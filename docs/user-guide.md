@@ -785,6 +785,8 @@ Memories brought in with `codemem memory import` that don't name the device that
 
 Imported memories that name their author keep that author: ones written on this device are shared like any other memory, and ones written elsewhere are not shared from this device.
 
+Shares created by earlier versions could include such imported memories, and memories written before sync was set up without recording this device as their author. Recipients may already hold copies of those memories, and those copies may remain on their devices after you remove access or stop the share. This device no longer sends recipients the cleanup they would refuse for those memories, which previously stopped their sync with this device. Withholding that cleanup never deletes a recipient's copy.
+
 The invite is single-use, expires, and is limited to the reviewed Projects. It names one Identity, not a Team, and the recipient cannot add Projects during acceptance. Existing and future selected-Project memories arrive after setup; unrelated Projects remain absent.
 
 Changing who receives a Project works only on a device that holds the coordinator admin secret, because that device applies the change to the coordinator. That covers **Projects → Update sharing**, the Projects of a person or Team in **Sharing**, and moving a Project out of local-only in **Projects**. On other devices, these controls are turned off and say which device makes changes, and the Viewer refuses such a save. You can still keep a Project local-only on any device.

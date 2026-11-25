@@ -16,6 +16,7 @@ const now = "2026-07-20T14:00:00.000Z";
 function insertMemory(
 	db: InstanceType<typeof Database>,
 	scopeId: string | null = "source",
+	originDeviceId: string | null = null,
 ): number {
 	const session = db
 		.prepare("INSERT INTO sessions(started_at, project, git_remote) VALUES (?, 'api', ?)")
@@ -24,9 +25,9 @@ function insertMemory(
 		db
 			.prepare(`INSERT INTO memory_items(
 				session_id, kind, title, body_text, confidence, tags_text, active,
-				created_at, updated_at, metadata_json, import_key, rev, visibility, scope_id
-			) VALUES (?, 'discovery', 'title', 'body', 0.8, '', 1, ?, ?, '{}', 'memory:key', 2, 'shared', ?)`)
-			.run(Number(session.lastInsertRowid), now, now, scopeId).lastInsertRowid,
+				created_at, updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
+			) VALUES (?, 'discovery', 'title', 'body', 0.8, '', 1, ?, ?, '{}', 'memory:key', 2, 'shared', ?, ?)`)
+			.run(Number(session.lastInsertRowid), now, now, scopeId, originDeviceId).lastInsertRowid,
 	);
 }
 
@@ -262,7 +263,7 @@ describe("reassign_scope replication", () => {
 	});
 
 	it("sends local-default old-side cleanup only to peers allowed for the project", () => {
-		const memoryId = insertMemory(db, DEFAULT_SYNC_SCOPE_ID);
+		const memoryId = insertMemory(db, DEFAULT_SYNC_SCOPE_ID, "owner");
 		recordScopeReassignment(db, {
 			operationId: "share_default",
 			memoryId,
@@ -307,7 +308,7 @@ describe("reassign_scope replication", () => {
 /** A shared memory written before sync setup, so its origin is "local". */
 function insertPreSyncMemory(
 	db: InstanceType<typeof Database>,
-	input: { origin?: string | null; sessionUser?: string } = {},
+	input: { origin?: string | null; sessionUser?: string; metadataJson?: string } = {},
 ): number {
 	const session = db
 		.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version)
@@ -323,11 +324,12 @@ function insertPreSyncMemory(
 			.prepare(`INSERT INTO memory_items(
 				session_id, kind, title, body_text, confidence, tags_text, active, created_at,
 				updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
-			) VALUES (?, 'discovery', 'title', 'body', 0.8, '', 1, ?, ?, '{}', 'memory:key', 1, 'shared', ?, ?)`)
+			) VALUES (?, 'discovery', 'title', 'body', 0.8, '', 1, ?, ?, ?, 'memory:key', 1, 'shared', ?, ?)`)
 			.run(
 				Number(session.lastInsertRowid),
 				now,
 				now,
+				input.metadataJson ?? "{}",
 				DEFAULT_SYNC_SCOPE_ID,
 				input.origin === undefined ? "local" : input.origin,
 			).lastInsertRowid,
@@ -509,5 +511,135 @@ describe("a recipient applying a share of pre-sync memories", () => {
 
 		// Assert
 		expect(cleanup.rejections.map((rejection) => rejection.reason)).toEqual(["sender_not_member"]);
+	});
+});
+
+/** A recipient that is a member of the new boundary alongside the owner. */
+function recipientStore(): InstanceType<typeof Database> {
+	const receiver = new Database(":memory:");
+	initTestSchemaWithPeers(receiver, ["owner"]);
+	receiver
+		.prepare(`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+		) VALUES ('managed', 'managed', 'team', 'coordinator', 1, 'active', ?, ?)`)
+		.run(now, now);
+	for (const deviceId of ["owner", "recipient"]) {
+		receiver
+			.prepare(`INSERT INTO scope_memberships(
+				scope_id, device_id, role, status, membership_epoch, updated_at
+			) VALUES ('managed', ?, 'member', 'active', 1, ?)`)
+			.run(deviceId, now);
+	}
+	return receiver;
+}
+
+describe("an owner sending cleanups recipients can't accept", () => {
+	let owner: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		owner = new Database(":memory:");
+		initTestSchema(owner);
+	});
+
+	afterEach(() => owner.close());
+
+	/** What this device sends: `sender` is the device filtering its outbound ops. */
+	function outbound(sender = "owner") {
+		const [allowed, nextCursor] = filterReplicationOpsForSyncWithStatus(
+			owner,
+			ops(owner),
+			"recipient",
+			{ localDeviceId: sender, supportsReassignScope: true, applyScopeFilter: false },
+		);
+		return { allowed: allowed.map((op) => op.op_id), nextCursor };
+	}
+
+	const opIds = (list: ReplicationOp[]) => list.map((op) => op.op_id);
+
+	it("withholds the cleanup of a memory shared without the owner as origin, and moves past it", () => {
+		// Arrange: a share recorded before shares claimed the origin.
+		reassignFromLocalDefault(owner, insertPreSyncMemory(owner));
+		const last = ops(owner).at(-1);
+
+		// Act
+		const sent = outbound();
+
+		// Assert
+		expect(sent.allowed).toEqual(opIds(sideOps(owner, "new")));
+		expect(sent.nextCursor).toBe(`${last?.created_at}|${last?.op_id}`);
+	});
+
+	it("withholds the cleanup of an imported memory without a known author", () => {
+		// Arrange: moved by an earlier version; the claim refuses imported memories.
+		const memoryId = insertPreSyncMemory(owner, { metadataJson: '{"source":"export"}' });
+		reassignFromLocalDefault(owner, memoryId, { claimLocalOrigin: true });
+
+		// Act
+		const sent = outbound();
+
+		// Assert
+		expect(sent.allowed).toEqual(opIds(sideOps(owner, "new")));
+	});
+
+	it("still sends the cleanup of a memory that names the owner as origin", () => {
+		// Arrange
+		reassignFromLocalDefault(owner, insertPreSyncMemory(owner), { claimLocalOrigin: true });
+
+		// Act
+		const sent = outbound();
+
+		// Assert
+		expect(sent.allowed).toEqual(opIds(ops(owner)));
+	});
+
+	it("leaves cleanups recorded by another device to the recipient's own checks", () => {
+		// Arrange: the same operations, filtered by a device that didn't record them.
+		reassignFromLocalDefault(owner, insertPreSyncMemory(owner));
+
+		// Act
+		const sent = outbound("recipient");
+
+		// Assert
+		expect(sent.allowed).toEqual(opIds(ops(owner)));
+	});
+
+	it("withholds the cleanup once this device no longer has the memory", () => {
+		// Arrange
+		const memoryId = insertPreSyncMemory(owner);
+		reassignFromLocalDefault(owner, memoryId);
+		owner.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
+
+		// Act
+		const sent = outbound();
+
+		// Assert
+		expect(sent.allowed).toEqual(opIds(sideOps(owner, "new")));
+	});
+
+	it("lets a recipient stuck on that cleanup pull again without a rejection", () => {
+		// Arrange: the recipient already holds the memory and refuses its cleanup.
+		reassignFromLocalDefault(owner, insertPreSyncMemory(owner));
+		const receiver = recipientStore();
+		const validation = { inboundScopeValidation: { peerDeviceId: "owner" } };
+		applyReplicationOps(receiver, sideOps(owner, "new"), "recipient", undefined, validation);
+		const stuck = applyReplicationOps(receiver, ops(owner), "recipient", undefined, validation);
+		const sentIds = new Set(outbound().allowed);
+
+		// Act
+		const pulled = applyReplicationOps(
+			receiver,
+			ops(owner).filter((op) => sentIds.has(op.op_id)),
+			"recipient",
+			undefined,
+			validation,
+		);
+
+		// Assert: the copy it already has stays as it was.
+		expect(stuck.rejections.map((rejection) => rejection.reason)).toEqual(["sender_not_member"]);
+		expect(pulled.rejected).toBe(0);
+		expect(
+			receiver.prepare("SELECT origin_device_id, scope_id, active FROM memory_items").get(),
+		).toEqual({ origin_device_id: "local", scope_id: "managed", active: 1 });
+		receiver.close();
 	});
 });
