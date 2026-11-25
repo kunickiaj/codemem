@@ -401,18 +401,69 @@ describe("stopping a received Project on this device", () => {
 		await clickOnThisDevice();
 
 		expect(visiblePanel().querySelector('[role="alert"]')?.textContent).toBe(
-			"Atlas was shared with this device the older way, so it can't be stopped here yet. Nothing changed.",
+			"Atlas was shared as part of a group of Projects, so this device can't stop receiving it on its own. Nothing changed.",
 		);
 	});
 
-	it("offers no switch for a Project that can't be stopped here", () => {
+	it("shows the state without a switch for a Project shared as part of a group", () => {
 		mount(intent(), { received: [receivedShare("not-own-boundary")] });
 		clickTab("From other devices");
 
 		const cell = visiblePanel().querySelector('[data-label="On this device"]');
 
-		expect(cell?.textContent).toBe("Can't be stopped here");
+		expect(cell?.textContent).toBe("Receiving");
 		expect(cell?.querySelector("button")).toBeNull();
+	});
+});
+
+function groupShareNote(): string | null {
+	return (
+		visiblePanel().querySelector(".recipient-policy-sharing-received-note")?.textContent ?? null
+	);
+}
+
+describe("received Projects shared as part of a group", () => {
+	beforeEach(setupSharingMount);
+	afterEach(cleanupSharingMount);
+
+	it.each([
+		[
+			"one of two Projects",
+			[receivedShare("not-own-boundary"), { ...receivedShare(null), displayName: "Borealis" }],
+			"1 Project was shared as part of a group of Projects. This device can't stop receiving it one at a time.",
+		],
+		[
+			"every Project",
+			[
+				receivedShare("not-own-boundary"),
+				{ ...receivedShare("not-own-boundary"), canonicalProjectIdentity: "git:example/b" },
+			],
+			"All 2 Projects were shared as part of a group of Projects. This device can't stop receiving them one at a time.",
+		],
+	])("explains once why %s has no switch", (_label, received, expected) => {
+		mount(intent(), { received });
+		clickTab("From other devices");
+
+		expect(groupShareNote()).toBe(expected);
+	});
+
+	it("shows no note when every Project can be stopped here", () => {
+		mount(intent(), { received: [receivedShare(null)] });
+		clickTab("From other devices");
+
+		expect(groupShareNote()).toBeNull();
+	});
+
+	it("keeps the exact last session time on a one-line relative label", () => {
+		const latestSessionAt = "2026-07-25T12:00:00.000Z";
+		mount(intent(), { received: [{ ...receivedShare(null), latestSessionAt }] });
+		clickTab("From other devices");
+
+		const time = visiblePanel().querySelector('[data-label="Last session"] time');
+
+		expect(time?.getAttribute("datetime")).toBe(latestSessionAt);
+		expect(time?.getAttribute("title")).toBe(new Date(latestSessionAt).toLocaleString());
+		expect(time?.textContent).not.toBe(new Date(latestSessionAt).toLocaleString());
 	});
 });
 

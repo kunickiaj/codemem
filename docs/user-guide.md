@@ -808,7 +808,7 @@ Any device can stop receiving a Project that someone shared with it. You don't n
 
 This device then stops getting new memories for that Project and stops sending its own memories for it. It keeps every memory it already has, and you can still search and read them. Choose **Resume** to start again. The device catches up on its next sync with whatever it's still allowed to receive at that point, including its own memories that changed in the meantime.
 
-The change applies only on this device. The coordinator still lists the device as receiving the Project, so the person who shared it sees no change. Projects shared the older way, as part of a group of Projects, show **Can't be stopped here**.
+The change applies only on this device. The coordinator still lists the device as receiving the Project, so the person who shared it sees no change. Projects shared the older way, as part of a group of Projects, show **Receiving** with no **Stop receiving…** button, because this device can't stop receiving them one at a time. A note above the table says how many Projects that applies to.
 
 ### Add a device for an existing Identity
 
