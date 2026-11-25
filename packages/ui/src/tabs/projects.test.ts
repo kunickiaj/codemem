@@ -1156,13 +1156,41 @@ describe("Projects cached recipient presentation", () => {
 		expect(entry?.querySelector("h2")?.textContent).toBe("Team needs recovery");
 		expect(entry?.textContent).not.toContain("Finish setting up");
 		expect(entry?.querySelector(".project-team-setup-recovery-reason")?.textContent).toBe(
-			teamSetupRecoveryReason("team_setup_completion_invalid"),
+			teamSetupRecoveryReason({ blockingError: "team_setup_completion_invalid" }),
 		);
 		const button = entry?.querySelector<HTMLButtonElement>("button");
 		expect(button?.textContent).toBe("View recovery details");
 		expect(button?.getAttribute("aria-label")).toBe("View recovery details for Example Team");
 		button?.click();
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
+	});
+
+	it("says removal records could not be read when that is why a Team is blocked", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Example Team",
+					status: "in_progress",
+					deviceCount: 2,
+					projectCount: 1,
+					unresolvedDeviceCount: 0,
+					unresolvedProjectCount: 0,
+					blockingError: "team_setup_completion_unavailable",
+					blockingReason: "device_removals_unavailable",
+				},
+			],
+		});
+
+		initProjectsTab(() => {}, { onOpenTeamSetup: vi.fn() });
+		await loadProjectsData();
+
+		expect(document.querySelector(".project-team-setup-recovery-reason")?.textContent).toBe(
+			"Device removal records could not be read from the coordinator. Nothing changed. View recovery details and try again.",
+		);
 	});
 
 	it("keeps ordinary setup wording for a Team without a blocker beside a blocked Team", async () => {

@@ -38,6 +38,8 @@ import {
 	isLegacyTeamCandidateSelectable,
 	isLegacyTeamSetupProjectMappingIdentity,
 	LegacyTeamSetupAdditiveConvergenceError,
+	type LegacyTeamSetupDeviceRemovalEvidence,
+	LegacyTeamSetupDeviceRemovalsUnavailableError,
 	LegacyTeamSetupRosterCapacityError,
 	legacyTeamCandidateId,
 	legacyTeamCandidateProjectInventory,
@@ -72,6 +74,7 @@ import {
 	type LegacyTeamSetupCandidateSummaryV1,
 	type LegacyTeamSetupDetailResponseV1,
 	type LegacyTeamSetupDeviceV1,
+	type LegacyTeamSetupErrorResponseV1,
 	type LegacyTeamSetupFinishResponseV1,
 	type LegacyTeamSetupIdentityChoiceV1,
 	type LegacyTeamSetupPendingCandidateSummaryV1,
@@ -232,6 +235,14 @@ function completionFailureHandlers(options: CompletionReconciliationOptions) {
 	return { handledGroupIds, handleFailure, reportFailure };
 }
 
+// Neither failure proves divergence, so the active Team must not be contained.
+function isNonDivergentApplyFailure(error: unknown): boolean {
+	return (
+		error instanceof LegacyTeamSetupAdditiveConvergenceError ||
+		error instanceof LegacyTeamSetupDeviceRemovalsUnavailableError
+	);
+}
+
 function completionConflictError(cause: unknown): Error {
 	return new Error("team_setup_completion_conflict", { cause });
 }
@@ -259,15 +270,44 @@ function groupCompletionFailureHandler(
 	};
 }
 
+interface CompletionBlocker {
+	code: LegacyTeamSetupActivationErrorCode;
+	reason?: LegacyTeamSetupErrorReason;
+}
+
+/** The safe cause behind a retryable completion failure, when one is known. */
+function completionFailureReason(error: unknown): LegacyTeamSetupErrorReason | undefined {
+	const removalsUnavailable = errorChain(error).some(
+		(item) => item instanceof LegacyTeamSetupDeviceRemovalsUnavailableError,
+	);
+	return removalsUnavailable ? "device_removals_unavailable" : undefined;
+}
+
+function completionBlocker(error: unknown): CompletionBlocker {
+	const code = apiErrorCode(new Error(completionApiError(error)));
+	const reason = completionFailureReason(error);
+	return reason && code === "team_setup_completion_unavailable" ? { code, reason } : { code };
+}
+
+/** A detail read failure, with the safe completion cause when one is known. */
+function detailFailure(error: unknown, route: string) {
+	const failure = teamSetupFailure(error, route);
+	const { reason } = completionBlocker(error);
+	const body: LegacyTeamSetupErrorResponseV1 = reason
+		? { error: failure.code, reason }
+		: { error: failure.code };
+	return { body, status: failure.status };
+}
+
 function summaryReconciliationOptions(
-	blockingErrors: Map<string, LegacyTeamSetupActivationErrorCode>,
+	blockingErrors: Map<string, CompletionBlocker>,
 ): CompletionReconciliationOptions {
 	return {
 		isolateApplyFailures: true,
 		onFailure: (group, error) => {
 			blockingErrors.set(
 				legacyTeamCandidateId(group.coordinatorId, group.groupId),
-				apiErrorCode(new Error(completionApiError(error))),
+				completionBlocker(error),
 			);
 		},
 	};
@@ -300,7 +340,9 @@ const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
 	listRemovals: coordinatorListRemovedDevicesAction,
 };
 
-type ListCompletionRemovals = () => ReturnType<typeof coordinatorListRemovedDevicesAction>;
+// Undefined when no removal reader is configured: core then has no removal
+// evidence and handles a missing device as it did before removal replay.
+type ListCompletionRemovals = () => Promise<LegacyTeamSetupDeviceRemovalEvidence | undefined>;
 
 interface LegacyTeamSnapshotLoaderDependencies {
 	readConfig: typeof readCoordinatorSyncConfig;
@@ -834,12 +876,16 @@ function candidateFromDraft(draft: LegacyTeamSetupDraftView): LegacyTeamCandidat
 function blockedCandidateSummary(
 	store: MemoryStore,
 	group: LegacyTeamConfiguredGroupSnapshot,
-	blockingError: LegacyTeamSetupActivationErrorCode,
+	blocker: CompletionBlocker,
 ): LegacyTeamSetupPendingCandidateSummaryV1 {
 	const candidateRef = legacyTeamCandidateId(group.coordinatorId, group.groupId);
 	const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+	const blocking = {
+		blockingError: blocker.code,
+		...(blocker.reason ? { blockingReason: blocker.reason } : {}),
+	};
 	if (draft) {
-		return { ...candidateSummary(candidateFromDraft(draft)), status: "stale", blockingError };
+		return { ...candidateSummary(candidateFromDraft(draft)), status: "stale", ...blocking };
 	}
 	const forbiddenIds = [
 		group.coordinatorId,
@@ -855,7 +901,7 @@ function blockedCandidateSummary(
 		candidateRef,
 		displayName: safeChoiceLabel(group.displayName, "Legacy Team", forbiddenIds),
 		status: "stale",
-		blockingError,
+		...blocking,
 		deviceCount: group.devices.length,
 		projectCount: 0,
 		unresolvedDeviceCount: 0,
@@ -866,7 +912,7 @@ function blockedCandidateSummary(
 function pendingCandidateSummaries(
 	store: MemoryStore,
 	groups: LegacyTeamConfiguredGroupSnapshot[],
-	blockingErrors: Map<string, LegacyTeamSetupActivationErrorCode>,
+	blockingErrors: Map<string, CompletionBlocker>,
 ): LegacyTeamSetupPendingCandidateSummaryV1[] {
 	const unblockedGroups = groups.filter(
 		(group) => !blockingErrors.has(legacyTeamCandidateId(group.coordinatorId, group.groupId)),
@@ -897,7 +943,7 @@ async function reconcileSummaryCandidates(
 	) => Promise<void>,
 ): Promise<LegacyTeamSetupSummaryResponseV1> {
 	readPureCandidateViews(store, groups);
-	const blockingErrors = new Map<string, LegacyTeamSetupActivationErrorCode>();
+	const blockingErrors = new Map<string, CompletionBlocker>();
 	await reconcile(store, groups, summaryReconciliationOptions(blockingErrors));
 	return {
 		version: TEAM_SETUP_VERSION,
@@ -2059,13 +2105,16 @@ function completionReadActions(
 	const adminSecret = config.syncCoordinatorAdminSecret;
 	let removals: ReturnType<ListCompletionRemovals> | undefined;
 	const listRemovals: ListCompletionRemovals = () => {
-		removals ??=
-			dependencies
-				.listRemovals?.({
-					includeBlocked: true,
-					remote: { url: remoteUrl, adminSecret, timeoutS, deadlineMs },
-				})
-				.catch(() => []) ?? Promise.resolve([]);
+		const read = dependencies.listRemovals;
+		if (!read) return Promise.resolve(undefined);
+		// A failed read is not an empty list: core must not treat it as missing proof.
+		removals ??= read({
+			includeBlocked: true,
+			remote: { url: remoteUrl, adminSecret, timeoutS, deadlineMs },
+		}).then(
+			(items): LegacyTeamSetupDeviceRemovalEvidence => ({ status: "read", removals: items }),
+			(): LegacyTeamSetupDeviceRemovalEvidence => ({ status: "unavailable" }),
+		);
 		return removals;
 	};
 	const listCompletionRecords = (groupIds: string[]) =>
@@ -2289,7 +2338,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		const missing = manifest.device_decisions.some(
 			(device) => device.decision === "included" && !freshIds.has(device.device_id),
 		);
-		const verifiedRemovals = missing ? await listRemovals() : undefined;
+		const deviceRemovals = missing ? await listRemovals() : undefined;
 		let outcome: "applied" | "unauthorized" = "unauthorized";
 		const ran = await runCandidateMutation(
 			store.db,
@@ -2302,7 +2351,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						groupId: group.groupId,
 						manifest,
 						freshRoster,
-						verifiedRemovals,
+						deviceRemovals,
 						recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(actorIds),
 					});
 					outcome = "applied";
@@ -2639,7 +2688,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						);
 						if (applied !== "applied") continue;
 					} catch (applyError) {
-						if (applyError instanceof LegacyTeamSetupAdditiveConvergenceError) {
+						if (isNonDivergentApplyFailure(applyError)) {
 							handleFailure(group, applyError);
 							continue;
 						}
@@ -2799,8 +2848,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 
 			return c.json(detailResponse(store, draft, candidate, detailAccess(store, candidateRef)));
 		} catch (error) {
-			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
-			return c.json({ error: failure.code }, failure.status);
+			const failure = detailFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json(failure.body, failure.status);
 		}
 	});
 

@@ -97,6 +97,8 @@ const COMPLETION_UNAVAILABLE_ERROR =
 	"Team setup completion could not be checked. Check the coordinator connection and settings, then retry.";
 const COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team setup could not be confirmed, and no local changes were applied. Retry to check whether setup completed.";
+const DEVICE_REMOVALS_UNAVAILABLE_ERROR =
+	"Device removal records could not be read from the coordinator. Nothing changed. Retry to check again.";
 const COMPLETION_CONFLICT_ERROR =
 	"Another device completed this Team with different reviewed details. Retry to load the completed setup.";
 const COMPLETION_INVALID_ERROR =
@@ -800,7 +802,7 @@ function staleLoadRecoveryMessage(
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_completion_unavailable"
 	)
-		return COMPLETION_UNAVAILABLE_ERROR;
+		return completionUnavailableMessage(recoveryCause);
 	if (
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		isChangedStateCode(recoveryCause.errorCode)
@@ -867,6 +869,8 @@ function finishCompletionMessage(
 	code: ReturnType<typeof completionErrorCode>,
 	cause: unknown,
 ): string | null {
+	if (kind !== "finish" && code === "team_setup_completion_unavailable")
+		return completionUnavailableMessage(cause);
 	if (kind !== "finish") return completionMessage(code);
 	if (code === "team_setup_completion_unavailable")
 		return completionUnavailableAfterFinishMessage(cause);
@@ -878,6 +882,12 @@ function finishCompletionMessage(
 	)
 		return COORDINATOR_OUTDATED_ERROR;
 	return completionMessage(code);
+}
+
+function completionUnavailableMessage(cause: unknown): string {
+	if (cause instanceof LegacyTeamSetupApiError && cause.reason === "device_removals_unavailable")
+		return DEVICE_REMOVALS_UNAVAILABLE_ERROR;
+	return COMPLETION_UNAVAILABLE_ERROR;
 }
 
 function completionUnavailableAfterFinishMessage(cause: unknown): string {

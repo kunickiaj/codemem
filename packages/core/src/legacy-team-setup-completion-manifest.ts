@@ -23,6 +23,7 @@ import {
 	LEGACY_TEAM_SETUP_MAX_PROJECTS,
 	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
+import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { listProjectScopeCandidates } from "./project-scope-settings.js";
 import type { LegacyTeamSetupActivationResultV1 } from "./recipient-policy-contract.js";
 import {
@@ -40,6 +41,8 @@ import {
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
+import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
 
 export type LegacyTeamSetupCompletionManifestErrorCode =
 	| "team_setup_completion_invalid"
@@ -89,6 +92,33 @@ export class LegacyTeamSetupRosterCapacityError extends Error {
 	}
 }
 
+/**
+ * The coordinator's removal records could not be read while an included device
+ * was missing from the roster. Retrying may prove or disprove the removal, so
+ * the installed setup is left untouched. The public code stays the retryable
+ * completion code; `reason` lets current callers say which read failed.
+ */
+export class LegacyTeamSetupDeviceRemovalsUnavailableError extends Error {
+	readonly code = "team_setup_completion_unavailable" as const;
+	readonly reason = "device_removals_unavailable" as const;
+
+	constructor() {
+		super("team_setup_completion_unavailable");
+		this.name = "LegacyTeamSetupDeviceRemovalsUnavailableError";
+	}
+}
+
+export interface LegacyTeamSetupDeviceRemovalRecord {
+	group_id: string;
+	device_id: string;
+	fingerprint: string;
+}
+
+/** Coordinator removal records, or the fact that they could not be read. */
+export type LegacyTeamSetupDeviceRemovalEvidence =
+	| { status: "read"; removals: readonly LegacyTeamSetupDeviceRemovalRecord[] }
+	| { status: "unavailable" };
+
 function completionApplyFailure(
 	error: unknown,
 	options: { compatibleLocalPolicy: boolean },
@@ -125,7 +155,8 @@ interface ApplyCompletionManifestInput {
 	groupId: string;
 	manifest: unknown;
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
-	verifiedRemovals?: readonly { group_id: string; device_id: string; fingerprint: string }[];
+	/** Omitted when the caller has no removal records to consult. */
+	deviceRemovals?: LegacyTeamSetupDeviceRemovalEvidence;
 	expectedDraftManifest?: CoordinatorLegacyTeamCompletionManifestV1;
 	recipientPolicyLocksHeld?: {
 		publication: true;
@@ -952,35 +983,35 @@ function requireIncludedDeviceEvidence(
 	}
 }
 
-function replayAfterVerifiedRemoval(
-	db: Database,
+type IncludedDeviceDecision = CoordinatorLegacyTeamCompletionManifestV1["device_decisions"][number];
+
+/**
+ * Included devices absent from the fresh roster, or undefined when none are
+ * absent or a remaining device no longer matches its reviewed evidence.
+ */
+function includedDevicesMissingOnlyFromRoster(
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,
-	input: ApplyCompletionManifestInput,
-): LegacyTeamSetupActivationResultV1 | undefined {
-	if (!input.verifiedRemovals?.length || input.expectedDraftManifest) return undefined;
-	const roster = new Map(input.freshRoster.map((device) => [device.deviceId, device]));
-	if (roster.size !== input.freshRoster.length || roster.size > LEGACY_TEAM_SETUP_MAX_DEVICES)
+	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[],
+): IncludedDeviceDecision[] | undefined {
+	const roster = new Map(freshRoster.map((device) => [device.deviceId, device]));
+	if (roster.size !== freshRoster.length || roster.size > LEGACY_TEAM_SETUP_MAX_DEVICES)
 		return undefined;
 	const included = manifest.device_decisions.filter((device) => device.decision === "included");
 	const missing = included.filter((device) => !roster.has(device.device_id));
 	if (!missing.length) return undefined;
-	const proven = missing.every((device) =>
-		input.verifiedRemovals?.some(
-			(removal) =>
-				removal.group_id === input.groupId &&
-				removal.device_id === device.device_id &&
-				removal.fingerprint === device.key_fingerprint,
-		),
-	);
-	if (!proven) return undefined;
-	const remaining = included.filter((device) => roster.has(device.device_id));
-	if (
-		remaining.some((device) => {
-			const fresh = roster.get(device.device_id);
-			return !device.enabled || !fresh?.enabled || fresh.fingerprint !== device.key_fingerprint;
-		})
-	)
-		return undefined;
+	const remainingDiverged = included.some((device) => {
+		if (!roster.has(device.device_id)) return false;
+		const fresh = roster.get(device.device_id);
+		return !device.enabled || !fresh?.enabled || fresh.fingerprint !== device.key_fingerprint;
+	});
+	return remainingDiverged ? undefined : missing;
+}
+
+/** The stored activation result when the installed setup equals the manifest exactly. */
+function exactInstalledCompletionResult(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): LegacyTeamSetupActivationResultV1 | undefined {
 	try {
 		const completed = reconstructLegacyTeamSetupCompletionManifest(db, {
 			candidateRef: manifest.candidate_ref,
@@ -990,13 +1021,152 @@ function replayAfterVerifiedRemoval(
 			canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest)
 		)
 			return undefined;
-		// A removal permits a read-only replay of the already-installed setup. It
-		// must not recreate device bindings, memberships, or Project recipients.
 		return loadCompletedActivationResult(db, loadCompletedDraft(db, manifest.candidate_ref));
 	} catch (error) {
 		if (!(error instanceof LegacyTeamSetupCompletionManifestError)) throw error;
 		return undefined;
 	}
+}
+
+/** The Team's device eligibility from this machine's policy rows, as recipient policy derives it. */
+function localTeamDeviceEligibility(db: Database, teamId: string) {
+	const mode = db
+		.prepare("SELECT device_eligibility_mode FROM policy_teams WHERE team_id = ?")
+		.pluck()
+		.get(teamId) as string | undefined;
+	if (mode === undefined) return undefined;
+	const members = "SELECT identity_id FROM policy_team_memberships WHERE team_id = ?";
+	const memberships = db
+		.prepare("SELECT identity_id, status FROM policy_team_memberships WHERE team_id = ?")
+		.all(teamId) as Array<{ identity_id: string; status: string }>;
+	const identities = db
+		.prepare(
+			`SELECT actor_id, status, merged_into_actor_id FROM actors WHERE actor_id IN (${members})`,
+		)
+		.all(teamId) as Array<{
+		actor_id: string;
+		status: string;
+		merged_into_actor_id: string | null;
+	}>;
+	const devices = db
+		.prepare(
+			`SELECT identity_id, device_id, status, assignment_version FROM identity_devices
+			 WHERE identity_id IN (${members})`,
+		)
+		.all(teamId) as Array<{
+		identity_id: string;
+		device_id: string;
+		status: string;
+		assignment_version: number;
+	}>;
+	const decisions = db
+		.prepare(
+			`SELECT device_id, decision, assignment_version FROM policy_team_device_decisions
+			 WHERE team_id = ?`,
+		)
+		.all(teamId) as Array<{ device_id: string; decision: string; assignment_version: number }>;
+	return derivePolicyTeamDeviceEligibility({
+		teamId,
+		mode,
+		memberships: memberships.map((row) => ({ identityId: row.identity_id, status: row.status })),
+		identities: identities.map((row) => ({
+			identityId: row.actor_id,
+			status: row.status,
+			mergedIntoIdentityId: row.merged_into_actor_id,
+		})),
+		devices: devices.map((row) => ({
+			identityId: row.identity_id,
+			deviceId: row.device_id,
+			status: row.status,
+			assignmentVersion: row.assignment_version,
+		})),
+		decisions: decisions.map((row) => ({
+			deviceId: row.device_id,
+			decision: row.decision,
+			assignmentVersion: row.assignment_version,
+		})),
+	});
+}
+
+/**
+ * Whether the sync routes would accept this device for the scope from cached
+ * membership. This is the peer-side check of `parseSyncScopeRequest`. No key
+ * is passed, so a retained authorization for any of the device's keys counts:
+ * a bootstrap grant can present a key this machine no longer pins.
+ */
+function isCachedScopeMember(db: Database, deviceId: string, scopeId: string): boolean {
+	const authorization = getEffectiveCachedScopeAuthorization(db, { deviceId, scopeId });
+	return scopeAuthorizationFailureReason(authorization) === null;
+}
+
+/**
+ * Whether this machine's cache authorizes the device for any scope at all.
+ * The authorization helper denies a device that has no cached membership row,
+ * so the device's own rows are the complete candidate set.
+ */
+function hasAnyCachedScopeAuthorization(db: Database, deviceId: string): boolean {
+	const scopeIds = db
+		.prepare("SELECT DISTINCT scope_id FROM scope_memberships WHERE device_id = ?")
+		.pluck()
+		.all(deviceId) as string[];
+	return scopeIds.some((scopeId) => isCachedScopeMember(db, deviceId, scopeId));
+}
+
+/**
+ * True when this machine already gives none of the devices a way to receive
+ * the Team's Projects: no active Identity binding, no peer pin, no place in
+ * the Team's derived device eligibility, and no cached scope authorization.
+ * The last one matters because a bootstrap grant can authenticate a device
+ * without a pin and then rely on cached scope membership alone. It covers
+ * every scope rather than the Team's: a Project can be remapped to another
+ * group's scope after setup, and its memories move with it.
+ */
+function areDevicesDeniedLocallyForTeam(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	deviceIds: readonly string[],
+): boolean {
+	const activeBinding = db.prepare(
+		"SELECT 1 FROM identity_devices WHERE device_id = ? AND status = 'active' LIMIT 1",
+	);
+	const peerPin = db.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ? LIMIT 1");
+	if (deviceIds.some((deviceId) => activeBinding.get(deviceId) || peerPin.get(deviceId)))
+		return false;
+	const eligibility = localTeamDeviceEligibility(db, manifest.team_id);
+	if (eligibility?.status !== "eligible") return false;
+	if (deviceIds.some((deviceId) => eligibility.eligibleDeviceIds.includes(deviceId))) return false;
+	return deviceIds.every((deviceId) => !hasAnyCachedScopeAuthorization(db, deviceId));
+}
+
+function replayAfterVerifiedRemoval(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	input: ApplyCompletionManifestInput,
+): LegacyTeamSetupActivationResultV1 | undefined {
+	const evidence = input.deviceRemovals;
+	if (!evidence || input.expectedDraftManifest) return undefined;
+	const missing = includedDevicesMissingOnlyFromRoster(manifest, input.freshRoster);
+	if (!missing) return undefined;
+	const installed = exactInstalledCompletionResult(db, manifest);
+	if (!installed) return undefined;
+	if (evidence.status === "unavailable") {
+		// Unreadable records neither prove nor disprove the removal. Waiting is
+		// safe only while this machine already denies every missing device.
+		const deviceIds = missing.map((device) => device.device_id);
+		if (!areDevicesDeniedLocallyForTeam(db, manifest, deviceIds)) return undefined;
+		throw new LegacyTeamSetupDeviceRemovalsUnavailableError();
+	}
+	const proven = missing.every((device) =>
+		evidence.removals.some(
+			(removal) =>
+				removal.group_id === input.groupId &&
+				removal.device_id === device.device_id &&
+				removal.fingerprint === device.key_fingerprint,
+		),
+	);
+	// A removal permits a read-only replay of the already-installed setup. It
+	// must not recreate device bindings, memberships, or Project recipients.
+	return proven ? installed : undefined;
 }
 
 function tryRemovalCompletionReplay(
@@ -1005,7 +1175,7 @@ function tryRemovalCompletionReplay(
 	input: ApplyCompletionManifestInput,
 	actorIds: readonly string[],
 ) {
-	if (!input.verifiedRemovals?.length) return undefined;
+	if (!input.deviceRemovals) return undefined;
 	return db.transaction(() => {
 		requireCompletionActorLocks(db, manifest, actorIds);
 		const result = replayAfterVerifiedRemoval(db, manifest, input);

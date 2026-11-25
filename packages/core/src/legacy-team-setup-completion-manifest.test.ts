@@ -14,6 +14,8 @@ import {
 	containLegacyTeamSetupCompletionConflict,
 	deriveLegacyTeamSetupCompletionManifest,
 	LegacyTeamSetupAdditiveConvergenceError,
+	type LegacyTeamSetupDeviceRemovalEvidence,
+	LegacyTeamSetupDeviceRemovalsUnavailableError,
 	LegacyTeamSetupRosterCapacityError,
 	reconstructLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifest,
@@ -26,12 +28,14 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "./legacy-team-setup-draft.js";
 import { removePairingState } from "./pairing-removal.js";
+import { upsertProjectScopeSettingsMapping } from "./project-scope-settings.js";
 import {
 	legacyTeamCandidateId,
 	legacyTeamProjectRef,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { renameRecipientPolicyTeam } from "./recipient-policy-team-metadata.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -2577,6 +2581,103 @@ function hiddenSpaceCompletionState(
 	};
 }
 
+/**
+ * Completes a two-device Team, then removes the Laptop from the roster. By
+ * default this machine has also removed it locally, ending its binding.
+ */
+async function completeTeamThenRemoveLaptop(
+	db: InstanceType<typeof Database>,
+	options: { removedLocally?: string[] } = {},
+) {
+	db.prepare(
+		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+		 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
+	).run(NOW, NOW);
+	const roster = [
+		...FRESH_ROSTER,
+		{ deviceId: "device-b", fingerprint: "b".repeat(64), displayName: "Desktop", enabled: true },
+	];
+	let draft = refreshLegacyTeamSetupDraft(db, {
+		candidateId: CANDIDATE,
+		coordinatorId: COORDINATOR_ID,
+		groupId: GROUP_ID,
+		displayName: "Engineering",
+		devices: roster,
+		projects: [HIDDEN_SPACE_PROJECTS[0]],
+		now: NOW,
+	});
+	for (const device of draft.devices) {
+		setLegacyTeamSetupDeviceAssignment(db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			targetIdentityId: device.displayName === "Laptop" ? "identity-a" : "identity-b",
+			expectation: device.expectation,
+			now: NOW,
+		});
+		draft = setLegacyTeamSetupDeviceDecision(db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			decision: "included",
+			now: NOW,
+		});
+	}
+	const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+		candidateRef: draft.candidateRef,
+		attemptId: draft.attemptId,
+		completedAt: NOW,
+	});
+	const input = { coordinatorId: COORDINATOR_ID, groupId: GROUP_ID, manifest };
+	await applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster: roster });
+	const removedLocally = options.removedLocally ?? ["device-a"];
+	if (removedLocally.length > 0) {
+		removePairingState(db, {
+			localDeviceId: "device-local",
+			reason: "removed",
+			deviceIds: removedLocally,
+		});
+	}
+	const reconcile = (
+		deviceRemovals: LegacyTeamSetupDeviceRemovalEvidence,
+		freshRoster = roster.slice(1),
+	) => applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster, deviceRemovals });
+	return { manifest, reconcile };
+}
+
+function laptopRemoval(group = GROUP_ID, fingerprint = KEY_A) {
+	return { group_id: group, device_id: "device-a", fingerprint };
+}
+
+/** Caches coordinator scope memberships through the trusted refresh path, with key evidence. */
+async function cacheScopeMembers(
+	db: InstanceType<typeof Database>,
+	members: ReadonlyArray<readonly [scopeId: string, deviceId: string]>,
+) {
+	const insertScope = db.prepare(
+		`INSERT OR IGNORE INTO replication_scopes(
+		 scope_id, label, kind, authority_type, coordinator_id, group_id,
+		 membership_epoch, status, created_at, updated_at
+		 ) VALUES (?, 'Scope', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+	);
+	insertScope.run("scope-group-default", COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	insertScope.run("scope-other-group", COORDINATOR_ID, "other-group", NOW, NOW);
+	const insertMember = db.prepare(
+		`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+		 VALUES (?, ?, 'member', 'active', 1, ?)`,
+	);
+	for (const [scopeId, deviceId] of members) insertMember.run(scopeId, deviceId, NOW);
+	await refreshTestScopeRows(db);
+}
+
+function databaseSnapshot(db: InstanceType<typeof Database>) {
+	const tables = db
+		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+		.pluck()
+		.all() as string[];
+	return Object.fromEntries(
+		tables.map((table) => [table, db.prepare(`SELECT * FROM "${table}"`).all()]),
+	);
+}
+
 describe("legacy Team setup completion manifests after device removal", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -2587,65 +2688,18 @@ describe("legacy Team setup completion manifests after device removal", () => {
 	afterEach(() => db.close());
 
 	it.each([
-		["verified removal", GROUP_ID, KEY_A, true],
-		["wrong group", "other-group", KEY_A, false],
-		["wrong key", GROUP_ID, "other-key", false],
-	] as const)("reconciles an absent reviewed device: %s", async (_case, group, key, verified) => {
-		db.prepare(
-			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-			 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
-		).run(NOW, NOW);
-		const roster = [
-			...FRESH_ROSTER,
-			{ deviceId: "device-b", fingerprint: "b".repeat(64), displayName: "Desktop", enabled: true },
-		];
-		let draft = refreshLegacyTeamSetupDraft(db, {
-			candidateId: CANDIDATE,
-			coordinatorId: COORDINATOR_ID,
-			groupId: GROUP_ID,
-			displayName: "Engineering",
-			devices: roster,
-			projects: [HIDDEN_SPACE_PROJECTS[0]],
-			now: NOW,
-		});
-		for (const device of draft.devices) {
-			setLegacyTeamSetupDeviceAssignment(db, {
-				attemptId: draft.attemptId,
-				deviceRef: device.deviceRef,
-				targetIdentityId: device.displayName === "Laptop" ? "identity-a" : "identity-b",
-				expectation: device.expectation,
-				now: NOW,
-			});
-			draft = setLegacyTeamSetupDeviceDecision(db, {
-				attemptId: draft.attemptId,
-				deviceRef: device.deviceRef,
-				decision: "included",
-				now: NOW,
-			});
-		}
-		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
-			candidateRef: draft.candidateRef,
-			attemptId: draft.attemptId,
-			completedAt: NOW,
-		});
-		const input = { coordinatorId: COORDINATOR_ID, groupId: GROUP_ID, manifest };
-		await applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster: roster });
-		removePairingState(db, {
-			localDeviceId: "device-b",
-			reason: "removed",
-			deviceIds: ["device-a"],
-		});
-		const reconcile = () =>
-			applyLegacyTeamSetupCompletionManifest(db, {
-				...input,
-				freshRoster: roster.slice(1),
-				verifiedRemovals: [{ group_id: group, device_id: "device-a", fingerprint: key }],
-			});
+		["verified removal", [laptopRemoval()], true],
+		["wrong group", [laptopRemoval("other-group")], false],
+		["wrong key", [laptopRemoval(GROUP_ID, "other-key")], false],
+		["no removal records", [], false],
+	] as const)("reconciles an absent reviewed device: %s", async (_case, removals, verified) => {
+		const { manifest, reconcile } = await completeTeamThenRemoveLaptop(db);
+		const read = () => reconcile({ status: "read", removals });
 		if (verified) {
-			await expect(reconcile()).resolves.toEqual(manifest);
-			await expect(reconcile()).resolves.toEqual(manifest);
+			await expect(read()).resolves.toEqual(manifest);
+			await expect(read()).resolves.toEqual(manifest);
 		} else {
-			await expect(reconcile()).rejects.toThrow("team_setup_completion_invalid");
+			await expect(read()).rejects.toThrow("team_setup_completion_invalid");
 		}
 		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe(
 			verified ? "active" : "inactive",
@@ -2657,6 +2711,173 @@ describe("legacy Team setup completion manifests after device removal", () => {
 			db.prepare("SELECT status FROM identity_devices ORDER BY device_id").pluck().all(),
 		).toEqual(["removed", "active"]);
 		expect(db.prepare("SELECT count(*) FROM policy_team_memberships").pluck().get()).toBe(2);
+	});
+
+	it("leaves the Team untouched when removal records cannot be read, then preserves it on retry", async () => {
+		// Arrange: the only discrepancy is the Laptop that the coordinator removed.
+		const { manifest, reconcile } = await completeTeamThenRemoveLaptop(db);
+		const before = databaseSnapshot(db);
+		expect(db.prepare("SELECT count(*) FROM project_scope_mappings").pluck().get()).toBe(1);
+
+		// Act and assert: a failed read is retryable and writes nothing.
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
+		);
+		expect(databaseSnapshot(db)).toEqual(before);
+
+		// The finish digest survived, so a successful read can still replay.
+		await expect(reconcile({ status: "read", removals: [laptopRemoval()] })).resolves.toEqual(
+			manifest,
+		);
+		expect(db.prepare("SELECT status, migration_state FROM policy_teams").get()).toEqual({
+			status: "active",
+			migration_state: "completed",
+		});
+		expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("active");
+	});
+
+	it.each([
+		[
+			"the missing device's binding is still active",
+			{ removedLocally: [] },
+			["device-b"],
+			() => {},
+		],
+		[
+			"the missing device's peer pin is still stored",
+			{},
+			["device-b"],
+			(db: InstanceType<typeof Database>) =>
+				db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+						 VALUES ('device-a', 'ssh-ed25519 key', 'pin', ?)`,
+					)
+					.run(NOW),
+		],
+		["a second missing device is still bound", {}, [], () => {}],
+	] as const)(
+		"quarantines when removal records cannot be read and %s",
+		async (_case, options, remainingDeviceIds, prepare) => {
+			// Arrange: a missing device that this machine still serves keeps no Team access.
+			const { reconcile } = await completeTeamThenRemoveLaptop(db, {
+				removedLocally: [...(options.removedLocally ?? ["device-a"])],
+			});
+			prepare(db);
+			const roster = [
+				{
+					deviceId: "device-b",
+					fingerprint: "b".repeat(64),
+					displayName: "Desktop",
+					enabled: true,
+				},
+			].filter((device) => remainingDeviceIds.includes(device.deviceId));
+
+			// Act and assert: the pre-PR quarantine runs exactly as before.
+			await expect(reconcile({ status: "unavailable" }, roster)).rejects.toThrow(
+				"team_setup_completion_invalid",
+			);
+			expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+			expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("revoked");
+			expect(
+				db.prepare("SELECT finish_digest FROM legacy_team_setup_drafts").pluck().get(),
+			).toBeNull();
+		},
+	);
+
+	it("quarantines when removal records cannot be read and a remaining device changed key", async () => {
+		// A key change on a device still in the roster diverges from the reviewed
+		// setup whatever the removal records say, so the read failure is not consulted.
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		const rotated = [
+			{ deviceId: "device-b", fingerprint: "c".repeat(64), displayName: "Desktop", enabled: true },
+		];
+		await expect(reconcile({ status: "unavailable" }, rotated)).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+		expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("revoked");
+		expect(
+			db.prepare("SELECT finish_digest FROM legacy_team_setup_drafts").pluck().get(),
+		).toBeNull();
+		expect(db.prepare("SELECT count(*) FROM project_scope_mappings").pluck().get()).toBe(0);
+	});
+});
+
+describe("legacy Team setup completion manifests with cached scope access after removal", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = createCompletionFixtureDb();
+	});
+
+	afterEach(() => db.close());
+
+	it.each([
+		["the Team's mapped Project scope", "scope-engineering"],
+		["another coordinator scope of the Team's group", "scope-group-default"],
+		["a scope of another group", "scope-other-group"],
+	] as const)(
+		"quarantines when removal records cannot be read and the removed device is still cached in %s",
+		async (_case, scopeId) => {
+			// Arrange: binding ended and pin gone, but cached membership alone can
+			// authorize a bootstrap-grant request for this scope.
+			const { reconcile } = await completeTeamThenRemoveLaptop(db);
+			await cacheScopeMembers(db, [[scopeId, "device-a"]]);
+
+			// Act and assert.
+			await expect(reconcile({ status: "unavailable" })).rejects.toThrow(
+				"team_setup_completion_invalid",
+			);
+			expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+			expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("revoked");
+		},
+	);
+
+	it("quarantines when a Team Project was remapped to another group's scope that still caches the removed device", async () => {
+		// Arrange: after setup an admin moves the Project, and its memories, to
+		// another group's scope. The completed draft still names the old target.
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		await cacheScopeMembers(db, [["scope-other-group", "device-a"]]);
+		const mapping = db
+			.prepare(
+				`SELECT id, workspace_identity, project_pattern FROM project_scope_mappings
+				 WHERE source = 'reviewed_team_setup'`,
+			)
+			.get() as { id: number; workspace_identity: string; project_pattern: string };
+		upsertProjectScopeSettingsMapping(db, {
+			id: mapping.id,
+			deviceId: "device-local",
+			workspace_identity: mapping.workspace_identity,
+			project_pattern: mapping.project_pattern,
+			scope_id: "scope-other-group",
+			source: "reviewed_team_setup",
+		});
+		expect(
+			db
+				.prepare("SELECT scope_id FROM project_scope_mappings WHERE id = ?")
+				.pluck()
+				.get(mapping.id),
+		).toBe("scope-other-group");
+
+		// Act and assert.
+		await expect(reconcile({ status: "unavailable" })).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+	});
+
+	it.each([
+		["only another device is cached", [["scope-engineering", "device-b"]]],
+		["no device is cached", []],
+	] as const)("defers with every table unchanged when %s", async (_case, members) => {
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		await cacheScopeMembers(db, members);
+		const before = databaseSnapshot(db);
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
+		);
+		expect(databaseSnapshot(db)).toEqual(before);
 	});
 });
 
