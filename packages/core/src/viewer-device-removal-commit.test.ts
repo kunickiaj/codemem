@@ -7,6 +7,7 @@ import { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecyc
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { canonicalKeyId } from "./retired-device-aliases.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 import { commitViewerDeviceRemoval } from "./viewer-device-removal-commit.js";
@@ -303,6 +304,35 @@ describe("Viewer coordinator removal commit", () => {
 		});
 		expect(f.summary()).toEqual(f.before);
 		expect(f.refresh).toHaveBeenCalledOnce();
+	});
+});
+
+describe("Viewer removal commit and cached scope authorization", () => {
+	it("ends the removed devices' cached scope authorization and keeps other devices'", async () => {
+		// Arrange: a trusted refresh cached every device in one coordinator scope.
+		const f = await fixture();
+		f.db
+			.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
+				coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+				VALUES ('scope-a', 'Scope', 'team', 'coordinator', ?, 'a', 1, 'active', 'then', 'then')`)
+			.run(origin);
+		const member = f.db.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status,
+			membership_epoch, updated_at) VALUES ('scope-a', ?, 'member', 'active', 1, 'then')`);
+		for (const id of ["peer", "remote-alias", "local-alias", "keep"]) member.run(id);
+		await refreshTestScopeRows(f.db);
+		const proofs = () =>
+			f.db
+				.prepare("SELECT device_id FROM scope_membership_authorization_evidence ORDER BY device_id")
+				.pluck()
+				.all();
+		expect(proofs()).toEqual(["keep", "local-alias", "peer", "remote-alias"]);
+
+		// Act
+		expect(await f.run()).toMatchObject({ kind: "removed", localCleanup: { state: "applied" } });
+
+		// Assert
+		expect(f.summary()).toEqual(afterRemoval);
+		expect(proofs()).toEqual(["keep"]);
 	});
 });
 

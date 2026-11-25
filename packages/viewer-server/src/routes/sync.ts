@@ -3284,10 +3284,64 @@ function bootstrapSeedMatchesLocalIdentity(
 	}
 }
 
+/**
+ * Whether the scope is one of the grant group's coordinator scopes in this
+ * machine's cache. A grant proves enrollment in one group only, so it must not
+ * open a scope that this machine caches for the device through another group.
+ */
+function isBootstrapGrantGroupScope(
+	store: MemoryStore,
+	scopeId: string,
+	grant: { group_id: string },
+	coordinatorUrl: string,
+): boolean {
+	const cleanScopeId = scopeId.trim();
+	if (!cleanScopeId) return false;
+	return !!store.db
+		.prepare(
+			`SELECT 1 FROM replication_scopes
+			 WHERE scope_id = ? AND group_id = ? AND coordinator_id = ?
+			   AND authority_type = 'coordinator' LIMIT 1`,
+		)
+		.get(cleanScopeId, grant.group_id, buildBaseUrl(coordinatorUrl));
+}
+
+/** Why the verified grant does not authorize this request here, or null when it does. */
+function bootstrapGrantFailureReason(
+	store: MemoryStore,
+	verification: CoordinatorBootstrapGrantVerification,
+	request: {
+		config: ReturnType<typeof readCoordinatorSyncConfig>;
+		deviceId: string;
+		localDeviceId: string;
+		requestedScopeId: string | undefined;
+	},
+): string | null {
+	const { grant } = verification;
+	const groups = request.config.syncCoordinatorGroups;
+	if (groups.length > 0 && !groups.includes(grant.group_id))
+		return "bootstrap_grant_group_mismatch";
+	if (grant.worker_device_id !== request.deviceId) return "bootstrap_grant_worker_mismatch";
+	if (grant.seed_device_id !== request.localDeviceId) return "bootstrap_grant_seed_mismatch";
+	if (parseBootstrapExpiry(grant.expires_at) <= Date.now()) return "bootstrap_grant_expired";
+	// Re-read after the coordinator lookup; no async gap precedes the trust writes below.
+	if (!bootstrapSeedMatchesLocalIdentity(store, verification.seed_enrollment))
+		return "bootstrap_grant_seed_identity_invalid";
+	// Refused before the nonce, the pin, or any memory is written or read.
+	const scopeId = request.requestedScopeId;
+	if (
+		scopeId !== undefined &&
+		!isBootstrapGrantGroupScope(store, scopeId, grant, request.config.syncCoordinatorUrl)
+	)
+		return "bootstrap_grant_scope_outside_group";
+	return null;
+}
+
 async function authorizeBootstrapGrantRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
 	body: Buffer,
+	options: { requestedScopeId?: string } = {},
 ): Promise<SyncAuthResult> {
 	const grantId = (request.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
@@ -3347,30 +3401,16 @@ async function authorizeBootstrapGrantRequest(
 		return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
 	}
 
-	const grant = verification.grant;
-	const seedEnrollment = verification.seed_enrollment;
+	const grantFailure = bootstrapGrantFailureReason(store, verification, {
+		config,
+		deviceId,
+		localDeviceId,
+		requestedScopeId: options.requestedScopeId,
+	});
+	if (grantFailure) return { ok: false, reason: grantFailure, deviceId };
 	const workerEnrollment = verification.worker_enrollment;
-	if (
-		config.syncCoordinatorGroups.length > 0 &&
-		!config.syncCoordinatorGroups.includes(grant.group_id)
-	) {
-		return { ok: false, reason: "bootstrap_grant_group_mismatch", deviceId };
-	}
 	const workerPublicKey = workerEnrollment.public_key;
 	const workerFingerprint = workerEnrollment.fingerprint;
-	if (grant.worker_device_id !== deviceId) {
-		return { ok: false, reason: "bootstrap_grant_worker_mismatch", deviceId };
-	}
-	if (grant.seed_device_id !== localDeviceId) {
-		return { ok: false, reason: "bootstrap_grant_seed_mismatch", deviceId };
-	}
-	if (parseBootstrapExpiry(grant.expires_at) <= Date.now()) {
-		return { ok: false, reason: "bootstrap_grant_expired", deviceId };
-	}
-	// Re-read after the coordinator lookup; no async gap precedes the trust writes below.
-	if (!bootstrapSeedMatchesLocalIdentity(store, seedEnrollment)) {
-		return { ok: false, reason: "bootstrap_grant_seed_identity_invalid", deviceId };
-	}
 
 	const existingPeer = store.db
 		.prepare(
@@ -5253,6 +5293,11 @@ function parseInboundScopeRequest(
 	);
 }
 
+/** The scope a snapshot request names, for checks made before it is authorized. */
+function scopeOf(c: Context): { requestedScopeId?: string } {
+	return { requestedScopeId: c.req.query(SYNC_SCOPE_QUERY_PARAM) };
+}
+
 function serveAuthorizedSnapshot(
 	c: Context,
 	store: MemoryStore,
@@ -5628,7 +5673,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					if (unauthLimited) return unauthLimited;
 				}
 				deviceAuthReason = auth.reason;
-				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
+				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), scopeOf(c));
 				bootstrapAttempted = true;
 			}
 			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);

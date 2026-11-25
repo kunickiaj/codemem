@@ -165,6 +165,36 @@ function pruneEvidence(db: Database, batches: Batch[], authority: Authority): vo
 	}
 }
 
+function hasRefreshRevision(db: Database): boolean {
+	return !!db
+		.prepare("SELECT 1 FROM pragma_table_info('scope_membership_cache_state') WHERE name = ?")
+		.get("refresh_revision");
+}
+
+/**
+ * Deletes every retained proof for the devices, in every group, so the cached
+ * scope authorization denies them on every coordinator scope. Membership rows
+ * and other devices' proofs stay. Proofs are written only by a whole-group
+ * refresh that still holds the refresh revision it read before contacting the
+ * coordinator. Advancing every group's revision here makes a refresh that was
+ * already in flight discard its possibly older answer. A refresh that starts
+ * later carries the coordinator's current answer and restores what it grants.
+ * Run it inside the caller's removal transaction. Returns the proofs deleted.
+ */
+export function endRetainedScopeAuthorization(db: Database, deviceIds: readonly string[]): number {
+	if (deviceIds.length === 0) return 0;
+	if (hasRefreshRevision(db))
+		db.prepare(
+			`UPDATE scope_membership_cache_state SET refresh_revision = refresh_revision + 1
+			 WHERE refresh_revision < 9007199254740991`,
+		).run();
+	if (!scopeEvidenceTableExists(db)) return 0;
+	const remove = db.prepare(
+		"DELETE FROM scope_membership_authorization_evidence WHERE device_id = ?",
+	);
+	return deviceIds.reduce((total, deviceId) => total + remove.run(deviceId).changes, 0);
+}
+
 /** Evidence is not a lease: freshness policy remains with the caller. Malformed storage denies. */
 export function getRetainedScopeAuthorizationKey(
 	db: Database,

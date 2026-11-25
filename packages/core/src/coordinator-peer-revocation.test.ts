@@ -9,6 +9,7 @@ import { fetchPeerRemovalLookup } from "./coordinator-peer-revocation.js";
 import { removeCoordinatorRevokedPeers } from "./coordinator-runtime.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { getRetirementPeer } from "./memory-retirement-trust.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -244,5 +245,48 @@ describe("coordinator peer revocation refresh", () => {
 		await refresh();
 
 		expect(pairedPeerIds()).toEqual([active.deviceId, retired.deviceId].toSorted());
+	});
+});
+
+describe("coordinator peer removal refresh and cached scope authorization", () => {
+	it("ends the cached scope authorization of a device the coordinator removed", async () => {
+		// Arrange: a trusted refresh cached both peers in one coordinator scope.
+		localDb
+			.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
+				coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+				VALUES ('scope-a', 'Scope', 'team', 'coordinator', ?, 'group-a', 1, 'active', 'then', 'then')`)
+			.run(COORDINATOR);
+		const member = localDb.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role,
+			status, membership_epoch, updated_at) VALUES ('scope-a', ?, 'member', 'active', 1, 'then')`);
+		for (const device of [retired, active]) member.run(device.deviceId);
+		await refreshTestScopeRows(localDb);
+		const app = createBetterSqliteCoordinatorApp({ dbPath: coordinatorDbPath });
+		routeFetchTo({
+			request: (url, init) =>
+				url.includes("/v1/peers/revocations")
+					? Promise.resolve(
+							Response.json({
+								version: 1,
+								revoked: [],
+								removed: [retired.deviceId],
+								enrolled: [active.deviceId],
+								removal_seq: 1,
+							}),
+						)
+					: app.request(url, init),
+		});
+
+		// Act
+		const result = await refresh();
+
+		// Assert
+		expect(result).toMatchObject({ status: "checked", removed: 1 });
+		expect(pairedPeerIds()).toEqual([active.deviceId]);
+		expect(
+			localDb
+				.prepare("SELECT device_id FROM scope_membership_authorization_evidence")
+				.pluck()
+				.all(),
+		).toEqual([active.deviceId]);
 	});
 });
