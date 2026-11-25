@@ -20,6 +20,14 @@ describe("project-first navigation layout", () => {
 		expect(html).toContain('id="legacyTeamSetupMount"');
 	});
 
+	it("spaces the Projects review and Team setup cards with the panel gap", () => {
+		const rule = html.match(/#recipientPolicyReviewMount\s*\{([^}]*)\}/)?.[1] ?? "";
+		expect(rule).toMatch(/display:\s*flex/);
+		expect(rule).toMatch(/flex-direction:\s*column/);
+		expect(rule).toMatch(/gap:\s*var\(--sp-5\)/);
+		expect(html).toMatch(/<div id="recipientPolicyReviewMount" hidden><\/div>/);
+	});
+
 	it("orders the visible navigation with Sharing before Advanced", () => {
 		const navigation = html.slice(
 			html.indexOf('<nav class="tab-bar"'),
