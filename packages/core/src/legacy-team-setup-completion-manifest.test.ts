@@ -28,6 +28,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "./legacy-team-setup-draft.js";
 import { removePairingState } from "./pairing-removal.js";
+import { upsertProjectScopeSettingsMapping } from "./project-scope-settings.js";
 import {
 	legacyTeamCandidateId,
 	legacyTeamProjectRef,
@@ -2815,6 +2816,7 @@ describe("legacy Team setup completion manifests with cached scope access after 
 	it.each([
 		["the Team's mapped Project scope", "scope-engineering"],
 		["another coordinator scope of the Team's group", "scope-group-default"],
+		["a scope of another group", "scope-other-group"],
 	] as const)(
 		"quarantines when removal records cannot be read and the removed device is still cached in %s",
 		async (_case, scopeId) => {
@@ -2832,12 +2834,42 @@ describe("legacy Team setup completion manifests with cached scope access after 
 		},
 	);
 
+	it("quarantines when a Team Project was remapped to another group's scope that still caches the removed device", async () => {
+		// Arrange: after setup an admin moves the Project, and its memories, to
+		// another group's scope. The completed draft still names the old target.
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		await cacheScopeMembers(db, [["scope-other-group", "device-a"]]);
+		const mapping = db
+			.prepare(
+				`SELECT id, workspace_identity, project_pattern FROM project_scope_mappings
+				 WHERE source = 'reviewed_team_setup'`,
+			)
+			.get() as { id: number; workspace_identity: string; project_pattern: string };
+		upsertProjectScopeSettingsMapping(db, {
+			id: mapping.id,
+			deviceId: "device-local",
+			workspace_identity: mapping.workspace_identity,
+			project_pattern: mapping.project_pattern,
+			scope_id: "scope-other-group",
+			source: "reviewed_team_setup",
+		});
+		expect(
+			db
+				.prepare("SELECT scope_id FROM project_scope_mappings WHERE id = ?")
+				.pluck()
+				.get(mapping.id),
+		).toBe("scope-other-group");
+
+		// Act and assert.
+		await expect(reconcile({ status: "unavailable" })).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+	});
+
 	it.each([
-		["only another device is cached in the Team's scopes", [["scope-engineering", "device-b"]]],
-		[
-			"the removed device is cached only in another group's scope",
-			[["scope-other-group", "device-a"]],
-		],
+		["only another device is cached", [["scope-engineering", "device-b"]]],
+		["no device is cached", []],
 	] as const)("defers with every table unchanged when %s", async (_case, members) => {
 		const { reconcile } = await completeTeamThenRemoveLaptop(db);
 		await cacheScopeMembers(db, members);

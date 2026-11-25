@@ -1089,30 +1089,6 @@ function localTeamDeviceEligibility(db: Database, teamId: string) {
 }
 
 /**
- * Every scope this Team's setup can route its Projects through: each
- * completion-bound mapping scope, plus every coordinator scope of the setup's
- * group, active or retired. The second set is the one quarantine clears
- * setup mappings from, and it includes any group default scope.
- */
-function teamSetupScopeIds(
-	db: Database,
-	manifest: CoordinatorLegacyTeamCompletionManifestV1,
-): string[] {
-	const groupScopeIds = db
-		.prepare(
-			`SELECT DISTINCT scope.scope_id FROM replication_scopes AS scope
-			 JOIN legacy_team_setup_drafts AS draft
-			   ON draft.coordinator_id = scope.coordinator_id AND draft.group_id = scope.group_id
-			 WHERE draft.candidate_id = ? AND draft.completed_team_id = ?
-			   AND scope.authority_type = 'coordinator'`,
-		)
-		.pluck()
-		.all(manifest.candidate_ref, manifest.team_id) as string[];
-	const mappedScopeIds = manifest.project_mappings.map((mapping) => mapping.scope_id);
-	return [...new Set([...groupScopeIds, ...mappedScopeIds])];
-}
-
-/**
  * Whether the sync routes would accept this device for the scope from cached
  * membership. This is the peer-side check of `parseSyncScopeRequest`. No key
  * is passed, so a retained authorization for any of the device's keys counts:
@@ -1124,12 +1100,26 @@ function isCachedScopeMember(db: Database, deviceId: string, scopeId: string): b
 }
 
 /**
+ * Whether this machine's cache authorizes the device for any scope at all.
+ * The authorization helper denies a device that has no cached membership row,
+ * so the device's own rows are the complete candidate set.
+ */
+function hasAnyCachedScopeAuthorization(db: Database, deviceId: string): boolean {
+	const scopeIds = db
+		.prepare("SELECT DISTINCT scope_id FROM scope_memberships WHERE device_id = ?")
+		.pluck()
+		.all(deviceId) as string[];
+	return scopeIds.some((scopeId) => isCachedScopeMember(db, deviceId, scopeId));
+}
+
+/**
  * True when this machine already gives none of the devices a way to receive
  * the Team's Projects: no active Identity binding, no peer pin, no place in
- * the Team's derived device eligibility, and no cached scope authorization for
- * any scope the Team's setup uses. The last one matters because a bootstrap
- * grant can authenticate a device without a pin and then rely on cached scope
- * membership alone.
+ * the Team's derived device eligibility, and no cached scope authorization.
+ * The last one matters because a bootstrap grant can authenticate a device
+ * without a pin and then rely on cached scope membership alone. It covers
+ * every scope rather than the Team's: a Project can be remapped to another
+ * group's scope after setup, and its memories move with it.
  */
 function areDevicesDeniedLocallyForTeam(
 	db: Database,
@@ -1145,10 +1135,7 @@ function areDevicesDeniedLocallyForTeam(
 	const eligibility = localTeamDeviceEligibility(db, manifest.team_id);
 	if (eligibility?.status !== "eligible") return false;
 	if (deviceIds.some((deviceId) => eligibility.eligibleDeviceIds.includes(deviceId))) return false;
-	const scopeIds = teamSetupScopeIds(db, manifest);
-	return deviceIds.every((deviceId) =>
-		scopeIds.every((scopeId) => !isCachedScopeMember(db, deviceId, scopeId)),
-	);
+	return deviceIds.every((deviceId) => !hasAnyCachedScopeAuthorization(db, deviceId));
 }
 
 function replayAfterVerifiedRemoval(
