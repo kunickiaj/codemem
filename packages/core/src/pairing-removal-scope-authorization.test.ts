@@ -153,10 +153,37 @@ describe("removing a device ends its cached scope authorization", () => {
 		expect(access(KEEP)).toEqual(EVERYWHERE);
 	});
 
+	it("a group's first refresh that was in flight during the removal commits nothing", async () => {
+		// Arrange: no refresh has ever stored state for group C.
+		const scopeC = cacheScope({ scope_id: "scope-c", group_id: "group-c" });
+		const groupRows = (table: string) =>
+			db.prepare(`SELECT COUNT(*) FROM ${table} WHERE group_id = 'group-c'`).pluck().get();
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const inFlight = refreshGroup(scopeC, [LOCAL, REMOVED], gate);
+		expect(groupRows("scope_membership_cache_state")).toBe(0);
+
+		// Act
+		removePairingState(db, { localDeviceId: LOCAL, reason: "removed", deviceIds: [REMOVED] });
+		release();
+		const result = await inFlight;
+
+		// Assert
+		expect(result.status).toBe("stale");
+		expect(groupRows("scope_membership_authorization_evidence")).toBe(0);
+		expect(authorized(REMOVED, "scope-c")).toBe(false);
+		expect(authorized(LOCAL, "scope-c")).toBe(false);
+	});
+
 	it("a failed removal leaves the cached authorization and refresh state unchanged", () => {
 		const state = () => ({
 			evidence: db.prepare("SELECT * FROM scope_membership_authorization_evidence").all(),
 			cache: db.prepare("SELECT * FROM scope_membership_cache_state").all(),
+			removals: db
+				.prepare("SELECT name FROM sqlite_master WHERE name = 'scope_membership_removal_state'")
+				.all(),
 		});
 		const before = state();
 		db.prepare(

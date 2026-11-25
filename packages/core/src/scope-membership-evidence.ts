@@ -165,29 +165,47 @@ function pruneEvidence(db: Database, batches: Batch[], authority: Authority): vo
 	}
 }
 
-function hasRefreshRevision(db: Database): boolean {
-	return !!db
-		.prepare("SELECT 1 FROM pragma_table_info('scope_membership_cache_state') WHERE name = ?")
-		.get("refresh_revision");
+const REMOVAL_STATE_TABLE = "scope_membership_removal_state";
+
+/**
+ * Counts local device removals across the whole database. A cache refresh
+ * reads it before contacting the coordinator and writes nothing if it changed
+ * by commit time, so no answer older than a removal can restore a deleted
+ * proof, even a group's first refresh. 0 until the first removal.
+ */
+export function readScopeAuthorizationRemovalGeneration(db: Database): number {
+	const table = db
+		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+		.get(REMOVAL_STATE_TABLE);
+	if (!table) return 0;
+	const row = db.prepare(`SELECT generation FROM ${REMOVAL_STATE_TABLE} WHERE id = 1`).get() as
+		| { generation: number }
+		| undefined;
+	return row?.generation ?? 0;
+}
+
+function advanceRemovalGeneration(db: Database): void {
+	db.exec(`CREATE TABLE IF NOT EXISTS ${REMOVAL_STATE_TABLE} (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		generation INTEGER NOT NULL
+	)`);
+	db.prepare(
+		`INSERT INTO ${REMOVAL_STATE_TABLE}(id, generation) VALUES (1, 1)
+		 ON CONFLICT(id) DO UPDATE SET generation = generation + 1`,
+	).run();
 }
 
 /**
  * Deletes every retained proof for the devices, in every group, so the cached
  * scope authorization denies them on every coordinator scope. Membership rows
- * and other devices' proofs stay. Proofs are written only by a whole-group
- * refresh that still holds the refresh revision it read before contacting the
- * coordinator. Advancing every group's revision here makes a refresh that was
- * already in flight discard its possibly older answer. A refresh that starts
- * later carries the coordinator's current answer and restores what it grants.
+ * and other devices' proofs stay. Advancing the removal generation makes any
+ * refresh that began earlier discard its answer. A refresh that starts later
+ * carries the coordinator's current answer and restores what it grants.
  * Run it inside the caller's removal transaction. Returns the proofs deleted.
  */
 export function endRetainedScopeAuthorization(db: Database, deviceIds: readonly string[]): number {
 	if (deviceIds.length === 0) return 0;
-	if (hasRefreshRevision(db))
-		db.prepare(
-			`UPDATE scope_membership_cache_state SET refresh_revision = refresh_revision + 1
-			 WHERE refresh_revision < 9007199254740991`,
-		).run();
+	advanceRemovalGeneration(db);
 	if (!scopeEvidenceTableExists(db)) return 0;
 	const remove = db.prepare(
 		"DELETE FROM scope_membership_authorization_evidence WHERE device_id = ?",

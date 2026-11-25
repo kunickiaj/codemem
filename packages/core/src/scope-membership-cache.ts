@@ -11,7 +11,10 @@ import {
 	loadCachedScope,
 	type ScopeMembershipCacheAuthority,
 } from "./scope-membership-cache-read.js";
-import { reconcileScopeAuthorizationEvidence } from "./scope-membership-evidence.js";
+import {
+	readScopeAuthorizationRemovalGeneration,
+	reconcileScopeAuthorizationEvidence,
+} from "./scope-membership-evidence.js";
 import {
 	normalizeScopeCatalog,
 	normalizeScopeSnapshot,
@@ -469,15 +472,13 @@ export async function refreshScopeMembershipCache(
 			const authority = authorityForGroup(groupId);
 			ensureScopeMembershipCacheStateTable(db);
 			expectedRevision = readRefreshRevision(db, authority);
+			const expected = {
+				revision: expectedRevision,
+				removalGeneration: readScopeAuthorizationRemovalGeneration(db),
+			};
 			const membershipBatches = await gatherCurrentSnapshots(fetchers, authority);
 			const scopes = membershipBatches.map((batch) => batch.scope);
-			const error = persistCurrentSnapshots(
-				db,
-				membershipBatches,
-				authority,
-				timestamp,
-				expectedRevision,
-			);
+			const error = persistCurrentSnapshots(db, membershipBatches, authority, timestamp, expected);
 			const membershipCount = membershipBatches.reduce(
 				(count, batch) => count + batch.memberships.length,
 				0,
@@ -589,12 +590,15 @@ function persistCurrentSnapshots(
 	batches: CurrentScopeBatch[],
 	authority: ScopeMembershipCacheAuthority,
 	timestamp: string,
-	expectedRevision: number,
+	expected: { revision: number; removalGeneration: number },
 ): string | null {
 	return db
 		.transaction(() => {
-			if (readRefreshRevision(db, authority) !== expectedRevision)
+			if (readRefreshRevision(db, authority) !== expected.revision)
 				return "Current scope snapshot superseded by a newer cache refresh.";
+			// A device removal after this refresh began may postdate the coordinator's answer.
+			if (readScopeAuthorizationRemovalGeneration(db) !== expected.removalGeneration)
+				return "Current scope snapshot superseded by a device removal.";
 			// Validate every batch before writes, even when an earlier batch cannot revive a row.
 			const conflicts = batches.map((batch) => requireUnsupersededSnapshot(db, batch));
 			const error = conflicts.some(Boolean)
