@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import * as syncAuth from "./sync-auth.js";
 import { fetchAllSnapshotPages } from "./sync-bootstrap.js";
 import { SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
@@ -67,7 +68,7 @@ function snapshotPage(more: boolean) {
 
 let db: InstanceType<typeof Database>;
 
-beforeEach(() => {
+beforeEach(async () => {
 	db = new Database(":memory:");
 	initTestSchema(db);
 	// Disposable in-memory keys keep real v2/v3 signing without consulting a key store.
@@ -89,8 +90,8 @@ beforeEach(() => {
 		"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
 	).run(peerId, "executor-fingerprint", timestamp);
 	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
-			membership_epoch, status, created_at, updated_at)
-			VALUES (?, 'Executor scope', 'team', 'coordinator', 1, 'active', ?, ?)`).run(
+			coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+			VALUES (?, 'Executor scope', 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`).run(
 		scopeId,
 		timestamp,
 		timestamp,
@@ -103,6 +104,8 @@ beforeEach(() => {
 			timestamp,
 		);
 	}
+	// The push rechecks each batch against retained coordinator proofs.
+	await refreshTestScopeRows(db);
 });
 
 afterEach(() => {

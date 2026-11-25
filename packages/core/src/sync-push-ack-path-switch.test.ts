@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { SecretScanner } from "./secret-scanner.js";
 import * as syncAuth from "./sync-auth.js";
 import {
@@ -29,7 +30,7 @@ const boundary = { generation: 1, snapshot_id: "switch-snapshot", baseline_curso
 
 let source: InstanceType<typeof Database>;
 
-beforeEach(() => {
+beforeEach(async () => {
 	source = new Database(":memory:");
 	initTestSchema(source);
 	vi.spyOn(identity, "ensureDeviceIdentity").mockReturnValue([localId, "ed25519 fixture"]);
@@ -54,8 +55,8 @@ beforeEach(() => {
 		.run(peerId, "switch-fingerprint", timestamp);
 	source
 		.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
-		membership_epoch, status, created_at, updated_at)
-		VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`)
+		coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+		VALUES (?, ?, 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`)
 		.run(scopeId, scopeId, timestamp, timestamp);
 	for (const deviceId of [localId, peerId]) {
 		source
@@ -65,6 +66,8 @@ beforeEach(() => {
 	}
 	setReplicationCursor(source, peerId, { lastApplied: baseline, lastAcked: baseline }, scopeId);
 	setReplicationCursor(source, peerId, { lastApplied: baseline, lastAcked: baseline });
+	// The push rechecks each batch against retained coordinator proofs.
+	await refreshTestScopeRows(source);
 });
 
 afterEach(() => {

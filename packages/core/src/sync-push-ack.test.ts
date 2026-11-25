@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { SecretScanner } from "./secret-scanner.js";
 import * as syncAuth from "./sync-auth.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
@@ -37,7 +38,7 @@ const boundary = {
 let source: InstanceType<typeof Database>;
 let receiver: InstanceType<typeof Database>;
 
-beforeEach(() => {
+beforeEach(async () => {
 	vi.useFakeTimers({ toFake: ["Date"] });
 	vi.setSystemTime(new Date("2026-11-02T12:00:00Z"));
 	source = new Database(":memory:");
@@ -74,8 +75,8 @@ beforeEach(() => {
 	for (const id of [scopeId, unrelatedScopeId]) {
 		source
 			.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
-			membership_epoch, status, created_at, updated_at)
-			VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`)
+			coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+			VALUES (?, ?, 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`)
 			.run(id, id, timestamp, timestamp);
 		for (const deviceId of [localId, peerId]) {
 			source
@@ -86,6 +87,8 @@ beforeEach(() => {
 		setReplicationCursor(source, peerId, { lastApplied: baseline, lastAcked: baseline }, id);
 	}
 	setReplicationCursor(source, peerId, { lastApplied: baseline, lastAcked: baseline });
+	// The push rechecks each batch against retained coordinator proofs.
+	await refreshTestScopeRows(source);
 });
 
 afterEach(() => {

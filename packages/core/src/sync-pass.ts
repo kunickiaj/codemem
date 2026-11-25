@@ -16,6 +16,7 @@ import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-poli
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import {
@@ -48,21 +49,26 @@ import {
 import { buildBaseUrl, type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import {
+	ACCESS_CLEANUP_OP_TYPE,
 	applyReplicationOps,
 	backfillReplicationOps,
 	chunkOpsBySize,
 	clearReplicationCursorLastApplied,
+	DEFAULT_SYNC_SCOPE_ID,
 	extractReplicationOps,
 	type FilterReplicationSkipped,
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
+	parseReassignScopePayload,
+	REASSIGN_SCOPE_OP_TYPE,
 	reconcileStalePeerReceivedRows,
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
 	withoutWithdrawnScopeOps,
 } from "./sync-replication.js";
+import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
 import {
 	recordSyncTransferObservation,
 	recordSyncTransferReceipts,
@@ -1887,6 +1893,49 @@ function withoutOpsPeerAlreadyHolds(
 	});
 }
 
+function isOldSideMove(op: ReplicationOp): boolean {
+	try {
+		return parseReassignScopePayload(op).side === "old";
+	} catch {
+		return false;
+	}
+}
+
+/** The scope whose content an outbound op carries, or null for cleanup and unscoped ops. */
+function carriedScope(op: ReplicationOp): string | null {
+	if (op.entity_type !== "memory_item" || op.op_type === ACCESS_CLEANUP_OP_TYPE) return null;
+	// The old side of a move tells a peer to drop its copy, so it carries no content.
+	if (op.op_type === REASSIGN_SCOPE_OP_TYPE && isOldSideMove(op)) return null;
+	const scopeId = op.scope_id?.trim();
+	return scopeId && scopeId !== DEFAULT_SYNC_SCOPE_ID ? scopeId : null;
+}
+
+/**
+ * Throws when the peer may no longer receive a batch: its pin is gone or now
+ * pins another key, or the effective authorization the serving routes use,
+ * with retained proofs and deny overlays, no longer allows a carried scope.
+ * The pass start filtered with raw membership, and a push spans network waits.
+ */
+function requirePeerStillAuthorized(context: SyncExchangeContext, ops: ReplicationOp[]): void {
+	const pin = context.db
+		.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+		.get(context.peerDeviceId) as
+		| { pinned_fingerprint: string | null; public_key: string | null }
+		| undefined;
+	if (!pin || pin.pinned_fingerprint !== context.pinnedFingerprint)
+		throw new Error("peer access ended during push");
+	const scopeIds = new Set(ops.map(carriedScope).filter((scopeId) => scopeId !== null));
+	for (const scopeId of scopeIds) {
+		const authorization = getEffectiveCachedScopeAuthorization(context.db, {
+			deviceId: context.peerDeviceId,
+			scopeId,
+			expectedPublicKey: pin.public_key?.trim() || undefined,
+		});
+		if (scopeAuthorizationFailureReason(authorization))
+			throw new Error("peer access ended during push");
+	}
+}
+
 interface PushedDefaultOps {
 	outboundOps: ReplicationOp[];
 	skippedOutbound: FilterReplicationSkipped | null | undefined;
@@ -1933,7 +1982,11 @@ async function pushDefaultScope(
 				recordSyncTransferObservation(context.db, context.peerDeviceId, "send");
 			})();
 		},
-		stillSendable: (ops) => withoutWithdrawnScopeOps(context.db, ops),
+		stillSendable: (ops) => {
+			const sendable = withoutWithdrawnScopeOps(context.db, ops);
+			requirePeerStillAuthorized(context, sendable);
+			return sendable;
+		},
 		keysDir: context.keysDir,
 		dbPath: context.dbPath,
 	};

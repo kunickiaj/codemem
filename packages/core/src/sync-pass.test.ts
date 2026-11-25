@@ -1,8 +1,10 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
+import { removePairingState } from "./pairing-removal.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
 import {
@@ -191,6 +193,25 @@ function grantScopeForSyncPass(
 			 ON CONFLICT(scope_id, device_id) DO UPDATE SET updated_at = excluded.updated_at`,
 		).run(scopeId, deviceId, now);
 	}
+}
+
+/** Grants the scope and gives it retained coordinator proofs, as a trusted refresh would. */
+async function grantProvenScopeForSyncPass(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+	deviceIds: string[],
+): Promise<void> {
+	grantScopeForSyncPass(db, scopeId, deviceIds);
+	await proveScopesForSyncPass(db);
+}
+
+/** Gives the granted scopes retained coordinator proofs, as a trusted refresh would. */
+async function proveScopesForSyncPass(db: InstanceType<typeof Database>): Promise<void> {
+	db.prepare(
+		`UPDATE replication_scopes SET coordinator_id = 'coordinator-1', group_id = 'group-1'
+		 WHERE authority_type = 'coordinator' AND coordinator_id IS NULL AND group_id IS NULL`,
+	).run();
+	await refreshTestScopeRows(db);
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +490,7 @@ describe("syncOnce", () => {
 		syncReplication.setReplicationCursor(db, "peer-push", {
 			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
 		});
-		grantScopeForSyncPass(db, "acme-work", ["peer-push", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-push", "local-device-id"]);
 		for (const index of [1, 2]) {
 			db.prepare(
 				`INSERT INTO replication_ops(
@@ -3663,6 +3684,7 @@ describe("syncOnce with a Project this device withdrew from", () => {
 			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
 		});
 		insertLocalScopedOps(db, SCOPE, LOCAL, [1, 2]);
+		await proveScopesForSyncPass(db);
 		const request = vi
 			.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([200, { ...statusResponse, sync_capability: "enforcing" }])
@@ -3681,5 +3703,74 @@ describe("syncOnce with a Project this device withdrew from", () => {
 			.filter(([method]) => method === "POST")
 			.map(([, , options]) => (options?.body as { ops: unknown[] } | undefined)?.ops.length);
 		expect(pushedOpCounts).toEqual([2]);
+	});
+});
+
+describe("syncOnce when the peer loses access during a push", () => {
+	const { SCOPE, PEER, LOCAL, statusResponse, defaultOpsResponse } = WITHDRAWN;
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		addSyncTables(db);
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run(PEER, "fp-scoped", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([LOCAL, "ed25519 AAAA"]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		db.close();
+	});
+
+	it.each([
+		[
+			"the peer is removed",
+			(db: InstanceType<typeof Database>) =>
+				removePairingState(db, { localDeviceId: LOCAL, reason: "removed", deviceIds: [PEER] }),
+		],
+		[
+			"the peer is denied the Project",
+			(db: InstanceType<typeof Database>) =>
+				putRecipientPolicyDenyOverlay(db, {
+					canonicalProjectIdentity: "git:acme/internal",
+					scopeId: SCOPE,
+					deviceId: PEER,
+					generation: 1,
+					reasonCode: "pending_revoke",
+					now: "2026-01-01T00:00:00Z",
+				}),
+		],
+	])("sends no later batch of a split push after %s", async (_case, endAccess) => {
+		// Arrange: three ops split into batches; access ends after the first batch lands.
+		syncReplication.setReplicationCursor(db, PEER, {
+			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
+		});
+		insertLocalScopedOps(db, SCOPE, LOCAL, [1, 2, 3]);
+		await grantProvenScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
+		const request = vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, { ...statusResponse, sync_capability: "enforcing" }])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockResolvedValueOnce([413, { error: "too_many_ops" }])
+			.mockImplementationOnce(async () => {
+				endAccess(db);
+				return [200, {}];
+			})
+			.mockResolvedValue([200, {}]);
+
+		// Act
+		const result = await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+		// Assert: the refused request and the first half went out, nothing after.
+		const pushedOpCounts = request.mock.calls
+			.filter(([method]) => method === "POST")
+			.map(([, , options]) => (options?.body as { ops: unknown[] } | undefined)?.ops.length);
+		expect(pushedOpCounts).toEqual([3, 1]);
+		expect(result.ok).toBe(false);
 	});
 });
