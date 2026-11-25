@@ -33,8 +33,10 @@ export default defineConfig({
 			"src/coordinator-account-historical-revoke-equivalence.test.ts",
 			"src/coordinator-legacy-completion-owner-proof-equivalence.test.ts",
 		],
-		// The root config's worker cap does not apply to this standalone config.
-		maxWorkers: process.env.CI ? 3 : undefined,
+		// The root config's worker cap does not apply to this standalone config. Unlike the
+		// root config, capture uses all 4 vCPUs of a standard runner: on a 4-CPU Linux
+		// container this run took 341s with 4 workers against 368s and 389s with 3.
+		maxWorkers: process.env.CI ? 4 : undefined,
 		setupFiles: [
 			resolve(core, "src/test-environment-isolation.ts"),
 			resolve(import.meta.dirname, "capture-setup.ts"),
