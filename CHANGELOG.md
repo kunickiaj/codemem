@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.50.0-beta.2] - 2026-11-25
+
+### Added
+
+- Memory search returns a compact, ranked index across MCP, the Viewer and Pi, with full details available by exact ID. MCP and native OpenCode callers can opt in to compact batch hydration. ([#2933])
+- OpenCode Code Mode on supported 2.x hosts shows the codemem search and batch fetch signatures up front. The full tool catalog stays discoverable. ([#2934])
+- The Projects list leaves out Projects that have no memories. A **No memories** filter shows them, and nothing is deleted. ([#2926])
+
+### Changed
+
+- Scopes with `manual` or `invite` authority no longer sync with other devices. Their memories stay visible and searchable on the device that holds them. Coordinator, personal and local scopes are unchanged. ([#2936])
+- The People action is named **Remove from all sharing** and explains that it ends direct shares and access through every Team. Device removal confirmations say that Team membership stays the same. ([#2917])
+- The Projects table shows one row per Project and readable names for path-only and unnamed Projects. Search finds unnamed Projects by "No project". ([#2919], [#2920], [#2925])
+
+### Fixed
+
+- Removing a device now ends its cached scope access on this device, and a scope permission refresh that began before the removal cannot restore it. ([#2929])
+- A push to a peer rechecks the peer's pairing and scope access before every batch. ([#2930])
+- A completed Team stays active when a device missing from its roster has a verified coordinator removal, and the removed device's access on this device ends first. The Team also stays unchanged when removal records cannot be read. ([#2918], [#2928], [#2931])
+- Operations and snapshots pulled from a peer need the sender's coordinator proof for every scope they change, whatever sync capability the peer reports. A memory created on this device in a local scope is never changed by a peer. ([#2937], [#2938])
+- A snapshot checks the pairing again before it writes, so a device removed during a download leaves sync state unchanged. ([#2938])
+- OpenCode and Pi keep nested tool calls in captured sessions. ([#2932])
+- The Viewer explains why a device removal preview was refused, lays out removed devices in rows, notes Projects shared through a group, and shows a **Team needs recovery** card for a disabled Team. ([#2914], [#2916], [#2927])
+- Relay health probes stay under Service devices after coordinator discovery adds a peer record, instead of asking for pairing. ([#2915])
+
+**Upgrade notes and limitations:**
+
+- This is an opt-in beta on npm's `beta` channel. Restart the Viewer and agent hosts after upgrading.
+- No coordinator database migration is needed since `0.50.0-beta.1`. Cloudflare operators should redeploy the Worker to pick up the current code.
+- A device that still holds a `manual` or `invite` scope cached from before 0.46 stops syncing that scope.
+- A removed device can still retract replicas of memories it created.
+
 ## [0.50.0-beta.1] - 2026-11-24
 
 ### Added
@@ -403,7 +435,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.50.0-beta.1...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.50.0-beta.2...HEAD
+[0.50.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.50.0-beta.1...v0.50.0-beta.2
 [0.50.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.49.1...v0.50.0-beta.1
 [0.49.1]: https://github.com/kunickiaj/codemem/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0
@@ -602,3 +635,23 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2765]: https://github.com/kunickiaj/codemem/pull/2765
 [#2766]: https://github.com/kunickiaj/codemem/pull/2766
 [#2768]: https://github.com/kunickiaj/codemem/pull/2768
+[#2914]: https://github.com/kunickiaj/codemem/pull/2914
+[#2915]: https://github.com/kunickiaj/codemem/pull/2915
+[#2916]: https://github.com/kunickiaj/codemem/pull/2916
+[#2917]: https://github.com/kunickiaj/codemem/pull/2917
+[#2918]: https://github.com/kunickiaj/codemem/pull/2918
+[#2919]: https://github.com/kunickiaj/codemem/pull/2919
+[#2920]: https://github.com/kunickiaj/codemem/pull/2920
+[#2925]: https://github.com/kunickiaj/codemem/pull/2925
+[#2926]: https://github.com/kunickiaj/codemem/pull/2926
+[#2927]: https://github.com/kunickiaj/codemem/pull/2927
+[#2928]: https://github.com/kunickiaj/codemem/pull/2928
+[#2929]: https://github.com/kunickiaj/codemem/pull/2929
+[#2930]: https://github.com/kunickiaj/codemem/pull/2930
+[#2931]: https://github.com/kunickiaj/codemem/pull/2931
+[#2932]: https://github.com/kunickiaj/codemem/pull/2932
+[#2933]: https://github.com/kunickiaj/codemem/pull/2933
+[#2934]: https://github.com/kunickiaj/codemem/pull/2934
+[#2936]: https://github.com/kunickiaj/codemem/pull/2936
+[#2937]: https://github.com/kunickiaj/codemem/pull/2937
+[#2938]: https://github.com/kunickiaj/codemem/pull/2938
