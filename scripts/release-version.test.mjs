@@ -13,7 +13,8 @@ function write(path, content) {
 	writeFileSync(path, content, "utf8");
 }
 
-function makeRepo(version = "0.16.0") {
+/** `pin` is the version the four plugin manifest files hold. */
+function makeRepo(version = "0.16.0", pin = version) {
 	const root = mkdtempSync(join(tmpdir(), "codemem-release-version-"));
 	tempRoots.push(root);
 	write(join(root, "packages/core/package.json"), `{
@@ -57,11 +58,11 @@ function makeRepo(version = "0.16.0") {
 	write(
 		join(root, "plugins/claude/.claude-plugin/plugin.json"),
 		`{
-  "version": "${version}",
+  "version": "${pin}",
   "mcpServers": {
     "codemem": {
       "command": "npx",
-      "args": ["-y", "--package", "codemem@${version}", "--package", "@codemem/embeddings@${version}", "codemem", "mcp"]
+      "args": ["-y", "--package", "codemem@${pin}", "--package", "@codemem/embeddings@${pin}", "codemem", "mcp"]
     }
   }
 }
@@ -71,12 +72,12 @@ function makeRepo(version = "0.16.0") {
 		join(root, ".claude-plugin/marketplace.json"),
 		`{
   "metadata": {
-    "version": "${version}"
+    "version": "${pin}"
   },
   "plugins": [
     {
       "name": "codemem",
-      "version": "${version}"
+      "version": "${pin}"
     }
   ]
 }
@@ -86,7 +87,7 @@ function makeRepo(version = "0.16.0") {
 		join(root, "plugins/codex/.codex-plugin/plugin.json"),
 		`{
   "name": "codemem",
-  "version": "${version}"
+  "version": "${pin}"
 }
 `,
 	);
@@ -94,7 +95,7 @@ function makeRepo(version = "0.16.0") {
 		join(root, "plugins/codex/.mcp.json"),
 		JSON.stringify({ codemem: {
 			command: "npx",
-			args: ["-y", "--package", `codemem@${version}`, "--package", `@codemem/embeddings@${version}`, "codemem", "mcp"],
+			args: ["-y", "--package", `codemem@${pin}`, "--package", `@codemem/embeddings@${pin}`, "codemem", "mcp"],
 			startup_timeout_sec: 30,
 			tool_timeout_sec: 60,
 		} }, null, 2) + "\n",
@@ -147,6 +148,45 @@ function repoContents(root, directory = "") {
 	return contents;
 }
 
+const MANIFEST_FILES = [
+	".claude-plugin/marketplace.json",
+	"plugins/claude/.claude-plugin/plugin.json",
+	"plugins/codex/.codex-plugin/plugin.json",
+	"plugins/codex/.mcp.json",
+];
+const MANIFEST_KEYS = new Set([
+	"claude_plugin_manifest",
+	"marketplace_metadata",
+	"marketplace_plugin",
+	"codex_plugin_manifest",
+	"claude_mcp_cli",
+	"claude_mcp_embeddings",
+	"codex_mcp_cli",
+	"codex_mcp_embeddings",
+]);
+
+/** The distinct versions held by package files and by plugin manifest files. */
+function versionGroups(snapshot) {
+	const distinct = (manifest) => [
+		...new Set(Object.entries(snapshot).filter(([key]) => MANIFEST_KEYS.has(key) === manifest).map(([, value]) => value)),
+	];
+	return { packages: distinct(false), manifests: distinct(true) };
+}
+
+function manifestContents(root) {
+	return Object.fromEntries(MANIFEST_FILES.map((path) => [path, readFileSync(join(root, path), "utf8")]));
+}
+
+function runCli(root, argv) {
+	let stdout = "";
+	let stderr = "";
+	const code = withCwd(root, () => main(argv,
+		{ write: (chunk) => (stdout += chunk) },
+		{ write: (chunk) => (stderr += chunk) },
+	));
+	return { code, stdout, stderr };
+}
+
 function checkRepo(root) {
 	let stdout = "";
 	let stderr = "";
@@ -158,7 +198,8 @@ function checkRepo(root) {
 }
 
 describe("MCP release package pins", () => {
-	for (const version of ["0.47.0", "0.47.0-beta.1"]) {
+	// A prerelease `set` leaves the launchers alone; see the plugin manifest tests below.
+	for (const version of ["0.47.0", "1.0.0"]) {
 		it(`reads and checks all four exact pins at ${version}`, () => {
 			// Arrange: all managed versions and launcher packages agree.
 			const root = makeRepo(version);
@@ -265,7 +306,7 @@ describe("MCP release package pins", () => {
 			for (const spec of [`${pin.spec}@0.46.0`, pin.spec]) {
 				it(`check rejects ${launcher.name} ${pin.name} spec ${spec}`, () => {
 					// Arrange: drift or an unversioned package must not pass release checks.
-					const root = makeRepo("0.47.0-beta.1");
+					const root = makeRepo("0.47.0");
 					changeLauncher(root, launcher, (server) => { server.args[pin.index] = spec; });
 
 					// Act.
@@ -273,7 +314,7 @@ describe("MCP release package pins", () => {
 
 					// Assert.
 					assert.equal(result.code, 1);
-					assert.match(result.stdout, new RegExp(`${launcher.key}_${pin.name}:`));
+					assert.match(result.stdout, new RegExp(`${launcher.key}_${pin.name}\\)?:`));
 					assert.equal(result.stderr, "");
 					if (spec === pin.spec) assert.match(result.stdout, /Invalid release version values detected:/);
 				});
@@ -281,8 +322,8 @@ describe("MCP release package pins", () => {
 		}
 
 		it(`repairs unversioned ${launcher.name} packages when manifest versions already match`, () => {
-			// Arrange: legacy launchers resolve stable even though manifests say beta.
-			const root = makeRepo("0.47.0-beta.1");
+			// Arrange: legacy launchers resolve npm's latest tag whatever the manifests say.
+			const root = makeRepo("0.47.0");
 			changeLauncher(root, launcher, (server) => {
 				server.args[2] = "codemem";
 				server.args[4] = "@codemem/embeddings";
@@ -290,15 +331,15 @@ describe("MCP release package pins", () => {
 			const before = repoContents(root);
 
 			// Act: dry run and real repair share validation and change reporting.
-			const planned = setVersion(root, "0.47.0-beta.1", { dryRun: true });
+			const planned = setVersion(root, "0.47.0", { dryRun: true });
 			assert.deepEqual(repoContents(root), before);
-			const changed = setVersion(root, "0.47.0-beta.1");
+			const changed = setVersion(root, "0.47.0");
 
 			// Assert: a same-version request must still repair package specs.
 			assert.deepEqual(planned, [launcher.path]);
 			assert.deepEqual(changed, [launcher.path]);
 			assert.deepEqual(launcher.server(readLauncher(root, launcher)).args,
-				["-y", "--package", "codemem@0.47.0-beta.1", "--package", "@codemem/embeddings@0.47.0-beta.1", "codemem", "mcp"]);
+				["-y", "--package", "codemem@0.47.0", "--package", "@codemem/embeddings@0.47.0", "codemem", "mcp"]);
 			assert.deepEqual(versionsAreAligned(readVersions(root)), { aligned: true, details: [] });
 		});
 
@@ -412,12 +453,10 @@ describe("release-version script", () => {
 
 	it("accepts alpha/beta/rc prerelease tags routed by the Release workflow", () => {
 		const root = makeRepo("1.0.0");
-		setVersion(root, "1.0.1-alpha.0");
-		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.1-alpha.0"]));
-		setVersion(root, "1.0.1-beta.2");
-		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.1-beta.2"]));
-		setVersion(root, "1.0.1-rc.1");
-		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.1-rc.1"]));
+		for (const version of ["1.0.1-alpha.0", "1.0.1-beta.2", "1.0.1-rc.1"]) {
+			setVersion(root, version);
+			assert.deepEqual(versionGroups(readVersions(root)), { packages: [version], manifests: ["1.0.0"] });
+		}
 	});
 
 	it("rejects unknown prerelease identifiers", () => {
@@ -455,5 +494,126 @@ describe("release-version script", () => {
 		const root = mkdtempSync(join(tmpdir(), "codemem-release-version-invalid-"));
 		tempRoots.push(root);
 		assert.throws(() => readVersions(root), /Expected a codemem repo root/);
+	});
+});
+
+describe("plugin manifests track the latest stable release", () => {
+	const SKIPPED = MANIFEST_FILES.map((path) => `- ${path}`).join("\n");
+
+	it("leaves the manifests byte-for-byte unchanged on a prerelease set and says why", () => {
+		const root = makeRepo("0.49.1");
+		const before = manifestContents(root);
+
+		const result = runCli(root, ["set", "0.50.0-beta.2"]);
+
+		assert.equal(result.code, 0);
+		assert.deepEqual(manifestContents(root), before);
+		assert.deepEqual(versionGroups(readVersions(root)), { packages: ["0.50.0-beta.2"], manifests: ["0.49.1"] });
+		assert.match(result.stdout, /^updated 11 file\(s\):\n/);
+		assert.ok(
+			result.stdout.includes(
+				"left 4 plugin manifest file(s) unchanged, because plugin installs from the default branch " +
+					`pin the latest stable release and 0.50.0-beta.2 is a prerelease:\n${SKIPPED}\n`,
+			),
+			result.stdout,
+		);
+		assert.equal(result.stderr, "");
+	});
+
+	it("reports the same rule in a prerelease dry run without writing", () => {
+		const root = makeRepo("0.49.1");
+		const before = repoContents(root);
+
+		const result = runCli(root, ["set", "0.50.0-beta.2", "--dry-run"]);
+
+		assert.equal(result.code, 0);
+		assert.deepEqual(repoContents(root), before);
+		assert.match(result.stdout, /^would update 11 file\(s\):\n/);
+		const [updates] = result.stdout.split("would leave");
+		for (const path of MANIFEST_FILES) assert.equal(updates.includes(path), false, path);
+		assert.ok(result.stdout.includes(`would leave 4 plugin manifest file(s) unchanged`), result.stdout);
+		assert.ok(result.stdout.endsWith(`${SKIPPED}\nDry run complete; no files written.\n`), result.stdout);
+	});
+
+	it("updates the manifests on a later stable set", () => {
+		const root = makeRepo("0.49.1");
+		setVersion(root, "0.50.0-beta.2");
+
+		const planned = setVersion(root, "0.50.0", { dryRun: true });
+		const result = runCli(root, ["set", "0.50.0"]);
+
+		for (const path of MANIFEST_FILES) assert.ok(planned.includes(path), path);
+		assert.equal(result.code, 0);
+		assert.equal(result.stdout.includes("plugin manifest file(s) unchanged"), false);
+		assert.deepEqual(versionGroups(readVersions(root)), { packages: ["0.50.0"], manifests: ["0.50.0"] });
+	});
+
+	it("accepts one stable pin below a prerelease's base version", () => {
+		for (const [version, pin] of [
+			["0.50.0-beta.2", "0.49.1"],
+			["0.50.0-rc.1", "0.48.0"],
+			["1.0.0-alpha.0", "0.99.9"],
+			["0.50.1-beta.1", "0.50.0"],
+		]) {
+			const result = checkRepo(makeRepo(version, pin));
+
+			assert.equal(result.code, 0, `${version} over ${pin}: ${result.stdout}`);
+			assert.equal(
+				result.stdout,
+				`OK: release versions are aligned at ${version}; plugin manifests pin stable ${pin}\n`,
+			);
+		}
+	});
+
+	for (const [name, pin] of [
+		["a prerelease pin", "0.50.0-beta.1"],
+		["the same prerelease pin", "0.50.0-beta.2"],
+		["a stable pin equal to the base version", "0.50.0"],
+		["a stable pin above the package version", "0.51.0"],
+	]) {
+		it(`rejects ${name} while packages are at a prerelease`, () => {
+			const result = checkRepo(makeRepo("0.50.0-beta.2", pin));
+
+			assert.equal(result.code, 1);
+			assert.match(
+				result.stdout,
+				/^Plugin manifest pins must all hold one stable release below 0\.50\.0 while packages are at 0\.50\.0-beta\.2:\n/,
+			);
+			assert.ok(result.stdout.includes(`- plugins/codex/.mcp.json (codex_mcp_cli): ${pin}\n`), result.stdout);
+			assert.ok(result.stdout.includes(`- .claude-plugin/marketplace.json (marketplace_metadata): ${pin}\n`));
+		});
+	}
+
+	it("rejects a mix of stable pins while packages are at a prerelease", () => {
+		const root = makeRepo("0.50.0-beta.2", "0.49.1");
+		writeFileSync(
+			join(root, "plugins/codex/.codex-plugin/plugin.json"),
+			'{\n  "name": "codemem",\n  "version": "0.49.0"\n}\n',
+		);
+
+		const result = checkRepo(root);
+
+		assert.equal(result.code, 1);
+		assert.ok(result.stdout.includes("- plugins/codex/.codex-plugin/plugin.json (codex_plugin_manifest): 0.49.0\n"));
+		assert.ok(result.stdout.includes("- plugins/claude/.claude-plugin/plugin.json (claude_plugin_manifest): 0.49.1\n"));
+	});
+
+	it("rejects stable packages whose manifests pin an older stable release", () => {
+		const result = checkRepo(makeRepo("0.50.0", "0.49.1"));
+
+		assert.equal(result.code, 1);
+		assert.match(result.stdout, /^Plugin manifest pins must equal the stable release 0\.50\.0:\n/);
+		assert.ok(result.stdout.includes("- plugins/claude/.claude-plugin/plugin.json (claude_mcp_cli): 0.49.1\n"));
+	});
+
+	it("still fails a prerelease set whose manifests already hold a prerelease", () => {
+		const root = makeRepo("0.50.0-beta.1");
+		const before = manifestContents(root);
+
+		const result = runCli(root, ["set", "0.50.0-beta.2"]);
+
+		assert.equal(result.code, 1);
+		assert.deepEqual(manifestContents(root), before);
+		assert.ok(result.stdout.includes("- plugins/codex/.mcp.json (codex_mcp_embeddings): 0.50.0-beta.1\n"));
 	});
 });

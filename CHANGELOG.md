@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The Claude Code and Codex plugins on the default branch pin the latest stable release again. Preparing a prerelease had moved them onto the beta, and plugin installs failed where only stable versions are available.
+
 ## [0.50.0-beta.2] - 2026-11-25
 
 ### Added

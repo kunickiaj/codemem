@@ -173,6 +173,9 @@ In Claude Code, add the marketplace and install the plugin:
 /plugin install codemem
 ```
 
+The marketplace and plugin manifests on the repository's default branch pin the latest stable
+codemem release, which the MCP launcher and the hook `npx` fallbacks run.
+
 The plugin starts MCP with the TS CLI:
 
 - `codemem mcp`
@@ -310,7 +313,7 @@ codex plugin marketplace upgrade
 codex plugin remove codemem@codemem
 ```
 
-The plugin bundles `.mcp.json`, `hooks/hooks.json`, and a dependency-free generated normalizer. Its MCP `npx` launcher requests both `codemem` and `@codemem/embeddings` in the same temporary environment so the optional runtime is resolvable. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds.
+The plugin bundles `.mcp.json`, `hooks/hooks.json`, and a dependency-free generated normalizer. Its MCP `npx` launcher requests both `codemem` and `@codemem/embeddings` in the same temporary environment so the optional runtime is resolvable. Ingest wrappers use Viewer HTTP without child processes when healthy; `codemem` and pinned `npx` are fallback-only. Generated files come from the TypeScript normalizers in `packages/core/src/` via `node scripts/build-adapter-normalizers.mjs` and are protected by a byte-drift test. Validated targets: Codex CLI 0.135+ and current Desktop builds. The plugin manifests on the repository's default branch pin the latest stable codemem release, which the MCP launcher and the hook `npx` fallbacks run.
 
 ### Plugin-free install (`codemem setup --codex-only`)
 

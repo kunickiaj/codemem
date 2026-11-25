@@ -20,7 +20,7 @@ GitHub release announcements remain separate. The release workflow uses GitHub's
 
 ## Release workflow
 
-Version bumps are prepared on `main`. A maintenance version bump is prepared through a PR into the matching `release/X.Y` branch and touches these files:
+Version bumps are prepared on `main`. A maintenance version bump is prepared through a PR into the matching `release/X.Y` branch and touches these files (the last four only for a stable version):
 
 - `packages/core/package.json` (`version`)
 - `packages/embeddings/package.json` (`version`)
@@ -38,11 +38,19 @@ Version bumps are prepared on `main`. A maintenance version bump is prepared thr
 - `plugins/codex/.codex-plugin/plugin.json` (Codex plugin metadata version; also pins the `npx -y codemem@<version>` fallback used by Codex hook scripts)
 - `plugins/codex/.mcp.json` (exact MCP `--package` pins for `codemem` and `@codemem/embeddings`)
 
-Both checked-in MCP launchers use the shared release version for both packages, including
-prereleases. Plugin metadata alone does not select an npm version: unversioned package specs
-resolve the registry's `latest` tag, which may still point to the previous stable release.
-The release helper checks these four pins and repairs unversioned specs even when the
-manifest already has the target version. It changes only the package specs in launcher
+Claude Code and Codex install the plugin from the four plugin manifest files on the default
+branch, so those files track the latest stable release. `set` with a stable version writes it
+into them. `set` with an alpha, beta, or rc version leaves them unchanged and lists them in its
+output. `check` then requires all of their pins to hold one stable version whose X.Y.Z is lower
+than the prerelease's X.Y.Z. The package versions, the core `VERSION` export, and the OpenCode
+`PINNED_BACKEND_VERSION` files ship inside npm packages on the matching dist-tag, so they follow
+every release, prereleases included.
+
+Both checked-in MCP launchers use the same version for both packages. Plugin metadata alone
+does not select an npm version: unversioned package specs resolve the registry's `latest` tag,
+which may still point to the previous stable release.
+The release helper checks these four pins, and a stable `set` repairs unversioned specs even
+when the manifest already has the target version. It changes only the package specs in launcher
 arguments; the plain `codemem mcp` executable, timeouts, and unrelated arguments stay intact.
 Malformed launchers fail validation before any managed files are written. These pins apply
 only to the shipped Claude and Codex launchers, not user CLI setup or global configuration.
