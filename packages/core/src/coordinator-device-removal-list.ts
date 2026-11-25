@@ -123,15 +123,17 @@ function listingItem(row: ListRow): CoordinatorDeviceRemovalListItem {
 export function parseDeviceRemovalListPage(
 	payload: Record<string, unknown> | null,
 	beforeSeq?: number,
+	options: { includeBlocked?: boolean } = {},
 ): CoordinatorDeviceRemovalListResult {
 	const invalid = () => new Error("coordinator_removal_list_malformed");
 	if (payload?.version !== 1 || !Array.isArray(payload.items) || payload.items.length > 500)
 		throw invalid();
 	let previous = beforeSeq ?? Infinity;
 	const items = payload.items.map((item: unknown) => {
-		if (!item || typeof item !== "object" || Array.isArray(item) || "revoked" in item)
-			throw invalid();
-		const row = { ...item, revoked: 0 };
+		if (!item || typeof item !== "object" || Array.isArray(item)) throw invalid();
+		const blocked = "revoked" in item;
+		if (blocked && (!options.includeBlocked || item.revoked !== true)) throw invalid();
+		const row = { ...item, revoked: blocked ? 1 : 0 };
 		if (!validRow(row) || row.removal_seq >= previous) throw invalid();
 		previous = row.removal_seq;
 		return listingItem(row);

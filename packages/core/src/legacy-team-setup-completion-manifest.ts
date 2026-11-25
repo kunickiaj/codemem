@@ -125,6 +125,7 @@ interface ApplyCompletionManifestInput {
 	groupId: string;
 	manifest: unknown;
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
+	verifiedRemovals?: readonly { group_id: string; device_id: string; fingerprint: string }[];
 	expectedDraftManifest?: CoordinatorLegacyTeamCompletionManifestV1;
 	recipientPolicyLocksHeld?: {
 		publication: true;
@@ -951,6 +952,97 @@ function requireIncludedDeviceEvidence(
 	}
 }
 
+function replayAfterVerifiedRemoval(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	input: ApplyCompletionManifestInput,
+): LegacyTeamSetupActivationResultV1 | undefined {
+	if (!input.verifiedRemovals?.length || input.expectedDraftManifest) return undefined;
+	const roster = new Map(input.freshRoster.map((device) => [device.deviceId, device]));
+	if (roster.size !== input.freshRoster.length || roster.size > LEGACY_TEAM_SETUP_MAX_DEVICES)
+		return undefined;
+	const included = manifest.device_decisions.filter((device) => device.decision === "included");
+	const missing = included.filter((device) => !roster.has(device.device_id));
+	if (!missing.length) return undefined;
+	const proven = missing.every((device) =>
+		input.verifiedRemovals?.some(
+			(removal) =>
+				removal.group_id === input.groupId &&
+				removal.device_id === device.device_id &&
+				removal.fingerprint === device.key_fingerprint,
+		),
+	);
+	if (!proven) return undefined;
+	const remaining = included.filter((device) => roster.has(device.device_id));
+	if (
+		remaining.some((device) => {
+			const fresh = roster.get(device.device_id);
+			return !device.enabled || !fresh?.enabled || fresh.fingerprint !== device.key_fingerprint;
+		})
+	)
+		return undefined;
+	try {
+		const completed = reconstructLegacyTeamSetupCompletionManifest(db, {
+			candidateRef: manifest.candidate_ref,
+		});
+		if (
+			canonicalCoordinatorLegacyTeamCompletionManifestJson(completed) !==
+			canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest)
+		)
+			return undefined;
+		// A removal permits a read-only replay of the already-installed setup. It
+		// must not recreate device bindings, memberships, or Project recipients.
+		return loadCompletedActivationResult(db, loadCompletedDraft(db, manifest.candidate_ref));
+	} catch (error) {
+		if (!(error instanceof LegacyTeamSetupCompletionManifestError)) throw error;
+		return undefined;
+	}
+}
+
+function tryRemovalCompletionReplay(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	input: ApplyCompletionManifestInput,
+	actorIds: readonly string[],
+) {
+	if (!input.verifiedRemovals?.length) return undefined;
+	return db.transaction(() => {
+		requireCompletionActorLocks(db, manifest, actorIds);
+		const result = replayAfterVerifiedRemoval(db, manifest, input);
+		if (result) return { manifest, result };
+	})();
+}
+
+function readProvenRenamedTeam(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	hasCompletedDraft: boolean,
+): string | undefined {
+	const team = db
+		.prepare(
+			"SELECT display_name, revision FROM policy_teams WHERE team_id = ? AND status = 'active'",
+		)
+		.get(manifest.team_id) as { display_name: string; revision: string } | undefined;
+	if (!team || team.display_name === manifest.team.display_name) return undefined;
+	// An existing completed draft links to itself. A rename-specific revision
+	// distinguishes a proven local rename from a pre-protocol display name.
+	if (hasCompletedDraft && !isRecipientPolicyTeamRenameRevision(team.revision)) return undefined;
+	const linked = db
+		.prepare(
+			`SELECT 1 FROM legacy_team_setup_drafts AS draft
+		 JOIN legacy_team_setup_completions AS completion
+		   ON completion.attempt_id = draft.attempt_id
+		  AND completion.finish_digest = draft.finish_digest
+		  AND completion.candidate_ref = draft.candidate_id
+		  AND completion.completed_team_id = draft.completed_team_id
+		 WHERE draft.candidate_id = ? AND draft.state = 'completed'
+		   AND draft.completed_team_id = ? AND draft.display_name = ? LIMIT 1`,
+		)
+		.pluck()
+		.get(manifest.candidate_ref, manifest.team_id, team.display_name);
+	return linked ? team.display_name : undefined;
+}
+
 /** Compute under the publication lock, before acquiring actor, Team, and group locks. */
 export function legacyTeamSetupCompletionActorIds(
 	db: Database,
@@ -1215,10 +1307,11 @@ async function applyCompletionManifest(
 		let compatibleLocalPolicy = false;
 		try {
 			const manifest = validateLegacyTeamSetupCompletionManifest(boundManifest, input);
+			const replay = tryRemovalCompletionReplay(db, manifest, input, actorIds);
+			if (replay) return replay;
 			return db
 				.transaction(() => {
 					requireCompletionActorLocks(db, manifest, actorIds);
-					let preservedTeamMetadata: { displayName: string; policyRevision: string } | null = null;
 					const draft = loadDraft(db, manifest.candidate_ref);
 					requireExpectedDraftManifest(db, draft, input.expectedDraftManifest);
 					const hasCompletedDraft = draft.state === "completed";
@@ -1292,51 +1385,6 @@ async function applyCompletionManifest(
 					) {
 						fail("team_setup_completion_invalid");
 					}
-					{
-						// A proven Team/coordinator rename survives both a replacement draft
-						// and a divergent winner re-applied over the completed draft.
-						const team = db
-							.prepare(
-								"SELECT display_name, revision FROM policy_teams WHERE team_id = ? AND status = 'active'",
-							)
-							.get(manifest.team_id) as { display_name: string; revision: string } | undefined;
-						const hasRenamedCompletedLink = team
-							? Boolean(
-									db
-										.prepare(
-											`SELECT 1 FROM legacy_team_setup_drafts AS draft
-											 JOIN legacy_team_setup_completions AS completion
-											   ON completion.attempt_id = draft.attempt_id
-											  AND completion.finish_digest = draft.finish_digest
-											  AND completion.candidate_ref = draft.candidate_id
-											  AND completion.completed_team_id = draft.completed_team_id
-											 WHERE draft.candidate_id = ? AND draft.state = 'completed'
-											   AND draft.completed_team_id = ? AND draft.display_name = ? LIMIT 1`,
-										)
-										.pluck()
-										.get(manifest.candidate_ref, manifest.team_id, team.display_name),
-								)
-							: false;
-						// A completed draft always links to its own completion, so for the
-						// re-apply path the rename must additionally be proven by a
-						// rename-minted revision; a pre-protocol local name is superseded.
-						const renameProven = hasCompletedDraft
-							? Boolean(team && isRecipientPolicyTeamRenameRevision(team.revision))
-							: true;
-						if (
-							team &&
-							team.display_name !== manifest.team.display_name &&
-							hasRenamedCompletedLink &&
-							renameProven
-						) {
-							// Preserve the proven rename, but advance the revision because this
-							// replacement apply may change policy facts from the linked completion.
-							preservedTeamMetadata = {
-								displayName: team.display_name,
-								policyRevision: manifest.team.policy_revision,
-							};
-						}
-					}
 					const retainedCompletionKey = hasCompletedDraft
 						? retainedCompletionKeyForExactReapply(db, draft, manifest)
 						: undefined;
@@ -1345,13 +1393,13 @@ async function applyCompletionManifest(
 						draft,
 						manifest,
 						input.freshRoster,
-						preservedTeamMetadata?.displayName,
+						readProvenRenamedTeam(db, manifest, hasCompletedDraft),
 					);
 					ensureCanonicalMemberActorsInTransaction(db, manifest);
 					const result = applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 						candidateRef: manifest.candidate_ref,
 						attemptId: draft.attempt_id,
-						policyRevision: preservedTeamMetadata?.policyRevision ?? manifest.team.policy_revision,
+						policyRevision: manifest.team.policy_revision,
 						completedAt: manifest.completed_at,
 						completionKey: retainedCompletionKey,
 						allowCompletedDraft: hasCompletedDraft,
