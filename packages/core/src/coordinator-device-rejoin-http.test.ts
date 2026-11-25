@@ -1,13 +1,18 @@
+import { sign } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as proof from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
+import { generateDeviceKey } from "../../cloudflare-coordinator-worker/test/device-rejoin-ceremony-fixture.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { confirmationScope as scope } from "./coordinator-device-rejoin-confirmation-test-harness.js";
 import { signedFinalize } from "./coordinator-device-rejoin-finalize-test-harness.js";
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
+import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./sync-auth.js";
 
 const path = `/v1/auth/rejoin-attempts/${scope.attemptId}/finalize`;
+const adminSecret = "rejoin-display-fixture";
 const closers: (() => void)[] = [];
 afterEach(() => {
 	for (const close of closers.splice(0)) close();
@@ -30,16 +35,16 @@ async function fixture(kind: Backend) {
 		changed: async ({ sql, values }) => db.prepare(sql).run(...values).changes,
 	});
 	const storeFactory = vi.fn(() => store);
-	const requestVerifier = vi.fn(() => {
-		throw new Error("Enrolled admission must not run");
-	});
+	const requestVerifier = vi.fn<Parameters<typeof createCoordinatorApp>[0]["requestVerifier"]>(
+		(input) => verifySignature({ ...input, bodyBytes: Buffer.from(input.bodyBytes) }),
+	);
 	const limiter = createInMemoryRequestRateLimiter({ now: Date.now });
 	const rate = vi.fn(limiter.check.bind(limiter));
 	const clientKey = vi.fn<() => string | null>(() => "fixture-a");
 	const app = createCoordinatorApp({
 		storeFactory,
 		requestVerifier,
-		runtime: { adminSecret: () => null, now: () => new Date(Date.now()).toISOString() },
+		runtime: { adminSecret: () => adminSecret, now: () => new Date(Date.now()).toISOString() },
 		requestRateLimit: { limiter: { check: rate }, unauthenticatedMutationLimit: 10 },
 		browserAuth: {
 			kind: "ready",
@@ -68,8 +73,111 @@ async function fixture(kind: Backend) {
 			headers: { "content-type": "application/json" },
 			body: typeof data === "string" ? data : JSON.stringify(data),
 		});
-	return { db, clock, readRejoin, requestVerifier, rate, clientKey, storeFactory, body, send };
+	return {
+		app,
+		store,
+		db,
+		clock,
+		readRejoin,
+		requestVerifier,
+		rate,
+		clientKey,
+		storeFactory,
+		body,
+		send,
+	};
 }
+
+async function observer(f: Awaited<ReturnType<typeof fixture>>) {
+	const key = generateDeviceKey();
+	await f.store.enrollDevice("group-a", {
+		deviceId: "observer",
+		publicKey: key.publicKey,
+		fingerprint: key.fingerprint,
+	});
+	return {
+		key,
+		get: (peerPath = "/v1/peers?group_id=group-a") => {
+			const timestamp = String(Math.floor(Date.now() / 1000));
+			const nonce = crypto.randomUUID();
+			const canonical = buildCanonicalRequest("GET", peerPath, timestamp, nonce, Buffer.alloc(0));
+			return f.app.request(`${scope.origin}${peerPath}`, {
+				headers: {
+					"x-opencode-device": "observer",
+					"x-opencode-timestamp": timestamp,
+					"x-opencode-nonce": nonce,
+					"x-opencode-signature": `${SIGNATURE_VERSION}:${sign(null, canonical, key.privateKey).toString("base64")}`,
+				},
+			});
+		},
+	};
+}
+
+it.each(["SQLite", "D1"] as const)(
+	"shows a rejoin to signed peers and the operator after eight days (%s)",
+	async (kind) => {
+		const f = await fixture(kind);
+		const viewer = await observer(f);
+		expect((await f.send()).status).toBe(200);
+		f.clock.mockReturnValue(scope.now + 8 * 86_400_000);
+
+		const admin = await f.app.request(`${scope.origin}/v1/admin/devices?group_id=group-a`, {
+			headers: { "x-codemem-coordinator-admin": adminSecret },
+		});
+		expect(admin.status).toBe(200);
+		const body = await admin.json<{ items: { device_id: string; rejoined_at_ms?: number }[] }>();
+		expect(body.items.find(({ device_id }) => device_id === "observer")).not.toHaveProperty(
+			"rejoined_at_ms",
+		);
+		expect(body.items.find(({ device_id }) => device_id === "removed")).toMatchObject({
+			rejoined_at_ms: scope.now,
+		});
+		const peer = await viewer.get();
+		expect(peer.status).toBe(200);
+		expect(await peer.json()).toMatchObject({
+			items: [{ device_id: "removed", rejoined_at_ms: scope.now }],
+		});
+	},
+);
+
+it.each(["SQLite", "D1"] as const)(
+	"reads durable rejoin events only for the caller's exact ownership binding (%s)",
+	async (kind) => {
+		const f = await fixture(kind);
+		const viewer = await observer(f);
+		expect((await f.send()).status).toBe(200);
+		f.clock.mockReturnValue(scope.now + 8 * 86_400_000);
+		const events = "/v1/auth/rejoin-events?group_id=group-a";
+		const empty = { items: [], next_cursor: null };
+		const unbound = await viewer.get(events);
+		expect(unbound.status).toBe(200);
+		expect(await unbound.json()).toEqual(empty);
+		f.db
+			.prepare(`INSERT INTO coordinator_device_ownership_bindings
+			(device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
+			VALUES ('observer',?,'identity-a',?,'viewer-binding','owner_enrollment','fixture','then')`)
+			.run(await ed25519KeyId(viewer.key.publicKey), scope.coordinatorId);
+		const read = await viewer.get(events);
+		expect(read.status).toBe(200);
+		expect(read.headers.get("cache-control")).toBe("no-store");
+		expect(await read.json()).toEqual({
+			items: [
+				{
+					event_id: scope.attemptId,
+					device_id: "removed",
+					group_ids: ["group-a"],
+					finalized_at_ms: scope.now,
+				},
+			],
+			next_cursor: scope.attemptId,
+		});
+		const next = await viewer.get(`${events}&after=${scope.attemptId}`);
+		expect(next.status).toBe(200);
+		expect(await next.json()).toEqual({ ...empty, next_cursor: scope.attemptId });
+		const denied = await f.app.request(`${scope.origin}${events}`);
+		expect(denied.status).toBe(401);
+	},
+);
 
 function rows(db: Awaited<ReturnType<typeof fixture>>["db"]) {
 	return [
