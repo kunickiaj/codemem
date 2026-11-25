@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import {
 	type DeviceIdentityInventorySnapshot,
+	type DeviceIdentityPeerEvidence,
 	listDeviceIdentityInventory,
 	loadDeviceIdentityInventorySnapshot,
 	projectDeviceIdentityInventory,
@@ -45,6 +46,121 @@ function snapshot(
 function coordinatorOnly(enrollments: CoordinatorEnrollment[]) {
 	return snapshot({ coordinator: { availability: "available", safeErrorCode: null, enrollments } });
 }
+
+function discoveredProbe(overrides: Partial<DeviceIdentityPeerEvidence> = {}) {
+	return {
+		...coordinatorOnly([
+			enrollment("probe", "probe-key", {
+				display_name: "Relay health probe",
+				service_role: "relay_health_probe",
+			}),
+		]),
+		peers: [
+			{
+				deviceId: "probe",
+				displayName: "Relay health probe",
+				publicKey: "probe-key",
+				pinnedFingerprint: fingerprintPublicKey("probe-key"),
+				suggestedIdentityId: "identity-suggested",
+				trustProvenance: "coordinator_policy",
+				claimedLocalActor: false,
+				...overrides,
+			},
+		],
+	};
+}
+
+it.each(["probe", "probe-alias"])(
+	"keeps a trusted relay probe discovered as %s out of pairing setup",
+	(deviceId) => {
+		const result = projectDeviceIdentityInventory(discoveredProbe({ deviceId }));
+		expect(result.items).toMatchObject([
+			{ state: "service", identityId: null, suggestedIdentityId: null },
+		]);
+	},
+);
+
+it.each([
+	{ trustProvenance: "manual_pairing" },
+	{ trustProvenance: null },
+	{ claimedLocalActor: true },
+])("preserves person-managed evidence on a probe: %j", (overrides) => {
+	const result = projectDeviceIdentityInventory(discoveredProbe(overrides));
+	expect(result.items).toMatchObject([{ state: "setup_required" }]);
+});
+
+it("keeps a conflicting discovered probe in review", () => {
+	const result = projectDeviceIdentityInventory(
+		discoveredProbe({
+			publicKey: "other-key",
+			pinnedFingerprint: fingerprintPublicKey("other-key"),
+		}),
+	);
+	expect(result.items).toMatchObject([
+		{ state: "conflicted", conflictCodes: ["fingerprint_conflict"] },
+	]);
+});
+
+it("does not treat discovery alone as a service-device label", () => {
+	const input = discoveredProbe();
+	input.coordinator.enrollments = [];
+	expect(projectDeviceIdentityInventory(input).items).toMatchObject([
+		{ state: "pairing_required" },
+	]);
+});
+
+it("uses the coordinator's service evidence for an unpaired keyless discovery record", () => {
+	const result = projectDeviceIdentityInventory(
+		discoveredProbe({ publicKey: null, pinnedFingerprint: null }),
+	);
+	expect(result.items).toMatchObject([
+		{
+			state: "service",
+			validatedFingerprint: fingerprintPublicKey("probe-key"),
+			suggestedIdentityId: null,
+		},
+	]);
+});
+
+it("preserves an Identity binding even when the coordinator labels the peer as a probe", () => {
+	const input = discoveredProbe();
+	const result = projectDeviceIdentityInventory({
+		...input,
+		bindings: [
+			{
+				deviceId: "probe",
+				displayName: "Bound device",
+				identityId: "identity-reviewed",
+				status: "active",
+				identityStatus: "active",
+			},
+		],
+	});
+	expect(result.items).toMatchObject([{ state: "configured", identityId: "identity-reviewed" }]);
+});
+
+it("keeps the current device visible even when its key has a probe enrollment", () => {
+	const result = projectDeviceIdentityInventory({
+		...discoveredProbe(),
+		localDevice: {
+			deviceId: "probe",
+			displayName: "Current device",
+			publicKey: "probe-key",
+			fingerprint: fingerprintPublicKey("probe-key"),
+		},
+	});
+	expect(result.items).toMatchObject([{ state: "setup_required", isLocal: true }]);
+});
+
+it("does not hide a same-key enrollment whose coordinator has not labeled it as a service", () => {
+	const input = discoveredProbe();
+	input.coordinator.enrollments.push(
+		enrollment("peer-in-other-group", "probe-key", { group_id: "other-group" }),
+	);
+	expect(projectDeviceIdentityInventory(input).items).toMatchObject([
+		{ state: "pairing_required" },
+	]);
+});
 
 describe("device inventory service devices", () => {
 	it("classifies a coordinator-labeled relay probe as a service device", () => {
