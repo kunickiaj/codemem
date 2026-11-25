@@ -3047,12 +3047,13 @@ async function stillServedLaptop(
 function lookup(
 	db: InstanceType<typeof Database>,
 	removed: string[],
-	generationOffset = 0,
+	options: { generationOffset?: number; enrolled?: string[] } = {},
 ): LegacyTeamSetupPeerRemovalEvidence {
 	return {
 		status: "read",
 		removed,
-		generation: (readPeerRemovalCheckState(db)?.generation ?? 0) + generationOffset,
+		enrolled: options.enrolled ?? [],
+		generation: (readPeerRemovalCheckState(db)?.generation ?? 0) + (options.generationOffset ?? 0),
 	};
 }
 
@@ -3156,35 +3157,56 @@ describe("legacy Team setup completion manifests without proof of removal from e
 
 	afterEach(() => db.close());
 
-	it("quarantines and changes no local record when the device stays enrolled in another group", async () => {
-		// Arrange: removed from this group only, so the daemon's lookup does not report it.
-		const team = await stillServedLaptop(db);
-		db.prepare(
-			"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, updated_at) VALUES ('device-a', 'c1', ?)",
-		).run(NOW);
-		const before = laptopRecords(db);
+	/** Neither answer proves the manifest's key removed from every group. */
+	const ENROLLED_ELSEWHERE = [
+		["the lookup does not list the device as removed", () => lookup(db, [])],
+		[
+			"the lookup lists the device as both removed and still enrolled",
+			() => lookup(db, ["device-a"], { enrolled: ["device-a"] }),
+		],
+	] as const;
 
-		await expect(reconcileWith(team, lookup(db, []))).rejects.toThrow(
-			"team_setup_completion_invalid",
-		);
+	it.each(ENROLLED_ELSEWHERE)(
+		"quarantines and changes no local record of a still-paired device when %s",
+		async (_case, evidence) => {
+			const team = await stillServedLaptop(db);
+			db.prepare(
+				"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, updated_at) VALUES ('device-a', 'c1', ?)",
+			).run(NOW);
+			const before = laptopRecords(db);
 
-		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
-		expect(laptopRecords(db)).toEqual(before);
-		expect(localAccess(db, team.manifest.team_id)).toMatchObject({ servesOtherGroupScope: true });
-	});
+			await expect(reconcileWith(team, evidence())).rejects.toThrow(
+				"team_setup_completion_invalid",
+			);
 
-	it("keeps the Team and writes nothing when this machine already denies a device enrolled elsewhere", async () => {
-		const team = await completeTeamThenRemoveLaptop(db, { laptopFingerprint: LAPTOP_FINGERPRINT });
-		const before = databaseSnapshot(db);
+			expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+			expect(laptopRecords(db)).toEqual(before);
+			expect(localAccess(db, team.manifest.team_id)).toMatchObject({
+				servesOtherGroupScope: true,
+			});
+		},
+	);
 
-		await expect(reconcileWith(team, lookup(db, []))).resolves.toEqual(team.manifest);
+	it.each(ENROLLED_ELSEWHERE)(
+		"keeps the Team and writes nothing for a device already denied here when %s",
+		async (_case, evidence) => {
+			const team = await completeTeamThenRemoveLaptop(db, {
+				laptopFingerprint: LAPTOP_FINGERPRINT,
+			});
+			const before = databaseSnapshot(db);
 
-		expect(databaseSnapshot(db)).toEqual(before);
-	});
+			await expect(reconcileWith(team, evidence())).resolves.toEqual(team.manifest);
+
+			expect(databaseSnapshot(db)).toEqual(before);
+		},
+	);
 
 	it.each([
 		["the lookup is unavailable", () => ({ status: "unavailable" }) as const],
-		["the lookup predates a pairing change", () => lookup(db, ["device-a"], -1)],
+		[
+			"the lookup predates a pairing change",
+			() => lookup(db, ["device-a"], { generationOffset: -1 }),
+		],
 	])("quarantines a still-paired device when %s", async (_case, evidence) => {
 		const team = await stillServedLaptop(db);
 

@@ -2136,7 +2136,12 @@ function peerRemovalReader(
 			.then(
 				(result): LegacyTeamSetupPeerRemovalEvidence =>
 					result.status === "checked"
-						? { status: "read", removed: result.removed, generation: result.generation }
+						? {
+								status: "read",
+								removed: result.removed,
+								enrolled: result.enrolled,
+								generation: result.generation,
+							}
 						: { status: "unavailable" },
 				(): LegacyTeamSetupPeerRemovalEvidence => ({ status: "unavailable" }),
 			);

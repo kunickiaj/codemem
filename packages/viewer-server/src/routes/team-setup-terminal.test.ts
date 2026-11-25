@@ -2665,13 +2665,16 @@ type LookupPeerRemovals = NonNullable<
 	NonNullable<Parameters<typeof teamSetupRoutes>[0]["completionDependencies"]>["lookupPeerRemovals"]
 >;
 
-/** The daemon's lookup reporting these devices removed from every group, as of now. */
-function daemonLookup(removed: string[]): LookupPeerRemovals {
+/** The only device of the single-device Team, which the coordinator removed. */
+const LAPTOP_DEVICE_ID = "device-a";
+
+/** The daemon's lookup reporting these devices removed, and these still enrolled, as of now. */
+function daemonLookup(removed: string[], enrolled: string[] = []): LookupPeerRemovals {
 	return async (store) => ({
 		status: "checked",
 		revoked: [],
 		removed,
-		enrolled: [],
+		enrolled,
 		removalSeq: 1,
 		generation: readPeerRemovalCheckState(store.db)?.generation ?? null,
 		removedFromGroups: [],
@@ -2974,6 +2977,10 @@ describe("Team setup terminal routing ends a verified-removed device's local acc
 describe("Team setup terminal routing without proof of removal from every group", () => {
 	const lookups: Array<[string, LookupPeerRemovals]> = [
 		["the device stays enrolled in another group", daemonLookup([])],
+		[
+			"an older key's removal lists the still-enrolled device as removed",
+			daemonLookup([LAPTOP_DEVICE_ID], [LAPTOP_DEVICE_ID]),
+		],
 		[
 			"the daemon's lookup is unavailable",
 			async () => {

@@ -123,7 +123,13 @@ export interface LegacyTeamSetupDeviceRemovalRecord {
  * generation the lookup was made against. Or the fact that it gave no answer.
  */
 export type LegacyTeamSetupPeerRemovalEvidence =
-	| { status: "read"; removed: readonly string[]; generation: number | null }
+	| {
+			status: "read";
+			removed: readonly string[];
+			/** Devices the coordinator still holds any enrollment for, under any key. */
+			enrolled: readonly string[];
+			generation: number | null;
+	  }
 	| { status: "unavailable" };
 
 /** Coordinator removal records, or the fact that they could not be read. */
@@ -1191,7 +1197,11 @@ function removedEverywhere(db: Database, evidence: LegacyTeamSetupPeerRemovalEvi
 	if (evidence?.status !== "read" || evidence.generation === null) return new Set<string>();
 	// Same rule as the daemon: a pairing or binding written since the lookup voids it.
 	if (readPeerRemovalCheckState(db)?.generation !== evidence.generation) return new Set<string>();
-	return new Set(evidence.removed);
+	// The lookup matches removals by device ID as well as key, so an older key's
+	// removal can list a device whose current key is still enrolled elsewhere.
+	// The reply names no key, so a device in both lists is not proven removed.
+	const enrolled = new Set(evidence.enrolled);
+	return new Set(evidence.removed.filter((deviceId) => !enrolled.has(deviceId)));
 }
 
 /**
