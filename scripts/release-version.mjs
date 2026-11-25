@@ -10,6 +10,27 @@ const SEMVER_FORMAT = "X.Y.Z or X.Y.Z-{alpha,beta,rc}.N";
 const CORE_VERSION_RE = /^(export\s+const\s+VERSION\s*=\s*")([^"]+)(";\s*)$/m;
 const CORE_TEST_VERSION_RE = /^(\s*expect\(VERSION\)\.toBe\(")([^"]+)("\);\s*)$/m;
 const PLUGIN_PIN_RE = /^(const\s+PINNED_BACKEND_VERSION\s*=\s*")([^"]+)(";\s*)$/m;
+// Claude Code and Codex install the plugin from these files on the default branch, so they
+// pin the latest stable release, and a prerelease `set` leaves them alone. Package versions,
+// the core VERSION export and the OpenCode PINNED_BACKEND_VERSION ship inside npm packages
+// published on the matching dist-tag, so they follow every release, prereleases included.
+const PLUGIN_MANIFEST_FILES = [
+	".claude-plugin/marketplace.json",
+	"plugins/claude/.claude-plugin/plugin.json",
+	"plugins/codex/.codex-plugin/plugin.json",
+	"plugins/codex/.mcp.json",
+];
+/** Snapshot keys read from the plugin manifests, and the file each comes from. */
+const PLUGIN_MANIFEST_KEYS = {
+	claude_plugin_manifest: "plugins/claude/.claude-plugin/plugin.json",
+	marketplace_metadata: ".claude-plugin/marketplace.json",
+	marketplace_plugin: ".claude-plugin/marketplace.json",
+	codex_plugin_manifest: "plugins/codex/.codex-plugin/plugin.json",
+	claude_mcp_cli: "plugins/claude/.claude-plugin/plugin.json",
+	claude_mcp_embeddings: "plugins/claude/.claude-plugin/plugin.json",
+	codex_mcp_cli: "plugins/codex/.mcp.json",
+	codex_mcp_embeddings: "plugins/codex/.mcp.json",
+};
 const REQUIRED_REPO_MARKERS = [
 	"packages/core/package.json",
 	"packages/embeddings/package.json",
@@ -32,6 +53,20 @@ function validateSemver(version) {
 	if (!SEMVER_RE.test(version)) {
 		throw new Error(`Invalid version '${version}'. Expected format: ${SEMVER_FORMAT}`);
 	}
+}
+
+export function isPrerelease(version) {
+	return version.includes("-");
+}
+
+/** Numeric order of the X.Y.Z part of two versions: negative, zero or positive. */
+function compareBase(left, right) {
+	const parts = (version) => version.split("-")[0].split(".").map(Number);
+	const [a, b] = [parts(left), parts(right)];
+	for (let index = 0; index < 3; index += 1) {
+		if (a[index] !== b[index]) return a[index] - b[index];
+	}
+	return 0;
 }
 
 function isWithinRoot(root, candidate) {
@@ -274,28 +309,62 @@ export function readVersions(root) {
 	};
 }
 
+/**
+ * Packages share one release version. The plugin manifests equal it for a stable
+ * release. For a prerelease X.Y.Z-tag.N they all hold one stable version whose X.Y.Z
+ * is numerically lower than the prerelease's X.Y.Z, so they keep pointing plugin
+ * users at the latest stable release.
+ */
 export function versionsAreAligned(snapshot) {
 	const entries = Object.entries(snapshot);
 	const invalid = entries.filter(([, value]) => typeof value !== "string" || !SEMVER_RE.test(value));
-	const unique = [...new Set(entries.map(([, value]) => value))];
-	if (unique.length <= 1 && invalid.length === 0) {
-		return { aligned: true, details: [] };
-	}
-
-	const details = [];
 	if (invalid.length > 0) {
-		details.push("Invalid release version values detected:");
-		for (const [key, value] of invalid) {
-			details.push(`- ${key}: ${value}`);
-		}
+		return {
+			aligned: false,
+			details: [
+				"Invalid release version values detected:",
+				...invalid.map(([key, value]) => `- ${key}: ${value}`),
+			],
+		};
 	}
-	if (unique.length > 1) {
-		details.push("Version drift detected:");
-		for (const [key, value] of entries) {
-			details.push(`- ${key}: ${value}`);
-		}
+	const packageEntries = entries.filter(([key]) => !(key in PLUGIN_MANIFEST_KEYS));
+	const releaseVersions = [...new Set(packageEntries.map(([, value]) => value))];
+	if (releaseVersions.length > 1) {
+		return {
+			aligned: false,
+			details: ["Version drift detected:", ...packageEntries.map(([key, value]) => `- ${key}: ${value}`)],
+		};
 	}
-	return { aligned: false, details };
+	const details = manifestPinProblems(
+		releaseVersions[0],
+		entries.filter(([key]) => key in PLUGIN_MANIFEST_KEYS),
+	);
+	return { aligned: details.length === 0, details };
+}
+
+function manifestPinProblems(releaseVersion, manifestEntries) {
+	const line = ([key, value]) => `- ${PLUGIN_MANIFEST_KEYS[key]} (${key}): ${value}`;
+	if (!isPrerelease(releaseVersion)) {
+		const offending = manifestEntries.filter(([, value]) => value !== releaseVersion);
+		if (offending.length === 0) return [];
+		return [`Plugin manifest pins must equal the stable release ${releaseVersion}:`, ...offending.map(line)];
+	}
+	const base = releaseVersion.split("-")[0];
+	const pins = [...new Set(manifestEntries.map(([, value]) => value))];
+	const offending =
+		pins.length > 1
+			? manifestEntries
+			: manifestEntries.filter(([, value]) => isPrerelease(value) || compareBase(value, base) >= 0);
+	if (offending.length === 0) return [];
+	return [
+		`Plugin manifest pins must all hold one stable release below ${base} while packages are at ${releaseVersion}:`,
+		...offending.map(line),
+	];
+}
+
+/** The plugin manifest files a `set` of this version leaves unchanged. */
+export function skippedPluginManifests(version) {
+	return isPrerelease(version) ? [...PLUGIN_MANIFEST_FILES] : [];
 }
 
 export function setVersion(root, version, { dryRun = false } = {}) {
@@ -346,6 +415,23 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		}
 	}
 
+	if (skippedPluginManifests(version).length === 0) {
+		setPluginManifestVersions(repoRoot, version, writes, changed);
+	} else {
+		// Still read them, so a malformed manifest fails before any file is written.
+		readVersions(repoRoot);
+	}
+
+	if (!dryRun) {
+		for (const [path, content] of writes) {
+			writeText(path, content);
+		}
+	}
+
+	return changed;
+}
+
+function setPluginManifestVersions(repoRoot, version, writes, changed) {
 	const claudePluginPath = resolveManagedPath(repoRoot, "plugins/claude/.claude-plugin/plugin.json");
 	const claudePluginText = readText(claudePluginPath);
 	const claudePlugin = loadJson(claudePluginPath, "plugins/claude/.claude-plugin/plugin.json");
@@ -405,14 +491,6 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		writes.set(codexMcpPath, dumpJson(codexMcp, detectJsonIndent(codexMcpText)));
 		changed.push("plugins/codex/.mcp.json");
 	}
-
-	if (!dryRun) {
-		for (const [path, content] of writes) {
-			writeText(path, content);
-		}
-	}
-
-	return changed;
 }
 
 export function buildParserArgs(argv) {
@@ -446,7 +524,9 @@ export function main(argv = process.argv.slice(2), stdout = process.stdout, stde
 			const snapshot = readVersions(parsed.root);
 			const result = versionsAreAligned(snapshot);
 			if (result.aligned) {
-				stdout.write(`OK: release versions are aligned at ${snapshot.core_package}\n`);
+				const pin = snapshot.claude_plugin_manifest;
+				const stable = pin === snapshot.core_package ? "" : `; plugin manifests pin stable ${pin}`;
+				stdout.write(`OK: release versions are aligned at ${snapshot.core_package}${stable}\n`);
 				return 0;
 			}
 			for (const line of result.details) {
@@ -463,6 +543,15 @@ export function main(argv = process.argv.slice(2), stdout = process.stdout, stde
 			}
 		} else {
 			stdout.write("No version changes needed.\n");
+		}
+		const skipped = skippedPluginManifests(parsed.version);
+		if (skipped.length > 0) {
+			stdout.write(
+				`${parsed.dryRun ? "would leave" : "left"} ${skipped.length} plugin manifest file(s) unchanged, because plugin installs from the default branch pin the latest stable release and ${parsed.version} is a prerelease:\n`,
+			);
+			for (const path of skipped) {
+				stdout.write(`- ${path}\n`);
+			}
 		}
 		if (parsed.dryRun) {
 			stdout.write("Dry run complete; no files written.\n");

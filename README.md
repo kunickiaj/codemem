@@ -218,7 +218,7 @@ their existing behavior. See
 
 2. Restart Claude Code.
 
-The plugin bundles its MCP configuration and capture/context-injection hooks, and starts MCP with the TS CLI (`codemem mcp`). No preliminary `codemem setup --claude-only` command or global CLI install is required. The prerequisites and observer-access requirements above still apply.
+The plugin bundles its MCP configuration and capture/context-injection hooks, and starts MCP with the TS CLI (`codemem mcp`). No preliminary `codemem setup --claude-only` command or global CLI install is required. The prerequisites and observer-access requirements above still apply. The plugin manifests on the repository's default branch pin the latest stable codemem release, so the plugin's MCP server and hook fallbacks run that version.
 
 <details>
 <summary>Claude and Codex adapter transport details</summary>
@@ -254,7 +254,7 @@ codex plugin add codemem@codemem
 
 2. Restart Codex.
 
-The Codex plugin bundles its MCP config (`codemem mcp`), hooks, and generated normalizer. Healthy hook ingestion uses Viewer HTTP directly and starts no `codemem` or `npx` child; those commands are fallback-only. A global install remains optional and reduces fallback latency. Validated targets are Codex CLI 0.135+ and current Desktop builds.
+The Codex plugin bundles its MCP config (`codemem mcp`), hooks, and generated normalizer. Healthy hook ingestion uses Viewer HTTP directly and starts no `codemem` or `npx` child; those commands are fallback-only. A global install remains optional and reduces fallback latency. Validated targets are Codex CLI 0.135+ and current Desktop builds. The plugin manifests on the repository's default branch pin the latest stable codemem release, so the plugin's MCP server and hook fallbacks run that version.
 
 **API-key Codex Desktop (marketplace unavailable):** When plugin installation is greyed out (non-subscription / API-key Desktop), configure codemem without the plugin surface:
 
