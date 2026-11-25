@@ -345,6 +345,10 @@ export const translateV2Event = (event) => createV2EventTranslator().translate(e
 export const translateV2ToolResult = (input) => {
   const failed = input?.status === "error";
   const result = asRecord(input?.result);
+  const nestedCalls = asRecord(result.metadata).toolCalls;
+  const executionWrapper = input?.tool === "execute" && Array.isArray(nestedCalls);
+  const containsMemoryCalls = executionWrapper
+    && nestedCalls.some((call) => isMemoryToolId(call?.tool));
   let output = null;
   if (!failed) output = result.output ?? result.content ?? input?.result ?? null;
   return {
@@ -353,6 +357,10 @@ export const translateV2ToolResult = (input) => {
       sessionID: typeof input?.sessionID === "string" ? input.sessionID : null,
       tool: typeof input?.tool === "string" ? input.tool : "unknown",
       args: asRecord(input?.input),
+      ...(typeof input?.codemode === "boolean" ? { codemode: input.codemode } : {}),
+      ...(typeof input?.messageID === "string" ? { messageID: input.messageID } : {}),
+      ...(executionWrapper ? { executionWrapper } : {}),
+      ...(containsMemoryCalls ? { containsMemoryCalls } : {}),
     },
     output: {
       output,

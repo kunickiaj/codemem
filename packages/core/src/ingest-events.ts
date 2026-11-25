@@ -68,6 +68,20 @@ function compactListOutput(text: string): string {
 	return compactReadOutput(text, 120, 2400);
 }
 
+function compactToolOutput(tool: string, output: unknown): unknown {
+	if (typeof output !== "string") return output;
+	switch (tool) {
+		case "read":
+		case "bash":
+			return compactReadOutput(output);
+		case "glob":
+		case "grep":
+			return compactListOutput(output);
+		default:
+			return output;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Event → ToolEvent conversion
 // ---------------------------------------------------------------------------
@@ -78,8 +92,7 @@ export function eventToToolEvent(
 	maxChars: number,
 	lowSignalTools: Set<string> = LOW_SIGNAL_TOOLS,
 ): ToolEvent | null {
-	if (event.type !== "tool.execute.after") return null;
-
+	if (event.type !== "tool.execute.after" || event.contains_memory_calls === true) return null;
 	const tool = normalizeToolName(event);
 	if (isInternalMemoryTool(tool)) return null;
 	if (lowSignalTools.has(tool)) return null;
@@ -90,13 +103,7 @@ export function eventToToolEvent(
 			? (rawArgs as Record<string, unknown>)
 			: {};
 
-	let result = sanitizeToolOutput(tool, event.result, maxChars);
-	if (tool === "read" && typeof result === "string") result = compactReadOutput(result);
-	if (tool === "bash" && typeof result === "string") result = compactReadOutput(result);
-	if ((tool === "glob" || tool === "grep") && typeof result === "string") {
-		result = compactListOutput(result);
-	}
-
+	const result = compactToolOutput(tool, sanitizeToolOutput(tool, event.result, maxChars));
 	const error = sanitizePayload(event.error, maxChars);
 
 	return {
@@ -214,6 +221,8 @@ export function projectAdapterToolEvent(
 		error: toolError,
 		timestamp: adapter.ts,
 		cwd: event.cwd,
+		execution_wrapper: payload.execution_wrapper,
+		contains_memory_calls: payload.contains_memory_calls,
 	};
 }
 

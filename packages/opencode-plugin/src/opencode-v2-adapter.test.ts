@@ -1272,6 +1272,29 @@ describe("OpenCode 2 adapter lifecycle", () => {
 			},
 		});
 	});
+
+	it("retains host-reported Code Mode identity without inventing a parent", () => {
+		const { input } = adapter.translateV2ToolResult({
+			id: "child",
+			tool: "codemem_memory_get",
+			codemode: true,
+			messageID: "assistant",
+		});
+		expect(input).toMatchObject({ id: "child", codemode: true, messageID: "assistant" });
+		expect(input).not.toHaveProperty("parentToolCallID");
+	});
+
+	it("marks the execute wrapper when host metadata reports a memory child", () => {
+		const wrapper = adapter.translateV2ToolResult({
+			tool: "execute",
+			status: "completed",
+			result: { metadata: { toolCalls: [{ tool: "codemem.memory_search_index" }] } },
+		});
+		expect(wrapper.input).toMatchObject({ executionWrapper: true, containsMemoryCalls: true });
+		expect(adapter.translateV2ToolResult({ tool: "execute" }).input).not.toHaveProperty(
+			"executionWrapper",
+		);
+	});
 });
 
 describe("OpenCode 2 adapter lifecycle", () => {

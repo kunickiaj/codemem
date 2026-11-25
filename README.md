@@ -176,6 +176,13 @@ successful tools through `tool.execute.after` and failed tools through errored
 tool parts; Codemem normalizes both into the shared raw-event stream without
 double-counting repeated failure updates.
 
+OpenCode 2 Code Mode can expose individual nested tool results through the
+plugin hook. Codemem records their call IDs and assistant message IDs when
+available. OpenCode does not expose a parent call ID or guarantee a terminal
+hook for an interrupted child. Codemem excludes OpenCode wrappers that report
+memory calls from observer input. Those wrappers and their children may still
+appear in raw events, subject to capture settings.
+
 OpenCode 1 also preserves verified delegation provenance for individual task briefs.
 A proven brief-only batch stays in raw storage without an observer call or learned
 memory; later findings recover bounded earlier instructions from the same raw stream.
