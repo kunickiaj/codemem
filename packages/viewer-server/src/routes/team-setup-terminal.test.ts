@@ -19,6 +19,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
+import { readPeerRemovalCheckState } from "../../../core/src/peer-removal-check-state.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
 import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
 
@@ -2641,16 +2642,40 @@ function branchDependencies(
 	branch: ReconciliationBranch,
 	manifest: ReturnType<typeof deriveLegacyTeamSetupCompletionManifest>,
 	listRemovals: ReturnType<typeof vi.fn>,
+	lookupPeerRemovals?: LookupPeerRemovals,
 ) {
 	if (branch === "coordinator record") {
-		return { create: vi.fn(), list: async () => [{ group_id: GROUP_ID, manifest }], listRemovals };
+		return {
+			create: vi.fn(),
+			list: async () => [{ group_id: GROUP_ID, manifest }],
+			listRemovals,
+			lookupPeerRemovals,
+		};
 	}
 	return {
 		create: vi.fn().mockRejectedValue(new Error("completion_conflict")),
 		get: async () => manifest,
 		list: async () => [],
 		listRemovals,
+		lookupPeerRemovals,
 	};
+}
+
+type LookupPeerRemovals = NonNullable<
+	NonNullable<Parameters<typeof teamSetupRoutes>[0]["completionDependencies"]>["lookupPeerRemovals"]
+>;
+
+/** The daemon's lookup reporting these devices removed from every group, as of now. */
+function daemonLookup(removed: string[]): LookupPeerRemovals {
+	return async (store) => ({
+		status: "checked",
+		revoked: [],
+		removed,
+		enrolled: [],
+		removalSeq: 1,
+		generation: readPeerRemovalCheckState(store.db)?.generation ?? null,
+		removedFromGroups: [],
+	});
 }
 
 /** This machine applies the coordinator's removal: binding ended, pairing deleted. */
@@ -2872,7 +2897,11 @@ describe("Team setup terminal routing ends a verified-removed device's local acc
 			try {
 				const { manifest, removal } = await stillServedRemovedDevice(store);
 				const listRemovals = vi.fn(async () => [removal]);
-				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
+				const lookup = daemonLookup([removal.device_id]);
+				const app = appWithoutDevice(
+					store,
+					branchDependencies(branch, manifest, listRemovals, lookup),
+				);
 
 				const detail = await app.request(REMOVAL_DETAIL_PATH);
 
@@ -2900,7 +2929,11 @@ describe("Team setup terminal routing ends a verified-removed device's local acc
 				store.db.exec(`CREATE TRIGGER fail_binding_end BEFORE UPDATE ON identity_devices
 					WHEN NEW.status = 'removed' BEGIN SELECT RAISE(ABORT, 'binding end failed'); END`);
 				const listRemovals = vi.fn(async () => [removal]);
-				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
+				const lookup = daemonLookup([removal.device_id]);
+				const app = appWithoutDevice(
+					store,
+					branchDependencies(branch, manifest, listRemovals, lookup),
+				);
 
 				// Act
 				const failed = await app.request(REMOVAL_DETAIL_PATH);
@@ -2931,6 +2964,48 @@ describe("Team setup terminal routing ends a verified-removed device's local acc
 					expect(await retried.json()).toMatchObject({ candidate: { status: "needs_setup" } });
 				}
 				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
+describe("Team setup terminal routing without proof of removal from every group", () => {
+	const lookups: Array<[string, LookupPeerRemovals]> = [
+		["the device stays enrolled in another group", daemonLookup([])],
+		[
+			"the daemon's lookup is unavailable",
+			async () => {
+				throw new Error("lookup failed");
+			},
+		],
+	];
+	it.each(
+		(["coordinator record", "publication conflict"] as const).flatMap((branch) =>
+			lookups.map(([reason, lookup]) => [branch, reason, lookup] as const),
+		),
+	)(
+		"quarantines and keeps the device's local records (%s, %s)",
+		async (branch, _reason, lookup) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				const { manifest, removal } = await stillServedRemovedDevice(store);
+				const listRemovals = vi.fn(async () => [removal]);
+				const app = appWithoutDevice(
+					store,
+					branchDependencies(branch, manifest, listRemovals, lookup),
+				);
+
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				expect(detail.status).toBe(409);
+				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+				expect(deviceAccess(store, removal.device_id)).toEqual({
+					binding: "active",
+					pinned: 0,
+					proofs: 1,
+				});
 			} finally {
 				store.close();
 			}

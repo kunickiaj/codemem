@@ -24,6 +24,7 @@ import {
 	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
 import { removePairingState } from "./pairing-removal.js";
+import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { listProjectScopeCandidates } from "./project-scope-settings.js";
 import type { LegacyTeamSetupActivationResultV1 } from "./recipient-policy-contract.js";
@@ -116,6 +117,15 @@ export interface LegacyTeamSetupDeviceRemovalRecord {
 	fingerprint: string;
 }
 
+/**
+ * The sync daemon's peer removal lookup: the devices the coordinator reports
+ * removed with no surviving enrollment for the same key, and the local pairing
+ * generation the lookup was made against. Or the fact that it gave no answer.
+ */
+export type LegacyTeamSetupPeerRemovalEvidence =
+	| { status: "read"; removed: readonly string[]; generation: number | null }
+	| { status: "unavailable" };
+
 /** Coordinator removal records, or the fact that they could not be read. */
 export type LegacyTeamSetupDeviceRemovalEvidence =
 	| { status: "read"; removals: readonly LegacyTeamSetupDeviceRemovalRecord[] }
@@ -159,6 +169,8 @@ interface ApplyCompletionManifestInput {
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
 	/** Omitted when the caller has no removal records to consult. */
 	deviceRemovals?: LegacyTeamSetupDeviceRemovalEvidence;
+	/** Omitted when the caller cannot ask; treated like an unavailable lookup. */
+	peerRemovals?: LegacyTeamSetupPeerRemovalEvidence;
 	expectedDraftManifest?: CoordinatorLegacyTeamCompletionManifestV1;
 	recipientPolicyLocksHeld?: {
 		publication: true;
@@ -1167,15 +1179,45 @@ function replayAfterVerifiedRemoval(
 		),
 	);
 	// A removal permits a replay of the already-installed setup. It must not
-	// recreate device bindings, memberships, or Project recipients, and the
-	// removed devices must lose the access this machine still gives them.
-	// Otherwise the removal counts as unproven and the roster check quarantines.
-	if (!proven || !endVerifiedRemovedDeviceAccess(db, missing)) return undefined;
+	// recreate device bindings, memberships, or Project recipients. Otherwise
+	// the removal counts as unproven and the roster check quarantines.
+	if (!proven || !endRemovedDeviceAccessOrConfirmDenied(db, manifest, missing, input))
+		return undefined;
 	return installed;
 }
 
+/** The devices the daemon's lookup proves removed everywhere, read against the current pairings. */
+function removedEverywhere(db: Database, evidence: LegacyTeamSetupPeerRemovalEvidence | undefined) {
+	if (evidence?.status !== "read" || evidence.generation === null) return new Set<string>();
+	// Same rule as the daemon: a pairing or binding written since the lookup voids it.
+	if (readPeerRemovalCheckState(db)?.generation !== evidence.generation) return new Set<string>();
+	return new Set(evidence.removed);
+}
+
 /**
- * Ends local access for devices the coordinator proved removed, exactly as
+ * A device removed from every group loses its local access here, as the sync
+ * daemon would remove it. A device that may still be enrolled in another
+ * group is left alone, which keeps the Team only while this machine already
+ * denies it.
+ */
+function endRemovedDeviceAccessOrConfirmDenied(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	missing: readonly IncludedDeviceDecision[],
+	input: ApplyCompletionManifestInput,
+): boolean {
+	const everywhere = removedEverywhere(db, input.peerRemovals);
+	const elsewhere = missing
+		.filter((device) => !everywhere.has(device.device_id))
+		.map((device) => device.device_id);
+	if (elsewhere.length > 0 && !areDevicesDeniedLocallyForTeam(db, manifest, elsewhere))
+		return false;
+	const removed = missing.filter((device) => everywhere.has(device.device_id));
+	return removed.length === 0 || endVerifiedRemovedDeviceAccess(db, removed);
+}
+
+/**
+ * Ends local access for devices the coordinator proved removed everywhere, as
  * this machine's own Viewer removal commit would: device-wide, for each device
  * whose stored pin and binding match the removed key. Returns false, with its
  * writes rolled back, when a device would keep access: a pin or binding for

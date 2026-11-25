@@ -17,6 +17,7 @@ import {
 	LegacyTeamSetupAdditiveConvergenceError,
 	type LegacyTeamSetupDeviceRemovalEvidence,
 	LegacyTeamSetupDeviceRemovalsUnavailableError,
+	type LegacyTeamSetupPeerRemovalEvidence,
 	LegacyTeamSetupRosterCapacityError,
 	reconstructLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifest,
@@ -29,6 +30,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "./legacy-team-setup-draft.js";
 import { removePairingState } from "./pairing-removal.js";
+import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { upsertProjectScopeSettingsMapping } from "./project-scope-settings.js";
 import {
@@ -2646,7 +2648,14 @@ async function completeTeamThenRemoveLaptop(
 	const reconcile = (
 		deviceRemovals: LegacyTeamSetupDeviceRemovalEvidence,
 		freshRoster = roster.slice(1),
-	) => applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster, deviceRemovals });
+		peerRemovals?: LegacyTeamSetupPeerRemovalEvidence,
+	) =>
+		applyLegacyTeamSetupCompletionManifest(db, {
+			...input,
+			freshRoster,
+			deviceRemovals,
+			peerRemovals,
+		});
 	return { manifest, reconcile };
 }
 
@@ -2999,7 +3008,76 @@ const STILL_SERVED = {
 	desktopServed: true,
 };
 
-describe("legacy Team setup completion manifests end a verified-removed device's local access", () => {
+const LAPTOP_FINGERPRINT = fingerprintPublicKey(CANONICAL_PUBLIC_KEY);
+const verifiedRemoval = () =>
+	({ status: "read", removals: [laptopRemoval(GROUP_ID, LAPTOP_FINGERPRINT)] }) as const;
+
+function quarantined(db: InstanceType<typeof Database>) {
+	return {
+		team: db.prepare("SELECT status FROM policy_teams").pluck().get(),
+		recipients: db.prepare("SELECT status FROM project_recipients").pluck().get(),
+	};
+}
+
+/** The Laptop left the roster, but this machine still binds, pins, and caches it. */
+async function stillServedLaptop(
+	db: InstanceType<typeof Database>,
+	pinnedKey = CANONICAL_PUBLIC_KEY,
+) {
+	const team = await completeTeamThenRemoveLaptop(db, {
+		removedLocally: [],
+		laptopFingerprint: LAPTOP_FINGERPRINT,
+	});
+	db.prepare(
+		`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+		 VALUES ('device-a', ?, ?, ?)`,
+	).run(pinnedKey, fingerprintPublicKey(pinnedKey), NOW);
+	await cacheScopeMembers(db, [
+		["scope-engineering", "device-local"],
+		["scope-engineering", "device-a"],
+		["scope-engineering", "device-b"],
+		["scope-other-group", "device-local"],
+		["scope-other-group", "device-a"],
+	]);
+	expect(localAccess(db, team.manifest.team_id)).toEqual(STILL_SERVED);
+	return team;
+}
+
+/** The daemon's lookup, made against the pairings as they are now. */
+function lookup(
+	db: InstanceType<typeof Database>,
+	removed: string[],
+	generationOffset = 0,
+): LegacyTeamSetupPeerRemovalEvidence {
+	return {
+		status: "read",
+		removed,
+		generation: (readPeerRemovalCheckState(db)?.generation ?? 0) + generationOffset,
+	};
+}
+
+function reconcileWith(
+	team: Awaited<ReturnType<typeof completeTeamThenRemoveLaptop>>,
+	peerRemovals: LegacyTeamSetupPeerRemovalEvidence,
+) {
+	return team.reconcile(verifiedRemoval(), undefined, peerRemovals);
+}
+
+function laptopRecords(db: InstanceType<typeof Database>) {
+	return Object.fromEntries(
+		[
+			["sync_peers", "peer_device_id"],
+			["identity_devices", "device_id"],
+			["replication_cursors", "peer_device_id"],
+			["scope_membership_authorization_evidence", "device_id"],
+		].map(([table, column]) => [
+			table,
+			db.prepare(`SELECT * FROM ${table} WHERE ${column} = 'device-a'`).all(),
+		]),
+	);
+}
+
+describe("legacy Team setup completion manifests end a device's access once it is removed everywhere", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
@@ -3008,39 +3086,11 @@ describe("legacy Team setup completion manifests end a verified-removed device's
 
 	afterEach(() => db.close());
 
-	const LAPTOP_FINGERPRINT = fingerprintPublicKey(CANONICAL_PUBLIC_KEY);
-	const verifiedRemoval = () =>
-		({ status: "read", removals: [laptopRemoval(GROUP_ID, LAPTOP_FINGERPRINT)] }) as const;
-	const quarantined = () => ({
-		team: db.prepare("SELECT status FROM policy_teams").pluck().get(),
-		recipients: db.prepare("SELECT status FROM project_recipients").pluck().get(),
-	});
+	it("keeps the Team active and ends the access of a device removed from every group, device-wide", async () => {
+		const team = await stillServedLaptop(db);
+		const { manifest } = team;
 
-	/** The Laptop left the roster, but this machine still binds, pins, and caches it. */
-	async function stillServedLaptop(pinnedKey = CANONICAL_PUBLIC_KEY) {
-		const team = await completeTeamThenRemoveLaptop(db, {
-			removedLocally: [],
-			laptopFingerprint: LAPTOP_FINGERPRINT,
-		});
-		db.prepare(
-			`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
-			 VALUES ('device-a', ?, ?, ?)`,
-		).run(pinnedKey, fingerprintPublicKey(pinnedKey), NOW);
-		await cacheScopeMembers(db, [
-			["scope-engineering", "device-local"],
-			["scope-engineering", "device-a"],
-			["scope-engineering", "device-b"],
-			["scope-other-group", "device-local"],
-			["scope-other-group", "device-a"],
-		]);
-		expect(localAccess(db, team.manifest.team_id)).toEqual(STILL_SERVED);
-		return team;
-	}
-
-	it("keeps the Team active and ends the removed device's access device-wide, as the Viewer removal commit does", async () => {
-		const { manifest, reconcile } = await stillServedLaptop();
-
-		await expect(reconcile(verifiedRemoval())).resolves.toEqual(manifest);
+		await expect(reconcileWith(team, lookup(db, ["device-a"]))).resolves.toEqual(manifest);
 
 		expect(db.prepare("SELECT status, migration_state FROM policy_teams").get()).toEqual({
 			status: "active",
@@ -3057,30 +3107,32 @@ describe("legacy Team setup completion manifests end a verified-removed device's
 			desktopServed: true,
 		});
 		// A repeated reconciliation still keeps the Team.
-		await expect(reconcile(verifiedRemoval())).resolves.toEqual(manifest);
+		await expect(reconcileWith(team, lookup(db, ["device-a"]))).resolves.toEqual(manifest);
 	});
 
 	it("quarantines when the pin now holds another key, which the Viewer rule leaves in place", async () => {
-		const { manifest, reconcile } = await stillServedLaptop(
-			CANONICAL_PUBLIC_KEY.replace("dam", "eam"),
+		const team = await stillServedLaptop(db, CANONICAL_PUBLIC_KEY.replace("dam", "eam"));
+
+		await expect(reconcileWith(team, lookup(db, ["device-a"]))).rejects.toThrow(
+			"team_setup_completion_invalid",
 		);
 
-		await expect(reconcile(verifiedRemoval())).rejects.toThrow("team_setup_completion_invalid");
-
-		expect(quarantined()).toEqual({ team: "inactive", recipients: "revoked" });
-		expect(localAccess(db, manifest.team_id)).toMatchObject({ binding: "active", pinned: 1 });
+		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+		expect(localAccess(db, team.manifest.team_id)).toMatchObject({ binding: "active", pinned: 1 });
 	});
 
 	it("rolls back the cleanup and quarantines when ending access fails, then quarantines again on retry", async () => {
 		// Arrange: the pairing delete fails inside the replay.
-		const { manifest, reconcile } = await stillServedLaptop();
+		const team = await stillServedLaptop(db);
 		db.exec(`CREATE TRIGGER fail_pairing_delete BEFORE DELETE ON sync_peers
 			BEGIN SELECT RAISE(ABORT, 'pairing delete failed'); END`);
 
 		// Act and assert: the cleanup wrote nothing, and the roster check quarantined.
-		await expect(reconcile(verifiedRemoval())).rejects.toThrow("team_setup_completion_invalid");
-		expect(quarantined()).toEqual({ team: "inactive", recipients: "revoked" });
-		expect(localAccess(db, manifest.team_id)).toMatchObject({
+		await expect(reconcileWith(team, lookup(db, ["device-a"]))).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+		expect(localAccess(db, team.manifest.team_id)).toMatchObject({
 			binding: "active",
 			pinned: 1,
 			servesOtherGroupScope: true,
@@ -3088,7 +3140,57 @@ describe("legacy Team setup completion manifests end a verified-removed device's
 
 		// The quarantined setup no longer matches, so a retry quarantines again.
 		db.exec("DROP TRIGGER fail_pairing_delete");
-		await expect(reconcile(verifiedRemoval())).rejects.toThrow("team_setup_completion_invalid");
-		expect(quarantined()).toEqual({ team: "inactive", recipients: "revoked" });
+		await expect(reconcileWith(team, lookup(db, ["device-a"]))).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+	});
+});
+
+describe("legacy Team setup completion manifests without proof of removal from every group", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = createCompletionFixtureDb();
+	});
+
+	afterEach(() => db.close());
+
+	it("quarantines and changes no local record when the device stays enrolled in another group", async () => {
+		// Arrange: removed from this group only, so the daemon's lookup does not report it.
+		const team = await stillServedLaptop(db);
+		db.prepare(
+			"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, updated_at) VALUES ('device-a', 'c1', ?)",
+		).run(NOW);
+		const before = laptopRecords(db);
+
+		await expect(reconcileWith(team, lookup(db, []))).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+
+		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+		expect(laptopRecords(db)).toEqual(before);
+		expect(localAccess(db, team.manifest.team_id)).toMatchObject({ servesOtherGroupScope: true });
+	});
+
+	it("keeps the Team and writes nothing when this machine already denies a device enrolled elsewhere", async () => {
+		const team = await completeTeamThenRemoveLaptop(db, { laptopFingerprint: LAPTOP_FINGERPRINT });
+		const before = databaseSnapshot(db);
+
+		await expect(reconcileWith(team, lookup(db, []))).resolves.toEqual(team.manifest);
+
+		expect(databaseSnapshot(db)).toEqual(before);
+	});
+
+	it.each([
+		["the lookup is unavailable", () => ({ status: "unavailable" }) as const],
+		["the lookup predates a pairing change", () => lookup(db, ["device-a"], -1)],
+	])("quarantines a still-paired device when %s", async (_case, evidence) => {
+		const team = await stillServedLaptop(db);
+
+		await expect(reconcileWith(team, evidence())).rejects.toThrow("team_setup_completion_invalid");
+
+		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+		expect(localAccess(db, team.manifest.team_id)).toMatchObject({ binding: "active", pinned: 1 });
 	});
 });

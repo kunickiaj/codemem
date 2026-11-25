@@ -31,6 +31,8 @@ import {
 	deriveLegacyTeamSetupCompletionManifest,
 	deterministicPolicyTeamId,
 	discoverLegacyTeamCandidates,
+	ensureDeviceIdentity,
+	fetchPeerRemovalLookup,
 	fingerprintPublicKey,
 	getLegacyTeamSetupDraft,
 	inspectFreshLegacyTeamSetupActivation,
@@ -40,6 +42,7 @@ import {
 	LegacyTeamSetupAdditiveConvergenceError,
 	type LegacyTeamSetupDeviceRemovalEvidence,
 	LegacyTeamSetupDeviceRemovalsUnavailableError,
+	type LegacyTeamSetupPeerRemovalEvidence,
 	LegacyTeamSetupRosterCapacityError,
 	legacyTeamCandidateId,
 	legacyTeamCandidateProjectInventory,
@@ -331,6 +334,20 @@ export interface LegacyTeamCompletionDependencies {
 	get?: typeof coordinatorGetLegacyTeamCompletionAction;
 	list: typeof coordinatorListLegacyTeamCompletionsAction;
 	listRemovals?: typeof coordinatorListRemovedDevicesAction;
+	/** The sync daemon's signed peer removal lookup, asked with this device's key. */
+	lookupPeerRemovals?: (
+		store: MemoryStore,
+		config: ReturnType<typeof readCoordinatorSyncConfig>,
+	) => ReturnType<typeof fetchPeerRemovalLookup>;
+}
+
+function lookupPeerRemovalsAsDaemon(
+	store: MemoryStore,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+) {
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	return fetchPeerRemovalLookup(store, config, { localDeviceId, keysDir });
 }
 
 const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
@@ -338,11 +355,19 @@ const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
 	get: coordinatorGetLegacyTeamCompletionAction,
 	list: coordinatorListLegacyTeamCompletionsAction,
 	listRemovals: coordinatorListRemovedDevicesAction,
+	lookupPeerRemovals: lookupPeerRemovalsAsDaemon,
 };
 
 // Undefined when no removal reader is configured: core then has no removal
 // evidence and handles a missing device as it did before removal replay.
 type ListCompletionRemovals = () => Promise<LegacyTeamSetupDeviceRemovalEvidence | undefined>;
+type LookupCompletionPeerRemovals = () => Promise<LegacyTeamSetupPeerRemovalEvidence | undefined>;
+
+/** Evidence core reads for a device missing from a completed Team's roster. */
+interface CompletionRemovalReads {
+	listRemovals: ListCompletionRemovals;
+	lookupPeerRemovals: LookupCompletionPeerRemovals;
+}
 
 interface LegacyTeamSnapshotLoaderDependencies {
 	readConfig: typeof readCoordinatorSyncConfig;
@@ -2096,12 +2121,36 @@ function readCompletionAuthorization(
 	return { config, remoteUrl, configuredCoordinatorId, currentGroupIds };
 }
 
+/** One daemon lookup per reconciliation, read only when a missing device needs it. */
+function peerRemovalReader(
+	dependencies: LegacyTeamCompletionDependencies,
+	store: MemoryStore,
+	config: CompletionAuthorization["config"],
+): LookupCompletionPeerRemovals {
+	let lookup: Promise<LegacyTeamSetupPeerRemovalEvidence> | undefined;
+	return () => {
+		const read = dependencies.lookupPeerRemovals;
+		if (!read) return Promise.resolve(undefined);
+		lookup ??= Promise.resolve()
+			.then(() => read(store, config))
+			.then(
+				(result): LegacyTeamSetupPeerRemovalEvidence =>
+					result.status === "checked"
+						? { status: "read", removed: result.removed, generation: result.generation }
+						: { status: "unavailable" },
+				(): LegacyTeamSetupPeerRemovalEvidence => ({ status: "unavailable" }),
+			);
+		return lookup;
+	};
+}
+
 function completionReadActions(
 	dependencies: LegacyTeamCompletionDependencies,
-	{ config, remoteUrl }: CompletionAuthorization,
+	{ authorization, store }: { authorization: CompletionAuthorization; store: MemoryStore },
 	timeoutS: number,
 	deadlineMs: number,
 ) {
+	const { config, remoteUrl } = authorization;
 	const adminSecret = config.syncCoordinatorAdminSecret;
 	let removals: ReturnType<ListCompletionRemovals> | undefined;
 	const listRemovals: ListCompletionRemovals = () => {
@@ -2124,7 +2173,18 @@ function completionReadActions(
 			timeoutS,
 			deadlineMs,
 		);
-	return { listCompletionRecords, listRemovals };
+	const removalReads: CompletionRemovalReads = {
+		listRemovals,
+		lookupPeerRemovals: peerRemovalReader(dependencies, store, config),
+	};
+	return { listCompletionRecords, removalReads };
+}
+
+async function readRemovalEvidence(reads: CompletionRemovalReads) {
+	return {
+		deviceRemovals: await reads.listRemovals(),
+		peerRemovals: await reads.lookupPeerRemovals(),
+	};
 }
 
 // Endpoint equivalence only: candidate identity stays bound to the persisted
@@ -2332,13 +2392,13 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		group: LegacyTeamCandidateGroupDescriptor,
 		manifest: CoordinatorLegacyTeamCompletionManifestV1,
 		freshRoster: LegacyTeamConfiguredGroupSnapshot["devices"],
-		listRemovals: ListCompletionRemovals,
+		reads: CompletionRemovalReads,
 	): Promise<"applied" | "unauthorized" | "claimed"> {
 		const freshIds = new Set(freshRoster.map((device) => device.deviceId));
 		const missing = manifest.device_decisions.some(
 			(device) => device.decision === "included" && !freshIds.has(device.device_id),
 		);
-		const deviceRemovals = missing ? await listRemovals() : undefined;
+		const removalEvidence = missing ? await readRemovalEvidence(reads) : {};
 		let outcome: "applied" | "unauthorized" = "unauthorized";
 		const ran = await runCandidateMutation(
 			store.db,
@@ -2351,7 +2411,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						groupId: group.groupId,
 						manifest,
 						freshRoster,
-						deviceRemovals,
+						...removalEvidence,
 						recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(actorIds),
 					});
 					outcome = "applied";
@@ -2383,9 +2443,9 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
 		try {
 			const reconciliationDeadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
-			const { listCompletionRecords, listRemovals } = completionReadActions(
+			const { listCompletionRecords, removalReads } = completionReadActions(
 				completionDependencies,
-				authorization,
+				{ authorization, store },
 				timeoutS,
 				reconciliationDeadlineMs,
 			);
@@ -2573,7 +2633,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						group,
 						canonicalManifest,
 						freshGroup.devices,
-						listRemovals,
+						removalReads,
 					);
 					if (applied !== "applied") continue;
 				} catch (error) {
@@ -2684,7 +2744,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 							group,
 							canonicalManifest,
 							freshGroup.devices,
-							listRemovals,
+							removalReads,
 						);
 						if (applied !== "applied") continue;
 					} catch (applyError) {
