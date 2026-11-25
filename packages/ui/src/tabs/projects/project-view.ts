@@ -1,4 +1,5 @@
 import type { ProjectScopeInventoryProject, SharingDomainScope } from "../../lib/api/sync";
+import { collapseHome } from "../../lib/format";
 import type { ProjectsInventoryViewModel } from "../projects-inventory-model";
 
 export function projectDomId(prefix: string, value: string): string {
@@ -24,6 +25,35 @@ export function latestLabel(value: string | null): string {
 
 export function projectSignal(project: ProjectScopeInventoryProject): string {
 	return project.git_remote || project.repository_identity || project.cwd || "";
+}
+
+function isAbsolutePath(value: string): boolean {
+	return /^(\/|[A-Za-z]:[\\/])/.test(value);
+}
+
+function pathBasename(value: string): string {
+	return value.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+}
+
+/**
+ * A Project's on-screen name and the secondary line that tells same-named Projects apart.
+ * Presentation only: `display_project` also feeds mapping patterns and name guardrails,
+ * so it stays as recorded.
+ */
+export function projectHeading(project: ProjectScopeInventoryProject): {
+	title: string;
+	signal: string;
+} {
+	const name = project.display_project;
+	const signal = collapseHome(projectSignal(project));
+	// Memories recorded without a project name carry only a generated workspace ID.
+	const generatedIdOnly =
+		!project.project &&
+		project.identity_source === "workspace_id" &&
+		name === project.workspace_identity;
+	if (generatedIdOnly) return { title: "No project", signal };
+	if (!isAbsolutePath(name)) return { title: name, signal };
+	return { title: pathBasename(name) || name, signal: signal || collapseHome(name) };
 }
 
 export function identitySourceLabel(source: string): string {

@@ -454,6 +454,32 @@ describe("received Projects shared as part of a group", () => {
 		expect(groupShareNote()).toBeNull();
 	});
 
+	it("shows the readable name with its path and finds the Project by either name", () => {
+		const share = {
+			...receivedShare(null),
+			displayName: "/Users/sam/work/points-tracker",
+			heading: { title: "points-tracker", signal: "~/work/points-tracker" },
+		};
+		mount(intent(), { received: [share, { ...receivedShare(null), displayName: "Borealis" }] });
+		clickTab("From other devices");
+		const firstCell = () => visiblePanel().querySelector("tbody tr td");
+
+		expect(firstCell()?.querySelector("strong")?.textContent).toBe("points-tracker");
+		expect(
+			firstCell()?.querySelector(".recipient-policy-sharing-received-signal")?.textContent,
+		).toBe("~/work/points-tracker");
+		for (const query of ["points", "/users/sam"]) {
+			const search = visiblePanel().querySelector<HTMLInputElement>('input[type="search"]');
+			act(() => {
+				if (!search) throw new Error("received-project search missing");
+				search.value = query;
+				search.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			expect(visiblePanel().querySelectorAll("tbody tr")).toHaveLength(1);
+			expect(firstCell()?.querySelector("strong")?.textContent).toBe("points-tracker");
+		}
+	});
+
 	it("keeps the exact last session time on a one-line relative label", () => {
 		const latestSessionAt = "2026-07-25T12:00:00.000Z";
 		mount(intent(), { received: [{ ...receivedShare(null), latestSessionAt }] });

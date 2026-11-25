@@ -9,7 +9,7 @@ import type {
 } from "../projects-inventory-model";
 import { ProjectRowDetails } from "./ProjectRowDetails";
 import { ProjectRowMenu } from "./ProjectRowMenu";
-import { isAssignable, projectBadges, projectDomId, projectSignal } from "./project-view";
+import { isAssignable, projectBadges, projectDomId, projectHeading } from "./project-view";
 
 function recipientCoverageLabel(recipient: ProjectInventoryRecipientViewModel): string {
 	if (recipient.coveredProjectCount == null || recipient.knownProjectCount == null)
@@ -173,7 +173,7 @@ function ProjectRowActions({
 function ProjectRowHeader(props: ProjectRowHeaderProps) {
 	const { callbacks, child, model, titleId, view } = props;
 	const { project } = model;
-	const signal = projectSignal(project);
+	const heading = projectHeading(project);
 	return (
 		<tr
 			className={`project-inventory-row-header project-inventory-table-row${child ? " project-inventory-child-row" : ""}`}
@@ -195,10 +195,10 @@ function ProjectRowHeader(props: ProjectRowHeaderProps) {
 			</td>
 			<th className="project-inventory-cell project-inventory-project-cell" scope="row">
 				<strong className="project-inventory-title" id={titleId}>
-					{project.display_project}
+					{heading.title}
 				</strong>
-				{signal ? (
-					<span className="project-inventory-signal mono small tertiary">{signal}</span>
+				{heading.signal ? (
+					<span className="project-inventory-signal mono small tertiary">{heading.signal}</span>
 				) : null}
 				<div className="project-inventory-badges">
 					{projectBadges(project).map((badge) => (

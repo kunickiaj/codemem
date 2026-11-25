@@ -4716,6 +4716,23 @@ describe("Projects table at rest", () => {
 		expect(details?.textContent).toContain("received from other devices");
 	});
 
+	it("titles a path-only Project by its last folder and keeps the recorded name on its actions", async () => {
+		const path = "/Users/sam/work/points-tracker";
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
+				project({ cwd: path, display_project: path, git_remote: null, project: null }),
+			]),
+		);
+		await loadProjectsData();
+		const row = document.querySelector(".project-inventory-row-header");
+
+		expect(row?.querySelector(".project-inventory-title")?.textContent).toBe("points-tracker");
+		expect(row?.querySelector(".project-inventory-signal")?.textContent).toBe(
+			"~/work/points-tracker",
+		);
+		expect(row?.querySelector(`button[aria-label="Update sharing for ${path}"]`)).not.toBeNull();
+	});
+
 	it("keeps the exact time on a Project's one-line last activity", async () => {
 		const latest = "2026-05-06T00:00:00Z";
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(

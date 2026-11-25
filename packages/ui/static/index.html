@@ -1967,7 +1967,8 @@
       .recipient-policy-sharing-received-row { border-top: 1px solid var(--border); background: var(--surface-1); }
       .recipient-policy-sharing-received-row > * { min-width: 0; overflow-wrap: anywhere; }
       .recipient-policy-sharing-received-row td { min-width: 0; padding: 0; color: var(--text-secondary); text-align: left; }
-      .recipient-policy-sharing-received-row td:first-child { color: var(--text-primary); }
+      .recipient-policy-sharing-received-row td:first-child { display: grid; gap: 2px; color: var(--text-primary); }
+      .recipient-policy-sharing-received-signal { overflow: hidden; color: var(--text-tertiary); font-size: var(--font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
       .recipient-policy-sharing-received-head th { min-width: 0; padding: 0; text-align: left; }
       .recipient-policy-sharing-received-head th:nth-child(n + 3),
       .recipient-policy-sharing-received-row td:nth-child(n + 3) { text-align: right; }
