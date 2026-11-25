@@ -720,17 +720,21 @@ async function openProjectAdministrationFromRepair(target: ProjectRepairTarget):
 	const previous = projectNavigationSnapshot();
 	const repairSearch = project.workspace_identity;
 	if (search) search.value = repairSearch;
-	if (status) status.value = target.status;
 	currentOffset = target.offset;
 	const repairGeneration = projectsUserNavigationGeneration;
-	await loadProjectsData();
-	if (focusProjectAdministration(project.workspace_identity)) return;
+	// The repair's status goes only into this request. The status filter changes once
+	// the target row opens, so a superseding load keeps the user's filter.
+	await loadProjectsData({ status: target.status });
 	if (
 		projectsUserNavigationGeneration !== repairGeneration ||
 		(search && search.value !== repairSearch) ||
-		(status && status.value !== target.status) ||
+		(status && status.value !== previous.status) ||
 		currentOffset !== target.offset
 	) {
+		return;
+	}
+	if (focusProjectAdministration(project.workspace_identity)) {
+		if (status) status.value = target.status;
 		return;
 	}
 	if (search) search.value = previous.search;
@@ -1133,6 +1137,8 @@ export interface ProjectsDataLoadOptions {
 	awaitTeamSetupSummary?: boolean;
 	requireTeamSetupSummary?: boolean;
 	signal?: AbortSignal;
+	/** Status to request instead of the status filter's. The filter itself is unchanged. */
+	status?: string;
 }
 
 export function loadProjectsData(options: ProjectsDataLoadOptions = {}): Promise<boolean> {
@@ -1363,7 +1369,9 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 	if (isProjectSpaceSelectActive()) return loadProjectsWhileSelectActive(options);
 	skippedProjectRefreshForActiveSelect = false;
 	const loadGeneration = ++projectsLoadGeneration;
-	const requestedFilters = readProjectInventoryFilters();
+	const userFilters = readProjectInventoryFilters();
+	const requestedFilters =
+		options.status === undefined ? userFilters : { ...userFilters, status: options.status };
 	// Keep the last successful inventory usable while a background refresh is pending.
 	// The recipient review/commit path revalidates the current policy before saving.
 	if (!hasProjectInventoryResult) {
@@ -1380,7 +1388,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
-		if (!projectInventoryFiltersAreCurrent(requestedFilters)) return false;
+		if (!projectInventoryFiltersAreCurrent(userFilters)) return false;
 		const requiredLoadSucceeded = renderLoadedProjectResources(
 			resources,
 			loadGeneration,
@@ -1405,7 +1413,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
-		if (!projectInventoryFiltersAreCurrent(requestedFilters)) return false;
+		if (!projectInventoryFiltersAreCurrent(userFilters)) return false;
 		renderProjectsLoadFailure(error, meta);
 		return finishFailedProjectsLoad(options, teamSetupSummaryPromise);
 	}

@@ -2051,6 +2051,85 @@ describe("Projects cached recipient presentation", () => {
 		expect(showGlobalNotice).not.toHaveBeenCalled();
 	});
 
+	function inventoryRequests() {
+		return vi.mocked(api.loadProjectScopeInventory).mock.calls.map(([input]) => input ?? {});
+	}
+
+	/** An empty repair target that only the No memories list holds, and its status filter. */
+	function setupNoMemoriesRepair(
+		repairId: string,
+		reload: (input: { status?: string }) => Promise<ProjectScopeInventoryResult>,
+	) {
+		initProjectsTab(() => {
+			void loadProjectsData();
+		});
+		const status = emptyStatusOption();
+		status.value = "needs_attention";
+		const repairProject = project({
+			memory_count: 0,
+			statuses: ["empty", "local_only"],
+			workspace_identity: repairId,
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (input.q !== repairId) return inventoryPage();
+			if (input.include_empty === false && input.status === "empty") return reload(input);
+			if (input.status === "empty") return inventoryPage([repairProject]);
+			return inventoryPage();
+		});
+		mockRepairReview(repairId, `blocked-${repairId}`);
+		return { repairProject, status };
+	}
+
+	function isRepairReload(input: { include_empty?: boolean; q?: string; status?: string }) {
+		return input.include_empty === false && input.status === "empty" && Boolean(input.q);
+	}
+
+	it("keeps the user's status filter when a search supersedes a No memories repair", async () => {
+		let resolveReload!: (value: ProjectScopeInventoryResult) => void;
+		const reload = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveReload = resolve;
+		});
+		const { repairProject, status } = setupNoMemoriesRepair(
+			"/workspace/superseded-empty",
+			() => reload,
+		);
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+		await vi.waitFor(() => expect(inventoryRequests().some(isRepairReload)).toBe(true));
+
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "user-query";
+		search.dispatchEvent(new Event("input"));
+		resolveReload(inventoryPage([repairProject]));
+		await flushAsyncWork();
+
+		const userRequest = inventoryRequests().find((input) => input.q === "user-query");
+		expect(userRequest?.status).toBe("needs_attention");
+		expect(status.value).toBe("needs_attention");
+		expect(search.value).toBe("user-query");
+	});
+
+	it("leaves the status filter unchanged when the No memories repair reload fails", async () => {
+		const statusesDuringReload: string[] = [];
+		const { status } = setupNoMemoriesRepair("/workspace/failed-empty", async () => {
+			statusesDuringReload.push(status.value);
+			throw new Error("reload failed");
+		});
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+
+		await vi.waitFor(() =>
+			expect(showGlobalNotice).toHaveBeenCalledWith(
+				"Project administration could not be opened. Refresh Projects and try again.",
+				"warning",
+			),
+		);
+		expect(statusesDuringReload).toEqual(["needs_attention"]);
+		expect(status.value).toBe("needs_attention");
+		const restored = inventoryRequests().filter((input) => input.include_empty === false);
+		expect(restored.at(-1)).toMatchObject({ q: undefined, status: "needs_attention" });
+	});
+
 	it("opens the local repairable row when a peer row shares its reserved identity", async () => {
 		const workspaceIdentity = "peer-received:collision";
 		const localProject = project({ workspace_identity: workspaceIdentity });
