@@ -3559,6 +3559,91 @@ it.each([true, false])(
 );
 
 it.each([
+	["coordinator_update_required", 503, "Update the coordinator"],
+	[
+		"device_removal_unavailable",
+		503,
+		"check the coordinator's version, migrations, and connectivity",
+	],
+	["coordinator_admin_required", 409, "coordinator admin secret"],
+] as const)(
+	"explains a %s preview refusal before confirming Remove",
+	async (code, statusCode, guidance) => {
+		const deviceId = "device-address-fingerprint-secret";
+		const fetch = vi.fn().mockResolvedValue(Response.json({ error: code }, { status: statusCode }));
+		vi.stubGlobal("fetch", fetch);
+		const confirm = vi.fn(async () => true);
+		const onCommitted = vi.fn(async () => true);
+		try {
+			mount(intent(), reconciliation(), {
+				inventory: inventory([
+					inventoryItem(deviceId, "Work Laptop", "configured", {
+						sources: ["identity_binding", "coordinator_enrollment"],
+						validatedFingerprint: "fingerprint",
+					}),
+				]),
+				removalConfirmation: { confirm },
+				enrolledDeviceBlock: true,
+				onCommitted,
+			});
+			const menu = openActionMenu(
+				document.getElementById(`device-identity-card-${deviceId}`) ?? document,
+			);
+			const action = [...menu.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+				(button) => button.textContent === "Remove device…",
+			);
+			const status = watchDeviceCommitStatus();
+			try {
+				await act(() => action?.click());
+				expect(await status.reported).toContain(guidance);
+				expect(document.activeElement?.id).toBe("devices-commit-status");
+				expect(confirm).not.toHaveBeenCalled();
+				expect(onCommitted).not.toHaveBeenCalled();
+				expect(fetch).toHaveBeenCalledOnce();
+			} finally {
+				status.stop();
+			}
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	},
+);
+
+it("keeps a lost preview response distinct from a coordinator refusal", async () => {
+	const deviceId = "device-address-fingerprint-secret";
+	const fetch = vi.fn().mockRejectedValue(new Error("Connection lost"));
+	vi.stubGlobal("fetch", fetch);
+	const confirm = vi.fn(async () => true);
+	try {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "coordinator_enrollment"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			removalConfirmation: { confirm },
+			enrolledDeviceBlock: true,
+		});
+		const menu = openActionMenu(
+			document.getElementById(`device-identity-card-${deviceId}`) ?? document,
+		);
+		const action = menu.querySelector<HTMLButtonElement>('[aria-label="Remove Work Laptop"]');
+		const status = watchDeviceCommitStatus();
+		try {
+			await act(() => action?.click());
+			expect(await status.reported).toContain("Check your connection to the Viewer");
+			expect(confirm).not.toHaveBeenCalled();
+			expect(fetch).toHaveBeenCalledOnce();
+		} finally {
+			status.stop();
+		}
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+it.each([
 	["blocked", "Work Laptop is permanently blocked."],
 	[
 		"removed-but-block-refused",
