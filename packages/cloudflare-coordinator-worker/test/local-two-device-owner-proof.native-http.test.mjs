@@ -48,6 +48,7 @@ export { MemoryStore } from './store.ts';
 export { fingerprintPublicKey } from './sync-fingerprint.ts';
 export { syncOnce } from './sync-pass.ts';
 export { createSyncApp } from '../../viewer-server/src/index.ts';
+export { refreshTestScopeRows } from './scope-membership-cache-test-fixtures.ts';
 export { loadReplicationOpsSince, filterReplicationOpsForSyncWithStatus, applyReplicationOps } from './sync-replication.ts';`,
 			resolveDir: join(coreDir, "src"),
 			sourcefile: "fake-only-two-device.ts",
@@ -376,19 +377,24 @@ async function ownerEffects(f) {
 	return Promise.all(["coordinator_device_ownership_bindings", "coordinator_owner_enrollment_audit_log"].map(f.remote.rows));
 }
 
-function provisionScope(device, peer, now) {
+async function provisionScope(f, device, peer) {
 	const db = device.store.db;
-	const timestamp = new Date(now).toISOString();
+	const timestamp = new Date(f.now).toISOString();
 	// Explicit independent local policy, not an inference from the owner transport grant.
-	db.prepare(`INSERT INTO replication_scopes(scope_id,label,kind,authority_type,membership_epoch,status,created_at,updated_at)
-		VALUES (?, 'Synthetic Project', 'team', 'manual', 1, 'active', ?, ?)`)
-		.run(scopeId, timestamp, timestamp);
+	// Only a coordinator scope can authorize a peer, so it carries retained proofs for both keys.
+	db.prepare(`INSERT INTO replication_scopes(scope_id,label,kind,authority_type,coordinator_id,group_id,membership_epoch,status,created_at,updated_at)
+		VALUES (?, 'Synthetic Project', 'team', 'coordinator', ?, 'group-a', 1, 'active', ?, ?)`)
+		.run(scopeId, f.config.coordinatorId, timestamp, timestamp);
 	for (const id of [device.deviceId, peer.deviceId]) {
 		db.prepare(`INSERT INTO scope_memberships(scope_id,device_id,role,status,membership_epoch,updated_at)
 			VALUES (?, ?, 'member', 'active', 1, ?)`).run(scopeId, id, timestamp);
 	}
 	db.prepare(`INSERT INTO sync_peers(peer_device_id,public_key,pinned_fingerprint,created_at)
 		VALUES (?, ?, ?, ?)`).run(peer.deviceId, peer.key.publicKey, device.fingerprint(peer.key.publicKey), timestamp);
+	await f.h.refreshTestScopeRows(db, {
+		[device.deviceId]: device.key.publicKey,
+		[peer.deviceId]: peer.key.publicKey,
+	});
 }
 
 function capture(f) {
@@ -871,8 +877,8 @@ async function scopedCaptureAcceptance(f) {
 	assert.equal(f.b.store.db.prepare("SELECT COUNT(*) AS n FROM memory_items").get().n, 0);
 	// Arrange: explicitly provision local scope memberships and exact peer-key trust on A/B.
 	for (const d of [f.a, f.b]) d.fingerprint = f.h.fingerprintPublicKey;
-	provisionScope(f.a, f.b, f.now);
-	provisionScope(f.b, f.a, f.now);
+	await provisionScope(f, f.a, f.b);
+	await provisionScope(f, f.b, f.a);
 	const { memory, ops } = capture(f);
 	// In-process preflight: revoked memberships deny even though B is owner-enrolled.
 	f.a.store.db.prepare("UPDATE scope_memberships SET status='revoked' WHERE device_id=?").run(f.b.deviceId);
