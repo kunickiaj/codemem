@@ -165,6 +165,54 @@ function pruneEvidence(db: Database, batches: Batch[], authority: Authority): vo
 	}
 }
 
+const REMOVAL_STATE_TABLE = "scope_membership_removal_state";
+
+/**
+ * Counts local device removals across the whole database. A cache refresh
+ * reads it before contacting the coordinator and writes nothing if it changed
+ * by commit time, so no answer older than a removal can restore a deleted
+ * proof, even a group's first refresh. 0 until the first removal.
+ */
+export function readScopeAuthorizationRemovalGeneration(db: Database): number {
+	const table = db
+		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+		.get(REMOVAL_STATE_TABLE);
+	if (!table) return 0;
+	const row = db.prepare(`SELECT generation FROM ${REMOVAL_STATE_TABLE} WHERE id = 1`).get() as
+		| { generation: number }
+		| undefined;
+	return row?.generation ?? 0;
+}
+
+function advanceRemovalGeneration(db: Database): void {
+	db.exec(`CREATE TABLE IF NOT EXISTS ${REMOVAL_STATE_TABLE} (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		generation INTEGER NOT NULL
+	)`);
+	db.prepare(
+		`INSERT INTO ${REMOVAL_STATE_TABLE}(id, generation) VALUES (1, 1)
+		 ON CONFLICT(id) DO UPDATE SET generation = generation + 1`,
+	).run();
+}
+
+/**
+ * Deletes every retained proof for the devices, in every group, so the cached
+ * scope authorization denies them on every coordinator scope. Membership rows
+ * and other devices' proofs stay. Advancing the removal generation makes any
+ * refresh that began earlier discard its answer. A refresh that starts later
+ * carries the coordinator's current answer and restores what it grants.
+ * Run it inside the caller's removal transaction. Returns the proofs deleted.
+ */
+export function endRetainedScopeAuthorization(db: Database, deviceIds: readonly string[]): number {
+	if (deviceIds.length === 0) return 0;
+	advanceRemovalGeneration(db);
+	if (!scopeEvidenceTableExists(db)) return 0;
+	const remove = db.prepare(
+		"DELETE FROM scope_membership_authorization_evidence WHERE device_id = ?",
+	);
+	return deviceIds.reduce((total, deviceId) => total + remove.run(deviceId).changes, 0);
+}
+
 /** Evidence is not a lease: freshness policy remains with the caller. Malformed storage denies. */
 export function getRetainedScopeAuthorizationKey(
 	db: Database,

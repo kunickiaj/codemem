@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, readCoordinatorSyncConfig, removePairingState } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { syncScopedChannelOnce } from "../../core/src/sync-channel-pass.js";
 import {
 	getSyncChannelProgress,
@@ -68,6 +69,12 @@ it("H7: remove, then pair the same device ID again: both sides exchange the full
 			`INSERT INTO sync_peers (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`,
 		)
 		.run(...Object.values(pairing));
+	// Removal also ended the cached scope authorization. The coordinator still
+	// grants the device, so the next trusted refresh restores it.
+	await refreshTestScopeRows(f.client.db, {
+		[f.remote.localDeviceId]: f.remote.localPublicKey,
+		[f.remote.peerDeviceId]: f.remote.peerPublicKey,
+	});
 	const requestsBeforePairingAgain = f.requests.length;
 
 	const result = await syncScopedChannelOnce(f.options);

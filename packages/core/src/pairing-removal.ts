@@ -2,6 +2,7 @@ import type { Database } from "./db.js";
 import { wakeRecipientPoliciesForIdentities } from "./device-identity-binding.js";
 import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
 import { canonicalKeyId, recordRetiredDeviceAliases } from "./retired-device-aliases.js";
+import { endRetainedScopeAuthorization } from "./scope-membership-evidence.js";
 import { deletePeerSyncChannelProgress } from "./sync-channel-progress.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -16,6 +17,11 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
  * is `disconnect` or `policy`. The row stays, because deleting it would delete
  * the device's per-Team decisions and a later rejoin would then widen access
  * past a recorded exclusion.
+ *
+ * The same reasons end the device's cached scope authorization on every scope.
+ * Without it a bootstrap grant could recreate the pairing and the cached
+ * membership would authorize the device again. A later coordinator refresh
+ * restores what the coordinator still grants, so a rejoin regains access.
  */
 
 export type RetiredDeviceAliasRecord = Parameters<typeof recordRetiredDeviceAliases>[1][number];
@@ -154,6 +160,11 @@ function removeDevices(
 	}
 	const now = new Date().toISOString();
 	const endedIdentityIds = new Set<string>();
+	if (input.reason !== "disconnect")
+		endRetainedScopeAuthorization(
+			db,
+			deviceIds.filter((deviceId) => deviceId !== input.localDeviceId),
+		);
 	for (const deviceId of deviceIds) {
 		// Content sync stops, but retirement controls still need this peer's pinned key.
 		retainRetirementPeerTrust(db, { localDeviceId: input.localDeviceId, peerDeviceId: deviceId });
@@ -187,7 +198,8 @@ function emptyCounts(): PairingRemovalCounts {
 
 /**
  * Removes each device's pairing and sync progress, and ends its Identity binding
- * unless the reason is `disconnect` or `policy`. Memory retirement trust is retained first, and
+ * and cached scope authorization unless the reason is `disconnect` or `policy`.
+ * Memory retirement trust is retained first, and
  * `sync_attempts` and `sync_scope_rejections` stay as diagnostic history. One
  * immediate transaction: any failure leaves every table unchanged.
  */

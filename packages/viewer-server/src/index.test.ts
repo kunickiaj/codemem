@@ -1068,6 +1068,113 @@ async function verifyVersionedBootstrapCase(mode: string) {
 	}
 }
 
+const BOOTSTRAP_COORDINATOR_URL = "https://coord.example.test";
+
+/** Caches a coordinator scope with retained proofs for the devices through a trusted refresh. */
+async function cacheBootstrapScope(
+	store: MemoryStore,
+	scope: { scopeId: string; groupId: string },
+	publicKeys: Record<string, string>,
+) {
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id,
+			 group_id, membership_epoch, status, created_at, updated_at)
+			 VALUES (?, ?, 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+		)
+		.run(scope.scopeId, scope.scopeId, BOOTSTRAP_COORDINATOR_URL, scope.groupId, "then", "then");
+	for (const deviceId of Object.keys(publicKeys)) {
+		store.db
+			.prepare(
+				`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+				 VALUES (?, ?, 'member', 'active', 1, 'then')`,
+			)
+			.run(scope.scopeId, deviceId);
+	}
+	core.setSyncResetState(
+		store.db,
+		{
+			generation: 1,
+			snapshot_id: "snapshot-1",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+		},
+		scope.scopeId,
+	);
+	await refreshTestScopeRows(store.db, publicKeys);
+}
+
+/**
+ * A device with no pin on this machine requests one scope's snapshot with a
+ * valid group g1 bootstrap grant, then a signed `/v1/ops` for the same scope.
+ */
+async function requestBootstrapScope(scope: { scopeId: string; groupId: string }) {
+	const testApp = createTestApp();
+	const store = testApp.ensureStore();
+	const snapshotUrl = `http://localhost/v1/snapshot?generation=1&snapshot_id=snapshot-1&scope_id=${scope.scopeId}`;
+	const peer = createAuthenticatedSyncPeer(store, { url: snapshotUrl });
+	const peerRow = store.db
+		.prepare("SELECT public_key, pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
+		.get(peer.peerDeviceId) as { public_key: string; pinned_fingerprint: string };
+	const dir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-scope-"));
+	const previousConfig = process.env.CODEMEM_CONFIG;
+	const previousSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+	const previousFetch = globalThis.fetch;
+	try {
+		const localKey = loadPublicKey(process.env.CODEMEM_KEYS_DIR) ?? "";
+		await cacheBootstrapScope(store, scope, {
+			[store.deviceId]: localKey,
+			[peer.peerDeviceId]: peerRow.public_key,
+		});
+		// The pin is gone, as after a removal; the retained proofs stay.
+		store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peer.peerDeviceId);
+		process.env.CODEMEM_CONFIG = join(dir, "config.json");
+		delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+		writeFileSync(
+			process.env.CODEMEM_CONFIG,
+			JSON.stringify({
+				sync_coordinator_url: BOOTSTRAP_COORDINATOR_URL,
+				sync_coordinator_groups: ["g1"],
+			}),
+		);
+		const receipt = versionedBootstrapReceipt("test-device-001", {
+			deviceId: peer.peerDeviceId,
+			publicKey: peerRow.public_key,
+			fingerprint: peerRow.pinned_fingerprint,
+		});
+		globalThis.fetch = bootstrapLookupMock(receipt, true) as typeof globalThis.fetch;
+		const signed = (url: string, bootstrapGrantId?: string) => ({
+			...buildDirectPeerAuthHeaders({
+				deviceId: peer.peerDeviceId,
+				recipientId: "test-device-001",
+				method: "GET",
+				url,
+				bodyBytes: Buffer.alloc(0),
+				keysDir: peer.keysDir,
+				bootstrapGrantId,
+			}),
+			[core.SYNC_CAPABILITY_HEADER]: "scoped",
+		});
+		const snapshot = await testApp.syncApp.request(snapshotUrl, {
+			headers: signed(snapshotUrl, "grant-1"),
+		});
+		const snapshotBody = await snapshot.json();
+		const pins = store.db
+			.prepare("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = ?")
+			.pluck()
+			.get(peer.peerDeviceId);
+		const opsUrl = `http://localhost/v1/ops?limit=10&generation=1&snapshot_id=snapshot-1&scope_id=${scope.scopeId}`;
+		const ops = await testApp.syncApp.request(opsUrl, { headers: signed(opsUrl) });
+		return { snapshot: snapshot.status, snapshotBody, pins, ops: ops.status };
+	} finally {
+		globalThis.fetch = previousFetch;
+		restoreBootstrapEnvironment(previousConfig, previousSecret);
+		peer.cleanup();
+		testApp.cleanup();
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 function promptPackAttemptId(sequence: number): string {
 	return `018f2db4-f9d3-7a22-8d18-${sequence.toString(16).padStart(12, "0")}`;
 }
@@ -21363,6 +21470,30 @@ describe("viewer-server", () => {
 			} finally {
 				cleanup();
 			}
+		});
+	});
+});
+
+describe("bootstrap grant snapshots stay inside the grant's group", () => {
+	it("refuses a bootstrap snapshot for a cached scope outside the grant's group", async () => {
+		const result = await requestBootstrapScope({ scopeId: "scope-other", groupId: "g2" });
+
+		expect(result).toEqual({
+			snapshot: 401,
+			snapshotBody: { error: "unauthorized" },
+			pins: 0,
+			ops: 401,
+		});
+	});
+
+	it("serves a bootstrap snapshot for a scope of the grant's group", async () => {
+		const result = await requestBootstrapScope({ scopeId: "scope-g1", groupId: "g1" });
+
+		expect(result).toMatchObject({
+			snapshot: 200,
+			snapshotBody: { scope_id: "scope-g1", items: [] },
+			pins: 1,
+			ops: 200,
 		});
 	});
 });
