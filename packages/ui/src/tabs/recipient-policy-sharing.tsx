@@ -1060,7 +1060,9 @@ function ReceivedView({
 	const [query, setQuery] = useState("");
 	const normalizedQuery = query.trim().toLocaleLowerCase();
 	const visibleShares = received.filter((share) =>
-		share.displayName.toLocaleLowerCase().includes(normalizedQuery),
+		[share.displayName, share.heading?.title ?? ""].some((name) =>
+			name.toLocaleLowerCase().includes(normalizedQuery),
+		),
 	);
 	if (received.length === 0) {
 		return (
@@ -1104,7 +1106,12 @@ function ReceivedView({
 							key={share.canonicalProjectIdentity}
 						>
 							<td>
-								<strong>{share.displayName}</strong>
+								<strong>{share.heading?.title ?? share.displayName}</strong>
+								{share.heading?.signal ? (
+									<span className="recipient-policy-sharing-received-signal mono small">
+										{share.heading.signal}
+									</span>
+								) : null}
 							</td>
 							<td data-label="From">{receivedFromLabel(share.originDevices)}</td>
 							<td data-label="Memories">{share.existingMemoryCount.toLocaleString()}</td>

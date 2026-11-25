@@ -4,8 +4,10 @@ import { expect, it } from "vitest";
 import type { ProjectScopeInventoryProject } from "../lib/api/sync";
 import { toReceivedProjectShares } from "./recipient-policy-projects";
 
-it("defaults missing received-project origin devices for older inventory payloads", () => {
-	const project: ProjectScopeInventoryProject = {
+function receivedProject(
+	overrides: Partial<ProjectScopeInventoryProject> = {},
+): ProjectScopeInventoryProject {
+	return {
 		cwd: null,
 		display_project: "viewer",
 		git_branch: null,
@@ -23,7 +25,21 @@ it("defaults missing received-project origin devices for older inventory payload
 		session_count: 0,
 		statuses: ["received"],
 		workspace_identity: "peer-received:scope:managed-project:test",
+		...overrides,
 	};
+}
 
-	expect(toReceivedProjectShares([project])[0]?.originDevices).toEqual([]);
+it("defaults missing received-project origin devices for older inventory payloads", () => {
+	expect(toReceivedProjectShares([receivedProject()])[0]?.originDevices).toEqual([]);
+});
+
+it("names a path-only received Project by its last folder and keeps the recorded name", () => {
+	const path = "/Users/sam/work/points-tracker";
+
+	const [share] = toReceivedProjectShares([
+		receivedProject({ display_project: path, project: path }),
+	]);
+
+	expect(share?.displayName).toBe(path);
+	expect(share?.heading).toEqual({ title: "points-tracker", signal: "~/work/points-tracker" });
 });

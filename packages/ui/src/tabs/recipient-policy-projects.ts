@@ -1,4 +1,5 @@
 import type { ProjectScopeInventoryProject } from "../lib/api/sync";
+import { projectHeading } from "./projects/project-view";
 import type { RecipientPolicyManagementProject } from "./recipient-policy-management";
 
 export function isRecipientPolicyManageableProject(project: ProjectScopeInventoryProject): boolean {
@@ -8,6 +9,8 @@ export function isRecipientPolicyManageableProject(project: ProjectScopeInventor
 export interface ReceivedProjectShare {
 	canonicalProjectIdentity: string;
 	displayName: string;
+	/** On-screen name and distinguishing line. `displayName` stays the recorded name. */
+	heading?: { title: string; signal: string };
 	existingMemoryCount: number;
 	latestSessionAt: string | null;
 	originDevices: Array<{ deviceId: string; displayName: string | null }>;
@@ -29,6 +32,7 @@ export function toReceivedProjectShares(
 		byId.set(project.workspace_identity, {
 			canonicalProjectIdentity: project.workspace_identity,
 			displayName: project.display_project,
+			heading: projectHeading(project),
 			existingMemoryCount: project.memory_count ?? 0,
 			latestSessionAt: project.latest_session_at ?? null,
 			originDevices: (project.origin_devices ?? []).map((device) => ({
