@@ -4,7 +4,7 @@ Start in **Projects**. A Project is the canonical repository whose memories you 
 
 **Add Teams or Identities** only adds sharing. Each choice shows its saved direct coverage across the selected Project entries separately from its checkbox. An unchecked box means no addition requested. Partially covered choices start unchecked, and fully covered choices cannot request another addition. Access through a Team appears separately from direct Identity access. **Update sharing** on one Project shows saved direct relationships as checked boxes. Removing one relationship can leave access through another Team or direct relationship.
 
-A group badge shows how many distinct known Project entries include each recipient. Different recipients on different entries do not mean that every recipient has access to the whole group. These counts describe the loaded entries. **None added** in the **Shared with** column describes saved sharing settings, not every possible source of access.
+Each recipient on a group row shows how many of the group's known Project entries include it, such as **7 of 24 entries**. Different recipients on different entries do not mean that every recipient has access to the whole group. These counts describe the loaded entries. **None added** in the **Shared with** column describes saved sharing settings, not every possible source of access.
 
 Review lists **Devices included after this update** from the access preview. Expand a device to see its Project entries. A device included for one entry is not included for every affected entry. **Sharing settings saved** confirms the settings were saved. It does not confirm delivery, which happens through background sync.
 
