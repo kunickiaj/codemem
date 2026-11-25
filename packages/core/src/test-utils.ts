@@ -2,9 +2,11 @@
  * Test utilities for the codemem TS backend.
  */
 
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import type { Database } from "./db.js";
 import { bootstrapSchema } from "./schema-bootstrap.js";
 import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 /**
  * Create the full schema for test databases.
@@ -13,10 +15,18 @@ export function initTestSchema(db: Database): void {
 	bootstrapSchema(db);
 }
 
-/** Insert a pairing. Sync progress is written only for a peer that has one. */
+/**
+ * Insert a pairing. Sync progress is written only for a peer that has one. It
+ * pins the key the test refresh helper proves by default.
+ */
 export function insertTestPeer(db: Database, peerDeviceId: string): void {
-	db.prepare("INSERT OR IGNORE INTO sync_peers(peer_device_id, created_at) VALUES (?, ?)").run(
+	db.prepare(
+		`INSERT OR IGNORE INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+		 VALUES (?, ?, ?, ?)`,
+	).run(
 		peerDeviceId,
+		CANONICAL_PUBLIC_KEY,
+		fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
 		new Date().toISOString(),
 	);
 }

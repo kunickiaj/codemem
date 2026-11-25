@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import * as syncAuth from "./sync-auth.js";
 import { fetchAllSnapshotPages } from "./sync-bootstrap.js";
@@ -87,8 +88,8 @@ beforeEach(async () => {
 		}),
 	);
 	db.prepare(
-		"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
-	).run(peerId, "executor-fingerprint", timestamp);
+		"INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
+	).run(peerId, CANONICAL_PUBLIC_KEY, "executor-fingerprint", timestamp);
 	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
 			coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
 			VALUES (?, 'Executor scope', 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`).run(

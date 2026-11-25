@@ -11,6 +11,7 @@
 
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { toJson } from "./db.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
@@ -203,6 +204,10 @@ async function setupMixedFixture(): Promise<MixedFixture> {
 
 /** The coordinator scopes' retained proofs, as a trusted refresh writes them. */
 async function proveCoordinatorScopes(db: InstanceType<typeof Database>): Promise<void> {
+	// The pins name the key the proofs are for.
+	db.prepare("UPDATE sync_peers SET public_key = ? WHERE public_key IS NULL").run(
+		CANONICAL_PUBLIC_KEY,
+	);
 	db.prepare(
 		`UPDATE replication_scopes SET coordinator_id = 'coordinator-1', group_id = 'group-1'
 		 WHERE authority_type = 'coordinator'`,

@@ -6,6 +6,7 @@ import {
 	normalizeScopeSnapshot,
 	type ScopeMembershipSnapshot,
 } from "./scope-membership-snapshot.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 type Batch = ReturnType<typeof normalizeScopeSnapshot>;
 type Authority = { coordinatorId: string; groupId: string };
@@ -219,6 +220,7 @@ export function getRetainedScopeAuthorizationKey(
 	scope: CoordinatorScope,
 	member: CoordinatorScopeMembership,
 	expectedPublicKey?: string,
+	expectedFingerprint?: string,
 ): string | null {
 	try {
 		if (!scope.coordinator_id || !scope.group_id || !scopeEvidenceTableExists(db)) return null;
@@ -238,6 +240,15 @@ export function getRetainedScopeAuthorizationKey(
 			if (
 				parsed.kind !== "ed25519" ||
 				createHash("sha256").update(parsed.blob).digest("hex") !== keyId
+			)
+				return null;
+		}
+		// A pin with no stored key binds the proof through the fingerprint of the enrolled key.
+		if (expectedFingerprint !== undefined) {
+			const enrolledKey = proof.evidence.items[0]?.enrollment.public_key;
+			if (
+				typeof enrolledKey !== "string" ||
+				fingerprintPublicKey(enrolledKey) !== expectedFingerprint
 			)
 				return null;
 		}
