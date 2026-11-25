@@ -39,11 +39,16 @@ function candidateRow(
 	row.appendChild(label);
 	if (!onOpenTeamSetup) return row;
 	const button = document.createElement("button");
-	const action = candidate.blockingError ? "View recovery details" : "Finish setting up";
-	button.setAttribute("aria-label", `${action} ${candidate.displayName}`);
+	const needsRecovery = Boolean(candidate.blockingError);
+	button.setAttribute(
+		"aria-label",
+		needsRecovery
+			? `View recovery details for ${candidate.displayName}`
+			: `Finish setting up ${candidate.displayName}`,
+	);
 	button.className = "settings-button";
 	button.type = "button";
-	button.textContent = candidate.blockingError ? action : "Finish setting up this Team";
+	button.textContent = needsRecovery ? "View recovery details" : "Finish setting up this Team";
 	button.dataset.teamSetupCandidateRef = candidate.candidateRef;
 	button.addEventListener("click", () => onOpenTeamSetup(candidate.candidateRef));
 	row.appendChild(button);

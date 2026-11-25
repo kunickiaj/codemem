@@ -1160,7 +1160,7 @@ describe("Projects cached recipient presentation", () => {
 		);
 		const button = entry?.querySelector<HTMLButtonElement>("button");
 		expect(button?.textContent).toBe("View recovery details");
-		expect(button?.getAttribute("aria-label")).toBe("View recovery details Example Team");
+		expect(button?.getAttribute("aria-label")).toBe("View recovery details for Example Team");
 		button?.click();
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
 	});
