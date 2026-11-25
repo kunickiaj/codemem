@@ -1,7 +1,6 @@
 import { useState } from "preact/hooks";
-import type { DeviceIdentityInventoryItemV1, DeviceIdentityInventoryV1 } from "../lib/api/sync";
+import type { DeviceIdentityInventoryItemV1 } from "../lib/api/sync";
 import { formatTimestamp } from "../lib/format";
-import type { DiscoveredDevice } from "../lib/state";
 
 const STORAGE_PREFIX = "codemem.device-rejoin-notice.dismissed.v1:";
 const MAX_DISMISSED = 200;
@@ -41,27 +40,6 @@ function writeDismissed(localDeviceId: string, keys: string[]): void {
 	} catch {
 		// An unwritable store still hides the notice until the Viewer reloads.
 	}
-}
-
-/** Supplement existing rows with display evidence. Discovery alone never creates an inventory row. */
-export function withDiscoveredRejoinNotices(
-	inventory: DeviceIdentityInventoryV1 | undefined,
-	devices: readonly DiscoveredDevice[],
-): DeviceIdentityInventoryV1 | undefined {
-	if (!inventory || devices.length === 0) return inventory;
-	const byId = new Map<string, DiscoveredDevice | null>();
-	for (const device of devices) {
-		const id = device.device_id;
-		if (id) byId.set(id, byId.has(id) ? null : device);
-	}
-	const items = inventory.items.map((item) => {
-		if (item.isLocal || ["retired", "service", "conflicted"].includes(item.state)) return item;
-		const at = byId.get(item.deviceId)?.rejoined_at_ms;
-		if (typeof at !== "number" || (item.rejoin && at <= item.rejoin.rejoinedAtMs)) return item;
-		const rejoin = validRejoin({ rejoin: { deviceId: item.deviceId, rejoinedAtMs: at } });
-		return rejoin ? { ...item, rejoin } : item;
-	});
-	return { ...inventory, items };
 }
 
 /**

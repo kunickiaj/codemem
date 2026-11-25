@@ -7,7 +7,6 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { closeActionMenu, openActionMenu } from "../menu-test-utils";
-import { withDiscoveredRejoinNotices } from "./device-rejoin-notice";
 import { mountDevices } from "./devices";
 
 const NOTICE = "Rejoined by Google sign-in";
@@ -96,29 +95,6 @@ const dismissButton = () =>
 beforeEach(() => {
 	document.body.innerHTML = '<div id="mount"></div>';
 	window.localStorage.clear();
-});
-
-it("uses only an unambiguous signed discovery marker for an existing device row", () => {
-	const existing = item();
-	const inventory: DeviceIdentityInventoryV1 = {
-		version: 1,
-		items: [existing],
-		coordinatorEvidence: { availability: "unavailable", safeErrorCode: null },
-		truncated: false,
-	};
-	const marker = { device_id: DEVICE, rejoined_at_ms: AT };
-	expect(
-		withDiscoveredRejoinNotices(inventory, [
-			marker,
-			{ device_id: "unlisted-device", rejoined_at_ms: AT },
-		])?.items,
-	).toEqual([{ ...existing, rejoin: { deviceId: DEVICE, rejoinedAtMs: AT } }]);
-	expect(withDiscoveredRejoinNotices(inventory, [marker, { device_id: DEVICE }])).toEqual(
-		inventory,
-	);
-	expect(withDiscoveredRejoinNotices(inventory, [{ ...marker, rejoined_at_ms: -1 }])).toEqual(
-		inventory,
-	);
 });
 
 afterEach(() => {

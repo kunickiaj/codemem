@@ -10,7 +10,6 @@ import {
 	type PeerRemovalLookup,
 	type PeerRevocationCheckStatus,
 } from "./coordinator-peer-revocation.js";
-import { isRejoinTimestamp } from "./coordinator-rejoin-timestamp.js";
 import {
 	clearCoordinatorDeviceRemoved,
 	recordCoordinatorDeviceRemoved,
@@ -362,12 +361,6 @@ function mergeCoordinatorPeerGroup(
 	groupId: string,
 	freshAddresses: string[],
 ): void {
-	const rejoinedAt = record.rejoined_at_ms;
-	if (
-		isRejoinTimestamp(rejoinedAt) &&
-		(!isRejoinTimestamp(existing.rejoined_at_ms) || rejoinedAt > existing.rejoined_at_ms)
-	)
-		existing.rejoined_at_ms = rejoinedAt;
 	existing.addresses = mergeAddresses(stringList(existing.addresses), freshAddresses);
 	existing.groups = mergeStringLists(stringList(existing.groups), [groupId]);
 	const wasStale = Boolean(existing.stale);
@@ -1301,7 +1294,6 @@ function discoveredPeerStatus(
 		device_id: peer.device_id,
 		display_name: peer.display_name ?? null,
 		fingerprint: peer.fingerprint ?? null,
-		...(isRejoinTimestamp(peer.rejoined_at_ms) ? { rejoined_at_ms: peer.rejoined_at_ms } : {}),
 		addresses: Array.isArray(peer.addresses) ? peer.addresses : [],
 		groups: Array.isArray(peer.groups) ? peer.groups : [],
 		last_seen_at: peer.last_seen_at ?? null,

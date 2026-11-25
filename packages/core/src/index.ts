@@ -299,6 +299,7 @@ export {
 	queryPeerRemoval,
 } from "./coordinator-peer-revocation.js";
 export { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
+export { readCoordinatorRejoinDiscovery } from "./coordinator-rejoin-discovery.js";
 export { relayAdmissionNamespaces } from "./coordinator-relay-admission-route.js";
 export {
 	type CoordinatorRemovalState,

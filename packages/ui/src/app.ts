@@ -55,7 +55,6 @@ import {
 	beginStandaloneCoordinatorAdminStatusRefresh,
 	refreshCoordinatorAdminStatusForGeneration,
 } from "./tabs/coordinator-admin/data/status-refresh";
-import { withDiscoveredRejoinNotices } from "./tabs/device-rejoin-notice";
 import { mountRemovedDevices, refreshRemovedDevices } from "./tabs/device-removal-list";
 import {
 	type DeviceAvailabilityInput,
@@ -794,10 +793,6 @@ async function runLoadDevicesData(
 		]);
 		if (options.signal?.aborted) return false;
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
-		const inventory = withDiscoveredRejoinNotices(
-			inventoryResult.inventory,
-			syncRefreshed ? (state.lastSyncCoordinator?.discovered_devices ?? []) : [],
-		);
 		const availability = deriveDeviceAvailability();
 		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
 		const peerSyncMetadata = deriveDevicePeerSyncMetadata(syncRefreshed);
@@ -810,7 +805,7 @@ async function runLoadDevicesData(
 		state.deviceIdentityInventoryLoadError = inventoryResult.unavailable;
 		mountDevices(mount, intent, reconciliation, projects, availability, {
 			...deviceRendererActions(inventoryResult.inventory?.deviceLifecycleActions === true),
-			inventory,
+			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 			peerRuntimeMetadata,
@@ -824,7 +819,7 @@ async function runLoadDevicesData(
 			availability,
 			peerRuntimeMetadata,
 			peerSyncMetadata,
-			inventory,
+			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 		};

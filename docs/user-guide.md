@@ -933,7 +933,7 @@ Choose **Block device permanently** for a lost or compromised device. The Viewer
 
 A device that came back through Google sign-in shows **Rejoined by Google sign-in** with the time, next to its name or setup card in **Devices**. The notice is information only. It changes no access, and Remove and Block stay as they are. Choose **Dismiss** to hide it on this device. The Viewer remembers the dismissal for that exact device and rejoin time, so a later rejoin of the same device shows the notice again.
 
-Devices gets this notice from the coordinator's device list or from the next successful signed sync status refresh. You do not need the administrator secret if the rejoined device is listed as a peer. The notice applies to the current enrollment.
+Devices gets this notice from the coordinator's device list or from signed peer discovery when it can verify that the current enrollment matches the locally pinned key. The notice applies to the current enrollment.
 
 ## Advanced operator and compatibility guidance
 

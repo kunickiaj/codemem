@@ -123,7 +123,7 @@ import {
 	LocalIdentitySupersededError,
 	legacyPairingAssignmentsConverted,
 	listAuthorizedScopesForPeer,
-	listDeviceIdentityInventory,
+	type listDeviceIdentityInventory,
 	listInboundScopeRejections,
 	listLegacyRecipientPolicyProjections,
 	listPerPeerScopeSyncState,
@@ -240,6 +240,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
+import { readInventoryWithRejoinEvidence } from "./device-rejoin-evidence.js";
 import { listAllEnrollments } from "./device-rename.js";
 import { deviceRoutes } from "./device-retire.js";
 import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
@@ -3678,10 +3679,6 @@ function claimLegacyDeviceAsSelf(store: MemoryStore, originDeviceId: string): nu
 	return Number(result.changes ?? 0);
 }
 
-function rejoinStatusField(record: Record<string, unknown>) {
-	return typeof record.rejoined_at_ms === "number" ? { rejoined_at_ms: record.rejoined_at_ms } : {};
-}
-
 function redactCoordinatorStatus(
 	coordinator: Record<string, unknown>,
 	showDiag: boolean,
@@ -3695,7 +3692,6 @@ function redactCoordinatorStatus(
 				return {
 					device_id: record.device_id,
 					display_name: record.display_name ?? null,
-					...rejoinStatusField(record),
 					groups: Array.isArray(record.groups) ? record.groups : [],
 					last_seen_at: record.last_seen_at ?? null,
 					expires_at: record.expires_at ?? null,
@@ -7008,16 +7004,25 @@ export async function createRecipientInvitation(
 	}
 }
 
-async function readViewerDeviceInventory(
-	store: MemoryStore,
+function registerViewerDeviceInventory(
+	app: Hono,
+	getStore: StoreFactory,
 	readInput: (store: MemoryStore) => Promise<Parameters<typeof listDeviceIdentityInventory>[1]>,
-	options: Pick<SyncRoutesOptions, "deviceLifecycleActions">,
+	options: Pick<SyncRoutesOptions, "deviceLifecycleActions" | "readCoordinatorConfig">,
 ) {
-	ensureStableStoreIdentityForRead(store);
-	const inventory = listDeviceIdentityInventory(store.db, await readInput(store));
-	return options.deviceLifecycleActions
-		? { ...inventory, deviceLifecycleActions: true }
-		: inventory;
+	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
+		const store = getStore();
+		ensureStableStoreIdentityForRead(store);
+		const inventory = await readInventoryWithRejoinEvidence(
+			store,
+			await readInput(store),
+			options.readCoordinatorConfig,
+			c.req.raw.signal,
+		);
+		return c.json(
+			options.deviceLifecycleActions ? { ...inventory, deviceLifecycleActions: true } : inventory,
+		);
+	});
 }
 
 export function syncRoutes(
@@ -7061,9 +7066,7 @@ export function syncRoutes(
 		};
 	};
 
-	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) =>
-		c.json(await readViewerDeviceInventory(getStore(), localInventoryInput, options)),
-	);
+	registerViewerDeviceInventory(app, getStore, localInventoryInput, options);
 
 	app.patch("/api/sync/recipient-policy/v1/teams/:teamId", async (c) => {
 		const raw = await readBoundedRequestBytes(c.req.raw, 8_192);
