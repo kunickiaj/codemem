@@ -33,11 +33,13 @@ export {
 	type EffectiveCachedScopeAuthorization,
 	getCachedScopeAuthorization,
 	getEffectiveCachedScopeAuthorization,
+	getPeerCachedScopeAuthorization,
 	listCachedScopesForDevice,
 	type ScopeMembershipAuthorizationState,
 	type ScopeMembershipCacheAuthority,
 	type ScopeMembershipCacheFreshness,
 	type ScopeMembershipCacheState,
+	scopeAuthorityAllowsPeers,
 } from "./scope-membership-cache-read.js";
 
 export interface ScopeMembershipCacheFetchers {

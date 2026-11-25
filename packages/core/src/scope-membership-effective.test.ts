@@ -369,28 +369,30 @@ it("retains raw policy-denied diagnostics even with a valid proof", async () => 
 	expect(effective).toEqual({ ...raw, keyId: null });
 });
 
-it.each(["manual", "local"] as const)(
-	"leaves %s scope authorization unchanged without an evidence table",
-	(authorityType) => {
-		// Arrange
-		const db = setup();
-		seedOld(
-			db,
-			cacheScope({ authority_type: authorityType as CoordinatorScope["authority_type"] }),
-		);
-		// Act
-		const allowed = getEffectiveCachedScopeAuthorization(db, input);
-		db.exec("UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'scope-a'");
-		const denied = getEffectiveCachedScopeAuthorization(db, input);
-		// Assert
-		expect(allowed).toMatchObject({ authorized: true, keyId: null });
-		expect(denied).toEqual({ ...getCachedScopeAuthorization(db, input), keyId: null });
-		expect(denied.state).toBe("revoked");
-		expect(
-			db.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(evidenceTable),
-		).toBeUndefined();
-	},
-);
+it.each([
+	["local", { authorized: true }],
+	// No refresh can prove members of these, so a membership row never authorizes a peer.
+	["manual", { authorized: false, state: "not_authorized" }],
+	["invite", { authorized: false, state: "not_authorized" }],
+] as const)("reads %s scope authorization without an evidence table", (authorityType, expected) => {
+	// Arrange
+	const db = setup();
+	seedOld(db, cacheScope({ authority_type: authorityType as CoordinatorScope["authority_type"] }));
+	// Act
+	const current = getEffectiveCachedScopeAuthorization(db, input);
+	const local = getCachedScopeAuthorization(db, input);
+	db.exec("UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'scope-a'");
+	const denied = getEffectiveCachedScopeAuthorization(db, input);
+	// Assert
+	// This device's own reads of the scope are unchanged.
+	expect(local).toMatchObject({ authorized: true });
+	expect(current).toMatchObject({ ...expected, keyId: null });
+	expect(denied).toEqual({ ...getCachedScopeAuthorization(db, input), keyId: null });
+	expect(denied.state).toBe("revoked");
+	expect(
+		db.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(evidenceTable),
+	).toBeUndefined();
+});
 
 it("denies a legacy read-only database without creating tables or writing", () => {
 	// Arrange
@@ -412,7 +414,12 @@ it("denies a legacy read-only database without creating tables or writing", () =
 	});
 	// Assert
 	expect(effective).toMatchObject({ authorized: false, keyId: null });
-	expect(unmanaged).toMatchObject({ authorized: true, freshness: "unknown", keyId: null });
+	expect(unmanaged).toMatchObject({
+		authorized: false,
+		state: "not_authorized",
+		freshness: "unknown",
+		keyId: null,
+	});
 	expect(reader.prepare("SELECT name FROM sqlite_master ORDER BY name").all()).toEqual(schema);
 });
 
@@ -791,7 +798,7 @@ it.each(["legacy", "bootstrap", "absent"] as const)(
 				last_success_at: cacheTime,
 			});
 		expect(managed).toMatchObject({ authorized: false, freshness: raw.freshness, keyId: null });
-		expect(manual).toMatchObject({ authorized: true, keyId: null });
+		expect(manual).toMatchObject({ authorized: false, state: "not_authorized", keyId: null });
 		if (stateKind !== "absent")
 			expect(reader.prepare("SELECT * FROM scope_membership_cache_state").get()).toEqual(state);
 		expect(reader.prepare("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(schema);

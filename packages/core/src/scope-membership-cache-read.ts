@@ -277,7 +277,37 @@ export function getCachedScopeAuthorization(
 	return readCachedScopeAuthorization(db, input);
 }
 
-/** Managed access needs a current-refresh proof, not merely historical cache rows.
+/**
+ * No coordinator refresh maintains scopes with these authorities or proves their
+ * members, so their membership rows never let another device read, write, receive
+ * or learn about the scope. This device's own reads of rows in them are unaffected.
+ */
+const PEER_DENIED_AUTHORITIES: ReadonlySet<string> = new Set(["manual", "invite"]);
+
+/** Whether a scope's authority can ever authorize sync with another device. */
+export function scopeAuthorityAllowsPeers(authorityType: string | null | undefined): boolean {
+	return !PEER_DENIED_AUTHORITIES.has(authorityType ?? "");
+}
+
+function withoutUnprovableAuthority(cached: CachedScopeAuthorization): CachedScopeAuthorization {
+	if (!cached.authorized || scopeAuthorityAllowsPeers(cached.scope?.authority_type)) return cached;
+	return { ...cached, authorized: false, state: "not_authorized" };
+}
+
+/**
+ * The cached decision for exchanging a scope with another device, for this device
+ * or the peer. Like the raw read it does not check coordinator proofs, but a
+ * membership row never authorizes a scope whose authority cannot authorize peers.
+ */
+export function getPeerCachedScopeAuthorization(
+	db: Database,
+	input: { deviceId: string; scopeId: string } & ScopeMembershipCacheLookupOptions,
+): CachedScopeAuthorization {
+	return withoutUnprovableAuthority(getCachedScopeAuthorization(db, input));
+}
+
+/** Managed access needs a current-refresh proof, not merely historical cache rows,
+ * and scopes whose authority cannot authorize peers are never authorized here.
  * This read neither creates evidence nor refreshes permissions or adds an expiry. */
 export function getEffectiveCachedScopeAuthorization(
 	db: Database,
@@ -287,7 +317,7 @@ export function getEffectiveCachedScopeAuthorization(
 		expectedPublicKey?: string;
 	} & ScopeMembershipCacheLookupOptions,
 ): EffectiveCachedScopeAuthorization {
-	const cached = readCachedScopeAuthorization(db, input);
+	const cached = withoutUnprovableAuthority(readCachedScopeAuthorization(db, input));
 	if (!cached.authorized || cached.scope?.authority_type !== "coordinator")
 		return { ...cached, keyId: null };
 	const keyId =

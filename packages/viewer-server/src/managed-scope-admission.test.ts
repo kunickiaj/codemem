@@ -75,12 +75,12 @@ function createSigningKeyRoot() {
 		localKey,
 		peer,
 		other,
-		refresh: (keys = {}) =>
-			refreshTestScopeRows(store.db, {
-				[localId]: localKey,
-				[peer.deviceId]: peer.publicKey,
-				...keys,
-			}),
+		refresh: (keys = {}, options: { groupIds?: string[] } = {}) =>
+			refreshTestScopeRows(
+				store.db,
+				{ [localId]: localKey, [peer.deviceId]: peer.publicKey, ...keys },
+				options,
+			),
 		request(
 			path: string,
 			signingKeys = peer.keysDir,
@@ -168,20 +168,26 @@ function pinOtherKey() {
 		.run(root.other.publicKey, fingerprintPublicKey(root.other.publicKey), root.peer.deviceId);
 }
 
-function seedManualScope() {
+/**
+ * A scope of another group that both devices belong to, proven for the peer's
+ * given key. The peer can be enrolled there under a key managed-work's group
+ * does not prove.
+ */
+async function seedOtherGroupScope(peerKey = root.peer.publicKey) {
 	const now = new Date().toISOString();
 	root.store.db
 		.prepare(
-			"INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at) VALUES ('manual-work', 'Manual', 'user', 'manual', 1, 'active', ?, ?)",
+			"INSERT OR IGNORE INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at) VALUES ('other-work', 'Other', 'user', 'coordinator', 'coordinator-1', 'group-2', 1, 'active', ?, ?)",
 		)
 		.run(now, now);
 	for (const deviceId of [root.localId, root.peer.deviceId]) {
 		root.store.db
 			.prepare(
-				"INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at) VALUES ('manual-work', ?, 'member', 'active', 1, ?)",
+				"INSERT OR IGNORE INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at) VALUES ('other-work', ?, 'member', 'active', 1, ?)",
 			)
 			.run(deviceId, now);
 	}
+	await root.refresh({ [root.peer.deviceId]: peerKey }, { groupIds: ["group-2"] });
 }
 
 async function seedProtectedMemory(opId: string) {
@@ -242,7 +248,7 @@ async function accessCleanup(entityId: string) {
 	}
 }
 
-describe("managed authorization for the existing row behind a manual operation", () => {
+describe("managed authorization for the existing row behind another scope's operation", () => {
 	const cases = (["upsert", "delete"] as const).flatMap((opType) => [
 		{ opType, entityType: "memory_item", omitScope: false },
 		{ opType, entityType: "memory_itemx", omitScope: false },
@@ -253,26 +259,26 @@ describe("managed authorization for the existing row behind a manual operation",
 		async ({ opType, entityType, omitScope }) => {
 			// Arrange: C contains protected content; B is pinned but only A is enrolled in C.
 			const entityId = await seedProtectedMemory(`protected-${opType}-seed`);
-			seedManualScope();
+			await seedOtherGroupScope(root.other.publicKey);
 			pinOtherKey();
 			const before = contentState();
 			const { scope_id: declaredScope, ...mutationFields } = existingMemoryMutation(
 				opType,
-				"manual-work",
+				"other-work",
 				entityId,
-				`manual-labeled-${opType}`,
+				`other-labeled-${opType}`,
 			);
 			const labeledMutation = { ...mutationFields, entity_type: entityType };
 			const mutation = omitScope
 				? labeledMutation
 				: { ...labeledMutation, scope_id: declaredScope };
-			// Act: the first manual operation is allowed, but the second targets the stored C row.
+			// Act: the first operation is allowed for B, but the second targets the stored C row.
 			const status = await root.request("/v1/status", root.other.keysDir);
 			const denied = await root.request("/v1/ops", root.other.keysDir, {
 				method: "POST",
 				body: {
 					sync_capability: "unsupported",
-					ops: [memoryOp("manual-work", `allowed-before-${opType}`), mutation],
+					ops: [memoryOp("other-work", `allowed-before-${opType}`), mutation],
 				},
 			});
 			// Assert: neither content preservation via COALESCE nor deletion can bypass C's grant.
@@ -326,11 +332,11 @@ describe("managed authorization for every duplicate import key row", () => {
 		{ opType, entityType: "memory_itemx" },
 	]);
 	it.each(cases)(
-		"rejects $entityType $opType when the first duplicate is manual and the later duplicate is managed",
+		"rejects $entityType $opType when the first duplicate is in another group and the later duplicate is managed",
 		async ({ opType, entityType }) => {
 			// Arrange: use real signing-key evidence, then put U before M under the same key K.
 			await root.refresh();
-			const manualId = await seedManualMemory(`duplicate-${opType}-seed`);
+			const otherId = await seedOtherGroupMemory(`duplicate-${opType}-seed`);
 			const entityId = `duplicate-${opType}-seed-memory`;
 			const inserted = root.store.db
 				.prepare(`INSERT INTO memory_items(
@@ -340,37 +346,38 @@ describe("managed authorization for every duplicate import key row", () => {
 			confidence, tags_text, created_at, updated_at,
 			json_set(metadata_json, '$.scope_id', 'managed-work'), import_key, origin_device_id,
 			rev, visibility, 'managed-work', active FROM memory_items WHERE id = ?`)
-				.run(manualId);
-			expect(Number(inserted.lastInsertRowid)).toBeGreaterThan(manualId);
+				.run(otherId);
+			expect(Number(inserted.lastInsertRowid)).toBeGreaterThan(otherId);
 			expect(
 				root.store.db
 					.prepare("SELECT scope_id FROM memory_items WHERE import_key = ? ORDER BY id")
 					.all(entityId),
-			).toEqual([{ scope_id: "manual-work" }, { scope_id: "managed-work" }]);
+			).toEqual([{ scope_id: "other-work" }, { scope_id: "managed-work" }]);
 			// Freeze the old LIMIT 1 lookup's misleading result as part of the fixture contract.
 			expect(
 				root.store.db
 					.prepare("SELECT scope_id FROM memory_items WHERE import_key = ? LIMIT 1")
 					.get(entityId),
-			).toEqual({ scope_id: "manual-work" });
+			).toEqual({ scope_id: "other-work" });
+			await seedOtherGroupScope(root.other.publicKey);
 			pinOtherKey();
 			const before = contentState();
 			const mutation = {
 				...existingMemoryMutation(
 					opType,
-					"manual-work",
+					"other-work",
 					entityId,
 					`duplicate-${entityType}-${opType}-denied`,
 				),
 				entity_type: entityType,
 			};
-			// Act: B is authenticated and has U, but does not match M's retained enrollment.
+			// Act: B is authenticated and enrolled in U, but does not match M's retained enrollment.
 			const status = await root.request("/v1/status", root.other.keysDir);
 			const response = await root.request("/v1/ops", root.other.keysDir, {
 				method: "POST",
 				body: {
 					sync_capability: "unsupported",
-					ops: [memoryOp("manual-work", `manual-before-duplicate-${opType}`), mutation],
+					ops: [memoryOp("other-work", `other-before-duplicate-${opType}`), mutation],
 				},
 			});
 			// Assert: inspect all stored scopes and reject before either operation can mutate data.
@@ -485,11 +492,11 @@ describe("unknown scope rejection does not allocate caller-selected reset bounda
 	);
 });
 
-async function seedManualMemory(opId: string) {
-	seedManualScope();
+async function seedOtherGroupMemory(opId: string) {
+	await seedOtherGroupScope();
 	const response = await root.request("/v1/ops", root.peer.keysDir, {
 		method: "POST",
-		body: { sync_capability: "scoped", ops: [memoryOp("manual-work", opId)] },
+		body: { sync_capability: "scoped", ops: [memoryOp("other-work", opId)] },
 	});
 	expect(response.status).toBe(200);
 	expect(await response.json()).toMatchObject({ applied: 1 });
@@ -511,7 +518,7 @@ async function oldSideReassignment(operationId: string, memoryId: number) {
 		const { oldOpId } = recordScopeReassignment(sender, {
 			operationId,
 			memoryId,
-			oldScopeId: "manual-work",
+			oldScopeId: "other-work",
 			newScopeId: "managed-work",
 			deviceId: root.peer.deviceId,
 			createdAt: new Date().toISOString(),
@@ -533,11 +540,11 @@ async function oldSideReassignment(operationId: string, memoryId: number) {
 	}
 }
 
-describe("managed destinations of unmanaged old-side reassignment", () => {
+describe("managed destinations of an old-side reassignment from another group", () => {
 	it("denies destination changes when either actual peer or local signing key differs from retained enrollment", async () => {
-		// Arrange: the old scope is manual and contains a real peer-origin memory.
+		// Arrange: the old scope is another group's and contains a real peer-origin memory.
 		await root.refresh();
-		const memoryId = await seedManualMemory("destination-denial-seed");
+		const memoryId = await seedOtherGroupMemory("destination-denial-seed");
 		const before = contentState();
 		for (const mismatch of ["peer", "local"]) {
 			await root.refresh();
@@ -546,13 +553,14 @@ describe("managed destinations of unmanaged old-side reassignment", () => {
 				.prepare("UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ?")
 				.run(root.peer.publicKey, fingerprintPublicKey(root.peer.publicKey));
 			if (mismatch === "peer") {
+				await seedOtherGroupScope(root.other.publicKey);
 				pinOtherKey();
 				signingKeys = root.other.keysDir;
 			} else {
-				await root.refresh({ [root.localId]: root.other.publicKey });
+				await root.refresh({ [root.localId]: root.other.publicKey }, { groupIds: ["group-1"] });
 			}
 			const op = await oldSideReassignment(`destination-${mismatch}-denied`, memoryId);
-			// Act: submit only the valid old/manual mirror, not the managed/new mirror.
+			// Act: submit only the valid old mirror, not the managed/new mirror.
 			const status = await root.request("/v1/status", signingKeys);
 			const response = await root.request("/v1/ops", signingKeys, {
 				method: "POST",
@@ -573,7 +581,7 @@ describe("managed destinations of unmanaged old-side reassignment", () => {
 	it("applies the same old-side reassignment when both actual keys match managed destination evidence", async () => {
 		// Arrange: the SDK creates a valid mirrored operation and only its old side is sent.
 		await root.refresh();
-		const memoryId = await seedManualMemory("destination-permitted-seed");
+		const memoryId = await seedOtherGroupMemory("destination-permitted-seed");
 		const op = await oldSideReassignment("destination-permitted", memoryId);
 		// Act.
 		const response = await root.request("/v1/ops", root.peer.keysDir, {
@@ -663,19 +671,19 @@ describe("managed normalized operations in legacy POST envelopes", () => {
 });
 
 describe("managed POST admission before applying mixed or misleading envelopes", () => {
-	it("rejects the entire manual and managed batch signed by a different enrolled device key", async () => {
-		// Arrange: the manual operation is allowed, but the later managed operation is not.
+	it("rejects the entire batch across another group and managed-work signed by a key enrolled only in the other group", async () => {
+		// Arrange: the other group's operation is allowed, but the later managed operation is not.
 		await root.refresh();
-		seedManualScope();
+		await seedOtherGroupScope(root.other.publicKey);
 		pinOtherKey();
 		const before = contentState();
-		// Act: omit envelope scope_id and place the manual operation first.
+		// Act: omit envelope scope_id and place the other group's operation first.
 		const response = await root.request("/v1/ops", root.other.keysDir, {
 			method: "POST",
 			body: {
 				sync_capability: "scoped",
 				ops: [
-					memoryOp("manual-work", "manual-before-rejected"),
+					memoryOp("other-work", "other-before-rejected"),
 					memoryOp("managed-work", "managed-after-rejected"),
 				],
 			},
@@ -689,10 +697,10 @@ describe("managed POST admission before applying mixed or misleading envelopes",
 		expect(contentState()).toEqual(before);
 	});
 
-	it("rejects a managed operation under an otherwise authorized manual envelope", async () => {
-		// Arrange: a manual envelope must not substitute for the normalized operation's scope.
+	it("rejects a managed operation under an otherwise authorized envelope of another group", async () => {
+		// Arrange: another scope's envelope must not substitute for the normalized operation's scope.
 		await root.refresh();
-		seedManualScope();
+		await seedOtherGroupScope(root.other.publicKey);
 		pinOtherKey();
 		const before = contentState();
 		// Act.
@@ -700,8 +708,8 @@ describe("managed POST admission before applying mixed or misleading envelopes",
 			method: "POST",
 			body: {
 				sync_capability: "scoped",
-				scope_id: "manual-work",
-				ops: [memoryOp("managed-work", "managed-under-manual")],
+				scope_id: "other-work",
+				ops: [memoryOp("managed-work", "managed-under-other")],
 			},
 		});
 		// Assert: the actual managed operation requires its own enrolled signing key.
@@ -713,25 +721,33 @@ describe("managed POST admission before applying mixed or misleading envelopes",
 		expect(contentState()).toEqual(before);
 	});
 
-	it("keeps unmanaged manual operations applicable in legacy default-lane envelopes without managed proof", async () => {
-		// Arrange: these direct grants have no coordinator enrollment proof.
-		seedManualScope();
-		pinOtherKey();
-		// Act: sign a legacy envelope with the actual directly pinned key.
-		const response = await root.request("/v1/ops", root.other.keysDir, {
-			method: "POST",
-			body: {
-				sync_capability: "scoped",
-				ops: [memoryOp("manual-work", "manual-direct-push")],
-			},
-		});
-		// Assert: the new managed gate does not change direct-scope operation admission.
-		expect(response.status).toBe(200);
-		expect(await response.json()).toMatchObject({ applied: 1, rejected: 0 });
-		expect(
-			root.store.db.prepare("SELECT scope_id FROM memory_items ORDER BY scope_id").all(),
-		).toEqual([{ scope_id: "manual-work" }]);
-	});
+	it.each(["manual", "invite"])(
+		"refuses %s scope operations in envelopes without scope_id and writes nothing",
+		async (authorityType) => {
+			// Arrange: both devices have membership rows that no coordinator refresh can prove.
+			root.store.db
+				.prepare(
+					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
+				)
+				.run(authorityType);
+			const before = contentState();
+			// Act: sign the envelope with the actual directly pinned key.
+			const response = await root.request("/v1/ops", root.peer.keysDir, {
+				method: "POST",
+				body: {
+					sync_capability: "scoped",
+					ops: [memoryOp("managed-work", "unmanaged-direct-push")],
+				},
+			});
+			// Assert: the answer an ordinary peer without membership gets.
+			expect(response.status).toBe(403);
+			expect(await response.json()).toMatchObject({
+				error: "scope_rejected",
+				reason: "sender_not_member",
+			});
+			expect(contentState()).toEqual(before);
+		},
+	);
 });
 
 describe("managed scope admission with actual signed callers", () => {
@@ -809,24 +825,23 @@ describe("managed scope admission with actual signed callers", () => {
 
 describe("unmanaged direct scope admission", () => {
 	it.each(["manual", "invite"])(
-		"keeps trusted %s direct scopes usable without managed evidence",
+		"neither advertises nor admits %s scopes for a pinned member",
 		async (authorityType) => {
-			// Arrange: a direct peer pin and unmanaged grants do not need coordinator proof.
+			// Arrange: a direct peer pin and membership rows that no coordinator refresh can prove.
 			root.store.db
 				.prepare(
 					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
 				)
 				.run(authorityType);
-			// Act: the pinned signer succeeds, while an unpinned signer still fails auth.
+			// Act: the pinned signer authenticates, while an unpinned signer still fails auth.
 			const status = await root.request("/v1/status");
 			const ops = await root.request(scopedOpsPath);
 			const untrusted = await root.request("/v1/status", root.other.keysDir);
-			// Assert.
+			// Assert: the scope is treated like one the peer is not a member of.
 			expect(status.status).toBe(200);
-			expect(await status.json()).toMatchObject({
-				authorized_scopes: [{ scope_id: "managed-work" }],
-			});
-			expect(ops.status).toBe(200);
+			expect(await status.json()).toMatchObject({ authorized_scopes: [] });
+			expect(ops.status).toBe(409);
+			expect(await ops.json()).toMatchObject({ reason: "missing_scope", scope_id: null });
 			expect(untrusted.status).toBe(401);
 		},
 	);
@@ -835,7 +850,7 @@ describe("unmanaged direct scope admission", () => {
 describe("pushes that include a Project this device withdrew from", () => {
 	it("applies the rest of the batch and skips the withdrawn Project's operations", async () => {
 		// Arrange: this device left managed-work, and the peer has since lost it too.
-		seedManualScope();
+		await seedOtherGroupScope();
 		root.store.db
 			.prepare(
 				`INSERT INTO project_scope_withdrawals(scope_id, canonical_project_identity, group_id, withdrawn_at)
@@ -853,7 +868,7 @@ describe("pushes that include a Project this device withdrew from", () => {
 			method: "POST",
 			body: {
 				sync_capability: "scoped",
-				ops: [memoryOp("manual-work", "sibling-push"), memoryOp("managed-work", "withdrawn-push")],
+				ops: [memoryOp("other-work", "sibling-push"), memoryOp("managed-work", "withdrawn-push")],
 			},
 		});
 

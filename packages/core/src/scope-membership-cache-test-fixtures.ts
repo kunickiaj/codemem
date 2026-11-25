@@ -108,11 +108,13 @@ export function refreshFixtureScopeMembershipCache(
 export async function refreshTestScopeRows(
 	db: Database,
 	publicKeys: Record<string, string> = {},
-	options: { now?: Date } = {},
+	options: { now?: Date; groupIds?: readonly string[] } = {},
 ) {
-	const scopes = db
-		.prepare("SELECT * FROM replication_scopes WHERE authority_type = 'coordinator'")
-		.all() as CoordinatorScope[];
+	const scopes = (
+		db
+			.prepare("SELECT * FROM replication_scopes WHERE authority_type = 'coordinator'")
+			.all() as CoordinatorScope[]
+	).filter((scope) => !options.groupIds || options.groupIds.includes(scope.group_id ?? ""));
 	const authorities = new Map(
 		scopes.map((scope) => [`${scope.coordinator_id}:${scope.group_id}`, scope]),
 	);

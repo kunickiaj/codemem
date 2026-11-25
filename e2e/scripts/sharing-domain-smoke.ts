@@ -41,6 +41,8 @@ const PERSONAL_SCOPE = `personal:${MIXED_ACTOR}`;
 const ACME_SCOPE = "acme-work";
 const OSS_SCOPE = "oss-codemem";
 const LEGACY_SCOPE = "legacy-shared-review";
+/** Local notes: never sync, and stay visible here without coordinator proof or a matching key. */
+const LOCAL_SCOPE = "local-notes";
 
 const QUERY_TOKEN = "smokeboundary";
 const NOW = "2026-05-06T18:00:00.000Z";
@@ -76,12 +78,14 @@ interface MemoryIds {
 	personal: number;
 	work: number;
 	oss: number;
+	local: number;
 }
 
 interface MemoryTitles {
 	personal: string;
 	work: string;
 	oss: string;
+	local: string;
 }
 
 interface SmokeFixture {
@@ -331,8 +335,10 @@ function seedTopology(store: MemoryStore): void {
 		scopeId: PERSONAL_SCOPE,
 		label: "Personal",
 		kind: "personal",
-		// Personal membership is explicit/manual, not globally visible local authority.
-		authorityType: "manual",
+		// The coordinator grants a personal scope to the person's own devices, as in production.
+		authorityType: "coordinator",
+		coordinatorId: "local-e2e-coordinator",
+		groupId: "personal-adam",
 	});
 	upsertScope(store, {
 		scopeId: ACME_SCOPE,
@@ -356,8 +362,18 @@ function seedTopology(store: MemoryStore): void {
 		kind: "team",
 		authorityType: "local",
 	});
+	upsertScope(store, {
+		scopeId: LOCAL_SCOPE,
+		label: "Local notes",
+		kind: "user",
+		authorityType: "local",
+	});
 
-	grantScope(store, PERSONAL_SCOPE, [MIXED_DEVICE, PERSONAL_PEER]);
+	grantScope(store, PERSONAL_SCOPE, [MIXED_DEVICE, PERSONAL_PEER], {
+		coordinatorId: "local-e2e-coordinator",
+		groupId: "personal-adam",
+	});
+	grantScope(store, LOCAL_SCOPE, [MIXED_DEVICE]);
 	grantScope(store, ACME_SCOPE, [MIXED_DEVICE, WORK_PEER], {
 		coordinatorId: "local-e2e-coordinator",
 		groupId: "acme-eng",
@@ -370,6 +386,7 @@ function seedTopology(store: MemoryStore): void {
 	upsertProjectMapping(store, "/workspace/personal/*", PERSONAL_SCOPE);
 	upsertProjectMapping(store, "/workspace/work/acme/*", ACME_SCOPE);
 	upsertProjectMapping(store, "/workspace/oss/codemem", OSS_SCOPE);
+	upsertProjectMapping(store, "/workspace/local/notes", LOCAL_SCOPE);
 
 	const knownProjects = ["personal/finance", "work/acme-api", "oss/codemem"];
 	upsertPeer(store, {
@@ -469,6 +486,14 @@ function createMixedMemories(store: MemoryStore): SmokeFixture {
 			importKey: "e2e-mixed-oss-codemem",
 			metadata: { visibility: "shared", workspace_id: OSS_SCOPE, workspace_kind: "shared" },
 		},
+		local: {
+			cwd: "/workspace/local/notes",
+			project: "local/notes",
+			title: `${QUERY_TOKEN} local notes only here`,
+			body: `${QUERY_TOKEN} local notes never leave ${LOCAL_SCOPE}.`,
+			importKey: "e2e-mixed-local-notes",
+			metadata: { visibility: "shared", workspace_id: LOCAL_SCOPE, workspace_kind: "shared" },
+		},
 	} as const;
 
 	const ids = {} as MemoryIds;
@@ -516,7 +541,9 @@ function assertOutboundSync(store: MemoryStore, fixture: SmokeFixture): void {
 	const workOp = opsByKey.get(fixture.importKeys.work);
 	const ossOp = opsByKey.get(fixture.importKeys.oss);
 	assert(personalOp && workOp && ossOp, "expected replication ops for all Mixed Adam memories");
-	const allOps = [personalOp, workOp, ossOp];
+	// Local notes are offered too, and no peer may receive them.
+	const localOp = opsByKey.get(fixture.importKeys.local);
+	const allOps = [personalOp, workOp, ossOp, ...(localOp ? [localOp] : [])];
 
 	const allowedFor = (peerDeviceId: string) =>
 		filterReplicationOpsForSyncWithStatus(store.db, allOps, peerDeviceId, {
@@ -578,8 +605,10 @@ function visibleTitles(store: MemoryStore): string[] {
 async function assertStoreSurfaces(
 	fixture: SmokeFixture,
 	deviceId: string,
-	expectedTitles: string[],
+	expectedSharedTitles: string[],
 ): Promise<void> {
+	// Local notes belong to this database, so every device reading it sees them.
+	const expectedTitles = [...expectedSharedTitles, fixture.titles.local];
 	await withStore(fixture.dbPath, deviceId, async (store) => {
 		assertSameSet(visibleTitles(store), expectedTitles, `${deviceId} recent visibility`);
 		assertSameSet(
@@ -647,7 +676,7 @@ async function assertViewerSyncState(fixture: SmokeFixture, revokedWork = false)
 		};
 		assertSameSet(
 			settings.scopes.map((scope) => scope.scope_id),
-			[DEFAULT_SYNC_SCOPE_ID, PERSONAL_SCOPE, ACME_SCOPE, OSS_SCOPE, LEGACY_SCOPE],
+			[DEFAULT_SYNC_SCOPE_ID, PERSONAL_SCOPE, ACME_SCOPE, OSS_SCOPE, LEGACY_SCOPE, LOCAL_SCOPE],
 			"viewer Sharing-domain settings scopes",
 		);
 		assertSameSet(
@@ -656,6 +685,7 @@ async function assertViewerSyncState(fixture: SmokeFixture, revokedWork = false)
 				`/workspace/personal/*->${PERSONAL_SCOPE}`,
 				`/workspace/work/acme/*->${ACME_SCOPE}`,
 				`/workspace/oss/codemem->${OSS_SCOPE}`,
+				`/workspace/local/notes->${LOCAL_SCOPE}`,
 			],
 			"viewer project scope mappings",
 		);
@@ -988,8 +1018,12 @@ async function assertWrongSigningKeyDenied(fixture: SmokeFixture): Promise<void>
 		(store) => {
 			// Act: the retained coordinator proof must not match this runtime key.
 			const titles = visibleTitles(store);
-			// Assert: manual personal access remains, but both managed scopes deny.
-			assertSameSet(titles, [fixture.titles.personal], "wrong signing key denies managed reads");
+			// Assert: local notes remain, but the personal and both managed scopes deny.
+			assertSameSet(titles, [fixture.titles.local], "wrong signing key denies managed reads");
+			assert(
+				!titles.includes(fixture.titles.personal),
+				"wrong signing key denies the personal coordinator scope",
+			);
 		},
 		{ publicKey: signingPublicKey(WORK_PEER) },
 	);
@@ -1007,12 +1041,14 @@ async function prepareFixture(dbPath: string): Promise<SmokeFixture> {
 		);
 		assert(scopes.work === ACME_SCOPE, `work memory scope mismatch: ${scopes.work}`);
 		assert(scopes.oss === OSS_SCOPE, `OSS memory scope mismatch: ${scopes.oss}`);
+		assert(scopes.local === LOCAL_SCOPE, `local memory scope mismatch: ${scopes.local}`);
 		assertOutboundSync(store, nextFixture);
-		// Raw coordinator membership rows alone must not grant read access.
-		assertSameSet(
-			visibleTitles(store),
-			[nextFixture.titles.personal],
-			"unproven coordinator memberships",
+		// Raw coordinator membership rows alone must not grant read access; local notes need none.
+		const unproven = visibleTitles(store);
+		assertSameSet(unproven, [nextFixture.titles.local], "unproven coordinator memberships");
+		assert(
+			!unproven.includes(nextFixture.titles.personal),
+			"unproven personal coordinator membership denies reads",
 		);
 		// Import current enrollment snapshots through the maintained cache refresh path.
 		await refreshTestScopeRows(store.db, publicKeys, { now: new Date(NOW) });
@@ -1050,7 +1086,7 @@ async function main(): Promise<void> {
 				ok: true,
 				db_path: dbPath,
 				device_id: MIXED_DEVICE,
-				scopes: [PERSONAL_SCOPE, ACME_SCOPE, OSS_SCOPE, LEGACY_SCOPE],
+				scopes: [PERSONAL_SCOPE, ACME_SCOPE, OSS_SCOPE, LEGACY_SCOPE, LOCAL_SCOPE],
 				peers: [
 					PERSONAL_PEER,
 					WORK_PEER,

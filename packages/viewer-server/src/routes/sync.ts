@@ -5179,10 +5179,12 @@ function validateManagedScopes(
 			scopeId,
 			expectedPublicKey: context.localSigningPublicKey?.trim() ?? "",
 		});
-		// Only known unmanaged authorities bypass managed proof; unknown scopes fail closed.
+		// Local scopes never sync and unknown authorities fail closed. The helper never
+		// authorizes manual or invite scopes, so they get an unauthorized scope's answer.
 		const authority = localAuthorization.scope?.authority_type;
-		if (authority === "manual" || authority === "invite" || authority === "local") continue;
-		if (authority !== "coordinator") return { scopeId, reason: "missing_scope" };
+		if (authority === "local") continue;
+		if (!authority || !["coordinator", "manual", "invite"].includes(authority))
+			return { scopeId, reason: "missing_scope" };
 		const localReason = scopeAuthorizationFailureReason(localAuthorization);
 		if (localReason) return { scopeId, reason: localReason };
 		const peerAuthorization = getEffectiveCachedScopeAuthorization(context.db, {

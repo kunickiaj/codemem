@@ -21,7 +21,7 @@ export const signingContexts = [
 ] as const;
 export type SigningContext = (typeof signingContexts)[number];
 
-/** Real v1 retained proof, generated signer pairs, and untouched direct/manual controls. */
+/** Real v1 retained proof, generated signer pairs, a direct peer, and manual scopes that never authorize a peer. */
 export async function seedSigningStatusFixture(db: Database, root: string) {
 	const keysDir = join(root, "keys");
 	const [deviceId] = ensureDeviceIdentity(db, { keysDir, deviceId: "local-device" });
@@ -106,10 +106,8 @@ export function diagnosticKeySnapshot(root: string): Record<string, string> {
 }
 
 export function expectedDiagnosticScopes(context: SigningContext) {
-	if (context === "device-mismatch") return [];
-	const scopes = [{ scope_id: "manual", bootstrapped: true }];
-	if (context === "valid" || context === "missing-public-key") {
-		scopes.unshift({ scope_id: "managed", bootstrapped: true });
-	}
-	return scopes;
+	// The manual scopes have received cursors too, but never authorize the peer.
+	if (context === "valid" || context === "missing-public-key")
+		return [{ scope_id: "managed", bootstrapped: true }];
+	return [];
 }
