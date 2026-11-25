@@ -1967,6 +1967,118 @@ describe("searching for the No project title", () => {
 	});
 });
 
+describe("projects with no memories", () => {
+	let db: InstanceType<typeof Database>;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertEmptySession(project: string): string {
+		insertSession(db, { cwd: `/workspace/${project}`, gitBranch: null, gitRemote: null, project });
+		const entry = listProjectScopeInventory(db).projects.find(
+			(candidate) => candidate.display_project === project,
+		);
+		if (!entry) throw new Error(`missing inventory entry for ${project}`);
+		return entry.workspace_identity;
+	}
+
+	function insertRecipient(projectIdentity: string, status: "active" | "revoked"): void {
+		db.prepare(`INSERT INTO project_recipients(
+			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			policy_revision, migration_state, idempotency_key, created_at, updated_at
+		) VALUES (?, 'identity', 'identity-a', ?, 'user', 'r1', 'user_managed', ?, ?, ?)`).run(
+			projectIdentity,
+			status,
+			`edge-${projectIdentity}`,
+			"2026-05-06T00:00:00Z",
+			"2026-05-06T00:00:00Z",
+		);
+	}
+
+	/** One Project with memories, two empty ones that are hidden and two that are kept. */
+	function seedInventory(): void {
+		insertMemory(db, insertSession(db));
+		insertEmptySession("idle");
+		insertRecipient(insertEmptySession("revoked-idle"), "revoked");
+		insertRecipient(insertEmptySession("shared-idle"), "active");
+		insertScope(db, { scopeId: "exampleco-work", label: "ExampleCo Work" });
+		upsertProjectScopeSettingsMapping(db, {
+			workspace_identity: "workspace:retired-api",
+			project_pattern: "retired-api",
+			scope_id: "exampleco-work",
+		});
+	}
+
+	function names(result: ReturnType<typeof listProjectScopeInventory>): string[] {
+		return result.projects.map((project) => project.display_project).sort();
+	}
+
+	it("lists empty Projects by default with the empty status", () => {
+		seedInventory();
+
+		const inventory = listProjectScopeInventory(db);
+
+		expect(inventory).toMatchObject({ total: 5, hidden_empty_count: 0 });
+		expect(inventory.projects.find((project) => project.display_project === "idle")).toMatchObject({
+			memory_count: 0,
+			statuses: expect.arrayContaining(["empty"]),
+		});
+		expect(
+			inventory.projects.find((project) => project.display_project === "api")?.statuses,
+		).not.toContain("empty");
+	});
+
+	it("hides empty Projects without a saved Space assignment or active recipient", () => {
+		seedInventory();
+
+		const inventory = listProjectScopeInventory(db, { includeEmpty: false });
+
+		expect(names(inventory)).toEqual(["api", "retired-api", "shared-idle"]);
+		expect(inventory).toMatchObject({ total: 3, has_more: false, hidden_empty_count: 2 });
+	});
+
+	it("lists every empty Project, kept or hidden, under the empty status", () => {
+		seedInventory();
+
+		const inventory = listProjectScopeInventory(db, { includeEmpty: false, status: "empty" });
+
+		expect(names(inventory)).toEqual(["idle", "retired-api", "revoked-idle", "shared-idle"]);
+		expect(inventory.hidden_empty_count).toBe(0);
+	});
+
+	it("counts and pages the pruned list when a query is applied", () => {
+		seedInventory();
+
+		const inventory = listProjectScopeInventory(db, {
+			includeEmpty: false,
+			limit: 1,
+			query: "IDLE",
+		});
+
+		expect(names(inventory)).toEqual(["shared-idle"]);
+		expect(inventory).toMatchObject({ total: 1, has_more: false, hidden_empty_count: 2 });
+	});
+
+	it("pages past the hidden Projects", () => {
+		seedInventory();
+
+		const first = listProjectScopeInventory(db, { includeEmpty: false, limit: 2 });
+		const second = listProjectScopeInventory(db, { includeEmpty: false, limit: 2, offset: 2 });
+
+		expect(first).toMatchObject({ total: 3, has_more: true, hidden_empty_count: 2 });
+		expect(second).toMatchObject({ total: 3, has_more: false, hidden_empty_count: 2 });
+		expect([...names(first), ...names(second)].sort()).toEqual([
+			"api",
+			"retired-api",
+			"shared-idle",
+		]);
+	});
+});
+
 describe("historical repository scope propagation", () => {
 	it("keeps cwd-only memories local when repository history is ambiguous", () => {
 		const db = new Database(":memory:");

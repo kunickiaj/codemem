@@ -48,6 +48,7 @@ const STATUS_OPTIONS = [
 	["explicitly_mapped", "Already assigned"],
 	["legacy_review", "Older shared data"],
 	["unmapped", "Missing project identity"],
+	["empty", "No memories"],
 ] as const;
 
 let refreshProjects: RefreshFn | null = null;
@@ -902,7 +903,7 @@ function hideProjectInventorySkeleton() {
 	document.getElementById("projectsInventorySkeleton")?.remove();
 }
 
-function projectInventoryMetaText(result: {
+function projectCountText(result: {
 	projects: ProjectScopeInventoryProject[];
 	total: number;
 	offset: number;
@@ -913,6 +914,18 @@ function projectInventoryMetaText(result: {
 	// A range only helps when the list spans more than one page.
 	if (result.offset === 0 && lastVisible === result.total) return total;
 	return `${total} · ${result.offset + 1}–${lastVisible}`;
+}
+
+function projectInventoryMetaText(result: {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	offset: number;
+	hidden_empty_count?: number;
+}): string {
+	const hidden = result.hidden_empty_count ?? 0;
+	const count = projectCountText(result);
+	if (hidden <= 0) return count;
+	return `${count} · ${hidden.toLocaleString()} empty not shown`;
 }
 
 function renderCurrentProjectInventory(error?: string): void {
@@ -927,6 +940,7 @@ function renderProjectInventory(result: {
 	total: number;
 	offset: number;
 	has_more: boolean;
+	hidden_empty_count?: number;
 }) {
 	hasProjectInventoryResult = true;
 	latestInventoryResult = {
@@ -981,18 +995,28 @@ async function loadAllProjectShareChoices(
 	const projects = new Map<string, ProjectScopeInventoryProject>();
 	let offset = 0;
 	while (true) {
-		const page = await (sharedPage?.offset === offset
-			? sharedPage.promise
-			: api.loadProjectScopeInventory({
-					limit: lastLimit,
-					offset,
-					signal: options.signal,
-				}));
+		const page = await loadShareChoicesPage(offset, options, sharedPage);
 		for (const project of page.projects) projects.set(project.workspace_identity, project);
 		if (!page.has_more) break;
 		offset += page.limit;
 	}
 	return [...projects.values()];
+}
+
+/**
+ * Sharing must offer every Project, including empty ones. The visible page leaves empty
+ * Projects out, so it is reused only when it reports that none were left out.
+ */
+async function loadShareChoicesPage(
+	offset: number,
+	options: { signal?: AbortSignal },
+	sharedPage?: { offset: number; promise: ReturnType<typeof loadProjectInventoryPage> },
+) {
+	if (sharedPage?.offset === offset) {
+		const page = await sharedPage.promise;
+		if (!page.hidden_empty_count) return page;
+	}
+	return api.loadProjectScopeInventory({ limit: lastLimit, offset, signal: options.signal });
 }
 
 interface ProjectInventoryFilters {
@@ -1023,6 +1047,7 @@ function loadProjectInventoryPage(
 	filters: ProjectInventoryFilters,
 ) {
 	return api.loadProjectScopeInventory({
+		include_empty: false,
 		limit: lastLimit,
 		offset: filters.offset,
 		q: filters.query || undefined,
@@ -1200,7 +1225,8 @@ async function loadProjectsResources(
 	filters: ProjectInventoryFilters,
 ) {
 	const visiblePagePromise = loadProjectInventoryPage(options, filters);
-	// Share only an identical unfiltered request within this load and its abort signal.
+	// Share only an unfiltered request within this load and its abort signal. The share
+	// choices load it again when the visible page left empty Projects out.
 	const sharedPage =
 		!filters.query && !filters.status
 			? { offset: filters.offset, promise: visiblePagePromise }

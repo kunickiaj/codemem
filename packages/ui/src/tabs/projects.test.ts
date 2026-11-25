@@ -4894,3 +4894,65 @@ describe("Projects table at rest", () => {
 		);
 	});
 });
+
+describe("Projects with no memories", () => {
+	beforeEach(setupRequestReuseTest);
+
+	it("asks for the list without empty Projects and offers the No memories filter", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+
+		await loadProjectsData();
+
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(1);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
+			expect.objectContaining({ include_empty: false, offset: 0 }),
+		);
+		expect(document.querySelector("option[value='empty']")?.textContent).toBe("No memories");
+	});
+
+	it("loads sharing choices with empty Projects when the list left some out", async () => {
+		const idle = project({ display_project: "idle", memory_count: 0, workspace_identity: "idle" });
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(inventoryPage([project()], { hidden_empty_count: 1 }))
+			.mockResolvedValue(inventoryPage([project(), idle]));
+
+		await loadProjectsData();
+
+		const requests = vi.mocked(api.loadProjectScopeInventory).mock.calls.map(([input]) => input);
+		expect(requests).toHaveLength(2);
+		expect(requests[1]).toMatchObject({ limit: 250, offset: 0 });
+		expect(requests[1]).not.toHaveProperty("include_empty");
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project(), idle],
+			{ inventoryError: false },
+		);
+	});
+
+	it.each([
+		[
+			"no count when none are hidden",
+			inventoryPage([project()], { hidden_empty_count: 0 }),
+			"1 project",
+		],
+		[
+			"the hidden count",
+			inventoryPage([project()], { hidden_empty_count: 11 }),
+			"1 project · 11 empty not shown",
+		],
+		[
+			"the hidden count after the range",
+			inventoryPage([project()], { has_more: true, hidden_empty_count: 3, total: 251 }),
+			"251 projects · 1–1 · 3 empty not shown",
+		],
+	])("shows %s in the list summary", async (_label, page, expected) => {
+		// Follow-up sharing reads end on the last page.
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(page)
+			.mockResolvedValue(inventoryPage([], { offset: 250, total: 251 }));
+
+		await loadProjectsData();
+
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(expected);
+	});
+});

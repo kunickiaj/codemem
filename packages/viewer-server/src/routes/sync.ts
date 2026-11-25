@@ -6400,6 +6400,12 @@ async function revokeBootstrapGrantRoute(c: Context) {
 	}
 }
 
+/** Only `false` or `0` prunes, so clients that omit the parameter keep the full list. */
+function includeEmptyProjectsParam(value: string | undefined): boolean {
+	const normalized = value?.trim().toLowerCase();
+	return normalized !== "false" && normalized !== "0";
+}
+
 async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
 	const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
 	const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
@@ -6407,6 +6413,7 @@ async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
 	const inventory = listProjectScopeInventory(store.db, {
 		repositoryIdentitySnapshot,
 		identitySource: c.req.query("identity_source"),
+		includeEmpty: includeEmptyProjectsParam(c.req.query("include_empty")),
 		limit,
 		offset,
 		query: c.req.query("q"),

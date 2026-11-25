@@ -4,6 +4,7 @@ import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY, repositoryIdentityFromMetadata } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	hasConflictingRepositoryMappings,
 	hasRecordedRepositoryWorkspace,
 	normalizeRepositoryWorkspaceIdentity,
@@ -103,6 +104,7 @@ export interface ProjectScopeCandidate {
 }
 
 export type ProjectScopeInventoryStatus =
+	| "empty"
 	| "explicitly_mapped"
 	| "legacy_review"
 	| "local_only"
@@ -129,6 +131,11 @@ export interface ProjectScopeInventoryWorktree {
 export interface ProjectScopeInventoryOptions {
 	repositoryIdentitySnapshot?: RepositoryIdentitySnapshot;
 	identitySource?: string | null;
+	/**
+	 * When false, leaves out Projects with no memories unless they carry saved sharing
+	 * configuration. Defaults to true so lookups by identity still see every Project.
+	 */
+	includeEmpty?: boolean;
 	limit?: number;
 	offset?: number;
 	query?: string | null;
@@ -142,6 +149,8 @@ export interface ProjectScopeInventoryResult {
 	limit: number;
 	offset: number;
 	has_more: boolean;
+	/** Empty Projects that matched the other filters but were left out by `includeEmpty: false`. */
+	hidden_empty_count: number;
 }
 
 interface ProjectScopeSuggestion {
@@ -634,9 +643,12 @@ function mergeInventoryProject(
 	existing.read_only_reason = null;
 }
 
-function inventoryStatuses(project: ProjectScopeCandidate): ProjectScopeInventoryStatus[] {
+function inventoryStatuses(
+	project: ProjectScopeCandidate & { memory_count: number | null },
+): ProjectScopeInventoryStatus[] {
 	const statuses = new Set<ProjectScopeInventoryStatus>();
 	if (project.read_only) return ["received"];
+	if (project.memory_count === 0) statuses.add("empty");
 	if (!project.read_only && project.resolved_scope_id === LOCAL_DEFAULT_SCOPE_ID) {
 		statuses.add("local_only");
 	}
@@ -2252,30 +2264,20 @@ export function listProjectScopeInventory(
 
 	const withGuardrails = withCandidateGuardrails(inventory).map((project, index) => {
 		const original = inventory[index];
-		return {
+		const counted = {
 			...project,
 			memory_count: original?.memory_count ?? null,
 			session_count: original?.session_count ?? 0,
-			statuses: inventoryStatuses(project),
 		};
+		return { ...counted, statuses: inventoryStatuses(counted) };
 	});
 
-	const filtered = withGuardrails
-		.filter((project) => projectMatchesInventoryQuery(project, options.query))
-		.filter((project) => !options.scopeId || project.resolved_scope_id === options.scopeId)
-		.filter(
-			(project) => !options.identitySource || project.identity_source === options.identitySource,
-		)
-		.filter(
-			(project) => !options.status || project.statuses.some((status) => status === options.status),
-		)
-		.toSorted(
-			(left, right) =>
-				(left.latest_session_at == null ? 1 : right.latest_session_at == null ? -1 : 0) ||
-				String(right.latest_session_at ?? "").localeCompare(String(left.latest_session_at ?? "")) ||
-				left.display_project.localeCompare(right.display_project) ||
-				left.workspace_identity.localeCompare(right.workspace_identity),
-		);
+	const matched = withGuardrails
+		.filter((project) => matchesInventoryFilters(project, options))
+		.toSorted(compareInventoryProjects);
+	const filtered = shouldPruneEmptyProjects(options)
+		? matched.filter(keepUnlessEmptyAndUnshared(db, repositoryIdentityByWorkspace))
+		: matched;
 
 	return {
 		projects: filtered.slice(offset, offset + limit),
@@ -2283,7 +2285,80 @@ export function listProjectScopeInventory(
 		limit,
 		offset,
 		has_more: offset + limit < filtered.length,
+		hidden_empty_count: matched.length - filtered.length,
 	};
+}
+
+function matchesInventoryFilters(
+	project: ProjectScopeInventoryProject,
+	options: ProjectScopeInventoryOptions,
+): boolean {
+	return (
+		projectMatchesInventoryQuery(project, options.query) &&
+		(!options.scopeId || project.resolved_scope_id === options.scopeId) &&
+		(!options.identitySource || project.identity_source === options.identitySource) &&
+		(!options.status || project.statuses.some((status) => status === options.status))
+	);
+}
+
+function undatedLast(left: ProjectScopeInventoryProject, right: ProjectScopeInventoryProject) {
+	if (left.latest_session_at == null) return 1;
+	if (right.latest_session_at == null) return -1;
+	return 0;
+}
+
+function compareInventoryProjects(
+	left: ProjectScopeInventoryProject,
+	right: ProjectScopeInventoryProject,
+): number {
+	return (
+		undatedLast(left, right) ||
+		String(right.latest_session_at ?? "").localeCompare(String(left.latest_session_at ?? "")) ||
+		left.display_project.localeCompare(right.display_project) ||
+		left.workspace_identity.localeCompare(right.workspace_identity)
+	);
+}
+
+function shouldPruneEmptyProjects(options: ProjectScopeInventoryOptions): boolean {
+	return options.includeEmpty === false && options.status !== "empty";
+}
+
+/**
+ * Projects with active saved recipients, keyed by their canonical identity. Rows may
+ * carry an older workspace identity, so they canonicalize the same way the recipient
+ * policy edges do before matching the inventory's `workspace_identity`.
+ */
+function projectsWithActiveRecipients(
+	db: Database,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): Set<string> {
+	const rows = db
+		.prepare(
+			"SELECT DISTINCT canonical_project_identity FROM project_recipients WHERE status = 'active'",
+		)
+		.all() as Array<{ canonical_project_identity: string }>;
+	return new Set(
+		rows.flatMap(({ canonical_project_identity: identity }) => [
+			identity,
+			canonicalRepositoryProjectIdentity(repositoryIdentities, identity),
+		]),
+	);
+}
+
+/**
+ * Hides a Project with no memories unless a saved Space assignment or saved recipients
+ * would share its future memories. Hiding those would hide the rule itself.
+ */
+function keepUnlessEmptyAndUnshared(
+	db: Database,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): (project: ProjectScopeInventoryProject) => boolean {
+	const withRecipients = projectsWithActiveRecipients(db, repositoryIdentities);
+	return (project) =>
+		!project.statuses.includes("empty") ||
+		project.mapping_id != null ||
+		project.resolution_reason !== "local_default" ||
+		withRecipients.has(project.workspace_identity);
 }
 
 function projectRowsForScopeReassignment(db: Database): ProjectScopeCandidateRow[] {
