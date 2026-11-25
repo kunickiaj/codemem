@@ -226,6 +226,51 @@ function mountHistoryInDevices(revision: number, inventory: DeviceIdentityInvent
 	);
 }
 
+function aliasInventory() {
+	const inventory = matchingInventory();
+	const item = inventory.items[0];
+	if (!item) throw new Error("Missing inventory row");
+	item.evidenceDeviceIds = ["canonical-device", item.deviceId];
+	item.deviceId = "canonical-device";
+	return { inventory, item };
+}
+
+it("does not duplicate the live notice when its event names a same-key alias", async () => {
+	vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(Response.json(page)));
+	const { inventory } = aliasInventory();
+	mountHistoryInDevices(1, inventory);
+	await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
+	const card = host.querySelector("#device-identity-card-canonical-device");
+	expect(card?.querySelector(".device-rejoin-notice")?.textContent ?? "").toContain(
+		"Rejoined by Google sign-in",
+	);
+	expect(host.querySelectorAll(".device-rejoin-notice")).toHaveLength(1);
+});
+
+it.each(["conflicted row", "ambiguous match"] as const)(
+	"suppresses a historical alias rather than choosing a row with %s",
+	async (scenario) => {
+		vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(Response.json(page)));
+		const { inventory, item } = aliasInventory();
+		item.rejoin = undefined;
+		if (scenario === "conflicted row") {
+			item.state = "conflicted";
+			item.validatedFingerprint = null;
+		} else {
+			inventory.items.push({
+				...item,
+				deviceId: "other-canonical-device",
+				evidenceDeviceIds: ["other-canonical-device", "offline-device"],
+				displayName: "Another laptop",
+				validatedFingerprint: "different-fingerprint",
+			});
+		}
+		mount(1, inventory);
+		await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
+		expect(host.querySelector(".device-rejoin-notice")).toBeNull();
+	},
+);
+
 it.each([true, false])(
 	"shows a missed rejoin with a mounted configured fallback (verified pin: %s)",
 	async (verified) => {

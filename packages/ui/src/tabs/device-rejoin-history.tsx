@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { fetchJson } from "../lib/api/internal";
-import type { DeviceIdentityInventoryV1 } from "../lib/api/sync";
+import type { DeviceIdentityInventoryItemV1, DeviceIdentityInventoryV1 } from "../lib/api/sync";
 import { DeviceRejoinNotice, validRejoin } from "./device-rejoin-notice";
 
 const CURSOR_KEY = "codemem.device-rejoin-history.cursor.v1";
@@ -157,6 +157,18 @@ function useRejoinHistory(options: {
 	return { host, events: safeView?.items ?? [] };
 }
 
+function indexInventoryDevices(inventory?: DeviceIdentityInventoryV1) {
+	const byDevice = new Map<string, DeviceIdentityInventoryItemV1 | null>();
+	for (const item of inventory?.items ?? []) {
+		for (const id of [item.deviceId, ...item.evidenceDeviceIds]) {
+			const existing = byDevice.get(id);
+			if (existing === undefined) byDevice.set(id, item);
+			else if (existing !== item) byDevice.set(id, null);
+		}
+	}
+	return byDevice;
+}
+
 /** Recent history only. Access and actions are derived from the live inventory. */
 export function DeviceRejoinHistory({
 	localDeviceId,
@@ -170,11 +182,11 @@ export function DeviceRejoinHistory({
 	inventory?: DeviceIdentityInventoryV1;
 }) {
 	const { host, events } = useRejoinHistory({ localDeviceId, profile, refreshRevision });
-	const byDevice = new Map(inventory?.items.map((item) => [item.deviceId, item]));
+	const byDevice = indexInventoryDevices(inventory);
 	const items = events.filter(({ deviceId, finalizedAtMs }) => {
 		if (deviceId === localDeviceId) return false;
 		const item = byDevice.get(deviceId);
-		if (item?.state === "conflicted") return false;
+		if (item === null || item?.state === "conflicted") return false;
 		const live = item?.validatedFingerprint ? validRejoin(item) : null;
 		return live?.deviceId !== deviceId || live.rejoinedAtMs !== finalizedAtMs;
 	});
