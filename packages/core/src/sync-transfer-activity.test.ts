@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureAdditiveSchemaCompatibility } from "./db.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { SecretScanner } from "./secret-scanner.js";
 import { applyBootstrapSnapshot, mergeBootstrapSnapshot } from "./sync-bootstrap.js";
 import { applyPeerReplicationOps, applyReplicationOps } from "./sync-replication.js";
@@ -10,7 +11,7 @@ import {
 	recordSyncTransferReceipts,
 	type SyncTransferObservationSource,
 } from "./sync-transfer-activity.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, insertTestPeer } from "./test-utils.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
 
 let db: InstanceType<typeof Database>;
@@ -90,10 +91,12 @@ function scopedOp(id: string, scopeId = "fixture-valid-scope"): ReplicationOp {
 	};
 }
 
-function grantReceiveFixtureScope(scopeId: string) {
-	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
-		membership_epoch, status, created_at, updated_at)
-		VALUES (?, 'Fixture', 'team', 'coordinator', 1, 'active', ?, ?)`).run(
+/** The scope, its memberships and their retained proofs, with the peer paired. */
+async function grantReceiveFixtureScope(scopeId: string) {
+	insertTestPeer(db, peer);
+	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id,
+		group_id, membership_epoch, status, created_at, updated_at)
+		VALUES (?, 'Fixture', 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`).run(
 		scopeId,
 		"2026-01-01T00:00:00Z",
 		"2026-01-01T00:00:00Z",
@@ -106,6 +109,7 @@ function grantReceiveFixtureScope(scopeId: string) {
 			"2026-01-01T00:00:00Z",
 		);
 	}
+	await refreshTestScopeRows(db);
 }
 
 function failedReceiveFixture(errorCode: "apply_failed" | "scope_rejected") {
@@ -114,7 +118,7 @@ function failedReceiveFixture(errorCode: "apply_failed" | "scope_rejected") {
 			WHEN NEW.op_id = 'failed-source-op' BEGIN SELECT RAISE(ABORT, 'fixture apply failure'); END`);
 		return {
 			operation: scopedOp("failed-source-op"),
-			repair: () => db.exec("DROP TRIGGER fail_source_fixture"),
+			repair: async () => db.exec("DROP TRIGGER fail_source_fixture"),
 		};
 	}
 	return {
@@ -131,11 +135,11 @@ const receiveIsolationCases = (["initiated", "inbound"] as const).flatMap((sourc
 
 it.each(receiveIsolationCases)(
 	"keeps $source $errorCode after the other flow succeeds (nonempty: $hasOtherOperation) until its own retry",
-	({ source, errorCode, hasOtherOperation }) => {
+	async ({ source, errorCode, hasOtherOperation }) => {
 		// Arrange: persist an actual failed apply before the other request source runs.
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(new Date("2026-11-02T10:00:00Z"));
-		grantReceiveFixtureScope("fixture-valid-scope");
+		await grantReceiveFixtureScope("fixture-valid-scope");
 		const fixture = failedReceiveFixture(errorCode);
 		const failed = applyObservedFlow(source, [fixture.operation]);
 		const afterFailure = activity().receive;
@@ -148,7 +152,7 @@ it.each(receiveIsolationCases)(
 		const otherSuccess = applyObservedFlow(otherSource, otherOps);
 		const afterOtherSuccess = activity().receive;
 		const duplicate = applyObservedFlow(otherSource, otherOps);
-		fixture.repair();
+		await fixture.repair();
 		vi.setSystemTime(new Date("2026-11-02T12:00:00Z"));
 		const retry = applyObservedFlow(source, [fixture.operation]);
 		const replay = applyObservedFlow(otherSource, [fixture.operation]);

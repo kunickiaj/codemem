@@ -15,6 +15,7 @@ import { toJson } from "./db.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import {
 	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
@@ -51,7 +52,7 @@ interface MixedFixture {
 	ops: Record<string, ReplicationOp>;
 }
 
-function setupMixedFixture(): MixedFixture {
+async function setupMixedFixture(): Promise<MixedFixture> {
 	const db = new Database(":memory:");
 	initTestSchema(db);
 	insertTestSession(db);
@@ -196,7 +197,17 @@ function setupMixedFixture(): MixedFixture {
 	setPeerProjectFilters(db, PEER_OSS, ["acme/oss"], null);
 	setPeerProjectFilters(db, PEER_ROGUE, ["nothing-allowed"], null);
 
+	await proveCoordinatorScopes(db);
 	return { db, sessions, ops };
+}
+
+/** The coordinator scopes' retained proofs, as a trusted refresh writes them. */
+async function proveCoordinatorScopes(db: InstanceType<typeof Database>): Promise<void> {
+	db.prepare(
+		`UPDATE replication_scopes SET coordinator_id = 'coordinator-1', group_id = 'group-1'
+		 WHERE authority_type = 'coordinator'`,
+	).run();
+	await refreshTestScopeRows(db);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +357,8 @@ function filterForPeer(
 describe("mixed personal/work/OSS sync — boundary enforcement", () => {
 	let fixture: MixedFixture;
 
-	beforeEach(() => {
-		fixture = setupMixedFixture();
+	beforeEach(async () => {
+		fixture = await setupMixedFixture();
 	});
 
 	afterEach(() => {
@@ -586,8 +597,8 @@ describe("mixed personal/work/OSS sync — boundary enforcement", () => {
 describe("a Project this device withdrew from", () => {
 	let fixture: MixedFixture;
 
-	beforeEach(() => {
-		fixture = setupMixedFixture();
+	beforeEach(async () => {
+		fixture = await setupMixedFixture();
 		// The work scope stands in for a Project's boundary that this device left.
 		fixture.db
 			.prepare(
