@@ -317,7 +317,7 @@ describe("normal CI workflow source contract", () => {
 });
 
 describe("CI test scheduling contract", () => {
-	it("keeps normal test filtering and default CI concurrency unchanged", () => {
+	it("keeps normal test filtering unchanged and uses every runner CPU under CI", () => {
 		// Arrange: CI scheduling must not change development commands or deadlines.
 		const config = readFileSync(new URL("../vitest.config.ts", import.meta.url), "utf8");
 		const nodePath = "C:\\Program Files\\nodejs\\node.exe";
@@ -337,7 +337,7 @@ describe("CI test scheduling contract", () => {
 		);
 		assert.equal(scripts.test, "pnpm exec vitest run");
 		assert.equal(scripts["test:watch"], "pnpm exec vitest");
-		assert.match(config, /maxWorkers: process\.env\.CI \? 3 : undefined/u);
+		assert.match(config, /maxWorkers: process\.env\.CI \? 4 : undefined/u);
 		assert.doesNotMatch(
 			scripts["test:ci"],
 			/testTimeout|passWithNoTests|--testNamePattern|--no-file-parallelism/u,
