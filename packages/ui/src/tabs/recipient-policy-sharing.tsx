@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
 import { Chip } from "../components/primitives/chip";
 import { TextInput } from "../components/primitives/text-input";
+import { RelativeTime } from "../components/RelativeTime";
 import type { AccountView } from "../lib/api/account";
 import type {
 	DeviceIdentityInventoryV1,
@@ -13,7 +14,6 @@ import type {
 	RecipientPolicyTeamCreateResultV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
-import { formatRelativeTime, formatTimestamp } from "../lib/format";
 import {
 	projectDisplayNameKey,
 	projectIdentitySummaryGroups,
@@ -1046,16 +1046,6 @@ function receivedGroupShareNote(received: ReceivedProjectShare[]): string | null
 	return `${subject} shared as part of a group of Projects. This device can't stop receiving ${count === 1 ? "it" : "them"} one at a time.`;
 }
 
-/** A one-line relative time. The exact time stays available on hover and to assistive tech. */
-function ReceivedLastSession({ value }: { value: string | null }) {
-	if (!value) return <>No recent sessions</>;
-	return (
-		<time dateTime={value} title={formatTimestamp(value)}>
-			{formatRelativeTime(value)}
-		</time>
-	);
-}
-
 function ReceivedView({
 	actions,
 	disabled,
@@ -1119,7 +1109,11 @@ function ReceivedView({
 							<td data-label="From">{receivedFromLabel(share.originDevices)}</td>
 							<td data-label="Memories">{share.existingMemoryCount.toLocaleString()}</td>
 							<td data-label="Last session">
-								<ReceivedLastSession value={share.latestSessionAt} />
+								{share.latestSessionAt ? (
+									<RelativeTime value={share.latestSessionAt} />
+								) : (
+									"No recent sessions"
+								)}
 							</td>
 							<td data-label="On this device">
 								<ReceivedProjectOnThisDevice

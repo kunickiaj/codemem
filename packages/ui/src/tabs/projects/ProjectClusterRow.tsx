@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../components/primitives/chip";
 import { NativeSelect } from "../../components/primitives/native-select";
+import { RelativeTime } from "../../components/RelativeTime";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
 	ProjectsInventoryViewModel,
 } from "../projects-inventory-model";
-import { ProjectRow, RecipientSummary } from "./ProjectRow";
+import { ProjectDetailsToggle, ProjectRow, RecipientSummary } from "./ProjectRow";
 import { ProjectClusterMenu } from "./ProjectRowMenu";
 import { isAssignable, projectDomId, scopeIsAvailable, scopeOptionLabel } from "./project-view";
 
@@ -14,6 +15,19 @@ interface ProjectClusterRowProps {
 	callbacks: ProjectInventoryCallbacks;
 	model: ProjectInventoryClusterViewModel;
 	view: ProjectsInventoryViewModel;
+}
+
+/** The most recent session among a group's entries, or null when none has a valid time. */
+function latestSessionAcross(model: ProjectInventoryClusterViewModel): string | null {
+	let latest: string | null = null;
+	let latestMs = Number.NEGATIVE_INFINITY;
+	for (const { project } of model.projects) {
+		const ms = project.latest_session_at ? Date.parse(project.latest_session_at) : Number.NaN;
+		if (Number.isNaN(ms) || ms <= latestMs) continue;
+		latest = project.latest_session_at;
+		latestMs = ms;
+	}
+	return latest;
 }
 
 function buildClusterSummary(model: ProjectInventoryClusterViewModel) {
@@ -38,6 +52,7 @@ function buildClusterSummary(model: ProjectInventoryClusterViewModel) {
 			0,
 		),
 		sessionCount: model.projects.reduce((total, item) => total + item.project.session_count, 0),
+		latestSessionAt: latestSessionAcross(model),
 		warningTotal: model.projects.reduce(
 			(total, item) =>
 				total +
@@ -72,7 +87,7 @@ function ClusterStats({ model, summary, view }: ClusterContentProps) {
 				{summary.sessionCount.toLocaleString()}
 			</td>
 			<td className="project-inventory-cell project-inventory-latest" data-label="Last activity">
-				—
+				{summary.latestSessionAt ? <RelativeTime value={summary.latestSessionAt} /> : "—"}
 			</td>
 			<td className="project-inventory-cell project-inventory-shared" data-label="Shared with">
 				<RecipientSummary
@@ -86,14 +101,24 @@ function ClusterStats({ model, summary, view }: ClusterContentProps) {
 }
 
 type ClusterHeaderProps = ClusterContentProps & {
+	assignmentOpen: boolean;
 	onOpenAssignment: () => void;
+	onToggleAssignment: () => void;
 	onToggleWorktrees: () => void;
 	titleId: string;
 	entriesId: string;
 	worktreesOpen: boolean;
 };
 
-function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: ClusterHeaderProps) {
+function ClusterActions({
+	assignmentOpen,
+	callbacks,
+	model,
+	onOpenAssignment,
+	onToggleAssignment,
+	summary,
+	view,
+}: ClusterHeaderProps) {
 	return (
 		<td className="project-inventory-cell project-inventory-row-actions">
 			{model.projectIds.length > 0 ? (
@@ -110,6 +135,11 @@ function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: C
 			{summary.assignable.length > 0 ? (
 				<ProjectClusterMenu label={model.label} onOpenSpaceAssignment={onOpenAssignment} />
 			) : null}
+			<ProjectDetailsToggle
+				label={`Space assignment for ${model.label}`}
+				onToggle={onToggleAssignment}
+				open={assignmentOpen}
+			/>
 		</td>
 	);
 }
@@ -148,19 +178,18 @@ function ClusterHeader(props: ClusterHeaderProps) {
 					{model.label}
 				</strong>
 				<div className="project-inventory-badges">
-					<Chip variant="badge">{model.projects.length} Project entries</Chip>
 					<button
 						aria-controls={props.entriesId}
 						aria-expanded={worktreesOpen}
 						aria-label={`${worktreesOpen ? "Hide" : "Show"} entries for ${model.label}${groupLabel}`}
-						className="settings-button project-worktrees-toggle"
+						className="project-worktrees-toggle"
 						onClick={(event) => {
 							if (worktreesOpen) event.currentTarget.focus();
 							onToggleWorktrees();
 						}}
 						type="button"
 					>
-						{worktreesOpen ? "Hide entries" : "Show entries"}
+						{model.projects.length.toLocaleString()} entries
 					</button>
 					{summary.warningTotal > 0 ? (
 						<Chip tone="badge-offline" variant="badge">
@@ -395,8 +424,10 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 		>
 			<ClusterHeader
 				{...props}
+				assignmentOpen={open}
 				entriesId={entriesId}
 				onOpenAssignment={openAssignment}
+				onToggleAssignment={() => setDetailsOpen(!open)}
 				onToggleWorktrees={() => callbacks.setClusterWorktreesOpen(model.key, !model.worktreesOpen)}
 				summary={summary}
 				titleId={titleId}

@@ -120,7 +120,7 @@
         z-index: 10;
         padding: var(--sp-4) var(--sp-6);
         border-bottom: 1px solid var(--border);
-        background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+        background: color-mix(in srgb, var(--surface-1) 96%, transparent);
         backdrop-filter: blur(14px) saturate(1.2);
         -webkit-backdrop-filter: blur(14px) saturate(1.2);
       }
@@ -254,7 +254,7 @@
         display: flex;
         gap: 2px;
         padding: 0 var(--sp-6);
-        background: color-mix(in srgb, var(--surface-1) 55%, transparent);
+        background: color-mix(in srgb, var(--surface-1) 94%, transparent);
         backdrop-filter: blur(10px) saturate(1.2);
         -webkit-backdrop-filter: blur(10px) saturate(1.2);
         border-bottom: 1px solid var(--border);
@@ -321,6 +321,8 @@
         flex-direction: column;
         gap: var(--sp-5);
       }
+      /* The Projects table needs more width than card layouts to keep each cell on one line. */
+      #tab-projects { max-width: 1280px; }
       /* Sync tab wraps its cards in #syncMainView / #syncDiagnosticsView
          sub-view containers, which breaks the .tab-panel flex gap inheritance.
          Restore the gap inside each sub-view so Sync cards match the Feed
@@ -824,6 +826,7 @@
         gap: var(--sp-2);
         align-items: center;
       }
+      .section-actions > .section-meta { margin-bottom: 0; }
 
       /* Utility link that navigates between sibling sub-surfaces (e.g.
          main Sync view ↔ diagnostics sub-view). One treatment used for
@@ -1307,9 +1310,9 @@
       .project-inventory-table td { padding: 0; text-align: left; font-weight: inherit; }
       .project-inventory-table-row {
         display: grid;
-        grid-template-columns: 28px minmax(0, 1fr) 72px 72px 120px minmax(0, 130px) 180px;
+        grid-template-columns: 28px minmax(0, 1fr) 76px 76px 92px minmax(0, 220px) 212px;
         align-items: center;
-        column-gap: var(--sp-3);
+        column-gap: var(--sp-4);
         min-width: 0;
       }
       .project-inventory-table-header {
@@ -1332,16 +1335,81 @@
       .project-inventory-project-cell { display: flex; flex-direction: column; gap: var(--sp-1); }
       .project-inventory-title { overflow-wrap: anywhere; color: var(--text-primary); font-size: var(--font-size-md); font-weight: var(--font-weight-semibold); }
       .project-inventory-signal { overflow: hidden; color: var(--text-tertiary); font-size: var(--font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
-      .project-inventory-number { font-variant-numeric: tabular-nums; }
-      .project-inventory-latest { color: var(--text-secondary); }
+      .project-inventory-table .project-inventory-number,
+      .project-inventory-table-header > th:nth-child(3),
+      .project-inventory-table-header > th:nth-child(4) { font-variant-numeric: tabular-nums; text-align: right; }
+      .project-inventory-latest { color: var(--text-secondary); white-space: nowrap; }
       .project-inventory-badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
       .project-inventory-badges:empty { display: none; }
       .project-inventory-row-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
+      .project-details-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius-sm);
+        background: none;
+        color: var(--text-tertiary);
+        cursor: pointer;
+      }
+      .project-details-toggle:hover { background: var(--surface-2); color: var(--text-primary); }
+      .project-details-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .project-details-toggle::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        margin-top: -3px;
+        border-right: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: rotate(45deg);
+        transition: transform var(--duration-fast) var(--ease-standard);
+      }
+      .project-details-toggle[data-open="true"]::before { margin-top: 3px; transform: rotate(225deg); }
+      .project-worktrees-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sp-1);
+        min-height: 24px;
+        padding: 0 var(--sp-2) 0 var(--sp-1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-pill);
+        background: var(--surface-2);
+        color: var(--text-secondary);
+        font: inherit;
+        font-size: var(--font-size-xs);
+        cursor: pointer;
+      }
+      .project-worktrees-toggle::before {
+        content: "";
+        width: 0;
+        height: 0;
+        margin-inline: var(--sp-1) 2px;
+        border-block: 4px solid transparent;
+        border-inline-start: 5px solid currentColor;
+        transition: transform var(--duration-fast) var(--ease-standard);
+      }
+      .project-worktrees-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+      .project-worktrees-toggle:hover { border-color: var(--control-hover-border); color: var(--text-primary); }
+      .project-worktrees-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .project-inventory-row-actions .settings-button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
       .project-row-menu { flex: 0 0 auto; }
       .project-inventory-details { background: var(--surface-2); }
       .project-inventory-details-row,
       .project-inventory-details-cell { display: block; min-width: 0; }
+      .project-inventory-details-cell > .project-inventory-details:not([open]) > summary:not(:focus-visible) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
       .project-inventory-details > summary {
         display: flex;
         align-items: center;
@@ -1373,8 +1441,6 @@
       .projects-pagination { margin-top: var(--sp-4); }
       .project-selection-control { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; cursor: pointer; }
       .project-selection-checkbox { width: 18px; height: 18px; }
-      .project-recipient-summary { min-width: 0; }
-      .project-recipient-status { color: var(--text-secondary); font-size: var(--font-size-sm); }
       .project-inventory-child-row { padding-left: var(--sp-5); }
       .project-cluster-entries-row:not([hidden]),
       .project-cluster-entries-row > td { display: block; }
@@ -1497,17 +1563,21 @@
         cursor: pointer;
       }
       .project-selection-checkbox { width: 18px; height: 18px; }
-      .project-recipient-summary { margin-top: var(--sp-3); }
-      .project-recipient-status { color: var(--text-secondary); font-size: var(--font-size-sm); }
+      .project-recipient-status { color: var(--text-tertiary); font-size: var(--font-size-sm); }
       .project-recipient-chips {
         display: flex;
         flex-wrap: wrap;
-        gap: var(--sp-2);
+        gap: var(--sp-1) var(--sp-2);
+        min-width: 0;
         padding: 0;
-        margin: var(--sp-2) 0 0;
+        margin: 0;
         list-style: none;
       }
+      .project-recipient { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-2); min-width: 0; max-width: 100%; }
+      .project-recipient:has(.project-recipient-coverage) { flex-basis: 100%; }
+      .project-recipient-coverage { color: var(--text-secondary); font-size: var(--font-size-xs); white-space: nowrap; }
       .project-recipient-chip {
+        max-width: 100%;
         overflow: hidden;
         padding: 3px 9px;
         border: 1px solid var(--border);
@@ -2246,6 +2316,9 @@
       .device-sync-direction-details h4 { margin: 0 0 var(--sp-2); color: var(--text-primary); font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
       .device-sync-direction-details dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: var(--sp-1) var(--sp-3); margin: 0 0 var(--sp-2); }
       .device-sync-direction-details dd { margin: 0; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+      @media (max-width: 1180px) and (min-width: 901px) {
+        .project-inventory-table-row { grid-template-columns: 28px minmax(0, 1fr) 64px 64px 84px minmax(0, 150px) 200px; }
+      }
       @media (max-width: 1100px) and (min-width: 901px) {
         .devices-table-head, .devices-table-row { grid-template-columns: 16px minmax(110px, 1fr) 92px 56px minmax(280px, 1.6fr) 36px; column-gap: var(--sp-3); }
       }
@@ -2300,6 +2373,7 @@
         .received-project-on-this-device { justify-content: flex-start; }
         .project-inventory-table-header { display: none; }
         .project-inventory-table-row { grid-template-columns: 28px minmax(0, 1fr) auto; row-gap: var(--sp-3); }
+        .project-inventory-table .project-inventory-number { text-align: left; }
         .project-inventory-select-cell { grid-column: 1; grid-row: 1; }
         .project-inventory-project-cell { grid-column: 2; grid-row: 1; }
         .project-inventory-row-actions { grid-column: 3; grid-row: 1; flex-wrap: wrap; }
@@ -5232,7 +5306,7 @@
         <div class="section-header">
           <h2>Projects</h2>
           <div class="section-actions project-selection-actions">
-            <span class="section-meta" id="projectsSelectionStatus" role="status" aria-live="polite">0 Projects selected.</span>
+            <span class="section-meta" id="projectsSelectionStatus" role="status" aria-live="polite">No Projects selected</span>
             <button class="settings-button project-selection-target" id="projectsShareSelected" type="button" disabled>Add Teams or Identities</button>
           </div>
         </div>

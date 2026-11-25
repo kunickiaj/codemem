@@ -170,6 +170,11 @@ function uniqueProjectIds(projects: ProjectScopeInventoryProject[]): string[] {
 	return [...new Set(projects.map((project) => project.workspace_identity))].sort();
 }
 
+function selectionStatusText(count: number): string {
+	if (count === 0) return "No Projects selected";
+	return `${count.toLocaleString()} ${count === 1 ? "Project" : "Projects"} selected`;
+}
+
 function updateSelectionControls() {
 	const count = selectedProjectIds.size;
 	const shareSelected = el<HTMLButtonElement>("projectsShareSelected");
@@ -184,7 +189,7 @@ function updateSelectionControls() {
 	if (status) {
 		status.setAttribute("role", "status");
 		status.setAttribute("aria-live", "polite");
-		status.textContent = `${count.toLocaleString()} Project${count === 1 ? "" : "s"} selected.`;
+		status.textContent = selectionStatusText(count);
 	}
 	renderCurrentProjectInventory();
 }
@@ -904,7 +909,10 @@ function projectInventoryMetaText(result: {
 }): string {
 	if (result.total === 0) return "0 projects";
 	const lastVisible = Math.min(result.offset + result.projects.length, result.total);
-	return `${result.total.toLocaleString()} projects · ${result.offset + 1}–${lastVisible}`;
+	const total = `${result.total.toLocaleString()} ${result.total === 1 ? "project" : "projects"}`;
+	// A range only helps when the list spans more than one page.
+	if (result.offset === 0 && lastVisible === result.total) return total;
+	return `${total} · ${result.offset + 1}–${lastVisible}`;
 }
 
 function renderCurrentProjectInventory(error?: string): void {
@@ -939,6 +947,8 @@ function renderProjectInventory(result: {
 	const next = el<HTMLButtonElement>("projectsNextPage");
 	if (prev) prev.disabled = result.offset === 0;
 	if (next) next.disabled = !result.has_more;
+	const pagination = prev?.closest<HTMLElement>(".projects-pagination");
+	if (pagination) pagination.hidden = result.offset === 0 && !result.has_more;
 	updateSelectionControls();
 	notifyProjectInventoryChanged();
 }
