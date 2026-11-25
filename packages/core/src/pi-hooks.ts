@@ -131,11 +131,48 @@ export interface PiHookAdapterEvent {
 	meta: Record<string, unknown>;
 }
 
-/**
- * Map a pi extension event payload to a normalized AdapterEvent v1.
- * Returns null if the event type is unsupported, flush-only, or required
- * fields are missing.
- */
+const PI_ENVELOPE_FIELDS = [
+	"piEvent",
+	"pi_event",
+	"event",
+	"type",
+	"sessionId",
+	"session_id",
+	"entryId",
+	"entry_id",
+	"toolCallId",
+	"tool_call_id",
+	"parentToolCallId",
+	"parent_tool_call_id",
+	"terminalReason",
+	"cwd",
+	"ts",
+	"timestamp",
+	"project",
+];
+
+function piToolLineage(
+	payload: Record<string, unknown>,
+	eventType: string,
+): Record<string, unknown> {
+	if (eventType !== "tool_call" && eventType !== "tool_result") return {};
+	const parent = coerceString(field(payload, "parentToolCallId", "parent_tool_call_id"));
+	return {
+		...(parent ? { parent_tool_call_id: parent } : {}),
+		...(eventType === "tool_result" && payload.terminalReason === "unknown"
+			? { terminal_reason: "unknown" }
+			: {}),
+	};
+}
+
+function withPiExecutionWrapper(event: Record<string, unknown>, meta: Record<string, unknown>) {
+	if (event.tool_name === "codemode" && event.status && !meta.parent_tool_call_id) {
+		return { ...event, execution_wrapper: true };
+	}
+	return event;
+}
+
+/** Map supported Pi events with the required fields to AdapterEvent v1. */
 export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapterEvent | null {
 	const piEvent = coercePiEventName(payload);
 	if (!piEvent) return null;
@@ -155,22 +192,7 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 	const cwdRaw = field(payload, "cwd");
 	const cwd = typeof cwdRaw === "string" ? cwdRaw : null;
 
-	const consumed = new Set([
-		"piEvent",
-		"pi_event",
-		"event",
-		"type",
-		"sessionId",
-		"session_id",
-		"entryId",
-		"entry_id",
-		"toolCallId",
-		"tool_call_id",
-		"cwd",
-		"ts",
-		"timestamp",
-		"project",
-	]);
+	const consumed = new Set(PI_ENVELOPE_FIELDS);
 
 	let eventType: string;
 	let eventPayload: Record<string, unknown>;
@@ -289,6 +311,7 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 		event_id_algo: PI_EVENT_ID_ALGO,
 		pi_event: piEvent,
 		ordering_confidence: "low",
+		...piToolLineage(payload, eventType),
 	};
 	if (entryId) meta.entry_id = entryId;
 	if (toolCallId) meta.tool_call_id = toolCallId;
@@ -309,7 +332,7 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 		ts,
 		ordering_confidence: "low",
 		cwd,
-		payload: eventPayload,
+		payload: withPiExecutionWrapper(eventPayload, meta),
 		meta,
 	};
 }

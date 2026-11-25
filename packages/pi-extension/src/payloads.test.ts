@@ -100,6 +100,7 @@ describe("pi-extension tool payloads", () => {
 			sessionId,
 			cwd,
 			toolCallId: "tc-1",
+			parentToolCallId: "outer",
 			toolName: "read",
 			toolInput: { path: "src/a.ts" },
 			toolOutput: "file contents",
@@ -109,6 +110,30 @@ describe("pi-extension tool payloads", () => {
 		expect(resultAdapter?.event_type).toBe("tool_result");
 		expect(resultAdapter?.event_id).toMatch(/^pi_evt_[0-9a-f]{24}$/);
 		expect(resultAdapter?.payload).toMatchObject({ status: "ok" });
+		expect(resultAdapter?.meta).toMatchObject({ parent_tool_call_id: "outer" });
+	});
+
+	it("distinguishes a Pi Code Mode wrapper and a terminal-only child error", () => {
+		const wrapper = mapPiEventPayload(
+			buildToolResultPayload({
+				sessionId,
+				toolCallId: "outer",
+				toolName: "codemode",
+			}),
+		);
+		const child = mapPiEventPayload(
+			buildToolResultPayload({
+				sessionId,
+				toolCallId: "outer/1",
+				parentToolCallId: "outer",
+				toolName: "read",
+				isError: true,
+				terminalReason: "unknown",
+			}),
+		);
+		expect(wrapper?.payload).toMatchObject({ execution_wrapper: true });
+		expect(child?.meta).toMatchObject({ parent_tool_call_id: "outer", terminal_reason: "unknown" });
+		expect(child?.payload).not.toHaveProperty("execution_wrapper");
 	});
 
 	it("tool_result isError maps status error", () => {

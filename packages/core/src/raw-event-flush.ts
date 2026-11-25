@@ -324,6 +324,10 @@ function shouldRediagnoseLegacyNoOutputMicrobatch(
 // Session context builder
 // ---------------------------------------------------------------------------
 
+function isDomainToolEvent(event: Record<string, unknown>): boolean {
+	return event.type === "tool.execute.after" && event.execution_wrapper !== true;
+}
+
 /**
  * Build session context from raw events — extracts prompt count, tool count,
  * duration, files modified/read, and first user prompt.
@@ -339,7 +343,7 @@ export function buildSessionContext(
 
 	for (const e of contentEvents) {
 		if (e.type === "user_prompt") promptCount++;
-		if (e.type === "tool.execute.after") toolCount++;
+		if (isDomainToolEvent(e)) toolCount++;
 	}
 
 	const tsValues: number[] = [];

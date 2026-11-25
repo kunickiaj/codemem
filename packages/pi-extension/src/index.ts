@@ -32,6 +32,8 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 	ToolCallEvent,
+	ToolExecutionEndEvent,
+	ToolExecutionStartEvent,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -93,8 +95,7 @@ type SessionState = {
 	 * Never a content-only hash — always paired with a discriminator.
 	 */
 	messageSeq: number;
-	/** toolCallId → { toolName, input } for pairing results */
-	toolCalls: Map<string, { toolName: string; input: Record<string, unknown> }>;
+	toolCalls: Map<string, Record<string, unknown>>;
 };
 
 function createSessionState(): SessionState {
@@ -162,7 +163,9 @@ async function safeIngest(
 	pi: ExtensionAPI,
 	signal?: AbortSignal,
 ): Promise<void> {
-	if (!state.active || !state.sessionId) return;
+	if (!state.active || state.sessionId !== payload.sessionId) return;
+	const sessionID = state.sessionId;
+	if (!sessionID) return;
 	const flushOnly = isFlushOnlyPayload(payload);
 	const key = eventKey(payload);
 	// Flush signals fire every compaction — never suppress via seen cursor.
@@ -172,10 +175,10 @@ async function safeIngest(
 		// Mark seen + durable cursor ONLY after successful delivery. A failed
 		// attempt must remain unmarked so the next delivery (or session_start
 		// resume without a stale cursor entry) can retry.
-		if (!outcome.ok) return;
+		if (!outcome.ok || !state.active || state.sessionId !== sessionID) return;
 		if (flushOnly) return;
 		state.seenEventKeys.add(key);
-		persistCursor(pi, state.sessionId, state.seenEventKeys);
+		persistCursor(pi, sessionID, state.seenEventKeys);
 	} catch {
 		// fail-open: never break the pi session; leave unseen on throw
 	}
@@ -403,19 +406,20 @@ async function onToolCall(
 	event: ToolCallEvent,
 	ctx: ExtensionContext,
 ): Promise<void> {
-	if (!state.active || !state.sessionId) return;
+	if (!state.active || state.sessionId !== ctx.sessionManager.getSessionId()) return;
 	const toolName = event.toolName;
 	const toolCallId = event.toolCallId;
 	const toolInput =
 		event.input != null && typeof event.input === "object"
 			? (event.input as Record<string, unknown>)
 			: {};
-	state.toolCalls.set(toolCallId, { toolName, input: toolInput });
+	state.toolCalls.set(toolCallId, toolInput);
 	const payload = buildToolCallPayload({
 		sessionId: state.sessionId,
 		cwd: state.cwd || ctx.cwd,
 		project: state.project,
 		toolCallId,
+		parentToolCallId: event.parentToolCallId,
 		toolName,
 		toolInput,
 	});
@@ -430,19 +434,20 @@ async function onToolResult(
 	event: ToolResultEvent,
 	ctx: ExtensionContext,
 ) {
-	if (!state.active || !state.sessionId) return;
+	if (!state.active || state.sessionId !== ctx.sessionManager.getSessionId()) return;
 	const tracked = state.toolCalls.get(event.toolCallId);
 	const toolName = event.toolName;
 	const toolInput =
 		event.input != null && typeof event.input === "object"
 			? (event.input as Record<string, unknown>)
-			: (tracked?.input ?? {});
-	state.toolCalls.delete(event.toolCallId);
+			: (tracked ?? {});
+	if (!event.parentToolCallId) state.toolCalls.delete(event.toolCallId);
 	const payload = buildToolResultPayload({
 		sessionId: state.sessionId,
 		cwd: state.cwd || ctx.cwd,
 		project: state.project,
 		toolCallId: event.toolCallId,
+		parentToolCallId: event.parentToolCallId,
 		toolName,
 		toolInput,
 		toolOutput: serializeToolOutput(event.content),
@@ -451,6 +456,47 @@ async function onToolResult(
 	});
 	await safeIngest(client, payload, state, pi, ctx.signal);
 	return fileContextAppend(client, config, event, toolName, toolInput, ctx.signal);
+}
+
+function trackNestedToolStart(
+	state: SessionState,
+	event: ToolExecutionStartEvent,
+	ctx: ExtensionContext,
+): void {
+	if (!event.parentToolCallId || !state.active) return;
+	if (state.sessionId !== ctx.sessionManager.getSessionId()) return;
+	if (event.args && typeof event.args === "object" && !Array.isArray(event.args)) {
+		state.toolCalls.set(event.toolCallId, event.args);
+	}
+}
+
+async function captureNestedToolEnd(
+	state: SessionState,
+	client: PiCodememClient,
+	pi: ExtensionAPI,
+	event: ToolExecutionEndEvent,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (!event.parentToolCallId || !state.active) return;
+	if (state.sessionId !== ctx.sessionManager.getSessionId()) return;
+	const toolInput = state.toolCalls.get(event.toolCallId);
+	state.toolCalls.delete(event.toolCallId);
+	const output = serializeToolOutput(event.result?.content);
+	const payload = buildToolResultPayload({
+		sessionId: state.sessionId,
+		cwd: state.cwd || ctx.cwd,
+		project: state.project,
+		toolCallId: event.toolCallId,
+		parentToolCallId: event.parentToolCallId,
+		toolName: event.toolName,
+		toolInput,
+		toolOutput: output,
+		isError: event.isError,
+		error: event.isError ? output : null,
+		terminalReason: event.isError ? "unknown" : undefined,
+	});
+	// The tool may already be interrupted. Capture can still record its outcome.
+	await safeIngest(client, payload, state, pi, ctx.signal?.aborted ? undefined : ctx.signal);
 }
 
 async function onBeforeCompact(
@@ -528,6 +574,8 @@ export default function codememPiExtension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event, ctx) => onMessageEnd(state, client, injector, pi, event, ctx));
 	pi.on("tool_call", (event, ctx) => onToolCall(state, client, pi, event, ctx));
 	pi.on("tool_result", (event, ctx) => onToolResult(state, client, config, pi, event, ctx));
+	pi.on("tool_execution_start", (event, ctx) => trackNestedToolStart(state, event, ctx));
+	pi.on("tool_execution_end", (event, ctx) => captureNestedToolEnd(state, client, pi, event, ctx));
 	pi.on("session_before_compact", (event, ctx) => onBeforeCompact(state, client, pi, event, ctx));
 	pi.on("session_compact", (event) => onSessionCompact(injector, event));
 	pi.on("session_compact_failed", () => onSessionCompactFailed(injector));

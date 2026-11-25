@@ -1854,6 +1854,29 @@ const mapOpencodeEventTypeToAdapterType = (eventType) => {
   return null;
 };
 
+const toolCaptureMetadata = (event) => ({
+  ...(typeof event.codemode === "boolean" ? { codemode: event.codemode } : {}),
+  ...(event.message_id ? { message_id: event.message_id } : {}),
+  ...(event.execution_wrapper ? { execution_wrapper: true } : {}),
+  ...(event.contains_memory_calls ? { contains_memory_calls: true } : {}),
+});
+
+const buildToolCaptureEvent = (input, output, serialize) => ({
+  type: "tool.execute.after",
+  tool: input.tool,
+  args: input.args ?? {},
+  result: output.error ? null : serialize(output.output),
+  error: output.error ? serialize(output.error) : null,
+  ...(input.id ? { tool_call_id: String(input.id) } : {}),
+  ...toolCaptureMetadata({
+    codemode: input.codemode,
+    message_id: input.messageID,
+    execution_wrapper: input.executionWrapper,
+    contains_memory_calls: input.containsMemoryCalls,
+  }),
+  timestamp: new Date().toISOString(),
+});
+
 const buildOpencodeAdapterPayload = (event) => {
   const eventType = event?.type;
   if (eventType === "user_prompt") {
@@ -1889,6 +1912,7 @@ const buildOpencodeAdapterPayload = (event) => {
       tool_output: event?.result ?? null,
       error: event?.error ?? null,
       ...(toolCallID ? { tool_call_id: toolCallID } : {}),
+      ...toolCaptureMetadata(event),
     };
   }
 
@@ -1921,6 +1945,10 @@ const sanitizeIdPart = (value, fallback, maxChars) => {
 const buildAdapterEventId = ({ sessionID, eventType, event, payload, ts }) => {
   const safeSessionID = sanitizeIdPart(sessionID, "unknown", 48);
   const safeType = sanitizeIdPart(eventType, "event", 24);
+  if (typeof event.codemode === "boolean" && event.tool_call_id && eventType === "tool_result") {
+    const digest = stableDigest([sessionID, event.message_id ?? null, event.tool_call_id]);
+    return `oc:${safeSessionID}:${safeType}:${digest}`;
+  }
   const rawTimestamp =
     typeof event?.timestamp === "string" && event.timestamp.trim()
       ? event.timestamp.trim()
@@ -3937,6 +3965,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       return String(value);
     }
   };
+  const serializeToolCapture = (value) => truncate(safeStringify(value));
 
   const trimRetainedEvents = (retainedEvents) => {
     trimEventQueue({
@@ -4755,14 +4784,11 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       if (sessionID) await capturePendingPrompts({ sessionID });
       if (!runtimeActive) return;
       const args = input.args ?? {};
-      const result = output.output;
-      const error = output.error ?? null;
       const toolName = input.tool;
-      const toolCallID = input.id ?? null;
 
       // Update activity and session context
       updateActivity();
-      sessionContext.toolCount++;
+      if (!input.executionWrapper) sessionContext.toolCount++;
 
       // Track files from tool events
       const filePath = args.filePath || args.path;
@@ -4781,15 +4807,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         }
       }
 
-      captureCodememEvent(input.sessionID, {
-        type: "tool.execute.after",
-        tool: toolName,
-        args,
-        result: error ? null : truncate(safeStringify(result)),
-        error: error ? truncate(safeStringify(error)) : null,
-        ...(toolCallID ? { tool_call_id: String(toolCallID) } : {}),
-        timestamp: new Date().toISOString(),
-      });
+      captureCodememEvent(input.sessionID, buildToolCaptureEvent(input, output, serializeToolCapture));
       await logLine(`tool.execute.after ${toolName} queued=${events.length} tools=${sessionContext.toolCount}`);
 
       // Check if we should force flush due to threshold

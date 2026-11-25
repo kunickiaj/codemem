@@ -57,6 +57,7 @@ export function basePayload(input: {
 	ts?: string | null;
 	entryId?: string | null;
 	toolCallId?: string | null;
+	parentToolCallId?: string | null;
 }): PiHookPayload {
 	const payload: PiHookPayload = {
 		piEvent: input.piEvent,
@@ -67,6 +68,7 @@ export function basePayload(input: {
 	if (input.project) payload.project = input.project;
 	if (input.entryId) payload.entryId = input.entryId;
 	if (input.toolCallId) payload.toolCallId = input.toolCallId;
+	if (input.parentToolCallId) payload.parentToolCallId = input.parentToolCallId;
 	return payload;
 }
 
@@ -181,6 +183,7 @@ export function buildToolCallPayload(input: {
 	cwd?: string | null;
 	project?: string | null;
 	toolCallId: string;
+	parentToolCallId?: string;
 	toolName: string;
 	toolInput?: Record<string, unknown>;
 	entryId?: string | null;
@@ -192,6 +195,7 @@ export function buildToolCallPayload(input: {
 			cwd: input.cwd,
 			project: input.project,
 			toolCallId: input.toolCallId,
+			parentToolCallId: input.parentToolCallId,
 			entryId: input.entryId,
 		}),
 		toolName: input.toolName,
@@ -204,6 +208,8 @@ export function buildToolResultPayload(input: {
 	cwd?: string | null;
 	project?: string | null;
 	toolCallId: string;
+	parentToolCallId?: string;
+	terminalReason?: "unknown";
 	toolName: string;
 	toolInput?: Record<string, unknown>;
 	toolOutput?: unknown;
@@ -218,11 +224,13 @@ export function buildToolResultPayload(input: {
 			cwd: input.cwd,
 			project: input.project,
 			toolCallId: input.toolCallId,
+			parentToolCallId: input.parentToolCallId,
 			entryId: input.entryId,
 		}),
 		toolName: input.toolName,
 		toolInput: input.toolInput ?? {},
 		isError: Boolean(input.isError),
+		...(input.terminalReason ? { terminalReason: input.terminalReason } : {}),
 	};
 	if (input.isError) {
 		payload.error = input.error ?? true;

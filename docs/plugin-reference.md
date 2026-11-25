@@ -368,6 +368,11 @@ Already-shown items are omitted from a new pack when the response carries valid 
 
 Ingest cursors persist as `codemem.cursor` metadata via `appendEntry`. Recall decisions do not.
 
+Codemem retains parent call IDs when Pi reports them. When a nested call has
+no `tool_result` hook, Codemem can record its terminal result from
+`tool_execution_end`. If Pi only reports an error, Codemem leaves its cause
+unknown.
+
 Pi's CLI boundary fallback shares one local extraction allowance across the entire invocation, including spool recovery: at most one batch of 100 saved events. Unprocessed events remain stored, and incomplete boundary receipts remain in the spool with their original target sequence for later processing. A queued Viewer acknowledgement transfers responsibility without local extraction. New memories can therefore be delayed while the Viewer is stopped. Pi's extension timeout remains separate from this event limit.
 
 ### Session search and history import

@@ -14,6 +14,7 @@ import {
 	extractToolEvents,
 	isInternalMemoryTool,
 	normalizeToolName,
+	projectAdapterToolEvent,
 } from "./ingest-events.js";
 import { isLowSignalObservation, normalizeObservation } from "./ingest-filters.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
@@ -34,13 +35,38 @@ import {
 	shouldRepairObserverResponse,
 } from "./ingest-xml-parser.js";
 import type { ObserverConfig } from "./observer-client.js";
-import { flushRawEvents } from "./raw-event-flush.js";
+import { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
 beforeEach(() => {
 	// Ingest persistence and parsing do not exercise embeddings or model downloads.
 	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+
+it("counts Code Mode children once and keeps memory wrapper content out of observer evidence", () => {
+	const wrapper = projectAdapterToolEvent(
+		{
+			event_type: "tool_result",
+			payload: {
+				tool_name: "execute",
+				execution_wrapper: true,
+				contains_memory_calls: true,
+				tool_input: { code: "memory from execution script" },
+				tool_output: "memory from execution result",
+			},
+		},
+		{},
+	);
+	expect(wrapper).not.toBeNull();
+	if (!wrapper) throw new Error("expected wrapper projection");
+	const events = [
+		{ type: "tool.execute.after", tool: "read", args: { path: "sample.ts" } },
+		{ type: "tool.execute.after", tool: "codemem_memory_get", result: "retrieved memory" },
+		wrapper,
+	];
+	expect(buildSessionContext(events).toolCount).toBe(2);
+	expect(extractToolEvents(events, 1000).map((event) => event.toolName)).toEqual(["read"]);
 });
 
 afterEach(() => {

@@ -119,6 +119,8 @@ describe("extension factory lifecycle", () => {
 			"message_end",
 			"tool_call",
 			"tool_result",
+			"tool_execution_start",
+			"tool_execution_end",
 			"session_before_compact",
 			"session_compact",
 			"session_compact_failed",
@@ -658,6 +660,7 @@ describe("tool_call identity", () => {
 			{
 				type: "tool_call",
 				toolCallId: "tc-stable-7",
+				parentToolCallId: "outer",
 				toolName: "read",
 				input: { path: "a.ts" },
 			},
@@ -667,6 +670,7 @@ describe("tool_call identity", () => {
 			{
 				type: "tool_result",
 				toolCallId: "tc-stable-7",
+				parentToolCallId: "outer",
 				toolName: "read",
 				content: [{ type: "text", text: "ok" }],
 				isError: false,
@@ -682,9 +686,44 @@ describe("tool_call identity", () => {
 		expect(toolPayloads[1]).toMatchObject({
 			piEvent: "tool_result",
 			toolCallId: "tc-stable-7",
+			parentToolCallId: "outer",
+		});
+		await handlers.get("tool_execution_end")?.[0]?.(
+			{ toolCallId: "tc-stable-7", parentToolCallId: "outer", toolName: "read", isError: false },
+			ctx,
+		);
+		expect(toolPayloads).toHaveLength(2);
+
+		const failedChild = {
+			toolCallId: "outer/2",
+			parentToolCallId: "outer",
+			toolName: "read",
+			isError: true,
+			result: { content: [{ type: "text", text: "aborted" }] },
+		};
+		await handlers.get("tool_execution_start")?.[0]?.(
+			{ ...failedChild, args: { path: "b.ts" } },
+			ctx,
+		);
+		await handlers.get("tool_execution_end")?.[0]?.(
+			failedChild,
+			createMockCtx({ sessionId: "other-session" }),
+		);
+		expect(toolPayloads).toHaveLength(2);
+		await handlers.get("tool_execution_end")?.[0]?.(failedChild, {
+			...ctx,
+			signal: AbortSignal.abort(),
+		});
+		expect(toolPayloads[2]).toMatchObject({
+			piEvent: "tool_result",
+			toolCallId: "outer/2",
+			parentToolCallId: "outer",
+			toolInput: { path: "b.ts" },
+			terminalReason: "unknown",
+			isError: true,
 		});
 		// Must not fall back to leaf entry id.
-		for (const p of toolPayloads) {
+		for (const p of toolPayloads.slice(0, 2)) {
 			expect(p.entryId).not.toBe("should-not-appear");
 			expect(p.toolCallId).toBe("tc-stable-7");
 		}
@@ -699,7 +738,7 @@ describe("tool_call identity", () => {
 			},
 			ctx,
 		);
-		expect(toolPayloads).toHaveLength(2);
+		expect(toolPayloads).toHaveLength(3);
 	});
 });
 

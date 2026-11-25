@@ -227,7 +227,26 @@ describe("shared runtime disposal durability", () => {
 		try {
 			await addPrompt(runtime, "message-1");
 			await runtime.handleToolResult(
-				{ sessionID: "session-1", tool: "read", args: { filePath: "fixture.ts" } },
+				{
+					sessionID: "session-1",
+					tool: "read",
+					args: { filePath: "fixture.ts" },
+					id: "child-1",
+					messageID: "assistant-1",
+					codemode: true,
+				},
+				{ output: "fixture", error: null },
+			);
+			await runtime.handleToolResult(
+				{
+					sessionID: "session-1",
+					tool: "execute",
+					id: "wrapper",
+					messageID: "assistant-1",
+					codemode: false,
+					executionWrapper: true,
+					containsMemoryCalls: true,
+				},
 				{ output: "fixture", error: null },
 			);
 			await runtime.dispose();
@@ -237,6 +256,22 @@ describe("shared runtime disposal durability", () => {
 			);
 			expect(envelopes.some((entry) => entry.event_type === "user_prompt")).toBe(true);
 			expect(envelopes.some((entry) => entry.event_type === "tool.execute.after")).toBe(true);
+			expect(envelopes.find((entry) => entry.event_type === "tool.execute.after")).toMatchObject({
+				payload: {
+					tool_call_id: "child-1",
+					message_id: "assistant-1",
+					codemode: true,
+				},
+			});
+			expect(envelopes).toContainEqual(
+				expect.objectContaining({
+					payload: expect.objectContaining({
+						tool_call_id: "wrapper",
+						execution_wrapper: true,
+						contains_memory_calls: true,
+					}),
+				}),
+			);
 			expect(envelopes.every((entry) => entry.host_generation === "v2")).toBe(true);
 		} finally {
 			await runtime.dispose();
