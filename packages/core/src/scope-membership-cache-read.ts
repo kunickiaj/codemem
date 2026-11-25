@@ -306,6 +306,22 @@ export function getPeerCachedScopeAuthorization(
 	return withoutUnprovableAuthority(getCachedScopeAuthorization(db, input));
 }
 
+/** What binds a managed check to a pinned peer: the pinned key, else the pinned fingerprint. */
+export type PinnedKeyBinding = { expectedPublicKey: string } | { expectedFingerprint: string };
+
+/**
+ * The binding a pin offers, or null when it holds neither a key nor a fingerprint.
+ * Passing no binding would accept a proof for any key, so callers fail closed on null.
+ */
+export function pinnedKeyBinding(
+	pin: { public_key: string | null; pinned_fingerprint: string | null } | undefined,
+): PinnedKeyBinding | null {
+	const publicKey = pin?.public_key?.trim();
+	if (publicKey) return { expectedPublicKey: publicKey };
+	const fingerprint = pin?.pinned_fingerprint?.trim();
+	return fingerprint ? { expectedFingerprint: fingerprint } : null;
+}
+
 /** Managed access needs a current-refresh proof, not merely historical cache rows,
  * and scopes whose authority cannot authorize peers are never authorized here.
  * This read neither creates evidence nor refreshes permissions or adds an expiry. */
@@ -315,6 +331,7 @@ export function getEffectiveCachedScopeAuthorization(
 		deviceId: string;
 		scopeId: string;
 		expectedPublicKey?: string;
+		expectedFingerprint?: string;
 	} & ScopeMembershipCacheLookupOptions,
 ): EffectiveCachedScopeAuthorization {
 	const cached = withoutUnprovableAuthority(readCachedScopeAuthorization(db, input));
@@ -322,7 +339,13 @@ export function getEffectiveCachedScopeAuthorization(
 		return { ...cached, keyId: null };
 	const keyId =
 		cached.membership &&
-		getRetainedScopeAuthorizationKey(db, cached.scope, cached.membership, input.expectedPublicKey);
+		getRetainedScopeAuthorizationKey(
+			db,
+			cached.scope,
+			cached.membership,
+			input.expectedPublicKey,
+			input.expectedFingerprint,
+		);
 	if (!keyId) return { ...cached, authorized: false, state: "not_authorized", keyId: null };
 	return { ...cached, keyId };
 }

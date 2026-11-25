@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { removePairingState } from "./pairing-removal.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
@@ -207,6 +208,10 @@ async function grantProvenScopeForSyncPass(
 
 /** Gives the granted scopes retained coordinator proofs, as a trusted refresh would. */
 async function proveScopesForSyncPass(db: InstanceType<typeof Database>): Promise<void> {
+	// The pins name the key the proofs are for.
+	db.prepare("UPDATE sync_peers SET public_key = ? WHERE public_key IS NULL").run(
+		CANONICAL_PUBLIC_KEY,
+	);
 	db.prepare(
 		`UPDATE replication_scopes SET coordinator_id = 'coordinator-1', group_id = 'group-1'
 		 WHERE authority_type = 'coordinator' AND coordinator_id IS NULL AND group_id IS NULL`,

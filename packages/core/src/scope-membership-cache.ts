@@ -35,6 +35,8 @@ export {
 	getEffectiveCachedScopeAuthorization,
 	getPeerCachedScopeAuthorization,
 	listCachedScopesForDevice,
+	type PinnedKeyBinding,
+	pinnedKeyBinding,
 	type ScopeMembershipAuthorizationState,
 	type ScopeMembershipCacheAuthority,
 	type ScopeMembershipCacheFreshness,

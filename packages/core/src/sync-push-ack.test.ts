@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { SecretScanner } from "./secret-scanner.js";
 import * as syncAuth from "./sync-auth.js";
@@ -69,9 +70,9 @@ beforeEach(async () => {
 	);
 	source
 		.prepare(
-			"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+			"INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
 		)
-		.run(peerId, "ack-fingerprint", timestamp);
+		.run(peerId, CANONICAL_PUBLIC_KEY, "ack-fingerprint", timestamp);
 	for (const id of [scopeId, unrelatedScopeId]) {
 		source
 			.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,

@@ -18,6 +18,7 @@ import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
 import {
 	getEffectiveCachedScopeAuthorization,
+	pinnedKeyBinding,
 	scopeAuthorityAllowsPeers,
 } from "./scope-membership-cache-read.js";
 import type { SecretScanner } from "./secret-scanner.js";
@@ -731,10 +732,12 @@ function servingPeerSnapshotFailure(
 		pin.pinned_fingerprint !== options.pinnedFingerprint
 	)
 		return "missing_scope";
+	const binding = pinnedKeyBinding(pin);
+	if (!binding) return "missing_scope";
 	const authorization = getEffectiveCachedScopeAuthorization(db, {
 		deviceId: options.peerDeviceId,
 		scopeId: options.scopeId,
-		expectedPublicKey: pin.public_key?.trim() || undefined,
+		...binding,
 	});
 	return scopeAuthorizationFailureReason(authorization);
 }
@@ -1529,18 +1532,48 @@ function sharedMemoryCount(db: Database): number {
 	);
 }
 
+function directSnapshotAccess(context: SyncExchangeContext, scopeId: string): ScopedSnapshotAccess {
+	return {
+		scopeId,
+		peerDeviceId: context.peerDeviceId,
+		localDeviceId: context.deviceId,
+		pinnedFingerprint: context.pinnedFingerprint,
+	};
+}
+
+/**
+ * The peer names the boundary of an initial or reset snapshot, so a scoped one
+ * gets the scoped pull's admission check again inside the write.
+ */
+function directSnapshotApplication(
+	context: SyncExchangeContext,
+	reset: SyncResetRequired,
+): BootstrapApplicationOptions {
+	if (reset.scope_id)
+		return scopedSnapshotApplication(context.db, directSnapshotAccess(context, reset.scope_id));
+	// An unscoped snapshot writes no content but still sets this peer's cursor and the
+	// default boundary, so it needs the pairing that was admitted. A first bootstrap has no proof.
+	return { ...RECEIVE_WINDOW_OPTIONS, refusal: () => pairingChangedSince(context) };
+}
+
+function pairingChangedSince(context: SyncExchangeContext): "missing_scope" | null {
+	const pinned = context.db
+		.prepare("SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
+		.pluck()
+		.get(context.peerDeviceId);
+	return pinned === context.pinnedFingerprint ? null : "missing_scope";
+}
+
 function snapshotAccessDenied(
 	context: SyncExchangeContext,
 	peer: NegotiatedPeerExchange,
 	reset: SyncResetRequired,
 ): SyncResult | null {
 	if (!reset.scope_id) return null;
-	const failure = scopedSnapshotAccessFailure(context.db, {
-		scopeId: reset.scope_id,
-		peerDeviceId: context.peerDeviceId,
-		localDeviceId: context.deviceId,
-		pinnedFingerprint: context.pinnedFingerprint,
-	});
+	const failure = scopedSnapshotAccessFailure(
+		context.db,
+		directSnapshotAccess(context, reset.scope_id),
+	);
 	if (!failure) return null;
 	const result = scopedSnapshotAccessDeniedResult(peer.baseUrl, reset, failure);
 	context.recordAttempt(context.db, context.peerDeviceId, {
@@ -1566,7 +1599,7 @@ async function finishInitialBootstrap(
 		items,
 		resetInfo,
 		context.scanner,
-		RECEIVE_WINDOW_OPTIONS,
+		directSnapshotApplication(context, resetInfo),
 	);
 	if (!bootstrap.ok) throw new Error("initial bootstrap apply failed");
 	const scoped =
@@ -1775,7 +1808,7 @@ async function performResetBootstrap(
 			items,
 			resetRequired,
 			context.scanner,
-			RECEIVE_WINDOW_OPTIONS,
+			directSnapshotApplication(context, resetRequired),
 		);
 		if (!bootstrapResult.ok) throw new Error("bootstrap apply failed");
 		recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
@@ -1976,14 +2009,15 @@ function requirePeerStillAuthorized(context: SyncExchangeContext, ops: Replicati
 		.get(context.peerDeviceId) as
 		| { pinned_fingerprint: string | null; public_key: string | null }
 		| undefined;
-	if (!pin || pin.pinned_fingerprint !== context.pinnedFingerprint)
+	const binding = pinnedKeyBinding(pin);
+	if (!pin || !binding || pin.pinned_fingerprint !== context.pinnedFingerprint)
 		throw new Error("peer access ended during push");
 	const scopeIds = new Set(ops.map(carriedScope).filter((scopeId) => scopeId !== null));
 	for (const scopeId of scopeIds) {
 		const authorization = getEffectiveCachedScopeAuthorization(context.db, {
 			deviceId: context.peerDeviceId,
 			scopeId,
-			expectedPublicKey: pin.public_key?.trim() || undefined,
+			...binding,
 		});
 		if (scopeAuthorizationFailureReason(authorization))
 			throw new Error("peer access ended during push");

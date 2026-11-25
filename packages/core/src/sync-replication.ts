@@ -38,6 +38,8 @@ import {
 	getCachedScopeAuthorization,
 	getEffectiveCachedScopeAuthorization,
 	getPeerCachedScopeAuthorization,
+	type PinnedKeyBinding,
+	pinnedKeyBinding,
 } from "./scope-membership-cache.js";
 import { LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-resolution.js";
 import { ensureMemoryScopeId } from "./scope-stamping.js";
@@ -4538,14 +4540,14 @@ function scopeRetiredBySender(
 function inboundSenderScopeFailure(
 	db: Database,
 	scopeId: string,
-	sender: { deviceId: string; publicKey: string | undefined },
+	sender: { deviceId: string; binding: PinnedKeyBinding },
 ): InboundScopeRejectionReason | null {
 	if (scopeId === DEFAULT_SYNC_SCOPE_ID) return null;
 	if (!scopeId) return "missing_scope";
 	const authorization = getEffectiveCachedScopeAuthorization(db, {
 		deviceId: sender.deviceId,
 		scopeId,
-		expectedPublicKey: sender.publicKey,
+		...sender.binding,
 	});
 	const authority = authorization.scope?.authority_type;
 	if (authority === "local") return null;
@@ -4554,18 +4556,21 @@ function inboundSenderScopeFailure(
 	return authorizationFailureReason(authorization, "sender_not_member");
 }
 
-/** The sender's pinned key, or null when its pairing has gone or changed since admission. */
+/**
+ * What binds the sender's proofs to its pin, or null when the pairing has gone,
+ * changed since admission, or holds neither a key nor a fingerprint.
+ */
 function admittedSenderKey(
 	db: Database,
 	deviceId: string,
 	pinnedFingerprint: string | undefined,
-): { publicKey: string | undefined } | null {
+): PinnedKeyBinding | null {
 	const pin = db
 		.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
 		.get(deviceId) as { pinned_fingerprint: string | null; public_key: string | null } | undefined;
 	if (!pin) return null;
 	if (pinnedFingerprint !== undefined && pin.pinned_fingerprint !== pinnedFingerprint) return null;
-	return { publicKey: pin.public_key?.trim() || undefined };
+	return pinnedKeyBinding(pin);
 }
 
 /**
@@ -4590,7 +4595,7 @@ function inboundSenderRejections(
 			? scopesWrittenByInboundOp(db, op, senderId)
 					.map((scopeId) => ({
 						scopeId,
-						reason: inboundSenderScopeFailure(db, scopeId, { deviceId: senderId, ...key }),
+						reason: inboundSenderScopeFailure(db, scopeId, { deviceId: senderId, binding: key }),
 					}))
 					.find((check) => check.reason !== null)
 			: { scopeId: null, reason: "sender_not_member" as const };
