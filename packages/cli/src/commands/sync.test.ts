@@ -687,7 +687,7 @@ describe("sync peers actual runtime signer diagnostics", () => {
 					scopes: Array<{ scope_id: string; bootstrapped: boolean }>;
 				}>;
 
-				// Assert: no false received claim, manual overlap/direct peer controls remain intact.
+				// Assert: no false received claim, and neither manual scopes nor the direct peer are reported.
 				expect(
 					payload
 						.find((peer) => peer.peer_device_id === "peer-device")

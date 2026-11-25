@@ -34,7 +34,10 @@ import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
-import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
+import {
+	getCachedScopeAuthorization,
+	getPeerCachedScopeAuthorization,
+} from "./scope-membership-cache.js";
 import { LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-resolution.js";
 import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
@@ -2161,7 +2164,7 @@ export function personalScopeGrantStatusForPeer(
 		return { scope_id: null, authorized: false, state: "missing_peer_or_actor" };
 	}
 	const scopeId = `personal:${actorId}`;
-	const auth = getCachedScopeAuthorization(db, { deviceId: peerDeviceId, scopeId });
+	const auth = getPeerCachedScopeAuthorization(db, { deviceId: peerDeviceId, scopeId });
 	return { scope_id: scopeId, authorized: auth.authorized, state: auth.state };
 }
 
@@ -2361,11 +2364,11 @@ function outboundScopeAllowed(
 	if (isProjectScopeWithdrawn(db, scopeId)) return false;
 	const peerId = cleanText(peerDeviceId);
 	if (!peerId) return false;
-	const peerAuth = getCachedScopeAuthorization(db, { deviceId: peerId, scopeId });
+	const peerAuth = getPeerCachedScopeAuthorization(db, { deviceId: peerId, scopeId });
 	if (!peerAuth.authorized || peerAuth.scope?.authority_type === "local") return false;
 	const localId = cleanText(localDeviceId);
 	if (!localId) return true;
-	const localAuth = getCachedScopeAuthorization(db, { deviceId: localId, scopeId });
+	const localAuth = getPeerCachedScopeAuthorization(db, { deviceId: localId, scopeId });
 	return localAuth.authorized && localAuth.scope?.authority_type !== "local";
 }
 
@@ -3140,7 +3143,7 @@ function validateInboundScopeOp(
 		requireReceiverMembership = false;
 	}
 
-	const senderAuth = getCachedScopeAuthorization(db, {
+	const senderAuth = getPeerCachedScopeAuthorization(db, {
 		deviceId: senderDeviceId,
 		scopeId: authorizationScopeId,
 	});
@@ -3158,7 +3161,7 @@ function validateInboundScopeOp(
 		if (!receiverDeviceId) {
 			return inboundScopeRejection(op, "receiver_not_member", peerDeviceId, opScopeId);
 		}
-		const receiverAuth = getCachedScopeAuthorization(db, {
+		const receiverAuth = getPeerCachedScopeAuthorization(db, {
 			deviceId: receiverDeviceId,
 			scopeId: authorizationScopeId,
 		});

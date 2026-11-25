@@ -16,7 +16,10 @@ import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-poli
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
-import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
+import {
+	getEffectiveCachedScopeAuthorization,
+	scopeAuthorityAllowsPeers,
+} from "./scope-membership-cache-read.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import {
@@ -685,6 +688,7 @@ function scopedSnapshotAccessFailure(
 	if (!scope) return "missing_scope";
 	if (scope.status !== "active") return "scope_inactive";
 	if (scope.authority_type === "local") return "missing_scope";
+	if (!scopeAuthorityAllowsPeers(scope.authority_type)) return "missing_scope";
 
 	const requiredEpoch = Number(scope.membership_epoch ?? 0);
 	for (const deviceId of [options.localDeviceId, options.peerDeviceId]) {

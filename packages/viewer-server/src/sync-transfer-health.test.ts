@@ -13,6 +13,7 @@ import {
 	recordSyncTransferReceipts,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import type { PeerSyncHealth } from "./application/sync-health.js";
 import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
 
@@ -95,10 +96,11 @@ function seedExchange(id: string, at = recent) {
 	}
 }
 
-function signedInboundFixture() {
+async function signedInboundFixture() {
 	const [localId] = ensureDeviceIdentity(store.db, {
 		keysDir: join(directory, "keys"),
 	});
+	const localKey = loadPublicKey(join(directory, "keys"));
 	const peerDb = connect(":memory:");
 	const keysDir = join(directory, "peer-keys");
 	let peerId: string;
@@ -109,7 +111,7 @@ function signedInboundFixture() {
 		peerDb.close();
 	}
 	const publicKey = loadPublicKey(keysDir);
-	if (!publicKey) throw new Error("Missing fixture public key");
+	if (!publicKey || !localKey) throw new Error("Missing fixture public key");
 	seedPeer(peerId);
 	store.db
 		.prepare(
@@ -118,8 +120,8 @@ function signedInboundFixture() {
 		.run(publicKey, fingerprintPublicKey(publicKey), peerId);
 	store.db
 		.prepare(`INSERT INTO replication_scopes
-			(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
-			VALUES ('health-shared', 'Health fixture', 'user', 'manual', 1, 'active', ?, ?)`)
+			(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+			VALUES ('health-shared', 'Health fixture', 'user', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`)
 		.run(now.toISOString(), now.toISOString());
 	for (const id of [localId, peerId]) {
 		store.db
@@ -128,6 +130,7 @@ function signedInboundFixture() {
 				VALUES ('health-shared', ?, 'member', 'active', 1, ?)`)
 			.run(id, now.toISOString());
 	}
+	await refreshTestScopeRows(store.db, { [localId]: localKey, [peerId]: publicKey });
 	const protocol = syncProtocolRoutes(() => store);
 	return {
 		peerId,
@@ -191,7 +194,7 @@ describe("signed scope rejection health", () => {
 		"records $rejection without importing content and clears it on a valid retry",
 		async (testCase) => {
 			// Arrange: a prior successful exchange must not hide a newly rejected receive.
-			const fixture = signedInboundFixture();
+			const fixture = await signedInboundFixture();
 			seedExchange(fixture.peerId);
 			const app = syncRoutes(() => store);
 			const body = { sync_capability: "scoped", ops: [signedHealthOperation(fixture.peerId)] };
@@ -249,7 +252,7 @@ describe("signed scope rejection health", () => {
 
 	it("does not record activity for an unauthenticated scope rejection attempt", async () => {
 		// Arrange: an attacker cannot mark a paired peer's receive as failed.
-		const fixture = signedInboundFixture();
+		const fixture = await signedInboundFixture();
 		seedExchange(fixture.peerId);
 		const before = store.db
 			.prepare("SELECT * FROM sync_transfer_observations ORDER BY source, direction")
@@ -274,7 +277,7 @@ describe("signed scope rejection health", () => {
 describe("authenticated inbound transfer accounting", () => {
 	it("counts a signed operation once across fresh-nonce retries and preserves unknown send", async () => {
 		// Arrange: old contact history must not supply directional proof.
-		const fixture = signedInboundFixture();
+		const fixture = await signedInboundFixture();
 		store.db
 			.prepare("UPDATE sync_peers SET last_sync_at = ? WHERE peer_device_id = ?")
 			.run("2026-10-01T00:00:00.000Z", fixture.peerId);
@@ -308,7 +311,7 @@ describe("authenticated inbound transfer accounting", () => {
 
 	it("does not fabricate successful receive evidence for a malformed signed batch", async () => {
 		// Arrange.
-		const fixture = signedInboundFixture();
+		const fixture = await signedInboundFixture();
 		const app = syncRoutes(() => store);
 		// Act.
 		const response = await fixture.post(JSON.stringify({ sync_capability: "scoped", ops: null }));
@@ -329,7 +332,7 @@ describe.each(["apply_failed", "scope_rejected"] as const)(
 			"retains the failure after applying %i inbound operations until its source retries",
 			async (count) => {
 				// Arrange: only the initiated pull can resolve its receive error.
-				const fixture = signedInboundFixture();
+				const fixture = await signedInboundFixture();
 				recordSyncTransferObservation(store.db, fixture.peerId, "receive", {
 					errorCode,
 					now: recent,

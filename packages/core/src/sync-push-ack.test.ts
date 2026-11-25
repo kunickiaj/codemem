@@ -860,3 +860,88 @@ it("rejects mixed apply results without reflecting private operation text", asyn
 	expect(result.error).not.toContain("receiver_apply_failed");
 	expect(JSON.stringify(result.addressErrors)).not.toContain(privateText);
 });
+
+it.each(["manual", "invite"])(
+	"does not push %s scope operations to a peer that is a member of the scope",
+	async (authorityType) => {
+		// Arrange: both devices are members of both scopes, and each scope has one operation.
+		source
+			.prepare("UPDATE replication_scopes SET authority_type = ? WHERE scope_id = ?")
+			.run(authorityType, unrelatedScopeId);
+		const ops = seedOps(2);
+		source
+			.prepare(`UPDATE replication_ops SET scope_id = ?,
+			payload_json = json_set(payload_json, '$.scope_id', ?) WHERE op_id = ?`)
+			.run(unrelatedScopeId, unrelatedScopeId, opAt(ops, 1).op_id);
+		const pushed: string[] = [];
+		const executor = executorFor(async (batch) => {
+			pushed.push(...batch.map((op) => op.op_id));
+			return [200, { errors: [] }];
+		});
+
+		// Act
+		const result = await runSync(executor);
+
+		// Assert
+		expect(result.ok).toBe(true);
+		expect(pushed).toEqual([opAt(ops, 0).op_id]);
+	},
+);
+
+it.each(
+	["manual", "invite"].flatMap((authorityType) => [
+		{ authorityType, pull: "operations" },
+		{ authorityType, pull: "snapshot" },
+	]),
+)(
+	"does not apply $pull a peer serves for an advertised $authorityType scope",
+	async ({ authorityType, pull }) => {
+		// Arrange: both devices are members, and the peer advertises the scope.
+		source
+			.prepare("UPDATE replication_scopes SET authority_type = ? WHERE scope_id = ?")
+			.run(authorityType, unrelatedScopeId);
+		// Without a cursor, the pass would start the scope from a snapshot.
+		if (pull === "snapshot")
+			source.prepare("DELETE FROM replication_cursors_v2 WHERE scope_id = ?").run(unrelatedScopeId);
+		const incoming = {
+			...opAt(seedOps(1), 0),
+			op_id: "peer-op",
+			entity_id: "peer-memory",
+			device_id: peerId,
+			clock_device_id: peerId,
+			scope_id: unrelatedScopeId,
+			payload_json: JSON.stringify({
+				kind: "discovery",
+				title: "Peer content",
+				visibility: "shared",
+				scope_id: unrelatedScopeId,
+			}),
+		};
+		source.prepare("DELETE FROM replication_ops").run();
+		const scopedReads: string[] = [];
+		const base = executorFor(async () => [200, { errors: [] }], { scoped: true });
+		const executor: RequestJsonExecutor = async (method, url, request) => {
+			const parsed = new URL(url);
+			if (method === "GET" && parsed.searchParams.get("scope_id") === unrelatedScopeId) {
+				scopedReads.push(parsed.pathname);
+				const page = { ...boundary, scope_id: unrelatedScopeId, reset_required: false };
+				if (parsed.pathname !== "/v1/ops") return [200, { ...page, items: [], has_more: false }];
+				return [200, { ...page, ops: [incoming], next_cursor: cursorOf(incoming), skipped: 0 }];
+			}
+			const [status, payload] = await base(method, url, request);
+			if (url.endsWith("/v1/status") && payload) {
+				payload.authorized_scopes = [
+					{ scope_id: unrelatedScopeId, sync_reset: { ...boundary, scope_id: unrelatedScopeId } },
+				];
+			}
+			return [status, payload];
+		};
+
+		// Act
+		await runSync(executor);
+
+		// Assert: nothing is applied, and no snapshot is even requested.
+		expect(source.prepare("SELECT count(*) FROM memory_items").pluck().get()).toBe(0);
+		if (pull === "snapshot") expect(scopedReads).toEqual([]);
+	},
+);

@@ -306,21 +306,18 @@ describe("retained scope evidence and direct grants", () => {
 	});
 
 	it.each(["manual", "invite"])(
-		"retains unmanaged %s direct-scope admission without coordinator evidence",
+		"refuses and does not advertise an unmanaged %s scope both devices are members of",
 		(authorityType) => {
-			// Arrange: direct scopes are not coordinator-managed memberships.
+			// Arrange: no refresh proves members of these scopes, so membership rows are all there is.
 			insertScope(SCOPE_ID, { authorityType });
 			grantMembership(SCOPE_ID, LOCAL_DEVICE);
 			grantMembership(SCOPE_ID, PEER_DEVICE);
 			// Act.
 			const admitted = parseSyncScopeRequest(SCOPE_ID, true, { db, ...keyContext });
-			db.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = ?").run(
-				PEER_DEVICE,
-			);
-			const revoked = parseSyncScopeRequest(SCOPE_ID, true, { db, ...keyContext });
-			// Assert: direct grants remain usable, but revocation still blocks admission.
-			expect(admitted.ok).toBe(true);
-			expect(revoked).toEqual({ ok: false, reason: "scope_inactive" });
+			const advertised = listAuthorizedScopesForPeer(db, keyContext);
+			// Assert: the same answer as a scope the peer is not a member of.
+			expect(admitted).toEqual({ ok: false, reason: "missing_scope" });
+			expect(advertised).toEqual([]);
 		},
 	);
 });
