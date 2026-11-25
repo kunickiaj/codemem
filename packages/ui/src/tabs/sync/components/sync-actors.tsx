@@ -185,17 +185,17 @@ function SyncActorRow({
 							disabled={renameBusy || mergeBusy}
 							onClick={async () => {
 								const confirmed = await openSyncConfirmDialog({
-									title: `Remove ${label}?`,
+									title: `Remove ${label} from all sharing?`,
 									description:
-										"Their devices stop receiving every Project shared with them, directly or through a Team. Memories already on those devices stay there. This can't be undone.",
-									confirmLabel: "Remove person",
+										"All of their devices lose access to every Project shared with them, including direct shares and access through any Team. Memories already on those devices stay there. This can't be undone.",
+									confirmLabel: "Remove from all sharing",
 									cancelLabel: "Keep",
 									tone: "danger",
 								});
 								if (confirmed) await onDeactivate(actorId);
 							}}
 						>
-							Remove
+							Remove from all sharing
 						</button>
 						<button
 							type="button"

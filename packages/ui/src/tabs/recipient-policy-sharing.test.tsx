@@ -2010,7 +2010,7 @@ describe("Sharing person settings", () => {
 				?.click(),
 		);
 		const remove = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Remove Brian",
+			(button) => button.textContent === "Remove Brian from all sharing",
 		);
 
 		expect(remove?.disabled).toBe(true);

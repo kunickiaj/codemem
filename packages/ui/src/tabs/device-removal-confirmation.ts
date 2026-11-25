@@ -118,7 +118,7 @@ function confirmDescription(
 	rejoin: DeviceRemovalPreview["rejoin"],
 	olderDeviceNames: readonly string[],
 ): string {
-	const body = `Devices that support Remove stop syncing with ${name} when they next check the coordinator. Memories already on ${name} stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other. ${rejoinDescription(name, rejoin)}`;
+	const body = `Devices that support Remove stop syncing with ${name} when they next check the coordinator. Your other devices keep syncing with each other, and Team membership stays the same. Memories already on ${name} stay there, and memories it already sent stay on your devices. ${rejoinDescription(name, rejoin)}`;
 	if (olderDeviceNames.length === 0) return body;
 	return `${body}\n\n${removalCompatibilityNotice(name, olderDeviceNames)}`;
 }
@@ -173,8 +173,8 @@ export async function runDeviceRemovalConfirmation(
 			title: `Remove ${name} from this device?`,
 			description:
 				reviewed.mode === "already_removed"
-					? `${name} is already removed from the coordinator. This device will clear its pairing and sync progress. Memories already on either device stay.`
-					: `This device stops syncing with ${name} and forgets its sync progress. Your other devices keep syncing with ${name} until you remove it on each of them. Memories already on either device stay.`,
+					? `${name} is already removed from the coordinator. This device will clear its pairing and sync progress. Team membership stays the same. Memories already on either device stay.`
+					: `This device stops syncing with ${name} and forgets its sync progress. Your other devices keep syncing with ${name} until you remove it on each of them. Team membership stays the same. Memories already on either device stay.`,
 			confirmLabel: "Remove from this device",
 			cancelLabel: "Keep device",
 			autoFocusAction: "cancel",
