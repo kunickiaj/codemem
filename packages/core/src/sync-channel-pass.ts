@@ -530,6 +530,7 @@ export async function syncScopedChannelOnce(
 			scanner: context.scanner,
 			limit: context.limit,
 			completedNullBaseline: hasCompletedSyncChannelBoundary(progress, status.scope.sync_reset),
+			pinnedFingerprint: context.peer.pinned_fingerprint,
 			sourceDeviceId: context.peerDeviceId,
 			validateCurrentAuthorization: () => checkAuthorization(context),
 			invalidateCompletedBoundary: () =>

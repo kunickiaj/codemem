@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import {
 	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
@@ -439,7 +440,7 @@ describe("a recipient applying a share of pre-sync memories", () => {
 	let owner: InstanceType<typeof Database>;
 	let receiver: InstanceType<typeof Database>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		owner = new Database(":memory:");
 		initTestSchema(owner);
 		// The recipient is a member of the new boundary alongside the owner.
@@ -447,8 +448,9 @@ describe("a recipient applying a share of pre-sync memories", () => {
 		initTestSchemaWithPeers(receiver, ["owner"]);
 		receiver
 			.prepare(`INSERT INTO replication_scopes(
-				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-			) VALUES ('managed', 'managed', 'team', 'coordinator', 1, 'active', ?, ?)`)
+				scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status,
+				created_at, updated_at
+			) VALUES ('managed', 'managed', 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`)
 			.run(now, now);
 		for (const deviceId of ["owner", "recipient"]) {
 			receiver
@@ -457,6 +459,7 @@ describe("a recipient applying a share of pre-sync memories", () => {
 				) VALUES ('managed', ?, 'member', 'active', 1, ?)`)
 				.run(deviceId, now);
 		}
+		await refreshTestScopeRows(receiver);
 	});
 
 	afterEach(() => {
@@ -515,13 +518,14 @@ describe("a recipient applying a share of pre-sync memories", () => {
 });
 
 /** A recipient that is a member of the new boundary alongside the owner. */
-function recipientStore(): InstanceType<typeof Database> {
+async function recipientStore(): Promise<InstanceType<typeof Database>> {
 	const receiver = new Database(":memory:");
 	initTestSchemaWithPeers(receiver, ["owner"]);
 	receiver
 		.prepare(`INSERT INTO replication_scopes(
-			scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-		) VALUES ('managed', 'managed', 'team', 'coordinator', 1, 'active', ?, ?)`)
+			scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status,
+			created_at, updated_at
+		) VALUES ('managed', 'managed', 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`)
 		.run(now, now);
 	for (const deviceId of ["owner", "recipient"]) {
 		receiver
@@ -530,6 +534,7 @@ function recipientStore(): InstanceType<typeof Database> {
 			) VALUES ('managed', ?, 'member', 'active', 1, ?)`)
 			.run(deviceId, now);
 	}
+	await refreshTestScopeRows(receiver);
 	return receiver;
 }
 
@@ -616,10 +621,10 @@ describe("an owner sending cleanups recipients can't accept", () => {
 		expect(sent.allowed).toEqual(opIds(sideOps(owner, "new")));
 	});
 
-	it("lets a recipient stuck on that cleanup pull again without a rejection", () => {
+	it("lets a recipient stuck on that cleanup pull again without a rejection", async () => {
 		// Arrange: the recipient already holds the memory and refuses its cleanup.
 		reassignFromLocalDefault(owner, insertPreSyncMemory(owner));
-		const receiver = recipientStore();
+		const receiver = await recipientStore();
 		const validation = { inboundScopeValidation: { peerDeviceId: "owner" } };
 		applyReplicationOps(receiver, sideOps(owner, "new"), "recipient", undefined, validation);
 		const stuck = applyReplicationOps(receiver, ops(owner), "recipient", undefined, validation);

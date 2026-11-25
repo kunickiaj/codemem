@@ -36,6 +36,7 @@ import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import {
 	getCachedScopeAuthorization,
+	getEffectiveCachedScopeAuthorization,
 	getPeerCachedScopeAuthorization,
 } from "./scope-membership-cache.js";
 import { LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-resolution.js";
@@ -2961,6 +2962,11 @@ export interface InboundScopeRejection {
 export interface InboundScopeValidationOptions {
 	peerDeviceId?: string | null;
 	enabled?: boolean;
+	/**
+	 * The peer's pinned fingerprint when the exchange was admitted. The batch
+	 * writes nothing if the pairing has gone or pins another key since.
+	 */
+	pinnedFingerprint?: string;
 }
 
 export interface ApplyReplicationOpsOptions extends LocalCreationContext {
@@ -3297,6 +3303,10 @@ export function rejectInboundScopeFailures(
 				? []
 				: validateInboundScopeBatch(db, ops, localDeviceId, options);
 	if (rejections.length === 0) return null;
+	return inboundRejectionResult(db, rejections);
+}
+
+function inboundRejectionResult(db: Database, rejections: InboundScopeRejection[]): ApplyResult {
 	const result = emptyApplyResult();
 	result.rejected = rejections.length;
 	result.rejections = rejections;
@@ -4372,8 +4382,222 @@ function rejectedInboundBatch(
 	localDeviceId: string,
 	options: ApplyReplicationOpsOptions,
 ): ApplyResult | null {
-	if (!options.inboundScopeValidation) return null;
-	return rejectUnretiredScopeFailures(db, ops, localDeviceId, options.inboundScopeValidation);
+	const validation = options.inboundScopeValidation;
+	// These hold for every apply, whatever capability or validation mode was negotiated.
+	const sender = cleanText(validation?.peerDeviceId ?? options.activityPeerDeviceId);
+	const structural = [
+		...unsupportedEntityRejections(ops, sender),
+		...(sender ? localOnlyRowRejections(db, ops, localDeviceId, sender) : []),
+	];
+	if (structural.length > 0) return inboundRejectionResult(db, structural);
+	if (!validation) return null;
+	const rejected = rejectUnretiredScopeFailures(db, ops, localDeviceId, validation);
+	if (rejected) return rejected;
+	const senderRejections = inboundSenderRejections(db, ops, localDeviceId, validation);
+	return senderRejections.length > 0 ? inboundRejectionResult(db, senderRejections) : null;
+}
+
+/** Op types the apply dispatches on, all of which write memory rows. */
+const MEMORY_WRITE_OP_TYPES = new Set([
+	"upsert",
+	"delete",
+	REASSIGN_SCOPE_OP_TYPE,
+	ACCESS_CLEANUP_OP_TYPE,
+]);
+
+/**
+ * The apply handles these op types only for memory rows, and would treat any
+ * other entity as one. Such an op is refused before dispatch. Other op types
+ * are skipped without a write.
+ */
+function unsupportedEntityRejections(
+	ops: ReplicationOp[],
+	sender: string | null,
+): InboundScopeRejection[] {
+	return ops
+		.filter((op) => MEMORY_WRITE_OP_TYPES.has(op.op_type) && op.entity_type !== "memory_item")
+		.map((op) => inboundScopeRejection(op, "scope_mismatch", sender, null));
+}
+
+function isLocalOnlyScope(db: Database, scopeId: string | null): boolean {
+	const scope = cleanText(scopeId);
+	if (!scope || scope === DEFAULT_SYNC_SCOPE_ID) return true;
+	const row = db
+		.prepare("SELECT authority_type FROM replication_scopes WHERE scope_id = ?")
+		.get(scope) as { authority_type: string | null } | undefined;
+	return row?.authority_type === "local";
+}
+
+/**
+ * A local-only row is a replica the sender originated: this device recorded no
+ * creation of it, and its stored origin names the sender, not this device or
+ * the literal local label. Cleanup notices apply the same test.
+ */
+function senderOriginatedReplica(
+	db: Database,
+	importKey: string,
+	origin: string | null,
+	sender: { deviceId: string; localDeviceId: string },
+): boolean {
+	const stored = cleanText(origin);
+	if (!stored || stored !== sender.deviceId) return false;
+	if (stored === sender.localDeviceId || stored === "local") return false;
+	return !hasRecordedLocalCreation(db, importKey);
+}
+
+/**
+ * Rows in the local default scope or a local scope never sync, and an update,
+ * delete or move matches rows by import key alone. A peer may change such a
+ * row only when it is the peer's own replica, as in moving a memory it shared
+ * before scopes existed. A row this device created is never changed.
+ */
+function localOnlyRowRejections(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	sender: string,
+): InboundScopeRejection[] {
+	const stored = db.prepare(
+		"SELECT scope_id, origin_device_id FROM memory_items WHERE import_key = ?",
+	);
+	const applied = db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?");
+	const rejections: InboundScopeRejection[] = [];
+	for (const op of ops) {
+		if (!MEMORY_WRITE_OP_TYPES.has(op.op_type) || op.op_type === ACCESS_CLEANUP_OP_TYPE) continue;
+		// The apply skips these without a write.
+		if (op.device_id === localDeviceId || applied.get(op.op_id)) continue;
+		if (retirementBlocksMemoryOp(db, op) || opInWithdrawnScope(db, op)) continue;
+		const deviceId = sender;
+		const rows = stored.all(op.entity_id) as Array<{
+			scope_id: string | null;
+			origin_device_id: string | null;
+		}>;
+		const blocked = rows.find(
+			(row) =>
+				isLocalOnlyScope(db, row.scope_id) &&
+				!senderOriginatedReplica(db, op.entity_id, row.origin_device_id, {
+					deviceId,
+					localDeviceId,
+				}),
+		);
+		// The rejection names only the op's own scope, so it never reveals where the row is stored.
+		if (blocked)
+			rejections.push(
+				inboundScopeRejection(op, "sender_not_member", deviceId, cleanText(op.scope_id)),
+			);
+	}
+	return rejections;
+}
+
+/**
+ * Every scope whose rows an inbound op changes: its own, and the scope of every
+ * row here with the same import key, since an update
+ * or delete matches rows by import key alone. A scope the sender, as the
+ * memory's verified source, retired the memory from is left out: its copy may
+ * still be moved to where the source now writes it. A cleanup notice follows
+ * its own origin rule instead.
+ */
+function scopesWrittenByInboundOp(db: Database, op: ReplicationOp, senderId: string): string[] {
+	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) return [];
+	// A move's op scope is its new scope on the new side and its old scope on the old side.
+	// The other scope counts only through a copy stored there, below: a device in the
+	// destination may not know the older scope, and the old side writes nothing new.
+	const scopes = new Set([cleanText(op.scope_id) ?? ""]);
+	const existing = db
+		.prepare("SELECT DISTINCT scope_id FROM memory_items WHERE import_key = ?")
+		.pluck()
+		.all(op.entity_id) as Array<string | null>;
+	for (const scopeId of existing) {
+		const stored = cleanText(scopeId) ?? DEFAULT_SYNC_SCOPE_ID;
+		if (!scopeRetiredBySender(db, op.entity_id, stored, senderId)) scopes.add(stored);
+	}
+	return [...scopes];
+}
+
+function scopeRetiredBySender(
+	db: Database,
+	entityId: string,
+	scopeId: string,
+	senderId: string,
+): boolean {
+	if (!hasMemoryScopeRetirement(db, entityId)) return false;
+	return Boolean(
+		db
+			.prepare(`SELECT 1 FROM memory_scope_retirements
+			 WHERE entity_id = ? AND retired_scope_id = ? AND source_device_id = ?`)
+			.get(entityId, scopeId, senderId),
+	);
+}
+
+/**
+ * Why the sender may not change rows in this scope, or null. The sender needs
+ * effective authorization with a retained proof for its pinned key, as the
+ * serving routes require of a pushing peer. The local default and local
+ * scopes have their own checks above, and this device's checks are unchanged.
+ */
+function inboundSenderScopeFailure(
+	db: Database,
+	scopeId: string,
+	sender: { deviceId: string; publicKey: string | undefined },
+): InboundScopeRejectionReason | null {
+	if (scopeId === DEFAULT_SYNC_SCOPE_ID) return null;
+	if (!scopeId) return "missing_scope";
+	const authorization = getEffectiveCachedScopeAuthorization(db, {
+		deviceId: sender.deviceId,
+		scopeId,
+		expectedPublicKey: sender.publicKey,
+	});
+	const authority = authorization.scope?.authority_type;
+	if (authority === "local") return null;
+	// Unknown authorities fail closed, as the serving routes treat them.
+	if (authority && !["coordinator", "manual", "invite"].includes(authority)) return "missing_scope";
+	return authorizationFailureReason(authorization, "sender_not_member");
+}
+
+/** The sender's pinned key, or null when its pairing has gone or changed since admission. */
+function admittedSenderKey(
+	db: Database,
+	deviceId: string,
+	pinnedFingerprint: string | undefined,
+): { publicKey: string | undefined } | null {
+	const pin = db
+		.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+		.get(deviceId) as { pinned_fingerprint: string | null; public_key: string | null } | undefined;
+	if (!pin) return null;
+	if (pinnedFingerprint !== undefined && pin.pinned_fingerprint !== pinnedFingerprint) return null;
+	return { publicKey: pin.public_key?.trim() || undefined };
+}
+
+/**
+ * Applies to every inbound batch from a peer, whatever capability or
+ * validation mode the exchange negotiated: the sender must still be paired
+ * as admitted and be authorized for every scope each op would change.
+ */
+function inboundSenderRejections(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	options: InboundScopeValidationOptions,
+): InboundScopeRejection[] {
+	const expectedPeer = cleanText(options.peerDeviceId);
+	const rejections: InboundScopeRejection[] = [];
+	for (const op of ops) {
+		if (!expectedPeer && op.device_id === localDeviceId) continue;
+		if (retirementBlocksMemoryOp(db, op) || opInWithdrawnScope(db, op)) continue;
+		const senderId = expectedPeer ?? cleanText(op.device_id) ?? "";
+		const key = admittedSenderKey(db, senderId, options.pinnedFingerprint);
+		const failure = key
+			? scopesWrittenByInboundOp(db, op, senderId)
+					.map((scopeId) => ({
+						scopeId,
+						reason: inboundSenderScopeFailure(db, scopeId, { deviceId: senderId, ...key }),
+					}))
+					.find((check) => check.reason !== null)
+			: { scopeId: null, reason: "sender_not_member" as const };
+		if (failure?.reason)
+			rejections.push(inboundScopeRejection(op, failure.reason, senderId, failure.scopeId));
+	}
+	return rejections;
 }
 
 /** Apply authenticated inbound operations using the caller's scanner and scope policy. */

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toJson } from "./db.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { SecretScanner } from "./secret-scanner.js";
 import {
 	applyReplicationOps,
@@ -36,6 +37,27 @@ import {
 } from "./sync-replication.js";
 import { initTestSchema, initTestSchemaWithPeers, insertTestSession } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
+
+/** Grants a coordinator scope to the devices with retained proofs, as a trusted refresh would. */
+async function grantProvenScope(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+	deviceIds: string[],
+): Promise<void> {
+	const now = "2026-01-01T00:00:00Z";
+	db.prepare(
+		`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id, group_id,
+		 membership_epoch, status, created_at, updated_at)
+		 VALUES (?, ?, 'team', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`,
+	).run(scopeId, scopeId, now, now);
+	for (const deviceId of deviceIds) {
+		db.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+			 VALUES (?, ?, 'member', 'active', 1, ?)`,
+		).run(scopeId, deviceId, now);
+	}
+	await refreshTestScopeRows(db);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2826,8 +2848,8 @@ describe("applyReplicationOps", () => {
 		expect(recordedScopes).toEqual([{ scope_id: "acme-work" }, { scope_id: "client-a" }]);
 	});
 
-	it("applies scoped inbound ops only when sender and receiver are members", () => {
-		grantScope("acme-work", ["dev-remote", "dev-local"]);
+	it("applies scoped inbound ops only when sender and receiver are members", async () => {
+		await grantProvenScope(db, "acme-work", ["dev-remote", "dev-local"]);
 		const op = makeReplicationOp({
 			scope_id: "acme-work",
 			payload_json: toJson({
@@ -3244,8 +3266,8 @@ describe("applyReplicationOps", () => {
 		expect(logged).toEqual({ op_id: inbound.op_id, reason });
 	});
 
-	it("rejects a replayed duplicate op after revocation instead of idempotently accepting it", () => {
-		grantScope("acme-work", ["dev-remote", "dev-local"]);
+	it("rejects a replayed duplicate op after revocation instead of idempotently accepting it", async () => {
+		await grantProvenScope(db, "acme-work", ["dev-remote", "dev-local"]);
 		const op = makeReplicationOp({ op_id: "replayed-op", scope_id: "acme-work" });
 		expect(applyWithScopeValidation(op).applied).toBe(1);
 		grantScope("acme-work", ["dev-remote"], { status: "revoked", membershipEpoch: 2 });
@@ -3256,8 +3278,8 @@ describe("applyReplicationOps", () => {
 		expect(replay.rejections[0]?.reason).toBe("stale_epoch");
 	});
 
-	it("allows non-personal null-payload deletes when the op row carries an authorized scope", () => {
-		grantScope("acme-work", ["dev-remote", "dev-local"]);
+	it("allows non-personal null-payload deletes when the op row carries an authorized scope", async () => {
+		await grantProvenScope(db, "acme-work", ["dev-remote", "dev-local"]);
 		const insert = makeReplicationOp({ scope_id: "acme-work" });
 		expect(applyWithScopeValidation(insert).applied).toBe(1);
 		const deleteOp = makeReplicationOp({

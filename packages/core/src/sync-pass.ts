@@ -674,7 +674,7 @@ function hasLocalRowsInScope(db: Database, scopeId: string): boolean {
 
 function scopedSnapshotAccessFailure(
 	db: Database,
-	options: { scopeId: string; peerDeviceId: string; localDeviceId: string },
+	options: ScopedSnapshotAccess,
 ): SyncResetRequired["reason"] | null {
 	const scope = db
 		.prepare(
@@ -709,7 +709,34 @@ function scopedSnapshotAccessFailure(
 		if (Number(membership.membership_epoch ?? 0) < requiredEpoch) return "stale_epoch";
 	}
 
-	return null;
+	return servingPeerSnapshotFailure(db, options);
+}
+
+/**
+ * The serving peer must still be paired as when the exchange was admitted, and
+ * hold a retained proof for its pinned key, as a peer pushing to this device does.
+ */
+function servingPeerSnapshotFailure(
+	db: Database,
+	options: ScopedSnapshotAccess,
+): SyncResetRequired["reason"] | null {
+	const pin = db
+		.prepare("SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ?")
+		.get(options.peerDeviceId) as
+		| { pinned_fingerprint: string | null; public_key: string | null }
+		| undefined;
+	if (!pin) return "missing_scope";
+	if (
+		options.pinnedFingerprint !== undefined &&
+		pin.pinned_fingerprint !== options.pinnedFingerprint
+	)
+		return "missing_scope";
+	const authorization = getEffectiveCachedScopeAuthorization(db, {
+		deviceId: options.peerDeviceId,
+		scopeId: options.scopeId,
+		expectedPublicKey: pin.public_key?.trim() || undefined,
+	});
+	return scopeAuthorizationFailureReason(authorization);
 }
 
 function scopedSnapshotAccessDeniedResult(
@@ -780,6 +807,7 @@ async function runScopedSync(
 		dbPath?: string;
 		scanner?: SecretScanner;
 		limit: number;
+		pinnedFingerprint: string;
 	},
 ): Promise<{ results: SyncScopeResult[]; totalOpsIn: number }> {
 	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes);
@@ -799,6 +827,7 @@ async function runScopedSync(
 			dbPath: options.dbPath,
 			scanner: options.scanner,
 			limit: options.limit,
+			pinnedFingerprint: options.pinnedFingerprint,
 		});
 		results.push(scopeResult);
 		if (!scopeResult.ok)
@@ -846,6 +875,17 @@ interface ScopedSnapshotAccess {
 	scopeId: string;
 	peerDeviceId: string;
 	localDeviceId: string;
+	/** The pairing the exchange was admitted with. */
+	pinnedFingerprint?: string;
+}
+
+function scopedSnapshotAccess(options: ScopedPeerPullOptions): ScopedSnapshotAccess {
+	return {
+		scopeId: options.scope.scope_id,
+		peerDeviceId: options.peerDeviceId,
+		localDeviceId: options.deviceId,
+		pinnedFingerprint: options.pinnedFingerprint,
+	};
 }
 
 /** Snapshot admission is checked again inside the apply transaction, after the download. */
@@ -890,6 +930,8 @@ interface ScopedPeerPullOptions {
 	limit: number;
 	/** Explicit per-peer completion overrides the legacy marker, including on boundary changes. */
 	completedNullBaseline?: boolean;
+	/** The pairing the exchange was admitted with. */
+	pinnedFingerprint: string;
 	sourceDeviceId?: string;
 	validateCurrentAuthorization?: () => void;
 	/** Must finish synchronously before the inbound cursor can be cleared. */
@@ -948,7 +990,7 @@ async function syncOneScope(
 	const { peerDeviceId, baseUrl, deviceId, scope, keysDir, dbPath, scanner, limit } = options;
 	const bootstrapOptions = scopedBootstrapOptions(options);
 	const scopeId = scope.scope_id;
-	const access = { scopeId, peerDeviceId, localDeviceId: deviceId };
+	const access = scopedSnapshotAccess(options);
 	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scopeId);
 	const hasNullBaselineBootstrapMarker = lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
 	const nullBaselineBootstrapStillCurrent = scopedNullBaselineIsCurrent({
@@ -1239,7 +1281,7 @@ async function syncOneScope(
 			};
 		}
 
-		const applyOptions = scopedInboundOptions(peerDeviceId, keysDir);
+		const applyOptions = scopedInboundOptions(peerDeviceId, keysDir, options.pinnedFingerprint);
 		const applied = applyReplicationOps(db, ops, deviceId, scanner, applyOptions);
 		if (applied.rejected > 0) {
 			const reason = applied.rejections[0]?.reason ?? "scope_rejected";
@@ -1353,11 +1395,15 @@ export function syncPassPreflight(db: Database): void {
 
 type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
 
-function scopedInboundOptions(peerDeviceId: string, keysDir: string | undefined) {
+function scopedInboundOptions(
+	peerDeviceId: string,
+	keysDir: string | undefined,
+	pinnedFingerprint: string,
+) {
 	return {
 		...RECEIVE_WINDOW_OPTIONS,
 		activityPeerDeviceId: peerDeviceId,
-		inboundScopeValidation: { peerDeviceId },
+		inboundScopeValidation: { peerDeviceId, pinnedFingerprint },
 		keysDir,
 	};
 }
@@ -1493,6 +1539,7 @@ function snapshotAccessDenied(
 		scopeId: reset.scope_id,
 		peerDeviceId: context.peerDeviceId,
 		localDeviceId: context.deviceId,
+		pinnedFingerprint: context.pinnedFingerprint,
 	});
 	if (!failure) return null;
 	const result = scopedSnapshotAccessDeniedResult(peer.baseUrl, reset, failure);
@@ -1533,6 +1580,7 @@ async function finishInitialBootstrap(
 					dbPath: context.dbPath,
 					scanner: context.scanner,
 					limit: context.limit,
+					pinnedFingerprint: context.pinnedFingerprint,
 				})
 			: { results: [], totalOpsIn: 0 };
 	const ok = scoped.results.every((result) => result.ok);
@@ -1816,10 +1864,12 @@ async function applyPulledDefaultOps(
 	pulled: PulledDefaultOps,
 	lastApplied: string | null,
 ): Promise<{ applied: AppliedReplicationOps; lastApplied: string | null }> {
+	const admitted = {
+		peerDeviceId: context.peerDeviceId,
+		pinnedFingerprint: context.pinnedFingerprint,
+	};
 	const inboundScopeValidation =
-		peer.capabilities.negotiated === "unsupported"
-			? { peerDeviceId: context.peerDeviceId, enabled: false }
-			: { peerDeviceId: context.peerDeviceId };
+		peer.capabilities.negotiated === "unsupported" ? { ...admitted, enabled: false } : admitted;
 	const applied = applyReplicationOps(context.db, pulled.ops, context.deviceId, context.scanner, {
 		...RECEIVE_WINDOW_OPTIONS,
 		activityPeerDeviceId: context.peerDeviceId,
@@ -2049,6 +2099,7 @@ async function finishIncrementalExchange(
 					dbPath: context.dbPath,
 					scanner: context.scanner,
 					limit: context.limit,
+					pinnedFingerprint: context.pinnedFingerprint,
 				})
 			: { results: [], totalOpsIn: 0 };
 	const allScopesOk = scoped.results.every((result) => result.ok);

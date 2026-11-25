@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { isMemoryScopeRetired, recordMemoryScopeRetirement } from "./memory-scope-retirement.js";
 import { getVerifiedMemorySource } from "./memory-source-identity.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import {
 	applyReplicationOps,
 	filterReplicationOpsForSyncWithStatus,
@@ -10,7 +11,7 @@ import {
 	recordReplicationOp,
 	recordScopeReassignment,
 } from "./sync-replication.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, insertTestPeer } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 let db: InstanceType<typeof Database>;
@@ -110,7 +111,7 @@ it.each([false, true])(
 	},
 );
 
-it("preserves unrelated unscoped legacy apply and valid destination mutations", () => {
+it("preserves unrelated unscoped legacy apply and valid destination mutations", async () => {
 	const original = queued();
 	db.transaction(() => retire())();
 	db.prepare("DELETE FROM replication_ops").run();
@@ -125,6 +126,7 @@ it("preserves unrelated unscoped legacy apply and valid destination mutations", 
 	};
 	expect(applyReplicationOps(db, [legacy], "receiver").applied).toBe(1);
 	grantScope("new", ["source", "receiver"]);
+	await pairSourceWithProvenScopes();
 	const destination = {
 		...original,
 		op_id: "destination",
@@ -146,9 +148,10 @@ it("preserves unrelated unscoped legacy apply and valid destination mutations", 
 	).toBe("new");
 });
 
-it("checks reassignment sides and cleanup targets without denying a valid destination side", () => {
+it("checks reassignment sides and cleanup targets without denying a valid destination side", async () => {
 	grantScope("old", ["source", "receiver"]);
 	grantScope("new", ["source", "receiver"]);
+	await pairSourceWithProvenScopes();
 	db.prepare("UPDATE memory_items SET metadata_json = ?").run(JSON.stringify({ scope_id: "old" }));
 	db.transaction(() => {
 		retire();
@@ -228,12 +231,23 @@ function queued(): ReplicationOp {
 }
 
 function grantScope(scopeId: string, devices: string[]) {
-	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
-		VALUES (?, ?, 'user', 'coordinator', 1, 'active', ?, ?)`).run(scopeId, scopeId, now, now);
+	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+		VALUES (?, ?, 'user', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`).run(
+		scopeId,
+		scopeId,
+		now,
+		now,
+	);
 	for (const device of devices) {
 		db.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
 			VALUES (?, ?, 'member', 'active', 1, ?)`).run(scopeId, device, now);
 	}
+}
+
+/** The sender's pairing, and retained proofs for the granted scopes from a trusted refresh. */
+async function pairSourceWithProvenScopes() {
+	insertTestPeer(db, "source");
+	await refreshTestScopeRows(db);
 }
 
 it("does not transfer old recipients to the destination or suppress unrelated old-scope content", () => {

@@ -783,7 +783,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -890,7 +890,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-err", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-err", "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -968,7 +968,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-scoped", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-scoped", "local-device-id"]);
 
 		const statusResponse = {
 			fingerprint: "fp-scoped",
@@ -1131,7 +1131,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-scoped-merge", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-scoped-merge", "local-device-id"]);
 
 		const statusResponse = {
 			fingerprint: "fp-scoped-merge",
@@ -1366,7 +1366,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "broken-scope", ["peer-mixed", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "broken-scope", ["peer-mixed", "local-device-id"]);
 
 		const statusResponse = {
 			fingerprint: "fp-mixed",
@@ -1460,7 +1460,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "oss", ["peer-connectivity", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "oss", ["peer-connectivity", "local-device-id"]);
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
 				200,
@@ -1540,8 +1540,8 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-multi", "local-device-id"]);
-		grantScopeForSyncPass(db, "oss-projects", ["peer-multi", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-multi", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "oss-projects", ["peer-multi", "local-device-id"]);
 
 		const scopes = ["acme-work", "oss-projects"] as const;
 		const itemsPerScope = 3;
@@ -1655,9 +1655,9 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "alpha", ["peer-canary", "local-device-id"]);
-		grantScopeForSyncPass(db, "beta", ["peer-canary", "local-device-id"]);
-		grantScopeForSyncPass(db, "gamma", ["peer-canary", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "alpha", ["peer-canary", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "beta", ["peer-canary", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "gamma", ["peer-canary", "local-device-id"]);
 
 		const scopes = ["alpha", "beta", "gamma"] as const;
 		const itemsPerScope = 12;
@@ -1792,7 +1792,7 @@ describe("syncOnce", () => {
 			"X-Codemem-Recipient": "peer-cursor",
 			"X-Codemem-Signature": "v3:test-signature",
 		});
-		grantScopeForSyncPass(db, "acme-work", ["peer-cursor", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-cursor", "local-device-id"]);
 
 		const statusResponse = {
 			fingerprint: "fp-cursor",
@@ -1906,7 +1906,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-reset", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-reset", "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -2001,7 +2001,7 @@ describe("syncOnce", () => {
 				"ed25519 AAAA",
 			]);
 			vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-			grantScopeForSyncPass(db, "acme-work", [`peer-${reason}`, "local-device-id"]);
+			await grantProvenScopeForSyncPass(db, "acme-work", [`peer-${reason}`, "local-device-id"]);
 
 			vi.spyOn(syncHttpClient, "requestJson")
 				.mockResolvedValueOnce([
@@ -2180,7 +2180,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "empty-work", ["peer-empty-scope", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "empty-work", ["peer-empty-scope", "local-device-id"]);
 
 		const requestSpy = vi
 			.spyOn(syncHttpClient, "requestJson")
@@ -2276,7 +2276,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "empty-work", ["peer-empty-baseline", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "empty-work", ["peer-empty-baseline", "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -2441,7 +2441,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -2590,7 +2590,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-legacy", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-legacy", "local-device-id"]);
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
 				200,
@@ -2689,7 +2689,7 @@ describe("syncOnce", () => {
 		vi.spyOn(vectorMigration, "queueVectorBackfillForIncrementalSync").mockImplementation(() => {
 			throw new Error("queue write failed");
 		});
-		grantScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
 		const fallbackSpy = vi
 			.spyOn(vectors, "bestEffortMaintainVectorsForSyncFallback")
 			.mockResolvedValue({ deleted: 0, inserted: 1, errors: [] });
@@ -3104,7 +3104,7 @@ describe("syncOnce auto-bootstrap", () => {
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		grantScopeForSyncPass(db, "acme-work", [peerDeviceId, "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", [peerDeviceId, "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
 			200,
@@ -3166,7 +3166,7 @@ describe("syncOnce auto-bootstrap", () => {
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		grantScopeForSyncPass(db, "acme-work", [peerDeviceId, "local-device-id"]);
+		await grantProvenScopeForSyncPass(db, "acme-work", [peerDeviceId, "local-device-id"]);
 		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
 			200,
 			{
@@ -3344,6 +3344,16 @@ function pinFailureCategoryPeer(
 	}
 }
 
+/** The pinned peer with retained proofs for its scopes, as a trusted refresh writes them. */
+async function pinProvenFailureCategoryPeer(
+	db: InstanceType<typeof Database>,
+	peerDeviceId: string,
+	scopeIds: string[],
+): Promise<void> {
+	pinFailureCategoryPeer(db, peerDeviceId, scopeIds);
+	await proveScopesForSyncPass(db);
+}
+
 function scopedStatusPayload(peerDeviceId: string, scopeIds: string[]): Record<string, unknown> {
 	return {
 		fingerprint: `fp-${peerDeviceId}`,
@@ -3406,7 +3416,7 @@ describe("sync_attempts.failure_category", () => {
 		["other", [MISSING_SCOPE_RESPONSE, new Error("fetch failed")]],
 	] as const)("records %s from scoped pass outcomes", async (category, scopeResponses) => {
 		const scopeIds = scopeResponses.map((_, index) => `scope-${index}`);
-		pinFailureCategoryPeer(db, "peer-scoped", scopeIds);
+		await pinProvenFailureCategoryPeer(db, "peer-scoped", scopeIds);
 		const request = vi
 			.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([200, scopedStatusPayload("peer-scoped", scopeIds)])
@@ -3586,7 +3596,7 @@ describe("syncOnce with a Project this device withdrew from", () => {
 			.mockImplementationOnce(scopedPull);
 	}
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		db = new Database(":memory:");
 		initTestSchema(db);
 		addSyncTables(db);
@@ -3596,7 +3606,7 @@ describe("syncOnce with a Project this device withdrew from", () => {
 		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([LOCAL, "ed25519 AAAA"]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
 		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
+		await grantProvenScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
 	});
 
 	afterEach(() => {
