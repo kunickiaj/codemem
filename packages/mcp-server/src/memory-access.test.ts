@@ -15,6 +15,7 @@ import {
 	seedProvenMixedScopeFixture,
 } from "../../core/src/managed-scope-test-fixtures.js";
 import { createCodememMcpServer } from "./index.js";
+import { callCodememToolLocally } from "./local-call.js";
 import { withMcpRetrieval } from "./mcp-retrieval-ledger.js";
 import {
 	forgetMemoryForMcp,
@@ -1395,6 +1396,58 @@ describe("MCP memory access scope guards", () => {
 			expect(response.id).toBe(atlasId);
 		});
 	});
+});
+
+it("keeps compact local hydration scoped and records only the returned IDs in order", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "codemem-mcp-compact-"));
+	let openedStore: MemoryStore | undefined;
+	vi.stubEnv("CODEMEM_DEVICE_ID", "mcp-scope-device");
+	try {
+		const { store, sessionId } = await createScopeAccessFixture(directory);
+		openedStore = store;
+		const atlasId = insertScopedMemory(store, { sessionId, scopeId: "scope-a", title: "Atlas" });
+		const otherSessionId = insertSession(store.db, { cwd: directory, project: "other" });
+		const otherId = insertOwnedScopedMemory(store, {
+			sessionId: otherSessionId,
+			scopeId: "scope-a",
+			title: "Other",
+		});
+		const hiddenId = insertScopedMemory(store, { sessionId, scopeId: "scope-b", title: "Hidden" });
+		const args = { ids: [otherId, hiddenId, 999_999, atlasId], compact: true };
+
+		const result = await callCodememToolLocally(store, "memory_get_observations", args, {
+			envProject: "atlas",
+		});
+		expect(result).toEqual({
+			ok: true,
+			result: {
+				items: [expect.objectContaining({ id: otherId }), expect.objectContaining({ id: atlasId })],
+			},
+		});
+		expect(queryRetrievalAttempts(store.db, { surface: "mcp_get_observations" })).toMatchObject([
+			{
+				deliveryStatus: "handed_off",
+				selectedCount: 2,
+				exposures: [
+					{ memoryId: otherId, handoffStatus: "handed_off" },
+					{ memoryId: atlasId, handoffStatus: "handed_off" },
+				],
+			},
+		]);
+
+		const filtered = await callCodememToolLocally(store, "memory_get_observations", {
+			...args,
+			project: "atlas",
+		});
+		expect(filtered).toEqual({
+			ok: true,
+			result: { items: [expect.objectContaining({ id: atlasId })] },
+		});
+	} finally {
+		openedStore?.close();
+		rmSync(directory, { recursive: true, force: true });
+		vi.unstubAllEnvs();
+	}
 });
 
 function insertSession(

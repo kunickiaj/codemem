@@ -1,3 +1,4 @@
+import { MEMORY_TOOL_CONTRACTS } from "@codemem/memory-tools";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { errorContent, jsonContent } from "../content.js";
@@ -20,6 +21,7 @@ const getInputSchema = {
 
 const getObservationsInputSchema = {
 	ids: z.array(z.number().int()).max(200).describe("Memory IDs to fetch"),
+	compact: z.boolean().optional().describe("Return only id, kind, title, body_text, and project"),
 	...filterSchema,
 };
 
@@ -76,8 +78,7 @@ function registerGetObservationsTool(server: McpServer, context: ToolRegistratio
 	server.registerTool(
 		"memory_get_observations",
 		{
-			description:
-				"Fetch multiple memories by exact IDs. Does not inherit the default project. Missing or filtered-out IDs are omitted from results, not reported as not_found.",
+			description: MEMORY_TOOL_CONTRACTS.memory_get_observations.description,
 			inputSchema: z.object(getObservationsInputSchema),
 			outputSchema: toolOutputSchemas.memory_get_observations,
 			annotations: toolAnnotations.memory_get_observations,
@@ -97,7 +98,18 @@ function registerGetObservationsTool(server: McpServer, context: ToolRegistratio
 				},
 				(filters) => {
 					const items = getManyForMcp(context.store, args.ids, filters);
-					return { value: { items }, memoryIds: items.map((item) => item.id), filters };
+					const value = {
+						items: args.compact
+							? items.map(({ id, kind, title, body_text, project }) => ({
+									id,
+									kind,
+									title,
+									body_text,
+									project,
+								}))
+							: items,
+					};
+					return { value, memoryIds: items.map((item) => item.id), filters };
 				},
 			);
 		},

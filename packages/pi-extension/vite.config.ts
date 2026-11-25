@@ -7,6 +7,7 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
+			"@codemem/memory-tools": resolve(import.meta.dirname, "../memory-tools/src/index.ts"),
 		},
 		conditions: ["source"],
 	},
@@ -22,7 +23,7 @@ export default defineConfig({
 				/^node:/,
 				"typebox",
 				// Never bundle core — runtime must stay thin.
-				/^@codemem\//,
+				/^@codemem\/(?!memory-tools$)/,
 			],
 		},
 		outDir: "dist",

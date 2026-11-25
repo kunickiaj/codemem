@@ -4,9 +4,22 @@
  * Errors return as tool results (never throw through pi's loop).
  */
 
+import {
+	clampSearchIndexLimit,
+	projectSearchIndex,
+	SEARCH_INDEX_DEFAULT_LIMIT,
+	SEARCH_INDEX_DESCRIPTION,
+	SEARCH_INDEX_MAX_LIMIT,
+} from "@codemem/memory-tools";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { errorResult, jsonResult, type PiCodememClient, type ToolResultContent } from "./client.js";
+import {
+	errorResult,
+	jsonResult,
+	type PiCodememClient,
+	type ToolResultContent,
+	textResult,
+} from "./client.js";
 import { MEMORY_LEARN_PAYLOAD } from "./learn.js";
 import {
 	apiUrl,
@@ -238,19 +251,9 @@ async function searchMemoriesHttp(
 	return jsonResult({ items });
 }
 
-function compactIndexItems(parsed: unknown): unknown[] {
-	return firstList(asRecord(parsed).items, parsed).map((item) => {
-		const row = asRecord(item);
-		return {
-			id: row.id,
-			kind: row.kind,
-			title: row.title,
-			score: row.score,
-			created_at: row.created_at,
-			session_id: row.session_id,
-			metadata: row.metadata,
-		};
-	});
+function compactIndexResult(parsed: unknown, limit: number): ToolResultContent {
+	const value = projectSearchIndex(firstList(asRecord(parsed).items), limit);
+	return textResult(JSON.stringify(value), { value });
 }
 
 function distillCliArgs(params: Record<string, unknown>, body: Record<string, unknown>): string[] {
@@ -426,7 +429,7 @@ async function executeMemorySearchIndex(
 	const params = paramsOf(rawParams);
 	return withToolError("memory_search_index", async () => {
 		const query = String(params.query ?? "");
-		const limit = Number(params.limit ?? 8);
+		const limit = clampSearchIndexLimit(Number(params.limit ?? SEARCH_INDEX_DEFAULT_LIMIT));
 		const project = projectOrClient(params as Record<string, unknown>, client);
 		const kind = typeof params.kind === "string" ? params.kind : undefined;
 		return httpOrCli(
@@ -438,14 +441,20 @@ async function executeMemorySearchIndex(
 					signal,
 				});
 				if (!res.ok) return null;
-				return jsonResult(res.data);
+				return compactIndexResult(res.data, limit);
 			},
 			async () => {
-				const args = ["memory", "search", query, "--json", "-n", String(limit)];
-				if (project) args.push("--project", project);
-				if (kind) args.push("--kind", kind);
-				const { stdout } = await client.execCodemem(args, { signal });
-				return jsonResult({ items: compactIndexItems(parseCliJson(stdout)) });
+				// Preserve the CLI search command's precedence for CODEMEM_PROJECT.
+				const cliProject = process.env.CODEMEM_PROJECT?.trim() || project;
+				const { stdout } = await client.execCodemem(["memory-tool", "memory_search_index"], {
+					signal,
+					stdin: JSON.stringify({ query, limit, project: cliProject, kind }),
+				});
+				const outcome = asRecord(parseCliJson(stdout));
+				if (outcome.ok !== true) {
+					throw new Error(String(outcome.error ?? "Invalid CLI response"));
+				}
+				return compactIndexResult(outcome.result, limit);
 			},
 		);
 	});
@@ -943,12 +952,16 @@ function registerMemorySearchIndex(
 		tool({
 			name: "memory_search_index",
 			label: "Memory Search Index",
-			description:
-				"Search memories by text query. Returns compact index entries (no body) for browsing.",
+			description: SEARCH_INDEX_DESCRIPTION,
 			parameters: Type.Object({
 				query: Type.String({ description: "Search query" }),
 				limit: Type.Optional(
-					Type.Integer({ minimum: 1, maximum: 50, default: 8, description: "Max results" }),
+					Type.Integer({
+						minimum: 1,
+						maximum: SEARCH_INDEX_MAX_LIMIT,
+						default: SEARCH_INDEX_DEFAULT_LIMIT,
+						description: "Max results",
+					}),
 				),
 				...filterProps,
 			}),

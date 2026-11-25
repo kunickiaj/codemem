@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { connect } from "@codemem/core";
 import { expect, it } from "vitest";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -17,6 +18,7 @@ type ToolResult = {
 type Reply = {
 	jsonrpc: string;
 	id: number;
+	wireBytes: number;
 	result?: Record<string, unknown>;
 	error?: { code: number; message: string };
 };
@@ -24,6 +26,7 @@ type Reply = {
 function startFixture() {
 	const directory = mkdtempSync(join(tmpdir(), "codemem-sdk-stdio-"));
 	const config = join(directory, "config.json");
+	const databasePath = join(directory, "memory.sqlite");
 	writeFileSync(config, "{}");
 	// Match the source CLI runner's source condition without a pnpm/tsx wrapper
 	// process, so final cleanup owns exactly the process serving the protocol.
@@ -39,7 +42,7 @@ function startFixture() {
 			resolve(workspaceRoot, "packages/cli/src/index.ts"),
 			"mcp",
 			"--db-path",
-			join(directory, "memory.sqlite"),
+			databasePath,
 		],
 		{
 			cwd: directory,
@@ -72,7 +75,7 @@ function startFixture() {
 		try {
 			const reply = JSON.parse(line) as Reply;
 			if (reply.jsonrpc !== "2.0") protocolFailures.push(line);
-			pending.get(reply.id)?.resolve(reply);
+			pending.get(reply.id)?.resolve({ ...reply, wireBytes: Buffer.byteLength(line) + 1 });
 		} catch {
 			protocolFailures.push(line);
 		}
@@ -109,6 +112,7 @@ function startFixture() {
 		}
 	};
 	return {
+		databasePath,
 		request,
 		async initialize() {
 			const reply = await request("initialize", {
@@ -143,6 +147,88 @@ function startFixture() {
 		},
 	};
 }
+
+it("keeps index JSON small and hydrates full and compact rows on stdio", async () => {
+	const fixture = startFixture();
+	try {
+		await fixture.initialize();
+		const call = (name: string, args: Record<string, unknown>) =>
+			fixture.request("tools/call", { name, arguments: args });
+		const project = "compact-index-fixture";
+		const body = `indexsentinel exact stored body ${"with 💡 and newline\n".repeat(64)}end.`;
+		const remembered = await call("memory_remember", {
+			kind: "discovery",
+			title: "Fixture",
+			body,
+			project,
+		});
+		const id = (remembered.result as ToolResult).structuredContent?.id;
+		if (typeof id !== "number") throw new Error("Missing fixture memory ID");
+		const title = `Fixture ${'💡\u0001\\"'.repeat(100)}`;
+		const observerMetadata = { facts: ["observer detail ".repeat(12_000)] };
+		const db = connect(fixture.databasePath);
+		try {
+			db.prepare("UPDATE memory_items SET title = ?, metadata_json = ? WHERE id = ?").run(
+				title,
+				JSON.stringify(observerMetadata),
+				id,
+			);
+		} finally {
+			db.close();
+		}
+		await call("memory_remember", {
+			kind: "discovery",
+			title: "Outside the project",
+			body,
+			project: "other-index-fixture",
+		});
+
+		const reply = await call("memory_search_index", {
+			query: "indexsentinel",
+			limit: 8,
+			project,
+		});
+		const result = reply.result as ToolResult;
+		const fallback = result.content[0]?.text ?? "";
+		const structuredBytes = Buffer.byteLength(JSON.stringify(result.structuredContent));
+		const fallbackBytes = Buffer.byteLength(fallback);
+		expect(result.structuredContent).toEqual(JSON.parse(fallback));
+		expect(result.structuredContent).toEqual({
+			items: [
+				{
+					id,
+					kind: "discovery",
+					title: expect.stringMatching(/^Fixture .*…$/su),
+					score: expect.any(Number),
+					created_at: expect.any(String),
+					session_id: expect.any(Number),
+					metadata: {},
+				},
+			],
+		});
+		expect(structuredBytes).toBeLessThanOrEqual(512);
+		expect(fallbackBytes).toBeLessThanOrEqual(512);
+		expect(reply.wireBytes).toBeGreaterThan(structuredBytes + fallbackBytes);
+		expect(reply.wireBytes).toBeLessThanOrEqual(1_536);
+
+		const hydrated = await call("memory_get_observations", { ids: [id] });
+		const full = hydrated.result as ToolResult;
+		expect(full.structuredContent).toEqual(JSON.parse(full.content[0]?.text ?? ""));
+		expect(full.structuredContent).toMatchObject({
+			items: [{ id, title, body_text: body, metadata_json: observerMetadata }],
+		});
+
+		const compactReply = await call("memory_get_observations", { ids: [id], compact: true });
+		const compact = compactReply.result as ToolResult;
+		expect(compact.structuredContent).toEqual(JSON.parse(compact.content[0]?.text ?? ""));
+		expect(compact.structuredContent).toEqual({
+			items: [{ id, kind: "discovery", title, body_text: body, project }],
+		});
+		expect(compactReply.wireBytes).toBeLessThan(hydrated.wireBytes / 10);
+	} finally {
+		await fixture.dispose();
+	}
+}, 30_000);
 
 it("negotiates legacy stdio through the source CLI, lists tools, calls one, and exits on EOF", async () => {
 	// Arrange: raw protocol messages keep this acceptance test independent of SDK imports.

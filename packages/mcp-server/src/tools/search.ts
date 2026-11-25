@@ -1,4 +1,10 @@
 import type { MemoryResult, PackRenderOptions } from "@codemem/core";
+import {
+	projectSearchIndex,
+	SEARCH_INDEX_DEFAULT_LIMIT,
+	SEARCH_INDEX_DESCRIPTION,
+	SEARCH_INDEX_MAX_LIMIT,
+} from "@codemem/memory-tools";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
@@ -15,7 +21,13 @@ const searchInputSchema = {
 
 const searchIndexInputSchema = {
 	query: z.string().describe("Search query"),
-	limit: z.number().int().min(1).max(50).default(8).describe("Max results"),
+	limit: z
+		.number()
+		.int()
+		.min(1)
+		.max(SEARCH_INDEX_MAX_LIMIT)
+		.default(SEARCH_INDEX_DEFAULT_LIMIT)
+		.describe("Max results"),
 	...filterSchema,
 };
 
@@ -124,8 +136,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 	server.registerTool(
 		"memory_search_index",
 		{
-			description:
-				"Keyword-search memories when you know exact terms or identifiers. Returns compact entries with IDs and titles, without bodies; expand selected IDs with memory_get or memory_get_observations.",
+			description: SEARCH_INDEX_DESCRIPTION,
 			inputSchema: z.object(searchIndexInputSchema),
 			outputSchema: toolOutputSchemas.memory_search_index,
 			annotations: toolAnnotations.memory_search_index,
@@ -145,20 +156,13 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
-					const items = store.search(args.query, args.limit, filters);
+					const value = projectSearchIndex(
+						store.search(args.query, args.limit, filters),
+						args.limit,
+					);
 					return {
-						value: {
-							items: items.map((m: MemoryResult) => ({
-								id: m.id,
-								kind: m.kind,
-								title: m.title,
-								score: m.score,
-								created_at: m.created_at,
-								session_id: m.session_id,
-								metadata: m.metadata,
-							})),
-						},
-						memoryIds: items.map((item) => item.id),
+						value,
+						memoryIds: value.items.map((item) => item.id),
 						filters,
 					};
 				},

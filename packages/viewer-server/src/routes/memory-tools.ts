@@ -17,7 +17,6 @@ import type {
 	DistillContextDocument,
 	MemoryFilters,
 	MemoryItemResponse,
-	MemoryResult,
 	MemoryStore,
 } from "@codemem/core";
 import {
@@ -37,6 +36,11 @@ import {
 	searchPiSessions,
 	toJson,
 } from "@codemem/core";
+import {
+	clampSearchIndexLimit,
+	projectSearchIndex,
+	SEARCH_INDEX_DEFAULT_LIMIT,
+} from "@codemem/memory-tools";
 import { Hono } from "hono";
 import { parseJsonObjectBody, queryInt } from "../helpers.js";
 
@@ -314,18 +318,6 @@ function buildDistillFilters(
 		return { ok: false, error: "project cannot be combined with all_projects" };
 	}
 	return buildFilters(args, args.all_projects ? null : defaultProject);
-}
-
-function mapSearchIndexItem(m: MemoryResult) {
-	return {
-		id: m.id,
-		kind: m.kind,
-		title: m.title,
-		score: m.score,
-		created_at: m.created_at,
-		session_id: m.session_id,
-		metadata: m.metadata,
-	};
 }
 
 function expandMemories(
@@ -630,11 +622,10 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 		if (!query.trim()) {
 			return c.json({ error: "query required" }, 400);
 		}
-		const limit = clampInt(queryInt(c.req.query("limit"), 8), 1, 50);
+		const limit = clampSearchIndexLimit(queryInt(c.req.query("limit"), SEARCH_INDEX_DEFAULT_LIMIT));
 		const parsedFilters = parseGetFilters((name) => c.req.query(name));
 		if (!parsedFilters.ok) return c.json({ error: parsedFilters.error }, 400);
-		const items = store.search(query, limit, parsedFilters.filters).map(mapSearchIndexItem);
-		return c.json({ items });
+		return c.json(projectSearchIndex(store.search(query, limit, parsedFilters.filters), limit));
 	});
 
 	// POST /api/memories/explain — twin of memory_explain

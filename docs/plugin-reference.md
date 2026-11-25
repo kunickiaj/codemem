@@ -406,6 +406,12 @@ Import `--json` preserves the top-level import counters and adds `extraction: {r
 | `memory_expand` | Memories by ID plus nearby timeline |
 | `memory_distill_candidates` | Recurring memories as reviewable candidates |
 
+`memory_search_index` returns up to `limit` ranked entries after widening (default 8, maximum 50). Widened rows fill space after primary results. If primary results fill `limit`, use a higher limit or search another project explicitly. Each entry contains `id`, `kind`, `title`, `score`, `created_at`, `session_id`, and `metadata` with widening labels when present. Use `memory_get` or `memory_get_observations` with the returned IDs to read the full title, body, and stored metadata. The IDs refer to the same store that returned the index.
+
+The compact `{items}` JSON fits within 5 KiB at the default limit and 30 KiB at the maximum. The JSON string limits, including quotes and escapes, are 256 UTF-8 bytes for `title` and 48 each for `kind`, `created_at`, and `metadata.source_project`. Clipped fields end in `…`. The limits apply to the compact JSON itself. MCP sends that data in both `structuredContent` and a text fallback, so the wire response is larger.
+
+Pi's CLI fallback for this tool uses `codemem memory-tool memory_search_index` to keep bodies and metadata out of the subprocess output. Upgrade the CLI with the extension to use this fallback.
+
 Native HTTP proves `GET /api/prompt-pack-profile` matches this process's `db_path` and `identity_target`, then resends both on the query. An unproven or mismatched viewer falls back to the CLI and is not trusted on 2xx. `memory_remember` is not replayed after an ambiguous HTTP timeout, connection reset, or 5xx. An unproven viewer, a disabled viewer, connect failures, and 4xx may still fall back. Reads may fall back more broadly.
 
 Config and env, including `CODEMEM_PI_*` and shared inject knobs, are in the [package README configuration table](../packages/pi-extension/README.md#configuration). `CODEMEM_PI_HOOK_HTTP_TIMEOUT_MS` (default 5000) is the ingest and native-tool HTTP timeout, not the pack-fetch timeout.
@@ -545,6 +551,15 @@ native-tool roster remain at 14 tools.
 ### MCP result and annotation contract
 
 All 15 tools publish the standard optional `outputSchema` and `annotations` fields; `packages/mcp-server/src/tool-contracts.ts` is the authority. On success, `structuredContent` is an object that validates against the declared schema, and `content[0].text` remains compact JSON for compatible text-only clients. The two representations are identical after JSON serialization, so `undefined` properties are omitted.
+
+In MCP and native OpenCode tools, `memory_get_observations` accepts
+`{"ids":[123,456],"compact":true}`. Its `{items}` contains only `id`, `kind`,
+`title`, `body_text`, and the stored `project` (which can be `null`). Titles and
+bodies are returned in full. Omit `compact` or set it to `false` to get full rows
+with metadata. Both modes keep the requested ID order and apply the same access
+rules and explicit filters. Neither inherits a default project. Missing,
+inaccessible, and filtered-out IDs are omitted. Pi's native batch tool keeps
+its existing full response.
 
 Check `isError` before reading `structuredContent`: tool execution errors set `isError: true` and omit `structuredContent` so SDKs do not validate an error against the success schema. Registered-tool input validation and business errors remain tool execution errors.
 

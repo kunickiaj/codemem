@@ -664,37 +664,6 @@ describe("memory tool routes", () => {
 	});
 
 	describe("GET /api/memories/search_index (memory_search_index)", () => {
-		it("returns compact index entries without body text", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
-			try {
-				const store = ensureStore();
-				seedMemories(store);
-				const res = await app.request("/api/memories/search_index?query=Database&limit=5");
-				expect(res.status).toBe(200);
-				const body = (await res.json()) as {
-					items: Array<Record<string, unknown>>;
-				};
-				expect(body.items.length).toBeGreaterThan(0);
-				const first = body.items[0];
-				expect(first).toEqual(
-					expect.objectContaining({
-						id: expect.any(Number),
-						kind: expect.any(String),
-						title: expect.any(String),
-						score: expect.any(Number),
-						created_at: expect.any(String),
-						session_id: expect.any(Number),
-						metadata: expect.any(Object),
-					}),
-				);
-				// Compact index: no body / body_text field (MCP parity)
-				expect(first).not.toHaveProperty("body");
-				expect(first).not.toHaveProperty("body_text");
-			} finally {
-				cleanup();
-			}
-		});
-
 		it("requires query", async () => {
 			const { app, cleanup } = createTestApp();
 			try {
@@ -882,4 +851,40 @@ describe("memory tool routes", () => {
 			}
 		});
 	});
+});
+
+it("caps ranked rows and excludes stored metadata and bodies from GET /api/memories/search_index", async () => {
+	const { app, ensureStore, cleanup } = createTestApp();
+	try {
+		const store = ensureStore();
+		const { ids } = seedMemories(store);
+		const id = ids[0];
+		store.db
+			.prepare("UPDATE memory_items SET metadata_json = ? WHERE id = ?")
+			.run(JSON.stringify({ facts: ["oversized".repeat(10_000)] }), id);
+		const [first] = store.search("Database", 1);
+		const extra = store.search("Auth", 1);
+		if (!first || extra.length !== 1) throw new Error("Missing ranked fixtures");
+		vi.spyOn(store, "search").mockReturnValueOnce([first, ...extra]);
+
+		const res = await app.request("/api/memories/search_index?query=Database&limit=1");
+		expect(res.status).toBe(200);
+		const text = await res.text();
+		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+		expect(JSON.parse(text)).toEqual({
+			items: [
+				{
+					id,
+					kind: first.kind,
+					title: first.title,
+					score: first.score,
+					created_at: first.created_at,
+					session_id: first.session_id,
+					metadata: {},
+				},
+			],
+		});
+	} finally {
+		cleanup();
+	}
 });
