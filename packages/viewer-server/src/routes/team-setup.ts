@@ -40,7 +40,6 @@ import {
 	LegacyTeamSetupAdditiveConvergenceError,
 	type LegacyTeamSetupDeviceRemovalEvidence,
 	LegacyTeamSetupDeviceRemovalsUnavailableError,
-	LegacyTeamSetupRemovedDeviceAccessError,
 	LegacyTeamSetupRosterCapacityError,
 	legacyTeamCandidateId,
 	legacyTeamCandidateProjectInventory,
@@ -236,12 +235,11 @@ function completionFailureHandlers(options: CompletionReconciliationOptions) {
 	return { handledGroupIds, handleFailure, reportFailure };
 }
 
-// None of these failures proves divergence, so the active Team must not be contained.
+// Neither failure proves divergence, so the active Team must not be contained.
 function isNonDivergentApplyFailure(error: unknown): boolean {
 	return (
 		error instanceof LegacyTeamSetupAdditiveConvergenceError ||
-		error instanceof LegacyTeamSetupDeviceRemovalsUnavailableError ||
-		error instanceof LegacyTeamSetupRemovedDeviceAccessError
+		error instanceof LegacyTeamSetupDeviceRemovalsUnavailableError
 	);
 }
 

@@ -2851,18 +2851,16 @@ function deviceAccess(store: MemoryStore, deviceId: string) {
 	};
 }
 
-/** The coordinator removed the device, but this machine has not applied that yet. */
+/**
+ * The coordinator removed the device, but this machine still binds it and
+ * caches its scope proof. No pin is stored, so the Viewer removal rule
+ * applies to it by device ID.
+ */
 async function stillServedRemovedDevice(store: MemoryStore) {
 	const installed = await installCompletedTeam(store);
 	const deviceId = installed.removal.device_id;
-	store.db
-		.prepare(
-			`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
-			 VALUES (?, 'ssh-ed25519 fixture', 'fixture-pin', ?)`,
-		)
-		.run(deviceId, NOW);
 	await retainCachedTeamScopeMembership(store, deviceId);
-	expect(deviceAccess(store, deviceId)).toEqual({ binding: "active", pinned: 1, proofs: 1 });
+	expect(deviceAccess(store, deviceId)).toEqual({ binding: "active", pinned: 0, proofs: 1 });
 	return installed;
 }
 
@@ -2893,25 +2891,46 @@ describe("Team setup terminal routing ends a verified-removed device's local acc
 	);
 
 	it.each(["coordinator record", "publication conflict"] as const)(
-		"writes nothing and returns a retryable failure when ending access fails: %s",
+		"rolls back the cleanup and quarantines when ending access fails, then again on retry: %s",
 		async (branch) => {
 			const store = new MemoryStore(":memory:");
 			try {
-				// Arrange: the pairing delete fails inside the keep-active replay.
+				// Arrange: ending the binding fails inside the keep-active replay.
 				const { manifest, removal } = await stillServedRemovedDevice(store);
-				store.db.exec(`CREATE TRIGGER fail_pairing_delete BEFORE DELETE ON sync_peers
-					BEGIN SELECT RAISE(ABORT, 'pairing delete failed'); END`);
+				store.db.exec(`CREATE TRIGGER fail_binding_end BEFORE UPDATE ON identity_devices
+					WHEN NEW.status = 'removed' BEGIN SELECT RAISE(ABORT, 'binding end failed'); END`);
 				const listRemovals = vi.fn(async () => [removal]);
 				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
-				const before = databaseSnapshot(store);
 
 				// Act
-				const detail = await app.request(REMOVAL_DETAIL_PATH);
+				const failed = await app.request(REMOVAL_DETAIL_PATH);
+				const afterFailure = {
+					team: teamStatus(store),
+					access: deviceAccess(store, removal.device_id),
+				};
+				store.db.exec("DROP TRIGGER fail_binding_end");
+				const retried = await app.request(REMOVAL_DETAIL_PATH);
 
-				// Assert
-				expect(detail.status).toBe(503);
-				expect(await detail.json()).toEqual({ error: "team_setup_completion_unavailable" });
-				expect(databaseSnapshot(store)).toEqual(before);
+				// Assert: the cleanup wrote nothing and the Team is quarantined, also on retry.
+				const recordBranch = branch === "coordinator record";
+				expect(failed.status).toBe(409);
+				expect(await failed.json()).toEqual({
+					error: recordBranch ? "team_setup_completion_invalid" : "team_setup_completion_conflict",
+				});
+				expect(afterFailure).toEqual({
+					team: { status: "inactive", migration_state: "needs_setup" },
+					access: { binding: "active", pinned: 0, proofs: 1 },
+				});
+				// A record retry fails the roster check again; after containment the
+				// conflict branch shows setup as needed.
+				if (recordBranch) {
+					expect(retried.status).toBe(409);
+					expect(await retried.json()).toEqual({ error: "team_setup_completion_invalid" });
+				} else {
+					expect(retried.status).toBe(200);
+					expect(await retried.json()).toMatchObject({ candidate: { status: "needs_setup" } });
+				}
+				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
 			} finally {
 				store.close();
 			}

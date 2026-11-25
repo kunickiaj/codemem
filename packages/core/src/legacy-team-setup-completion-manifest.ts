@@ -42,6 +42,7 @@ import {
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
+import { localRemovedDeviceIds } from "./removed-device-local-ids.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
 import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
 
@@ -106,20 +107,6 @@ export class LegacyTeamSetupDeviceRemovalsUnavailableError extends Error {
 	constructor() {
 		super("team_setup_completion_unavailable");
 		this.name = "LegacyTeamSetupDeviceRemovalsUnavailableError";
-	}
-}
-
-/**
- * The coordinator proved a device's removal, but this machine could not end
- * that device's local access. The attempt wrote nothing and the Team is not
- * reported as kept. Retrying can succeed; nothing shows the policy diverged.
- */
-export class LegacyTeamSetupRemovedDeviceAccessError extends Error {
-	readonly code = "team_setup_completion_unavailable" as const;
-
-	constructor() {
-		super("team_setup_completion_unavailable");
-		this.name = "LegacyTeamSetupRemovedDeviceAccessError";
 	}
 }
 
@@ -1179,32 +1166,49 @@ function replayAfterVerifiedRemoval(
 				removal.fingerprint === device.key_fingerprint,
 		),
 	);
-	if (!proven) return undefined;
 	// A removal permits a replay of the already-installed setup. It must not
 	// recreate device bindings, memberships, or Project recipients, and the
 	// removed devices must lose the access this machine still gives them.
-	endVerifiedRemovedDeviceAccess(
-		db,
-		missing.map((device) => device.device_id),
-	);
+	// Otherwise the removal counts as unproven and the roster check quarantines.
+	if (!proven || !endVerifiedRemovedDeviceAccess(db, missing)) return undefined;
 	return installed;
 }
 
 /**
- * Ends local access for devices the coordinator proved removed, as the sync
- * daemon does once its own removal check succeeds. Runs inside the replay
- * transaction, so a failure leaves every table unchanged.
+ * Ends local access for devices the coordinator proved removed, exactly as
+ * this machine's own Viewer removal commit would: device-wide, for each device
+ * whose stored pin and binding match the removed key. Returns false, with its
+ * writes rolled back, when a device would keep access: a pin or binding for
+ * another key, or a failed write.
  */
-function endVerifiedRemovedDeviceAccess(db: Database, deviceIds: readonly string[]): void {
+function endVerifiedRemovedDeviceAccess(
+	db: Database,
+	devices: readonly IncludedDeviceDecision[],
+): boolean {
 	// Read only: replay must not create a signing identity. Without one, no
 	// removed device can be this machine.
 	const localDeviceId =
 		(db.prepare("SELECT device_id FROM sync_device LIMIT 1").pluck().get() as string | undefined) ??
 		"";
+	const removed = devices.filter((device) => device.device_id !== localDeviceId);
+	const deviceIds = localRemovedDeviceIds(
+		db,
+		{
+			enrollments: removed.map((device) => ({
+				device_id: device.device_id,
+				fingerprint: device.key_fingerprint,
+			})),
+			keyId: null,
+		},
+		localDeviceId,
+	);
+	if (removed.some((device) => !deviceIds.includes(device.device_id))) return false;
 	try {
-		removePairingState(db, { localDeviceId, reason: "removed", deviceIds: [...deviceIds] });
+		// Its own savepoint: a failure rolls back every row it wrote.
+		removePairingState(db, { localDeviceId, reason: "removed", deviceIds });
+		return true;
 	} catch {
-		throw new LegacyTeamSetupRemovedDeviceAccessError();
+		return false;
 	}
 }
 
