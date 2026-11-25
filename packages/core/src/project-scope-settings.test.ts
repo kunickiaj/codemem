@@ -8,6 +8,7 @@ import {
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
+	projectInventoryGroupKey,
 	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
 } from "./project-scope-settings.js";
@@ -2076,6 +2077,62 @@ describe("projects with no memories", () => {
 			"retired-api",
 			"shared-idle",
 		]);
+	});
+});
+
+// The same cases pin projectClusterKey in packages/ui/src/tabs/projects/project-view.test.ts.
+describe("project inventory group key", () => {
+	it.each([
+		[
+			{ git_remote: "https://example.test/acme/api.git", project: "api", workspace_identity: "a" },
+			"git:https://example.test/acme/api.git",
+		],
+		[{ git_remote: null, project: "api", workspace_identity: "/workspace/api" }, "project:api"],
+		[{ git_remote: null, project: null, workspace_identity: "ws-1" }, "identity:ws-1"],
+	])("groups %o under %s", (project, key) => {
+		expect(projectInventoryGroupKey(project)).toBe(key);
+	});
+});
+
+describe("empty Projects in a group", () => {
+	let db: InstanceType<typeof Database>;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertCheckout(project: string, cwd: string, options: { memories: number }): void {
+		const sessionId = insertSession(db, { cwd, gitBranch: null, gitRemote: null, project });
+		for (let index = 0; index < options.memories; index += 1) insertMemory(db, sessionId);
+	}
+
+	it("keeps an empty, unshared entry while its group has listed entries", () => {
+		insertCheckout("api", "/workspace/api-one", { memories: 1 });
+		insertCheckout("api", "/workspace/api-two", { memories: 1 });
+		insertCheckout("api", "/workspace/api-empty", { memories: 0 });
+
+		const inventory = listProjectScopeInventory(db, { includeEmpty: false });
+
+		expect(inventory.projects.map((project) => project.cwd).sort()).toEqual([
+			"/workspace/api-empty",
+			"/workspace/api-one",
+			"/workspace/api-two",
+		]);
+		expect(inventory).toMatchObject({ total: 3, hidden_empty_count: 0 });
+	});
+
+	it("drops and counts a group whose entries are all prunable", () => {
+		insertCheckout("api", "/workspace/api-one", { memories: 1 });
+		insertCheckout("idle", "/workspace/idle-one", { memories: 0 });
+		insertCheckout("idle", "/workspace/idle-two", { memories: 0 });
+
+		const inventory = listProjectScopeInventory(db, { includeEmpty: false });
+
+		expect(inventory.projects.map((project) => project.cwd)).toEqual(["/workspace/api-one"]);
+		expect(inventory).toMatchObject({ total: 1, has_more: false, hidden_empty_count: 2 });
 	});
 });
 

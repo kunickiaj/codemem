@@ -5,6 +5,7 @@ import type { ProjectScopeInventoryProject } from "../../lib/api/sync";
 import type { ProjectsInventoryViewModel } from "../projects-inventory-model";
 import {
 	firstScopeSelection,
+	projectClusterKey,
 	projectDomId,
 	projectHeading,
 	scopeIsAvailable,
@@ -117,5 +118,19 @@ describe("project heading", () => {
 		);
 
 		expect(heading.title).toBe("shared:default");
+	});
+});
+
+// The same cases pin projectInventoryGroupKey in packages/core/src/project-scope-settings.test.ts.
+describe("Project group key", () => {
+	it.each([
+		[
+			{ git_remote: "https://example.test/acme/api.git", project: "api", workspace_identity: "a" },
+			"git:https://example.test/acme/api.git",
+		],
+		[{ git_remote: null, project: "api", workspace_identity: "/workspace/api" }, "project:api"],
+		[{ git_remote: null, project: null, workspace_identity: "ws-1" }, "identity:ws-1"],
+	])("groups %o under %s", (project, key) => {
+		expect(projectClusterKey(project)).toBe(key);
 	});
 });

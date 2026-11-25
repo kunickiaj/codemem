@@ -132,8 +132,8 @@ export interface ProjectScopeInventoryOptions {
 	repositoryIdentitySnapshot?: RepositoryIdentitySnapshot;
 	identitySource?: string | null;
 	/**
-	 * When false, leaves out Projects with no memories unless they carry saved sharing
-	 * configuration. Defaults to true so lookups by identity still see every Project.
+	 * When false, leaves out Projects with no memories that `pruneEmptyProjects` can hide.
+	 * Defaults to true so lookups by identity still see every Project.
 	 */
 	includeEmpty?: boolean;
 	limit?: number;
@@ -658,10 +658,12 @@ function inventoryStatuses(
 		statuses.add("suggested");
 	}
 	if (project.mapping_id != null) statuses.add("explicitly_mapped");
-	if ((project.guardrail_warnings ?? []).some((warning) => warning.severity === "warning")) {
-		statuses.add("needs_attention");
-	}
+	if (hasWarningGuardrail(project)) statuses.add("needs_attention");
 	return [...statuses].sort();
+}
+
+function hasWarningGuardrail(project: ProjectScopeCandidate): boolean {
+	return (project.guardrail_warnings ?? []).some((warning) => warning.severity === "warning");
 }
 
 // The Projects table titles these Projects "No project" (projectHeading in
@@ -2276,7 +2278,7 @@ export function listProjectScopeInventory(
 		.filter((project) => matchesInventoryFilters(project, options))
 		.toSorted(compareInventoryProjects);
 	const filtered = shouldPruneEmptyProjects(options)
-		? matched.filter(keepUnlessEmptyAndUnshared(db, repositoryIdentityByWorkspace))
+		? pruneEmptyProjects(matched, projectsWithActiveRecipients(db, repositoryIdentityByWorkspace))
 		: matched;
 
 	return {
@@ -2346,19 +2348,56 @@ function projectsWithActiveRecipients(
 }
 
 /**
- * Hides a Project with no memories unless a saved Space assignment or saved recipients
- * would share its future memories. Hiding those would hide the rule itself.
+ * The group a Project's row belongs to in the Projects table. Keep this rule identical to
+ * projectClusterKey in packages/ui/src/tabs/projects/project-view.ts; both have tests
+ * pinned to the same three cases.
  */
-function keepUnlessEmptyAndUnshared(
-	db: Database,
-	repositoryIdentities: ReadonlyMap<string, string>,
-): (project: ProjectScopeInventoryProject) => boolean {
-	const withRecipients = projectsWithActiveRecipients(db, repositoryIdentities);
-	return (project) =>
-		!project.statuses.includes("empty") ||
-		project.mapping_id != null ||
-		project.resolution_reason !== "local_default" ||
-		withRecipients.has(project.workspace_identity);
+export function projectInventoryGroupKey(
+	project: Pick<ProjectScopeInventoryProject, "git_remote" | "project" | "workspace_identity">,
+): string {
+	if (project.git_remote) return `git:${project.git_remote}`;
+	if (project.project) return `project:${project.project}`;
+	return `identity:${project.workspace_identity}`;
+}
+
+/**
+ * A Project with no memories can be hidden only when nothing would be lost by hiding
+ * it: no saved Space assignment or recipients that would share its future memories, and
+ * no warning that needs the user's attention.
+ */
+function isPrunableEmptyProject(
+	project: ProjectScopeInventoryProject,
+	withRecipients: ReadonlySet<string>,
+): boolean {
+	return (
+		project.statuses.includes("empty") &&
+		!hasWarningGuardrail(project) &&
+		project.mapping_id == null &&
+		project.resolution_reason === "local_default" &&
+		!withRecipients.has(project.workspace_identity)
+	);
+}
+
+/**
+ * Drops prunable empty Projects, except those whose group still has a listed entry, so
+ * a group's entry count and sharing coverage include every entry. Runs on the whole
+ * matched list before paging.
+ */
+function pruneEmptyProjects(
+	projects: ProjectScopeInventoryProject[],
+	withRecipients: ReadonlySet<string>,
+): ProjectScopeInventoryProject[] {
+	const prunable = new Set(
+		projects.filter((project) => isPrunableEmptyProject(project, withRecipients)),
+	);
+	const listedGroups = new Set(
+		projects
+			.filter((project) => !prunable.has(project))
+			.map((project) => projectInventoryGroupKey(project)),
+	);
+	return projects.filter(
+		(project) => !prunable.has(project) || listedGroups.has(projectInventoryGroupKey(project)),
+	);
 }
 
 function projectRowsForScopeReassignment(db: Database): ProjectScopeCandidateRow[] {

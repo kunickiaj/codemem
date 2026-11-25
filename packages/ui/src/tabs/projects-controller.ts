@@ -12,6 +12,7 @@ import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
 import { renderProjectInventory as renderProjectInventoryView } from "./projects/ProjectInventory";
+import { projectClusterKey } from "./projects/project-view";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
@@ -278,12 +279,6 @@ function recipientChips(projectIds: string[]): RecipientChip[] {
 	return [...chips.values()].sort((left, right) =>
 		`${left.kind}:${left.displayName}`.localeCompare(`${right.kind}:${right.displayName}`),
 	);
-}
-
-function projectClusterKey(project: ProjectScopeInventoryProject): string {
-	if (project.git_remote) return `git:${project.git_remote}`;
-	if (project.project) return `project:${project.project}`;
-	return `identity:${project.workspace_identity}`;
 }
 
 function projectClusterLabel(project: ProjectScopeInventoryProject): string {
@@ -597,16 +592,46 @@ async function reassignInventoryProject(project: ProjectScopeInventoryProject) {
 	}
 }
 
+/**
+ * Where a repair target sits in the list the display loads. `status` is the filter the
+ * display applies: "" for the default list, which leaves prunable empty Projects out, or
+ * "empty", which lists every empty Project.
+ */
+interface ProjectRepairTarget {
+	offset: number;
+	project: ProjectScopeInventoryProject;
+	status: "" | "empty";
+}
+
 async function projectForRepair(
 	projectIdentity: string,
-): Promise<{ offset: number; project: ProjectScopeInventoryProject } | null> {
+	navigation: ProjectNavigationSnapshot,
+): Promise<ProjectRepairTarget | null> {
 	const cached = projectInventoryByIdentity.get(projectIdentity);
-	if (cached && !isPeerReceivedProject(cached)) return { offset: currentOffset, project: cached };
+	if (cached && !isPeerReceivedProject(cached)) {
+		const status = readProjectInventoryFilters().status === "empty" ? "empty" : "";
+		return { offset: currentOffset, project: cached, status };
+	}
+	// Search the same lists the display loads so the returned offset is valid there.
+	const listed = await findRepairTarget(projectIdentity, "");
+	if (listed || projectNavigationChanged(navigation)) return listed;
+	return findRepairTarget(projectIdentity, "empty");
+}
+
+function repairLookupFilter(status: ProjectRepairTarget["status"]) {
+	return status === "empty" ? { status } : { include_empty: false };
+}
+
+async function findRepairTarget(
+	projectIdentity: string,
+	status: ProjectRepairTarget["status"],
+): Promise<ProjectRepairTarget | null> {
 	try {
 		let offset = 0;
 		let pagesScanned = 0;
 		while (true) {
 			const result = await api.loadProjectScopeInventory({
+				...repairLookupFilter(status),
 				limit: lastLimit,
 				offset,
 				q: projectIdentity,
@@ -616,7 +641,7 @@ async function projectForRepair(
 				(candidate) =>
 					candidate.workspace_identity === projectIdentity && !isPeerReceivedProject(candidate),
 			);
-			if (project) return { offset: result.offset, project };
+			if (project) return { offset: result.offset, project, status };
 			if (!result.has_more || result.limit <= 0) return null;
 			const nextOffset = result.offset + result.limit;
 			if (nextOffset <= offset || pagesScanned >= maxRepairLookupPages) return null;
@@ -683,10 +708,7 @@ function projectNavigationChanged(snapshot: ProjectNavigationSnapshot): boolean 
 	);
 }
 
-async function openProjectAdministrationFromRepair(target: {
-	offset: number;
-	project: ProjectScopeInventoryProject;
-}): Promise<void> {
+async function openProjectAdministrationFromRepair(target: ProjectRepairTarget): Promise<void> {
 	const { project } = target;
 	if (focusProjectAdministration(project.workspace_identity)) return;
 	openProjectWorktrees.add(projectClusterKey(project));
@@ -698,7 +720,7 @@ async function openProjectAdministrationFromRepair(target: {
 	const previous = projectNavigationSnapshot();
 	const repairSearch = project.workspace_identity;
 	if (search) search.value = repairSearch;
-	if (status) status.value = "";
+	if (status) status.value = target.status;
 	currentOffset = target.offset;
 	const repairGeneration = projectsUserNavigationGeneration;
 	await loadProjectsData();
@@ -706,7 +728,7 @@ async function openProjectAdministrationFromRepair(target: {
 	if (
 		projectsUserNavigationGeneration !== repairGeneration ||
 		(search && search.value !== repairSearch) ||
-		(status && status.value !== "") ||
+		(status && status.value !== target.status) ||
 		currentOffset !== target.offset
 	) {
 		return;
@@ -729,7 +751,7 @@ async function performRecipientPolicyRepair(
 		return;
 	}
 	const navigation = projectNavigationSnapshot();
-	const target = await projectForRepair(repair.projectIdentity);
+	const target = await projectForRepair(repair.projectIdentity, navigation);
 	if (projectNavigationChanged(navigation)) return;
 	if (isProjectSpaceSelectActive()) {
 		showGlobalNotice("Finish the open Space assignment, then try Repair again.", "warning");

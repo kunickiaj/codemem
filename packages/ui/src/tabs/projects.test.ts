@@ -1660,12 +1660,13 @@ describe("Projects cached recipient presentation", () => {
 		).toEqual(["/workspace/first"]);
 
 		resolveFirstLookup(inventoryPage());
+		// Each lookup checks the default list, then the No memories list.
 		await vi.waitFor(() =>
 			expect(
 				vi
 					.mocked(api.loadProjectScopeInventory)
 					.mock.calls.flatMap(([input]) => (input?.q ? [input.q] : [])),
-			).toEqual(["/workspace/first", "/workspace/second"]),
+			).toEqual(["/workspace/first", "/workspace/first", "/workspace/second", "/workspace/second"]),
 		);
 		await flushAsyncWork();
 	});
@@ -1921,6 +1922,7 @@ describe("Projects cached recipient presentation", () => {
 			).toBe(true),
 		);
 		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith({
+			include_empty: false,
 			limit: 250,
 			offset: 0,
 			q: repairProject.workspace_identity,
@@ -1971,9 +1973,82 @@ describe("Projects cached recipient presentation", () => {
 				.mock.calls.map(([input]) => input)
 				.filter((input) => input?.q === projectIdentity),
 		).toEqual([
-			{ limit: 250, offset: 0, q: projectIdentity },
-			{ limit: 250, offset: 250, q: projectIdentity },
+			{ include_empty: false, limit: 250, offset: 0, q: projectIdentity },
+			{ include_empty: false, limit: 250, offset: 250, q: projectIdentity },
+			{ status: "empty", limit: 250, offset: 0, q: projectIdentity },
+			{ status: "empty", limit: 250, offset: 250, q: projectIdentity },
 		]);
+	});
+
+	function emptyStatusOption(): HTMLSelectElement {
+		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
+		if (![...status.options].some((option) => option.value === "empty"))
+			status.append(new Option("No memories", "empty"));
+		return status;
+	}
+
+	function openedRepairDetails(projectIdentity: string): boolean | undefined {
+		return document
+			.querySelector<HTMLElement>(`[data-project-workspace-identity="${projectIdentity}"]`)
+			?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open;
+	}
+
+	function mockRepairReview(projectIdentity: string, blockedItemId: string): void {
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [blockedProjectRepair(projectIdentity, { blockedItemId })],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+	}
+
+	it("opens a repair target at its offset in the default list, not the full inventory", async () => {
+		const repairProject = project({ workspace_identity: "/workspace/pruned-offset" });
+		const filler = project({ workspace_identity: "/workspace/pruned-offset/empty" });
+		// The full inventory has the target on page 2; the default list moves it to page 1.
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (input.q !== repairProject.workspace_identity) return inventoryPage();
+			const offset = input.offset ?? 0;
+			if (input.include_empty === false)
+				return offset === 0 ? inventoryPage([repairProject]) : inventoryPage([], { offset });
+			if (offset === 0) return inventoryPage([filler], { has_more: true, total: 251 });
+			return inventoryPage([repairProject], { offset, total: 251 });
+		});
+		mockRepairReview(repairProject.workspace_identity, "blocked-pruned-offset");
+
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+
+		await vi.waitFor(() =>
+			expect(openedRepairDetails(repairProject.workspace_identity)).toBe(true),
+		);
+		expect(showGlobalNotice).not.toHaveBeenCalled();
+	});
+
+	it("opens an empty repair target that the default list leaves out", async () => {
+		const status = emptyStatusOption();
+		const repairProject = project({
+			memory_count: 0,
+			statuses: ["empty", "local_only"],
+			workspace_identity: "/workspace/empty-target",
+		});
+		// Like the server, the default list leaves the target out unless the status is empty.
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			const pruned = input.include_empty === false && input.status !== "empty";
+			if (input.q !== repairProject.workspace_identity || pruned) return inventoryPage();
+			return inventoryPage([repairProject]);
+		});
+		mockRepairReview(repairProject.workspace_identity, "blocked-empty-target");
+
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+
+		await vi.waitFor(() =>
+			expect(openedRepairDetails(repairProject.workspace_identity)).toBe(true),
+		);
+		expect(status.value).toBe("empty");
+		expect(showGlobalNotice).not.toHaveBeenCalled();
 	});
 
 	it("opens the local repairable row when a peer row shares its reserved identity", async () => {
@@ -4105,6 +4180,42 @@ describe("Projects distinct canonical sharing coverage", () => {
 			expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
 		},
 	);
+});
+
+describe("Projects group coverage with an empty entry", () => {
+	it("counts an empty entry the server keeps in its group", async () => {
+		// The server keeps an empty, unshared entry listed while its group has listed entries.
+		const ids = ["/workspace/api-one", "/workspace/api-two", "/workspace/api-empty"];
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
+				project({ workspace_identity: ids[0] }),
+				project({ workspace_identity: ids[1] }),
+				project({ memory_count: 0, statuses: ["empty", "local_only"], workspace_identity: ids[2] }),
+			]),
+		);
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+			recipientIntent({
+				projectRecipients: ids.slice(0, 2).map((id) => ({
+					version: 1,
+					canonicalProjectIdentity: id,
+					recipientKind: "team",
+					teamId: "team-example",
+					intentSource: "user",
+					policyRevision: "one",
+					status: "active",
+				})),
+			}),
+		);
+
+		await loadProjectsData();
+
+		const row = getProjectsInventoryController().getViewModel().rows[0];
+		if (row?.kind !== "cluster") throw new Error("project cluster missing");
+		expect(row.projectIds).toEqual([...ids].sort());
+		expect(document.querySelector(".project-recipient-coverage")?.textContent).toBe(
+			"2 of 3 entries",
+		);
+	});
 });
 
 describe("Projects inventory controller subscriptions", () => {

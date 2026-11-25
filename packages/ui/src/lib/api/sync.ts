@@ -2083,7 +2083,7 @@ export async function loadSharingDomainSettings(
 export async function loadProjectScopeInventory(
 	input: {
 		identity_source?: string;
-		/** False leaves out Projects with no memories unless they have saved sharing. */
+		/** False leaves out empty Projects that the server can hide (see pruneEmptyProjects in core). */
 		include_empty?: boolean;
 		limit?: number;
 		offset?: number;

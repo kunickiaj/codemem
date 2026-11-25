@@ -9,6 +9,20 @@ export function projectDomId(prefix: string, value: string): string {
 	return `${prefix}-${encoded || "empty"}`;
 }
 
+/**
+ * The group a Project's row belongs to. The server keeps empty entries listed when their
+ * group still has listed entries, using the same rule (projectInventoryGroupKey in
+ * packages/core/src/project-scope-settings.ts). Change both together; their tests use the
+ * same three cases.
+ */
+export function projectClusterKey(
+	project: Pick<ProjectScopeInventoryProject, "git_remote" | "project" | "workspace_identity">,
+): string {
+	if (project.git_remote) return `git:${project.git_remote}`;
+	if (project.project) return `project:${project.project}`;
+	return `identity:${project.workspace_identity}`;
+}
+
 export function isPeerReceived(project: ProjectScopeInventoryProject): boolean {
 	return project.read_only === true && project.read_only_reason === "peer_received";
 }
