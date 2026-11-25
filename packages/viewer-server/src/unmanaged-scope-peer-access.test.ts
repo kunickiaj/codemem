@@ -328,3 +328,45 @@ describe("manual and invite scopes never authorize another device", () => {
 		await expectUnmanagedScopesRefused();
 	});
 });
+
+/** A memory this device created, stored in a scope that never syncs. */
+function holdLocalRow(scopeId: string, importKey: string) {
+	if (scopeId !== "local-default")
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch,
+				 status, created_at, updated_at) VALUES (?, ?, 'user', 'local', 1, 'active', ?, ?)`,
+			)
+			.run(scopeId, scopeId, NOW, NOW);
+	const sessionId = store.db
+		.prepare("INSERT INTO sessions(started_at, project) VALUES (?, 'fixture')")
+		.run(NOW).lastInsertRowid;
+	store.db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence, tags_text, created_at,
+			 updated_at, metadata_json, import_key, origin_device_id, rev, visibility, scope_id, active)
+			 VALUES (?, 'discovery', 'Local', 'Local body', 0.5, '', ?, ?, '{}', ?, ?, 1, 'shared', ?, 1)`,
+		)
+		.run(sessionId, NOW, NOW, importKey, localId, scopeId);
+}
+
+describe("a push naming a key stored here in a scope that never syncs", () => {
+	it.each(["local-notes", "local-default"])(
+		"is refused without naming the %s scope",
+		async (scopeId) => {
+			holdLocalRow(scopeId, "local-key");
+			const before = contentState();
+
+			const response = await request("/v1/ops", {
+				body: { sync_capability: "scoped", ops: [memoryOp(SHARED_SCOPE, "local-key", 2)] },
+			});
+
+			expect(response).toMatchObject({ status: 200, body: { applied: 0, rejected: 1 } });
+			expect(response.body.rejections).toEqual([
+				expect.objectContaining({ reason: "sender_not_member", scope_id: SHARED_SCOPE }),
+			]);
+			expect(JSON.stringify(response.body)).not.toContain(scopeId);
+			expect(contentState()).toEqual(before);
+		},
+	);
+});

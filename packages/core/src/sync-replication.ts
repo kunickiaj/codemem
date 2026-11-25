@@ -4480,10 +4480,11 @@ function localOnlyRowRejections(
 					localDeviceId,
 				}),
 		);
-		if (blocked) {
-			const scopeId = cleanText(blocked.scope_id) ?? DEFAULT_SYNC_SCOPE_ID;
-			rejections.push(inboundScopeRejection(op, "sender_not_member", deviceId, scopeId));
-		}
+		// The rejection names only the op's own scope, so it never reveals where the row is stored.
+		if (blocked)
+			rejections.push(
+				inboundScopeRejection(op, "sender_not_member", deviceId, cleanText(op.scope_id)),
+			);
 	}
 	return rejections;
 }
