@@ -13,6 +13,7 @@ import type {
 	RecipientPolicyTeamCreateResultV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
+import { formatRelativeTime, formatTimestamp } from "../lib/format";
 import {
 	projectDisplayNameKey,
 	projectIdentitySummaryGroups,
@@ -1034,6 +1035,27 @@ function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"])
 		: visibleNames.join(" · ");
 }
 
+/** Explains once why some rows offer no Stop receiving switch. */
+function receivedGroupShareNote(received: ReceivedProjectShare[]): string | null {
+	const count = received.filter((share) => !share.onThisDevice).length;
+	if (count === 0) return null;
+	const subject =
+		count === received.length && count > 1
+			? `All ${count.toLocaleString()} Projects were`
+			: `${count.toLocaleString()} ${count === 1 ? "Project was" : "Projects were"}`;
+	return `${subject} shared as part of a group of Projects. This device can't stop receiving ${count === 1 ? "it" : "them"} one at a time.`;
+}
+
+/** A one-line relative time. The exact time stays available on hover and to assistive tech. */
+function ReceivedLastSession({ value }: { value: string | null }) {
+	if (!value) return <>No recent sessions</>;
+	return (
+		<time dateTime={value} title={formatTimestamp(value)}>
+			{formatRelativeTime(value)}
+		</time>
+	);
+}
+
 function ReceivedView({
 	actions,
 	disabled,
@@ -1057,6 +1079,7 @@ function ReceivedView({
 			</p>
 		);
 	}
+	const groupSharedNote = receivedGroupShareNote(received);
 	return (
 		<div className="recipient-policy-sharing-received">
 			<div className="recipient-policy-sharing-toolbar">
@@ -1065,21 +1088,21 @@ function ReceivedView({
 					<TextInput
 						id="recipient-policy-sharing-search"
 						onInput={(event) => setQuery(event.currentTarget.value)}
-						placeholder="Search…"
+						placeholder="Search Projects…"
 						type="search"
 						value={query}
 					/>
 				</label>
-				<Chip tone="actor-badge" variant="badge">
-					Read-only
-				</Chip>
 			</div>
+			{groupSharedNote ? (
+				<p className="small recipient-policy-sharing-received-note">{groupSharedNote}</p>
+			) : null}
 			<table className="recipient-policy-sharing-received-table">
 				<thead>
 					<tr className="recipient-policy-sharing-received-head">
 						<th scope="col">Project</th>
 						<th scope="col">From</th>
-						<th scope="col">Memories on this device</th>
+						<th scope="col">Memories</th>
 						<th scope="col">Last session</th>
 						<th scope="col">On this device</th>
 					</tr>
@@ -1094,13 +1117,9 @@ function ReceivedView({
 								<strong>{share.displayName}</strong>
 							</td>
 							<td data-label="From">{receivedFromLabel(share.originDevices)}</td>
-							<td data-label="Memories on this device">
-								{share.existingMemoryCount.toLocaleString()}
-							</td>
+							<td data-label="Memories">{share.existingMemoryCount.toLocaleString()}</td>
 							<td data-label="Last session">
-								{share.latestSessionAt
-									? new Date(share.latestSessionAt).toLocaleString()
-									: "No recent sessions"}
+								<ReceivedLastSession value={share.latestSessionAt} />
 							</td>
 							<td data-label="On this device">
 								<ReceivedProjectOnThisDevice

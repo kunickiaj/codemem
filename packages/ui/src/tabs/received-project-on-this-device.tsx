@@ -32,7 +32,7 @@ export const defaultReceivedProjectActions: ReceivedProjectActions = {
 function failureMessage(error: unknown, share: ReceivedProjectShare, stopping: boolean): string {
 	const code = error instanceof Error ? error.message : "";
 	if (code === "project_not_on_own_boundary")
-		return `${share.displayName} was shared with this device the older way, so it can't be stopped here yet. Nothing changed.`;
+		return `${share.displayName} was shared as part of a group of Projects, so this device can't stop receiving it on its own. Nothing changed.`;
 	if (code === "project_not_stopped")
 		return `${share.displayName} is already being received on this device. Refresh to see the current state.`;
 	return `Couldn't ${stopping ? "stop" : "resume"} ${share.displayName} on this device. Nothing changed. Try again.`;
@@ -52,7 +52,8 @@ export function ReceivedProjectOnThisDevice({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	if (!share.onThisDevice) return <span className="small muted">Can't be stopped here</span>;
+	// The table explains once why these rows have no switch.
+	if (!share.onThisDevice) return <span className="small">Receiving</span>;
 	const stopped = share.onThisDevice.stoppedAt !== null;
 
 	async function change() {

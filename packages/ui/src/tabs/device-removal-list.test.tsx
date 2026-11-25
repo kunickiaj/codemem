@@ -43,9 +43,14 @@ it("reads the listing on demand and shows each removed enrollment", async () => 
 	await openPanel();
 	expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/sync/devices/removals", expect.anything());
 	await vi.waitFor(() =>
-		expect([...mount.querySelectorAll("li")].map((row) => row.textContent)).toEqual([
-			"Travel laptop · group-a",
-			"laptop · group-b",
+		expect(
+			[...mount.querySelectorAll("li")].map((row) => [
+				row.querySelector("strong")?.textContent,
+				row.querySelector(".removed-devices-group")?.textContent,
+			]),
+		).toEqual([
+			["Travel laptop", "Removed from group-a"],
+			["laptop", "Removed from group-b"],
 		]),
 	);
 	expect(mount.querySelector("button")).toBeNull();

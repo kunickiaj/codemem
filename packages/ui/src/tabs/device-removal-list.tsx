@@ -63,7 +63,10 @@ export function RemovedDevicesPanel({ blockApi }: { blockApi?: DeviceBlockApi } 
 	}, [open, revision]);
 
 	return (
-		<details className="card" onToggle={(event) => setOpen(event.currentTarget.open)}>
+		<details
+			className="card removed-devices"
+			onToggle={(event) => setOpen(event.currentTarget.open)}
+		>
 			<summary ref={heading}>Removed devices</summary>
 			{open && <RemovedEnrollments listing={listing} onRetry={retry} blockApi={blockApi} />}
 		</details>
@@ -79,23 +82,32 @@ function RemovedEnrollments({
 	onRetry: () => void;
 	blockApi?: DeviceBlockApi;
 }) {
-	if (listing.state === "loading") return <p role="status">Loading removed devices…</p>;
+	if (listing.state === "loading")
+		return (
+			<p className="removed-devices-status" role="status">
+				Loading removed devices…
+			</p>
+		);
 	if (listing.state === "error") {
 		return (
-			<>
+			<div className="removed-devices-status">
 				<p role="status">Could not list removed devices. Check your coordinator settings.</p>
 				<button className="settings-button" type="button" onClick={onRetry}>
 					Retry
 				</button>
-			</>
+			</div>
 		);
 	}
-	if (listing.items.length === 0) return <p>No removed devices</p>;
+	if (listing.items.length === 0)
+		return <p className="removed-devices-status">No removed devices</p>;
 	return (
-		<ul>
+		<ul className="removed-devices-list">
 			{listing.items.map((item) => (
-				<li key={item.removal_seq}>
-					{item.display_name || item.device_id} · {item.group_id}
+				<li className="removed-devices-row" key={item.removal_seq}>
+					<div className="removed-devices-identity">
+						<strong>{item.display_name || item.device_id}</strong>
+						<span className="removed-devices-group">Removed from {item.group_id}</span>
+					</div>
 					<RemovedDeviceBlockAction item={item} api={blockApi} onBlocked={onRetry} />
 				</li>
 			))}
@@ -167,7 +179,7 @@ function BlockRemovedDevice({
 		}
 	}
 	return (
-		<>
+		<div className="removed-devices-action">
 			<button
 				aria-label={`Block ${displayName} permanently`}
 				className="settings-button"
@@ -175,12 +187,14 @@ function BlockRemovedDevice({
 				onClick={() => void block()}
 				type="button"
 			>
-				Block device permanently
+				Block permanently…
 			</button>
 			{failed && (
-				<span role="status">Could not confirm the block. Refresh Devices before trying again.</span>
+				<span className="removed-devices-failure" role="status">
+					Could not confirm the block. Refresh Devices before trying again.
+				</span>
 			)}
-		</>
+		</div>
 	);
 }
 
