@@ -36,6 +36,7 @@ import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
+import { DeviceRejoinNotice } from "./device-rejoin-notice";
 import {
 	confirmAndCommitDeviceRemoval,
 	DeviceRemovalCommitError,
@@ -958,6 +959,7 @@ function SetupWorkflow({
 										onOpenPairing={onOpenPairing}
 									/>
 								)}
+								<DeviceRejoinNotice item={item} localDeviceId={directLocalDeviceId(options)} />
 								<SetupCardRetire item={item} options={options} />
 							</article>
 						</li>
@@ -1669,11 +1671,13 @@ function openConfiguredRebind(deviceId: string, trigger: HTMLButtonElement | nul
 
 function DeviceNameCell({
 	device,
+	inventoryItem,
 	onRenameClose,
 	options,
 	renameRequest,
 }: {
 	device: DeviceProjection;
+	inventoryItem?: DeviceIdentityInventoryItemV1;
 	onRenameClose: () => void;
 	options: DevicesRendererOptions;
 	renameRequest: number;
@@ -1697,6 +1701,9 @@ function DeviceNameCell({
 				</Chip>
 			) : null}
 			<DeviceNameSyncState device={device} options={options} />
+			{inventoryItem ? (
+				<DeviceRejoinNotice item={inventoryItem} localDeviceId={directLocalDeviceId(options)} />
+			) : null}
 		</td>
 	);
 }
@@ -1920,6 +1927,7 @@ function DeviceTableRow({
 	const detailsId = `device-details-${device.deviceId}`;
 	const nameCellProps = {
 		device,
+		inventoryItem,
 		options,
 		renameRequest,
 		onRenameClose: () => setRenameRequest(0),

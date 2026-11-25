@@ -449,6 +449,7 @@ export type {
 	DeviceIdentityInventoryV1,
 	DeviceIdentityLocalDeviceEvidence,
 	DeviceIdentityPeerEvidence,
+	DeviceIdentityRejoinEvidenceV1,
 } from "./device-identity-inventory.js";
 export {
 	DEVICE_IDENTITY_INVENTORY_LIMIT,

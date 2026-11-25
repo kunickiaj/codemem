@@ -12957,7 +12957,7 @@ describe("viewer-server", () => {
 									display_name: "Fresh Device",
 									fingerprint: FRESH_PEER_FINGERPRINT,
 									public_key: FRESH_PEER_PUBLIC_KEY,
-									groups: ["team-a"],
+									rejoined_at_ms: 1_700_000_000_000,
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -12995,7 +12995,7 @@ describe("viewer-server", () => {
 					expect.objectContaining({
 						device_id: "peer-fresh",
 						display_name: "Fresh Device",
-						groups: ["team-a"],
+						rejoined_at_ms: 1_700_000_000_000,
 						stale: false,
 						fingerprint: null,
 						addresses: [],

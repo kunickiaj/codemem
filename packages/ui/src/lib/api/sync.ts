@@ -1006,6 +1006,8 @@ export interface DeviceIdentityInventoryItemV1 {
 	isLocal: boolean;
 	sources: Array<"local_device" | "sync_peer" | "coordinator_enrollment" | "identity_binding">;
 	conflictCodes: string[];
+	/** Display only: Google sign-in rejoin wrote this device's current enrollment. */
+	rejoin?: { deviceId: string; rejoinedAtMs: number };
 }
 
 export interface DeviceIdentityInventoryV1 {

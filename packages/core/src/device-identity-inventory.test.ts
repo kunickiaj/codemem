@@ -774,3 +774,123 @@ describe("device Identity inventory database projection", () => {
 		});
 	});
 });
+
+describe("device Identity inventory rejoin evidence", () => {
+	const rejoined = (deviceId: string, key: string, rejoinedAtMs: number, extra = {}) =>
+		enrollment(deviceId, key, { rejoined_at_ms: rejoinedAtMs, ...extra });
+
+	it("reports a rejoin on an enabled enrollment without changing state or sources", () => {
+		const plain = projectDeviceIdentityInventory(coordinatorOnly([enrollment("d1", "key-1")]));
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([rejoined("d1", "key-1", 5_000)]),
+		);
+
+		expect(result.items[0]?.rejoin).toEqual({ deviceId: "d1", rejoinedAtMs: 5_000 });
+		expect({ ...result.items[0], rejoin: undefined }).toEqual({
+			...plain.items[0],
+			rejoin: undefined,
+		});
+	});
+
+	it("omits the field when no enrollment carries a marker", () => {
+		const result = projectDeviceIdentityInventory(coordinatorOnly([enrollment("d1", "key-1")]));
+
+		expect(result.items[0]).not.toHaveProperty("rejoin");
+	});
+
+	it.each([
+		["a negative timestamp", -1],
+		["a fractional timestamp", 2.5],
+		["a timestamp no Date can hold", 9e15],
+	])("ignores %s", (_label, marker) => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([enrollment("d1", "key-1", { rejoined_at_ms: marker })]),
+		);
+
+		expect(result.items[0]).not.toHaveProperty("rejoin");
+	});
+
+	it("ignores a marker on a disabled enrollment", () => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([rejoined("d1", "key-1", 5_000, { enabled: 0 })]),
+		);
+
+		expect(result.items[0]).not.toHaveProperty("rejoin");
+	});
+
+	it("ignores a marker on a revoked device and on a service device", () => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([
+				rejoined("revoked", "key-r", 5_000, { revoked: true }),
+				rejoined("probe", "key-p", 6_000, { service_role: "relay_health_probe" }),
+			]),
+		);
+
+		expect(result.items.map((item) => [item.deviceId, "rejoin" in item])).toEqual([
+			["probe", false],
+			["revoked", false],
+		]);
+	});
+
+	it("never marks this device", () => {
+		const publicKey = "key-local";
+		const result = projectDeviceIdentityInventory(
+			snapshot({
+				localDevice: {
+					deviceId: "d1",
+					displayName: "This laptop",
+					publicKey,
+					fingerprint: fingerprintPublicKey(publicKey),
+				},
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [rejoined("d1", publicKey, 5_000)],
+				},
+			}),
+		);
+
+		expect(result.items[0]).toMatchObject({ isLocal: true });
+		expect(result.items[0]).not.toHaveProperty("rejoin");
+	});
+
+	it("keeps the newest rejoin when one device is enrolled in several groups", () => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([
+				rejoined("d1", "key-1", 5_000, { group_id: "group-a" }),
+				rejoined("d1", "key-1", 9_000, { group_id: "group-b" }),
+			]),
+		);
+
+		expect(result.items[0]?.rejoin).toEqual({ deviceId: "d1", rejoinedAtMs: 9_000 });
+	});
+
+	it("omits the rejoin marker when the same device ID has conflicting enrollment keys", () => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([
+				rejoined("d1", "key-1", 5_000, { group_id: "group-a" }),
+				enrollment("d1", "key-2", { group_id: "group-b" }),
+			]),
+		);
+		expect(result.items[0]).toMatchObject({
+			state: "conflicted",
+			validatedFingerprint: null,
+			conflictCodes: ["fingerprint_conflict"],
+		});
+		expect(result.items[0]).not.toHaveProperty("rejoin");
+	});
+
+	it("reports nothing when the coordinator is unavailable", () => {
+		const result = projectDeviceIdentityInventory(
+			snapshot({
+				coordinator: {
+					availability: "unavailable",
+					safeErrorCode: "coordinator_unavailable",
+					enrollments: [rejoined("d1", "key-1", 5_000)],
+				},
+			}),
+		);
+
+		expect(result.items).toEqual([]);
+	});
+});

@@ -55,6 +55,7 @@ import {
 	beginStandaloneCoordinatorAdminStatusRefresh,
 	refreshCoordinatorAdminStatusForGeneration,
 } from "./tabs/coordinator-admin/data/status-refresh";
+import { withDiscoveredRejoinNotices } from "./tabs/device-rejoin-notice";
 import { mountRemovedDevices, refreshRemovedDevices } from "./tabs/device-removal-list";
 import {
 	type DeviceAvailabilityInput,
@@ -766,6 +767,13 @@ function renderPreviousDevicesAfterRefreshFailure(mount: HTMLElement): void {
 	);
 }
 
+function readDevicesInventory(options: ReadRequestOptions) {
+	return api
+		.loadDeviceIdentityInventory(options)
+		.then((inventory) => ({ inventory, unavailable: false }))
+		.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true }));
+}
+
 async function runLoadDevicesData(
 	mount: HTMLElement,
 	revision: number,
@@ -781,14 +789,15 @@ async function runLoadDevicesData(
 			loadRecipientPolicyProjects(options),
 			api.loadRecipientPolicyIntent(options),
 			api.loadRecipientPolicyReconciliationStatus(options),
-			api
-				.loadDeviceIdentityInventory(options)
-				.then((inventory) => ({ inventory, unavailable: false }))
-				.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true })),
+			readDevicesInventory(options),
 			loadSyncData({ requiredSurface: "devices", signal: options.signal }),
 		]);
 		if (options.signal?.aborted) return false;
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
+		const inventory = withDiscoveredRejoinNotices(
+			inventoryResult.inventory,
+			syncRefreshed ? (state.lastSyncCoordinator?.discovered_devices ?? []) : [],
+		);
 		const availability = deriveDeviceAvailability();
 		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
 		const peerSyncMetadata = deriveDevicePeerSyncMetadata(syncRefreshed);
@@ -801,7 +810,7 @@ async function runLoadDevicesData(
 		state.deviceIdentityInventoryLoadError = inventoryResult.unavailable;
 		mountDevices(mount, intent, reconciliation, projects, availability, {
 			...deviceRendererActions(inventoryResult.inventory?.deviceLifecycleActions === true),
-			inventory: inventoryResult.inventory,
+			inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 			peerRuntimeMetadata,
@@ -815,7 +824,7 @@ async function runLoadDevicesData(
 			availability,
 			peerRuntimeMetadata,
 			peerSyncMetadata,
-			inventory: inventoryResult.inventory,
+			inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 		};

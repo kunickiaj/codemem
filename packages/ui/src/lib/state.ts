@@ -302,6 +302,7 @@ export interface DiscoveredDevice {
 	device_id?: string;
 	display_name?: string;
 	fingerprint?: string | null;
+	rejoined_at_ms?: number;
 	groups?: string[];
 	stale?: boolean;
 	address_count?: number;

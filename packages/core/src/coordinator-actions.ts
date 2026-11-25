@@ -50,6 +50,7 @@ import {
 	validateResolutionOptions,
 } from "./coordinator-owner-resolution-review-client.js";
 import { selectDeviceListingCapabilities } from "./coordinator-presence-capabilities.js";
+import { isRejoinTimestamp } from "./coordinator-rejoin-timestamp.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorEnrollment,
@@ -1495,6 +1496,7 @@ function remoteEnrollmentExtras(record: Record<string, unknown>): Partial<Coordi
 		extras.ownership_identity_id = record.ownership_identity_id;
 	if (record.service_role === "relay_health_probe") extras.service_role = record.service_role;
 	if (record.revoked === true) extras.revoked = true;
+	if (isRejoinTimestamp(record.rejoined_at_ms)) extras.rejoined_at_ms = record.rejoined_at_ms;
 	const capabilities = record.presence_capabilities;
 	if (
 		typeof record.presence_expires_at !== "string" ||

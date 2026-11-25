@@ -931,6 +931,10 @@ Open a device's menu in **Devices** and choose **Remove device** to stop sharing
 
 Choose **Block device permanently** for a lost or compromised device. The Viewer checks that the coordinator supports the full Block flow before it removes anything. A permanent block covers the device ID and key, and a fresh invitation cannot bring that device back. If Remove succeeded but Block was refused, use **Block device permanently** on its entry under **Removed devices**. If the Viewer could not confirm the outcome, refresh Devices before retrying. Coordinator-wide Remove and Block require the coordinator admin secret on this Viewer. Neither action erases memories already copied to a device.
 
+A device that came back through Google sign-in shows **Rejoined by Google sign-in** with the time, next to its name or setup card in **Devices**. The notice is information only. It changes no access, and Remove and Block stay as they are. Choose **Dismiss** to hide it on this device. The Viewer remembers the dismissal for that exact device and rejoin time, so a later rejoin of the same device shows the notice again.
+
+Devices gets this notice from the coordinator's device list or from the next successful signed sync status refresh. You do not need the administrator secret if the rejoined device is listed as a peer. The notice applies to the current enrollment.
+
 ## Advanced operator and compatibility guidance
 
 **Sharing is the primary supported Team experience.** Use **Sharing → Teams** for Team membership, Team names, Identity relationships, and inherited Project access. Use **Projects** to choose exact Project recipients.

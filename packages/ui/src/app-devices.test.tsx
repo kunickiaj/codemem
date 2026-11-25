@@ -515,6 +515,7 @@ async function setupDevicesAppTest() {
 		];
 		state.lastSyncCoordinator = {
 			discovered_devices: [
+				{ device_id: "device-private", rejoined_at_ms: 1_700_000_000_000, stale: false },
 				{
 					device_id: "coordinator-only-device",
 					display_name: "Coordinator Tablet",
@@ -546,6 +547,7 @@ describe("Devices app integration", () => {
 		const panel = document.getElementById("tab-devices");
 		expect(panel?.hidden).toBe(false);
 		expect(panel?.textContent).toContain("Work Laptop");
+		expect(panel?.textContent).toContain("Rejoined by Google sign-in");
 		expect(panel?.textContent).toContain("Available");
 		expect(panel?.textContent).toContain("Needs attention");
 		expect(panel?.textContent).toContain("2 setup issues need review.");

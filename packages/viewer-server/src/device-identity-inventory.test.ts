@@ -327,6 +327,48 @@ describe("device Identity binding configuration", () => {
 	});
 });
 
+describe("device inventory rejoin marker", () => {
+	it("carries a coordinator rejoin marker on the item and changes nothing else", async () => {
+		const fixture = testStore();
+		try {
+			const enrollment = {
+				group_id: "group-a",
+				device_id: "rejoined-device",
+				public_key: "rejoined-key",
+				fingerprint: fingerprintPublicKey("rejoined-key"),
+				identity_id: null,
+				display_name: "Rejoined laptop",
+				enabled: 1,
+				created_at: "2026-08-18T12:00:00.000Z",
+			};
+			const read = async (extra: Record<string, unknown>) => {
+				const app = createApp({
+					storeFactory: () => fixture.store,
+					loadDeviceIdentityCoordinatorEvidence: async () => ({
+						availability: "available",
+						safeErrorCode: null,
+						enrollments: [{ ...enrollment, ...extra }],
+					}),
+				});
+				const response = await app.request("/api/sync/recipient-policy/v1/device-inventory");
+				const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+				return body.items.find((item) => item.deviceId === "rejoined-device");
+			};
+
+			const marked = await read({ rejoined_at_ms: 1_700_000_000_000 });
+			const plain = await read({});
+
+			expect(marked?.rejoin).toEqual({
+				deviceId: "rejoined-device",
+				rejoinedAtMs: 1_700_000_000_000,
+			});
+			expect({ ...marked, rejoin: undefined }).toEqual({ ...plain, rejoin: undefined });
+		} finally {
+			fixture.cleanup();
+		}
+	});
+});
+
 describe("device Identity binding writes", () => {
 	it("returns Retry-After when preview evidence is SQLite-busy", async () => {
 		const fixture = testStore();

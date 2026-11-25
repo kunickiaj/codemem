@@ -10,6 +10,7 @@ import {
 	type PeerRemovalLookup,
 	type PeerRevocationCheckStatus,
 } from "./coordinator-peer-revocation.js";
+import { isRejoinTimestamp } from "./coordinator-rejoin-timestamp.js";
 import {
 	clearCoordinatorDeviceRemoved,
 	recordCoordinatorDeviceRemoved,
@@ -349,38 +350,42 @@ export async function lookupCoordinatorPeers(
 				});
 				continue;
 			}
-			existing.addresses = mergeAddresses(
-				(Array.isArray(existing.addresses) ? existing.addresses : []) as string[],
-				freshAddresses,
-			);
-			existing.groups = mergeStringLists(
-				(Array.isArray(existing.groups) ? existing.groups : []) as string[],
-				[groupId],
-			);
-			existing.fresh_groups = mergeStringLists(
-				(Array.isArray(existing.fresh_groups) ? existing.fresh_groups : []) as string[],
-				record.stale ? [] : [groupId],
-			);
-			const wasStale = Boolean(existing.stale);
-			const isStale = Boolean(record.stale);
-			existing.stale = wasStale && isStale;
-			const shouldUpdateFreshnessMetadata =
-				(!isStale && (wasStale || clean(record.last_seen_at) > clean(existing.last_seen_at))) ||
-				(isStale && wasStale && clean(record.last_seen_at) > clean(existing.last_seen_at));
-			if (shouldUpdateFreshnessMetadata) {
-				existing.last_seen_at = record.last_seen_at;
-			}
-			// Unioned fresh addresses are valid only until the earliest group expiry.
-			if (!isStale) {
-				existing.expires_at = wasStale
-					? record.expires_at
-					: earliestValidExpiry(existing.expires_at, record.expires_at);
-			} else if (wasStale && shouldUpdateFreshnessMetadata) {
-				existing.expires_at = record.expires_at;
-			}
+			mergeCoordinatorPeerGroup(existing, record, groupId, freshAddresses);
 		}
 	}
 	return [...merged.values()];
+}
+
+function mergeCoordinatorPeerGroup(
+	existing: Record<string, unknown>,
+	record: Record<string, unknown>,
+	groupId: string,
+	freshAddresses: string[],
+): void {
+	const rejoinedAt = record.rejoined_at_ms;
+	if (
+		isRejoinTimestamp(rejoinedAt) &&
+		(!isRejoinTimestamp(existing.rejoined_at_ms) || rejoinedAt > existing.rejoined_at_ms)
+	)
+		existing.rejoined_at_ms = rejoinedAt;
+	existing.addresses = mergeAddresses(stringList(existing.addresses), freshAddresses);
+	existing.groups = mergeStringLists(stringList(existing.groups), [groupId]);
+	const wasStale = Boolean(existing.stale);
+	const isStale = Boolean(record.stale);
+	existing.fresh_groups = mergeStringLists(
+		stringList(existing.fresh_groups),
+		isStale ? [] : [groupId],
+	);
+	existing.stale = wasStale && isStale;
+	const newer = clean(record.last_seen_at) > clean(existing.last_seen_at);
+	const updateLastSeen = newer || (wasStale && !isStale);
+	if (updateLastSeen && (!isStale || wasStale)) existing.last_seen_at = record.last_seen_at;
+	// Unioned fresh addresses are valid only until the earliest group expiry.
+	if (!isStale)
+		existing.expires_at = wasStale
+			? record.expires_at
+			: earliestValidExpiry(existing.expires_at, record.expires_at);
+	else if (wasStale && updateLastSeen) existing.expires_at = record.expires_at;
 }
 
 function stringList(value: unknown): string[] {
@@ -1264,20 +1269,9 @@ export async function coordinatorStatusSnapshot(
 			incoming: incomingApprovals,
 			outgoing: outgoingApprovals,
 		};
-		snapshot.discovered_devices = peers.map((peer) => ({
-			device_id: peer.device_id,
-			display_name: peer.display_name ?? null,
-			fingerprint: peer.fingerprint ?? null,
-			addresses: Array.isArray(peer.addresses) ? peer.addresses : [],
-			groups: Array.isArray(peer.groups) ? peer.groups : [],
-			last_seen_at: peer.last_seen_at ?? null,
-			expires_at: peer.expires_at ?? null,
-			stale: Boolean(peer.stale),
-			needs_local_approval: incomingByPeer.has(clean(peer.device_id)),
-			waiting_for_peer_approval: outgoingByPeer.has(clean(peer.device_id)),
-			incoming_reciprocal_request_id: incomingByPeer.get(clean(peer.device_id))?.request_id ?? null,
-			outgoing_reciprocal_request_id: outgoingByPeer.get(clean(peer.device_id))?.request_id ?? null,
-		}));
+		snapshot.discovered_devices = peers.map((peer) =>
+			discoveredPeerStatus(peer, incomingByPeer, outgoingByPeer),
+		);
 	} catch (error) {
 		snapshot.lookup_error = error instanceof Error ? error.message : String(error);
 	}
@@ -1294,6 +1288,30 @@ export async function coordinatorStatusSnapshot(
 		});
 	}
 	return snapshot;
+}
+
+function discoveredPeerStatus(
+	peer: Record<string, unknown>,
+	incomingByPeer: ReadonlyMap<string, CoordinatorReciprocalApproval>,
+	outgoingByPeer: ReadonlyMap<string, CoordinatorReciprocalApproval>,
+) {
+	const incoming = incomingByPeer.get(clean(peer.device_id));
+	const outgoing = outgoingByPeer.get(clean(peer.device_id));
+	return {
+		device_id: peer.device_id,
+		display_name: peer.display_name ?? null,
+		fingerprint: peer.fingerprint ?? null,
+		...(isRejoinTimestamp(peer.rejoined_at_ms) ? { rejoined_at_ms: peer.rejoined_at_ms } : {}),
+		addresses: Array.isArray(peer.addresses) ? peer.addresses : [],
+		groups: Array.isArray(peer.groups) ? peer.groups : [],
+		last_seen_at: peer.last_seen_at ?? null,
+		expires_at: peer.expires_at ?? null,
+		stale: Boolean(peer.stale),
+		needs_local_approval: Boolean(incoming),
+		waiting_for_peer_approval: Boolean(outgoing),
+		incoming_reciprocal_request_id: incoming?.request_id ?? null,
+		outgoing_reciprocal_request_id: outgoing?.request_id ?? null,
+	};
 }
 
 export async function listCoordinatorJoinRequests(

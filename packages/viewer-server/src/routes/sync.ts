@@ -3678,6 +3678,10 @@ function claimLegacyDeviceAsSelf(store: MemoryStore, originDeviceId: string): nu
 	return Number(result.changes ?? 0);
 }
 
+function rejoinStatusField(record: Record<string, unknown>) {
+	return typeof record.rejoined_at_ms === "number" ? { rejoined_at_ms: record.rejoined_at_ms } : {};
+}
+
 function redactCoordinatorStatus(
 	coordinator: Record<string, unknown>,
 	showDiag: boolean,
@@ -3691,6 +3695,7 @@ function redactCoordinatorStatus(
 				return {
 					device_id: record.device_id,
 					display_name: record.display_name ?? null,
+					...rejoinStatusField(record),
 					groups: Array.isArray(record.groups) ? record.groups : [],
 					last_seen_at: record.last_seen_at ?? null,
 					expires_at: record.expires_at ?? null,
