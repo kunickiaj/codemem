@@ -7,6 +7,7 @@ import {
 	limitKind,
 	orderSchema,
 	readCapture,
+	schemaOrder,
 	schemaExclusionFor,
 	staticLimits,
 	toCompileOnly,
@@ -266,4 +267,60 @@ test("only the named sqlite-vec table of the local store is a schema exclusion",
 	);
 	assert.equal(schemaExclusionFor({ name: "memory_vectors", sql: "CREATE TABLE memory_vectors (x)" }), null);
 	assert.equal(schemaExclusionFor({ name: "other", sql: "CREATE VIRTUAL TABLE other USING vec0(x)" }), null);
+});
+
+// ---- schema order ----
+
+const object = (name, sql = `CREATE TABLE ${name} (a)`) => ({ type: "table", name, sql });
+const keys = (objects) => new Set(objects.map((entry) => `${entry.name}\n${entry.sql}`));
+/** Objects dropped or created to visit `order` from an empty database. */
+function transitions(schemas, order) {
+	let current = new Set();
+	let count = 0;
+	for (const hash of order) {
+		const next = keys(schemas.get(hash));
+		count += [...current].filter((key) => !next.has(key)).length;
+		count += [...next].filter((key) => !current.has(key)).length;
+		current = next;
+	}
+	return count;
+}
+
+test("schemaOrder visits every schema once", () => {
+	const schemas = new Map([
+		["abc", [object("a"), object("b"), object("c")]],
+		["empty", []],
+		["x", [object("x")]],
+	]);
+	assert.deepEqual([...schemaOrder(schemas)].sort(), ["abc", "empty", "x"]);
+	assert.deepEqual(schemaOrder(new Map()), []);
+});
+
+test("schemaOrder walks each build step by step instead of rebuilding it", () => {
+	// Captured interleaved, as two databases built at once would be.
+	const schemas = new Map([
+		["abc", [object("a"), object("b"), object("c")]],
+		["x", [object("x")]],
+		["a", [object("a")]],
+		["xy", [object("x"), object("y")]],
+		["ab", [object("a"), object("b")]],
+	]);
+	const order = schemaOrder(schemas);
+	assert.equal(transitions(schemas, [...schemas.keys()]), 16);
+	// Up the first build (3 creates), drop it (3), then up the second (2).
+	assert.equal(transitions(schemas, order), 8);
+	assert.ok(order.indexOf("a") < order.indexOf("ab") && order.indexOf("ab") < order.indexOf("abc"));
+	assert.ok(order.indexOf("x") < order.indexOf("xy"));
+});
+
+test("schemaOrder treats one table name with different SQL as different objects", () => {
+	const before = [object("t", "CREATE TABLE t (a)")];
+	const after = [object("t", "CREATE TABLE t (a, b)")];
+	const schemas = new Map([
+		["before", before],
+		["after", after],
+	]);
+	assert.deepEqual([...schemaOrder(schemas)].sort(), ["after", "before"]);
+	// Each schema needs its own build: moving between them drops one table and creates the other.
+	assert.equal(transitions(schemas, schemaOrder(schemas)), 3);
 });

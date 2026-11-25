@@ -425,3 +425,80 @@ export function orderSchema(objects) {
 		)
 		.sort((a, b) => SCHEMA_ORDER.indexOf(a.type) - SCHEMA_ORDER.indexOf(b.type));
 }
+
+/** Each schema as a bit set over every distinct object, by name and SQL, that any of them holds. */
+function schemaBits(schemas) {
+	const ids = new Map();
+	const idOf = (object) => {
+		const key = `${object.type}\n${object.name}\n${object.sql}`;
+		if (!ids.has(key)) ids.set(key, ids.size);
+		return ids.get(key);
+	};
+	const members = [...schemas.values()].map((objects) => orderSchema(objects).map(idOf));
+	const words = Math.ceil(ids.size / 32);
+	return members.map((list) => {
+		const bits = new Uint32Array(words);
+		for (const id of list) bits[id >>> 5] |= 1 << (id & 31);
+		return bits;
+	});
+}
+
+function popcount(word) {
+	let x = word - ((word >>> 1) & 0x55555555);
+	x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+	return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+
+/** How many objects one schema has that the other lacks, either way round. */
+function distance(a, b) {
+	let count = 0;
+	for (let i = 0; i < a.length; i++) count += popcount(a[i] ^ b[i]);
+	return count;
+}
+
+/**
+ * Prim's minimum spanning tree over every schema and the empty one at index 0, weighted
+ * by how many objects must be dropped or created to move between two schemas.
+ */
+function spanningTree(bits) {
+	const count = bits.length;
+	const joined = new Uint8Array(count);
+	const cost = new Float64Array(count).fill(Number.POSITIVE_INFINITY);
+	const parent = new Int32Array(count).fill(-1);
+	const children = Array.from({ length: count }, () => []);
+	cost[0] = 0;
+	for (let step = 0; step < count; step++) {
+		let next = -1;
+		for (let v = 0; v < count; v++) if (!joined[v] && (next < 0 || cost[v] < cost[next])) next = v;
+		joined[next] = 1;
+		if (parent[next] >= 0) children[parent[next]].push(next);
+		for (let v = 0; v < count; v++) {
+			if (joined[v]) continue;
+			const d = distance(bits[next], bits[v]);
+			if (d < cost[v]) [cost[v], parent[v]] = [d, next];
+		}
+	}
+	return children;
+}
+
+/**
+ * An order to rebuild the captured schemas in, so the local D1 moves from each one to the
+ * next with few drops and creates. Most captured schemas are steps of building one
+ * database, each a table or index more than the step before; visiting a spanning tree of
+ * them depth first walks down each build instead of rebuilding it from scratch. The order
+ * only changes how much work reaching each schema takes: the D1 still holds exactly that
+ * schema when its statements compile.
+ */
+export function schemaOrder(schemas) {
+	const hashes = [...schemas.keys()];
+	const bits = schemaBits(schemas);
+	const children = spanningTree([new Uint32Array(bits[0]?.length ?? 0), ...bits]);
+	const order = [];
+	const pending = [0];
+	while (pending.length) {
+		const node = pending.pop();
+		if (node > 0) order.push(hashes[node - 1]);
+		pending.push(...children[node]);
+	}
+	return order;
+}
