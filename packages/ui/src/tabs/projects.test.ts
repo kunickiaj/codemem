@@ -280,8 +280,10 @@ function mountProjectsDom() {
 		<div id="recipientPolicyManagementMount"></div>
 		<button id="projectsShareSelected"></button>
 		<div id="projectsSelectionStatus"></div>
-		<button id="projectsPrevPage"></button>
-		<button id="projectsNextPage"></button>
+		<div class="projects-pagination">
+			<button id="projectsPrevPage"></button>
+			<button id="projectsNextPage"></button>
+		</div>
 	`;
 }
 
@@ -991,9 +993,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 describe("Projects cached recipient presentation", () => {
 	it("keeps a loaded empty recipient state visible while a refresh is pending", async () => {
 		await loadProjectsData();
-		expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
-			"No Teams or Identities added",
-		);
+		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("None added");
 		let releaseIntent: ((value: ReturnType<typeof recipientIntent>) => void) | undefined;
 		vi.mocked(api.loadRecipientPolicyIntent).mockReturnValueOnce(
 			new Promise((resolve) => {
@@ -1003,9 +1003,7 @@ describe("Projects cached recipient presentation", () => {
 
 		const refresh = loadProjectsData();
 
-		expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
-			"No Teams or Identities added",
-		);
+		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("None added");
 		releaseIntent?.(recipientIntent());
 		await refresh;
 	});
@@ -1200,9 +1198,7 @@ describe("Projects cached recipient presentation", () => {
 
 		expect(document.body.textContent).toContain("api");
 		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
-		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-			"1 projects · 1–1",
-		);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain("1 project");
 	});
 
 	it("renders Projects before optional Team setup discovery finishes", async () => {
@@ -1217,9 +1213,7 @@ describe("Projects cached recipient presentation", () => {
 
 		const loading = loadProjectsData();
 		await vi.waitFor(() =>
-			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-				"1 projects · 1–1",
-			),
+			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain("1 project"),
 		);
 		await loading;
 		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
@@ -1239,9 +1233,7 @@ describe("Projects cached recipient presentation", () => {
 
 		const loading = loadProjectsData({ requireTeamSetupSummary: true });
 		await vi.waitFor(() =>
-			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-				"1 projects · 1–1",
-			),
+			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain("1 project"),
 		);
 		let settled = false;
 		void loading.then(() => {
@@ -1354,9 +1346,7 @@ describe("Projects cached recipient presentation", () => {
 		await expect(loadProjectsData({ requireTeamSetupSummary: true })).resolves.toBe(true);
 		resolveInventory(inventoryPage([project()]));
 		await expect(inventoryLoad).resolves.toBe(true);
-		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-			"1 projects · 1–1",
-		);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain("1 project");
 		resolveBackgroundSummary({ version: 1, candidates: [] });
 	});
 
@@ -2617,9 +2607,7 @@ describe("Projects cached recipient presentation", () => {
 
 		await loadProjectsData();
 
-		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-			"1 projects · 1–1",
-		);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain("1 project");
 		expect(api.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
 
 		resolveStatus({ has_admin_secret: true, readiness: "ready" });
@@ -2645,7 +2633,7 @@ describe("Projects cached recipient presentation", () => {
 
 		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
 		if (!cluster) throw new Error("project cluster missing");
-		expect(cluster.textContent).toContain("2 Project entries");
+		expect(cluster.textContent).toContain("2 entries");
 		expect(cluster.querySelector("details")?.open).toBe(false);
 		const disclosure = cluster.querySelector<HTMLButtonElement>(
 			'button[aria-label="Show entries for api"]',
@@ -2772,7 +2760,7 @@ describe("Projects cached recipient presentation", () => {
 			cluster.querySelector(".project-inventory-row-header")?.nextElementSibling?.contains(entries),
 		).toBe(true);
 		expect(entries?.compareDocumentPosition(assignment)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-		expect(cluster.textContent).toContain("3 Project entries");
+		expect(cluster.textContent).toContain("3 entries");
 		expect(cluster.querySelector('[data-label="Memories"]')?.textContent).toBe("9");
 		expect(cluster.querySelector('[data-label="Sessions"]')?.textContent).toBe("3");
 		expect(assignment.textContent).not.toContain(warnings[0]?.message);
@@ -2887,7 +2875,7 @@ describe("Projects cached recipient presentation", () => {
 		await loadProjectsData();
 
 		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
-		expect(cluster?.textContent).toContain("2 Project entries");
+		expect(cluster?.textContent).toContain("2 entries");
 		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("6");
 		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("1");
 		expect(document.body.textContent).toContain("Save Space for 1 Project entry");
@@ -3565,7 +3553,7 @@ describe("Projects cached recipient presentation", () => {
 		expect(shareSelected.textContent).toBe("Add Teams or Identities (2)");
 		expect(shareSelected.disabled).toBe(false);
 		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
-			"2 Projects selected.",
+			"2 Projects selected",
 		);
 		shareSelected.click();
 
@@ -3603,7 +3591,7 @@ describe("Projects cached recipient presentation", () => {
 		await loadProjectsData();
 
 		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
-			"1 Project selected.",
+			"1 Project selected",
 		);
 		expect(
 			document.querySelector<HTMLInputElement>(
@@ -3672,7 +3660,7 @@ describe("Projects cached recipient presentation", () => {
 
 		expect(refresh).toHaveBeenCalled();
 		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
-			"0 Projects selected.",
+			"No Projects selected",
 		);
 	});
 
@@ -3715,10 +3703,14 @@ describe("Projects cached recipient presentation", () => {
 					":scope > .project-inventory-row-header .project-recipient-chip",
 				),
 			].map((chip) => chip.textContent),
-		).toEqual([
-			"Identity: Adam · 1 of 2 known Project entries",
-			"Team: ExampleCo · 1 of 2 known Project entries",
-		]);
+		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
+		expect(
+			[
+				...cluster.querySelectorAll(
+					":scope > .project-inventory-row-header .project-recipient-coverage",
+				),
+			].map((coverage) => coverage.textContent),
+		).toEqual(["1 of 2 entries", "1 of 2 entries"]);
 		const model = getProjectsInventoryController().getViewModel().rows[0];
 		if (model?.kind !== "cluster") throw new Error("project cluster model missing");
 		expect(
@@ -3741,9 +3733,7 @@ describe("Projects cached recipient presentation", () => {
 				.find((entry) => entry.project.workspace_identity === "project-alpha")
 				?.recipients.map((recipient) => recipient.kind),
 		).toEqual(["Identity"]);
-		expect(cluster.querySelector(".project-recipient-status")?.textContent).toBe(
-			"Different sharing across entries",
-		);
+		expect(cluster.querySelector(".project-recipient-status")).toBeNull();
 		const action = cluster.querySelector<HTMLButtonElement>(
 			":scope > .project-inventory-row-header .project-recipient-action",
 		);
@@ -3754,7 +3744,7 @@ describe("Projects cached recipient presentation", () => {
 		);
 		clusterSelection?.click();
 		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
-			"2 Projects selected.",
+			"2 Projects selected",
 		);
 		action?.click();
 		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
@@ -3997,18 +3987,17 @@ describe("Projects distinct canonical sharing coverage", () => {
 			expect(row.projectIds).toEqual(ids);
 			if (!count) {
 				expect(row.recipients).toEqual([]);
-				expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
-					"No Teams or Identities added",
-				);
+				expect(document.querySelector(".project-recipient-status")?.textContent).toBe("None added");
 				return;
 			}
 			expect(row.recipients).toMatchObject([
 				{ key: "team:team-example", coveredProjectCount: count, knownProjectCount: 2 },
 			]);
 			expect(row.recipients).toHaveLength(1);
-			expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
-				count === 1 ? "Different sharing across entries" : "Sharing across known entries",
+			expect(document.querySelector(".project-recipient-coverage")?.textContent).toBe(
+				`${count} of 2 entries`,
 			);
+			expect(document.querySelector(".project-recipient-status")).toBeNull();
 			expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
 		},
 	);
@@ -4668,5 +4657,92 @@ describe("Projects recipient changes need the admin secret", () => {
 			.scopeGroups.flatMap((group) => group.scopes.map((scope) => scope.scope_id));
 		expect(offered.some((scopeId) => scopeId !== "local-default")).toBe(allowed);
 		expect(offered).toContain("local-default");
+	});
+});
+
+function lastActivityTime(row: Element | null): HTMLTimeElement | null {
+	return row?.querySelector<HTMLTimeElement>('[data-label="Last activity"] time') ?? null;
+}
+
+function worktreeEntry(latestSessionAt: string | null, suffix: string) {
+	return project({
+		cwd: `/workspace/${suffix}`,
+		latest_session_at: latestSessionAt,
+		workspace_identity: `https://git.example.invalid/exampleco/api.git:${suffix}`,
+	});
+}
+
+describe("Projects table at rest", () => {
+	it("opens and closes details from the pointer toggle without adding a tab stop", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+		await loadProjectsData();
+		const toggle = document.querySelector<HTMLButtonElement>(".project-details-toggle");
+		const details = document.querySelector<HTMLDetailsElement>(".project-inventory-details");
+
+		expect(details?.open).toBe(false);
+		expect(toggle?.tabIndex).toBe(-1);
+		expect(toggle?.getAttribute("aria-hidden")).toBe("true");
+		toggle?.click();
+		await vi.waitFor(() => expect(details?.open).toBe(true));
+		expect(toggle?.dataset.open).toBe("true");
+		toggle?.click();
+		await vi.waitFor(() => expect(details?.open).toBe(false));
+	});
+
+	it("keeps the exact time on a Project's one-line last activity", async () => {
+		const latest = "2026-05-06T00:00:00Z";
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ latest_session_at: latest })]),
+		);
+		await loadProjectsData();
+
+		const time = lastActivityTime(document.querySelector(".project-inventory-row-header"));
+
+		expect(time?.getAttribute("datetime")).toBe(latest);
+		expect(time?.getAttribute("title")).toBe(new Date(latest).toLocaleString());
+	});
+
+	it.each([
+		[
+			"the most recent entry",
+			["2026-05-01T00:00:00Z", "2026-05-09T00:00:00Z"],
+			"2026-05-09T00:00:00Z",
+		],
+		["the only dated entry", [null, "2026-05-02T00:00:00Z"], "2026-05-02T00:00:00Z"],
+		["no time when no entry has one", [null, null], null],
+	])("shows %s as a group's last activity", async (_label, sessions, expected) => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(sessions.map((latest, index) => worktreeEntry(latest, `entry-${index}`))),
+		);
+		await loadProjectsData();
+
+		const header = document.querySelector(
+			".project-inventory-cluster > .project-inventory-row-header",
+		);
+
+		expect(lastActivityTime(header)?.getAttribute("datetime") ?? null).toBe(expected);
+		if (!expected)
+			expect(header?.querySelector('[data-label="Last activity"]')?.textContent).toBe("—");
+	});
+
+	it("hides paging and the range when every Project fits on one page", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+		await loadProjectsData();
+
+		expect(document.querySelector<HTMLElement>(".projects-pagination")?.hidden).toBe(true);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe("1 project");
+	});
+
+	it("keeps paging and the range when more Projects follow", async () => {
+		// The follow-up reads that complete the inventory in the background end on the last page.
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(inventoryPage([project()], { has_more: true, total: 251 }))
+			.mockResolvedValue(inventoryPage([], { offset: 250, total: 251 }));
+		await loadProjectsData();
+
+		expect(document.querySelector<HTMLElement>(".projects-pagination")?.hidden).toBe(false);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
+			"251 projects · 1–1",
+		);
 	});
 });

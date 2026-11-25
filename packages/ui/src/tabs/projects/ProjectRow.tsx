@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../components/primitives/chip";
+import { RelativeTime } from "../../components/RelativeTime";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryProjectViewModel,
@@ -8,20 +9,18 @@ import type {
 } from "../projects-inventory-model";
 import { ProjectRowDetails } from "./ProjectRowDetails";
 import { ProjectRowMenu } from "./ProjectRowMenu";
-import {
-	isAssignable,
-	latestLabel,
-	projectBadges,
-	projectDomId,
-	projectSignal,
-} from "./project-view";
+import { isAssignable, projectBadges, projectDomId, projectSignal } from "./project-view";
 
 function recipientCoverageLabel(recipient: ProjectInventoryRecipientViewModel): string {
 	if (recipient.coveredProjectCount == null || recipient.knownProjectCount == null)
-		return " · Coverage unavailable";
-	return ` · ${recipient.coveredProjectCount} of ${recipient.knownProjectCount} known Project entries`;
+		return "Coverage unavailable";
+	return `${recipient.coveredProjectCount} of ${recipient.knownProjectCount} entries`;
 }
 
+/**
+ * Who a Project is shared with. For a group, each recipient states how many of the
+ * group's entries it covers, so uneven sharing shows without a separate status line.
+ */
 export function RecipientSummary({
 	available,
 	cluster = false,
@@ -33,36 +32,29 @@ export function RecipientSummary({
 }) {
 	if (!available) return <span className="project-recipient-status tertiary">Unavailable</span>;
 	if (recipients.length === 0)
-		return <span className="project-recipient-status tertiary">No Teams or Identities added</span>;
+		return <span className="project-recipient-status tertiary">None added</span>;
 	const visible = cluster ? recipients : recipients.slice(0, 2);
 	const remaining = recipients.length - visible.length;
-	const differentSharing =
-		cluster &&
-		recipients.some((recipient) => recipient.coveredProjectCount !== recipient.knownProjectCount);
-	let groupStatus = "Sharing across known entries";
-	if (differentSharing) groupStatus = "Different sharing across entries";
-	if (
-		recipients.some(
-			(recipient) => recipient.coveredProjectCount == null || recipient.knownProjectCount == null,
-		)
-	)
-		groupStatus = "Coverage unavailable";
 	return (
-		<div className="project-recipient-summary">
-			<ul aria-label="Active recipients" className="project-recipient-chips">
-				{visible.map((recipient) => (
-					<li
+		<ul aria-label="Active recipients" className="project-recipient-chips">
+			{visible.map((recipient) => (
+				<li className="project-recipient" key={recipient.key}>
+					<span
 						className={`project-recipient-chip project-recipient-chip-${recipient.kind.toLowerCase()}`}
-						key={recipient.key}
 					>
 						{recipient.kind}: {recipient.displayName}
-						{cluster ? recipientCoverageLabel(recipient) : ""}
-					</li>
-				))}
-				{remaining > 0 ? <li className="project-recipient-chip">+{remaining}</li> : null}
-			</ul>
-			{cluster ? <span className="project-recipient-status">{groupStatus}</span> : null}
-		</div>
+					</span>
+					{cluster ? (
+						<span className="project-recipient-coverage">{recipientCoverageLabel(recipient)}</span>
+					) : null}
+				</li>
+			))}
+			{remaining > 0 ? (
+				<li className="project-recipient">
+					<span className="project-recipient-chip">+{remaining}</span>
+				</li>
+			) : null}
+		</ul>
 	);
 }
 
@@ -74,7 +66,30 @@ interface ProjectRowProps {
 	view: ProjectsInventoryViewModel;
 }
 
-type ProjectRowHeaderProps = ProjectRowProps & { onOpenDetails: () => void; titleId: string };
+type ProjectRowHeaderProps = ProjectRowProps & {
+	detailsOpen: boolean;
+	onOpenDetails: () => void;
+	onToggleDetails: () => void;
+	titleId: string;
+};
+
+/**
+ * Pointer shortcut for the row's details. Keyboard and screen-reader users reach the
+ * same disclosure through its summary, so this duplicate stays out of their way.
+ */
+function ProjectDetailsToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+	return (
+		<button
+			aria-hidden="true"
+			className="project-details-toggle"
+			data-open={String(open)}
+			onClick={onToggle}
+			tabIndex={-1}
+			title={open ? "Hide details" : "Show details"}
+			type="button"
+		/>
+	);
+}
 
 function ProjectRowStats({ model, view }: Pick<ProjectRowProps, "model" | "view">) {
 	const { project } = model;
@@ -87,7 +102,7 @@ function ProjectRowStats({ model, view }: Pick<ProjectRowProps, "model" | "view"
 				{project.session_count.toLocaleString()}
 			</td>
 			<td className="project-inventory-cell project-inventory-latest" data-label="Last activity">
-				{latestLabel(project.latest_session_at)}
+				{project.latest_session_at ? <RelativeTime value={project.latest_session_at} /> : "—"}
 			</td>
 			<td className="project-inventory-cell project-inventory-shared" data-label="Shared with">
 				<RecipientSummary available={view.recipientPolicyReady} recipients={model.recipients} />
@@ -96,10 +111,15 @@ function ProjectRowStats({ model, view }: Pick<ProjectRowProps, "model" | "view"
 	);
 }
 
-function ProjectRowActions({ callbacks, model, onOpenDetails, view }: ProjectRowHeaderProps) {
+function ProjectRowActions({
+	callbacks,
+	detailsOpen,
+	model,
+	onOpenDetails,
+	onToggleDetails,
+	view,
+}: ProjectRowHeaderProps) {
 	const { project } = model;
-	if (!isAssignable(project) && !model.manageable)
-		return <td className="project-inventory-cell project-inventory-row-actions" />;
 	return (
 		<td className="project-inventory-cell project-inventory-row-actions">
 			{model.manageable ? (
@@ -130,6 +150,7 @@ function ProjectRowActions({ callbacks, model, onOpenDetails, view }: ProjectRow
 					onRemoveMapping={() => void callbacks.removeProjectScope(project.workspace_identity)}
 				/>
 			) : null}
+			<ProjectDetailsToggle onToggle={onToggleDetails} open={detailsOpen} />
 		</td>
 	);
 }
@@ -214,8 +235,10 @@ export function ProjectRow({ callbacks, child = false, clusterKey, model, view }
 			<ProjectRowHeader
 				callbacks={callbacks}
 				child={child}
+				detailsOpen={open}
 				model={model}
 				onOpenDetails={openDetails}
+				onToggleDetails={() => setDetailsOpen(!open)}
 				titleId={titleId}
 				view={view}
 			/>

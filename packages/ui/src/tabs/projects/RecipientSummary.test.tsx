@@ -9,7 +9,7 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
-it.each([1, 2])("shows %i of 2 known Project entries for each recipient", (coveredProjectCount) => {
+it.each([1, 2])("shows %i of 2 entries for each recipient", (coveredProjectCount) => {
 	// Arrange: two recipients can have disjoint access, with no universal Team.
 	const recipients: ProjectInventoryRecipientViewModel[] = [
 		{
@@ -30,15 +30,16 @@ it.each([1, 2])("shows %i of 2 known Project entries for each recipient", (cover
 	// Act
 	act(() => render(<RecipientSummary available cluster recipients={recipients} />, document.body));
 	// Assert
-	expect(document.body.textContent).toContain(
-		`Team: Studio · ${coveredProjectCount} of 2 known Project entries`,
-	);
-	expect(document.body.textContent).toContain(
-		`Identity: Alex · ${coveredProjectCount} of 2 known Project entries`,
-	);
-	expect(document.body.textContent?.includes("Different sharing across entries")).toBe(
-		coveredProjectCount === 1,
-	);
+	expect(
+		[...document.querySelectorAll(".project-recipient")].map((recipient) => [
+			recipient.querySelector(".project-recipient-chip")?.textContent,
+			recipient.querySelector(".project-recipient-coverage")?.textContent,
+		]),
+	).toEqual([
+		["Team: Studio", `${coveredProjectCount} of 2 entries`],
+		["Identity: Alex", `${coveredProjectCount} of 2 entries`],
+	]);
+	expect(document.querySelector(".project-recipient-status")).toBeNull();
 	expect(document.body.textContent).not.toContain("2 recipients");
 });
 
@@ -56,7 +57,10 @@ it("keeps unavailable recipients visible without exposing their identifiers", ()
 	// Act
 	act(() => render(<RecipientSummary available cluster recipients={recipients} />, document.body));
 	// Assert
-	expect(document.body.textContent).toContain("Unavailable Team · 1 of 2 known Project entries");
+	expect(document.querySelector(".project-recipient-chip")?.textContent).toBe(
+		"Team: Unavailable Team",
+	);
+	expect(document.querySelector(".project-recipient-coverage")?.textContent).toBe("1 of 2 entries");
 	expect(document.body.textContent).not.toContain("team:missing");
 });
 
@@ -68,8 +72,10 @@ it("does not imply complete sharing when recipient coverage is unavailable", () 
 	// Act
 	act(() => render(<RecipientSummary available cluster recipients={recipients} />, document.body));
 	// Assert
-	expect(document.body.textContent).toContain("Team: Studio · Coverage unavailable");
-	expect(document.body.textContent).not.toContain("Sharing across known entries");
+	expect(document.querySelector(".project-recipient-coverage")?.textContent).toBe(
+		"Coverage unavailable",
+	);
+	expect(document.body.textContent).not.toMatch(/\d+ of \d+/);
 });
 
 it.each([true, false])(
@@ -82,9 +88,7 @@ it.each([true, false])(
 			render(<RecipientSummary available={available} recipients={recipients} />, document.body),
 		);
 		// Assert
-		expect(document.body.textContent).toBe(
-			available ? "No Teams or Identities added" : "Unavailable",
-		);
+		expect(document.body.textContent).toBe(available ? "None added" : "Unavailable");
 		expect(document.body.textContent).not.toContain("Not shared");
 	},
 );
