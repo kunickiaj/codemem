@@ -4490,8 +4490,8 @@ function localOnlyRowRejections(
 }
 
 /**
- * Every scope whose rows an inbound op changes: its own, both sides of a move,
- * and the scope of every row here with the same import key, since an update
+ * Every scope whose rows an inbound op changes: its own, and the scope of every
+ * row here with the same import key, since an update
  * or delete matches rows by import key alone. A scope the sender, as the
  * memory's verified source, retired the memory from is left out: its copy may
  * still be moved to where the source now writes it. A cleanup notice follows
@@ -4499,13 +4499,10 @@ function localOnlyRowRejections(
  */
 function scopesWrittenByInboundOp(db: Database, op: ReplicationOp, senderId: string): string[] {
 	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) return [];
+	// A move's op scope is its new scope on the new side and its old scope on the old side.
+	// The other scope counts only through a copy stored there, below: a device in the
+	// destination may not know the older scope, and the old side writes nothing new.
 	const scopes = new Set([cleanText(op.scope_id) ?? ""]);
-	if (op.op_type === REASSIGN_SCOPE_OP_TYPE) {
-		const reassignment = parseReassignScopePayload(op);
-		scopes.add(reassignment.old_scope_id);
-		// The old side only retires the older copy, and this device may not know the new scope.
-		if (reassignment.side === "new") scopes.add(reassignment.new_scope_id);
-	}
 	const existing = db
 		.prepare("SELECT DISTINCT scope_id FROM memory_items WHERE import_key = ?")
 		.pluck()
