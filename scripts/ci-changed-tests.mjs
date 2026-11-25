@@ -3,6 +3,8 @@
 // runtime, or import computed paths (directly or via shared test fixtures) are invisible
 // to that trace, so they always run.
 // Main and `ci:full` runs set no base and execute every command unchanged.
+// CI_TEST_SHARD (for example `1/2`) runs one Vitest shard of each `vitest run`, after
+// selection, so every shard runner splits the same set of files.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -105,7 +107,16 @@ function listFiles(cwd, args) {
 	}
 }
 
-function runSelected(command, cwd, base) {
+/** Extra `vitest run` arguments that run one shard of the files the command resolves. */
+export function shardArgs(shard, { selected }) {
+	if (!shard) return [];
+	if (!/^[1-9]\d*\/[1-9]\d*$/.test(shard)) throw new Error(`Invalid CI_TEST_SHARD: ${shard}`);
+	// Vitest refuses more shards than files unless told to pass with none; a small selection
+	// can leave a shard empty, which is a pass. A full run always has files for every shard.
+	return selected ? [`--shard=${shard}`, "--passWithNoTests"] : [`--shard=${shard}`];
+}
+
+function runSelected(command, cwd, base, shard) {
 	const { flags, filters } = parseVitest(command);
 	const all = listFiles(cwd, [...flags, ...filters]);
 	const changed = new Set(listFiles(cwd, [...flags, "--changed", base]));
@@ -116,22 +127,34 @@ function runSelected(command, cwd, base) {
 		}),
 	);
 	const files = selectFiles({ all, changed, untraced });
-	if (files === null) return run("pnpm", ["exec", "vitest", "run", ...flags, ...filters], cwd);
+	if (files === null) {
+		const args = shardArgs(shard, { selected: false });
+		return run("pnpm", ["exec", "vitest", "run", ...flags, ...filters, ...args], cwd);
+	}
 	console.log(`Selected ${files.length} of ${all.length} test files (${untraced.size} untraced).`);
 	if (files.length === 0) return 0;
 	const paths = files.map((file) => relative(cwd, file));
-	return run("pnpm", ["exec", "vitest", "run", ...flags, ...paths], cwd);
+	const args = shardArgs(shard, { selected: true });
+	return run("pnpm", ["exec", "vitest", "run", ...flags, ...paths, ...args], cwd);
 }
+
+const isVitestRun = (command) => command === VITEST || command.startsWith(`${VITEST} `);
 
 export function main(names, { cwd = process.cwd(), env = process.env } = {}) {
 	const { scripts } = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
 	const base = env.CI_FORCE_FULL === "1" ? "" : (env.CI_TEST_BASE ?? "");
+	const shard = env.CI_TEST_SHARD ?? "";
 	console.log(base ? `Selecting tests changed since ${base}` : "Running full test scripts");
-	for (const command of expandScripts(names, scripts)) {
-		const selectable = base && (command === VITEST || command.startsWith(`${VITEST} `));
-		const status = selectable
-			? runSelected(command, cwd, base)
-			: run(command, [], cwd, { shell: true });
+	if (shard) console.log(`Running Vitest shard ${shard}`);
+	const commands = expandScripts(names, scripts);
+	// Every shard runner runs every command it is given, so anything else would run twice.
+	const unsharded = shard ? commands.filter((command) => !isVitestRun(command)) : [];
+	if (unsharded.length) throw new Error(`CI_TEST_SHARD cannot split: ${unsharded.join("; ")}`);
+	for (const command of commands) {
+		const vitest = isVitestRun(command);
+		const full = [command, ...(vitest ? shardArgs(shard, { selected: false }) : [])].join(" ");
+		const status =
+			base && vitest ? runSelected(command, cwd, base, shard) : run(full, [], cwd, { shell: true });
 		if (status !== 0) return status;
 	}
 	return 0;

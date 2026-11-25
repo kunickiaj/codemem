@@ -294,8 +294,9 @@ describe("normal CI workflow source contract", () => {
 	for (const [id, command] of [
 		[
 			"ts-test-common",
-			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci",
+			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci:isolated",
 		],
+		["ts-test-shards", "node scripts/ci-changed-tests.mjs test:ci:parallel"],
 		["worker-test", "node ../../scripts/ci-changed-tests.mjs test:worker"],
 	]) {
 		it(`runs ${id} once through the PR test selector with full history`, () => {
@@ -399,12 +400,12 @@ it("preserves complete parallel and isolated suite coverage through reusable ali
 	assert.equal(isolated, `pnpm exec vitest run ${heavyTest} --maxWorkers=1`);
 });
 
-describe("full CI sharding contract", () => {
-	it("keeps affected PR tests on one runner and runs full auxiliary checks and the proof once", () => {
+describe("CI sharding contract", () => {
+	it("runs auxiliary checks and the owner proof once in the common job, and no parallel tests", () => {
 		// Arrange
 		const common = getJob(ciWorkflow, "ts-test-common");
 		const affectedCommand =
-			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci";
+			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci:isolated";
 		const fullCommand =
 			"pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test:ci:isolated";
 		// Act
@@ -412,7 +413,8 @@ describe("full CI sharding contract", () => {
 		const affected = steps.find((step) => step.includes(`run: ${affectedCommand}\n`));
 		const full = steps.find((step) => step.includes(`run: ${fullCommand}\n`));
 		const commands = [...common.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
-		// Assert: complementary conditions prevent duplicate auxiliary or owner-proof execution.
+		// Assert: complementary conditions prevent duplicate auxiliary or owner-proof execution,
+		// and the parallel suite (test:ci or test:ci:parallel) is left to the shards.
 		assert.ok(affected);
 		assert.ok(full);
 		assert.ok(affected.includes(`        if: ${affectedCondition}\n`));
@@ -421,28 +423,34 @@ describe("full CI sharding contract", () => {
 			commands.filter((command) => command.includes("test:")),
 			[affectedCommand, fullCommand],
 		);
-		assert.doesNotMatch(common, /matrix:|--shard|test:ci:parallel|continue-on-error/u);
+		assert.doesNotMatch(common, /matrix:|--shard|CI_TEST_SHARD|test:ci(?::parallel)?(?=\s|$)/mu);
 		assert.doesNotMatch(full, /CI_TEST_BASE|ci-changed-tests/u);
 	});
 
-	it("runs only the parallel alias on two independent full-run shards", () => {
+	it("runs the selected parallel suite on two shards for every event", () => {
 		// Arrange
 		const shards = getJob(ciWorkflow, "ts-test-shards");
 		// Act
 		const commands = [...shards.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
 		const testCommands = commands.filter((command) => command.includes("test:"));
-		// Assert: native workspace sharding keeps the proof and Worker project out via the alias.
-		assert.ok(shards.includes(`    if: ${fullCondition}\n`));
+		const step = shards.split(/^ {6}- /m).find((entry) => entry.startsWith("name: Test shard\n"));
+		// Assert: both shards apply the same PR selection, then split it; non-PR and ci:full
+		// events pass no base and split the whole parallel suite.
+		assert.doesNotMatch(shards, /^ {4}if:/m);
 		assert.match(shards, /^ {6}fail-fast: false$/m);
 		assert.match(shards, /^ {8}shard: \[1, 2\]$/m);
-		assert.deepEqual(testCommands, [
-			`pnpm run test:ci:parallel --shard=${githubExpressionOpen} matrix.shard }}/2`,
-		]);
+		assert.deepEqual(testCommands, ["node scripts/ci-changed-tests.mjs test:ci:parallel"]);
+		assert.ok(step, "expected the Test shard step");
+		assert.match(step, /^ {10}CI_TEST_SHARD: \$\{\{ matrix\.shard \}\}\/2$/m);
+		assert.match(
+			step,
+			/^ {10}CI_TEST_BASE: \$\{\{ !contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci:full'\) && github\.event\.pull_request\.base\.sha \|\| '' \}\}$/m,
+		);
 		assert.match(shards, /fetch-depth: 0/u);
 		assert.match(shards, /pnpm install --frozen-lockfile/u);
 		assert.ok(commands.includes("pnpm run build"));
 		assert.ok(commands.indexOf("pnpm run build") < commands.indexOf(testCommands[0]));
-		assert.doesNotMatch(shards, /^ {4}needs:|continue-on-error|ci-changed-tests|--maxWorkers/u);
+		assert.doesNotMatch(shards, /^ {4}needs:|continue-on-error|--maxWorkers|test:ci:isolated/mu);
 	});
 });
 
@@ -459,57 +467,35 @@ describe("required TypeScript Test gate", () => {
 		assert.match(gate, /^ {4}needs: \[ts-test-common, ts-test-shards\]$/m);
 		assert.match(gate, /^ {4}if: always\(\)$/m);
 		assert.deepEqual(resultVariables, [
-			["FULL_RUN", `${githubExpressionOpen} ${fullCondition} }}`],
 			["COMMON_RESULT", `${githubExpressionOpen} needs.ts-test-common.result }}`],
 			["SHARDS_RESULT", `${githubExpressionOpen} needs.ts-test-shards.result }}`],
 		]);
 		assert.doesNotMatch(gate, /continue-on-error/u);
 	});
 
-	for (const [mode, shardResult] of [
-		["true", "success"],
-		["false", "skipped"],
-	]) {
-		it(`accepts successful common tests and expected shards for FULL_RUN=${mode}`, () => {
-			// Arrange
-			const env = { FULL_RUN: mode, COMMON_RESULT: "success", SHARDS_RESULT: shardResult };
-			// Act
-			const result = runTestGate(env);
-			// Assert
-			assert.deepEqual(result, { status: 0, errors: [] });
-		});
+	it("accepts successful common tests and shards", () => {
+		// Act
+		const result = runTestGate({ COMMON_RESULT: "success", SHARDS_RESULT: "success" });
+		// Assert
+		assert.deepEqual(result, { status: 0, errors: [] });
+	});
 
-		for (const variable of ["COMMON_RESULT", "SHARDS_RESULT"]) {
-			const expected = variable === "COMMON_RESULT" ? "success" : shardResult;
-			for (const value of ["success", "failure", "cancelled", "skipped", "", undefined]) {
-				if (value === expected) continue;
-				it(`rejects ${variable}=${String(value)} for FULL_RUN=${mode}`, () => {
-					// Arrange: undefined represents a missing environment entry.
-					const env = { FULL_RUN: mode, COMMON_RESULT: "success", SHARDS_RESULT: shardResult };
-					if (value === undefined) delete env[variable];
-					else env[variable] = value;
-					// Act
-					const result = runTestGate(env);
-					// Assert
-					assert.equal(result.status, 1);
-					assert.equal(result.errors.length, 1);
-					assert.match(result.errors[0], /TypeScript Test failed/u);
-				});
-			}
+	for (const variable of ["COMMON_RESULT", "SHARDS_RESULT"]) {
+		for (const value of ["failure", "cancelled", "skipped", "", undefined]) {
+			it(`rejects ${variable}=${String(value)}`, () => {
+				// Arrange: undefined represents a missing environment entry. Shards run on pull
+				// requests too, so a skipped shard job fails the check on every event.
+				const env = { COMMON_RESULT: "success", SHARDS_RESULT: "success" };
+				if (value === undefined) delete env[variable];
+				else env[variable] = value;
+				// Act
+				const result = runTestGate(env);
+				// Assert
+				assert.equal(result.status, 1);
+				assert.equal(result.errors.length, 1);
+				assert.match(result.errors[0], /TypeScript Test failed/u);
+			});
 		}
-	}
-
-	for (const mode of ["", undefined, "TRUE", "1", "invalid"]) {
-		it(`rejects invalid FULL_RUN=${String(mode)} even with otherwise passing results`, () => {
-			// Arrange
-			const env = { COMMON_RESULT: "success", SHARDS_RESULT: "skipped" };
-			if (mode !== undefined) env.FULL_RUN = mode;
-			// Act
-			const result = runTestGate(env);
-			// Assert
-			assert.equal(result.status, 1);
-			assert.equal(result.errors.length, 1);
-		});
 	}
 });
 
