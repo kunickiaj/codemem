@@ -206,6 +206,26 @@ it("does not duplicate live row markers or show a notice for conflicting keys", 
 	expect(host.textContent).toBe("");
 });
 
+function mountHistoryInDevices(revision: number, inventory: DeviceIdentityInventoryV1) {
+	act(() =>
+		mountDevices(
+			host,
+			{
+				version: 1,
+				identities: [],
+				teams: [],
+				teamMemberships: [],
+				identityDevices: [],
+				projectRecipients: [],
+			},
+			{ version: 1, items: [] },
+			[],
+			[],
+			{ inventory, localDeviceId: "viewer", rejoinHistoryRevision: revision },
+		),
+	);
+}
+
 it.each([true, false])(
 	"shows a missed rejoin with a mounted configured fallback (verified pin: %s)",
 	async (verified) => {
@@ -215,23 +235,7 @@ it.each([true, false])(
 		const item = inventory.items[0];
 		if (!item) throw new Error("Missing fallback inventory row");
 		if (!verified) item.validatedFingerprint = null;
-		act(() =>
-			mountDevices(
-				host,
-				{
-					version: 1,
-					identities: [],
-					teams: [],
-					teamMemberships: [],
-					identityDevices: [],
-					projectRecipients: [],
-				},
-				{ version: 1, items: [] },
-				[],
-				[],
-				{ inventory, localDeviceId: "viewer", rejoinHistoryRevision: 1 },
-			),
-		);
+		mountHistoryInDevices(1, inventory);
 		await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
 		const card = host.querySelector("#device-identity-card-offline-device");
 		expect(card?.textContent).toContain("Configured · Availability unknown");
@@ -242,6 +246,59 @@ it.each([true, false])(
 		expect(host.querySelectorAll(".device-rejoin-notice")).toHaveLength(1);
 	},
 );
+
+it("keeps an undismissed notice in mounted Devices through a failed read and the next successful page", async () => {
+	const inventory = matchingInventory();
+	const oldDevice = inventory.items[0];
+	if (!oldDevice) throw new Error("Missing inventory row");
+	oldDevice.rejoin = undefined;
+	let respond: (response: Response) => void = () => {
+		throw new Error("No pending request");
+	};
+	const remote = vi.fn<typeof fetch>();
+	remote.mockResolvedValueOnce(Response.json(page));
+	remote.mockImplementationOnce(
+		() =>
+			new Promise<Response>((resolve) => {
+				respond = resolve;
+			}),
+	);
+	remote.mockResolvedValueOnce(
+		Response.json({
+			...page,
+			items: [
+				{ eventId: "event-b", deviceId: "newly-rejoined-device", finalizedAtMs: 1_700_000_000_001 },
+			],
+			nextCursor: "event-b",
+		}),
+	);
+	vi.stubGlobal("fetch", remote);
+
+	mountHistoryInDevices(1, inventory);
+	await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
+	expect(host.textContent).toContain("Office laptop rejoined by Google sign-in");
+
+	mountHistoryInDevices(2, inventory);
+	await vi.waitFor(() => expect(remote).toHaveBeenCalledTimes(2));
+	await act(async () => {
+		respond(new Response(null, { status: 503 }));
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	});
+	expect(host.textContent).toContain("Office laptop rejoined by Google sign-in");
+	expect(localStorage.getItem(key)).toContain("event-a");
+
+	mountHistoryInDevices(3, inventory);
+	await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-b"));
+	expect(remote.mock.calls[2]?.[0]).toBe(`${path}?scope=${scope}&after=event-a`);
+	expect(host.querySelectorAll(".device-rejoin-notice")).toHaveLength(2);
+	act(() =>
+		host
+			.querySelector<HTMLButtonElement>('[aria-label="Dismiss rejoin notice for Office laptop"]')
+			?.click(),
+	);
+	expect(host.textContent).not.toContain("Office laptop rejoined by Google sign-in");
+	expect(host.textContent).toContain("A device rejoined by Google sign-in");
+});
 
 it("lets one slow history response complete across multiple ordinary refreshes", async () => {
 	let deliver: (response: Response) => void = () => {

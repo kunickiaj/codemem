@@ -131,7 +131,8 @@ function useRejoinHistory(options: {
 				});
 			})
 			.catch(() => {
-				if (!controller.signal.aborted) setView(null);
+				// The cursor may already have advanced past these visible notices.
+				// Keep them until dismissal or a change of device or profile.
 			})
 			.finally(() => {
 				if (pending.current === read) pending.current = null;
