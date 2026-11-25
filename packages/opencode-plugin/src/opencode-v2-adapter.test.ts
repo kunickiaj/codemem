@@ -1295,6 +1295,57 @@ describe("OpenCode 2 adapter lifecycle", () => {
 			"executionWrapper",
 		);
 	});
+
+	it.each(["2.4.1", "2.5.0"])("pins the retrieval signatures on %s", (version) => {
+		const tools = [
+			{ id: "codemem_memory_search_index", options: { namespace: "codemem" } },
+			{
+				id: "codemem_memory_get_observations",
+				options: { namespace: "codemem", codemode: { description: "retain custom description" } },
+			},
+			{ id: "codemem_memory_pack", options: { namespace: "codemem" } },
+			{ id: "codemem_memory_search_index", options: { namespace: "unrelated" } },
+		];
+		const updates = tools.map((tool) => ({ ...tool }));
+		const editor = {
+			list: () => tools,
+			update: vi.fn((id, mutate) => mutate(updates.find((tool) => tool.id === id))),
+		};
+		adapter.pinV2RetrievalCatalog(editor, version);
+		expect(editor.update).toHaveBeenCalledTimes(2);
+		expect(updates.map(({ options }) => options)).toEqual([
+			{ namespace: "codemem", codemode: { pinned: true } },
+			{
+				namespace: "codemem",
+				codemode: { description: "retain custom description", pinned: true },
+			},
+			{ namespace: "codemem" },
+			{ namespace: "unrelated" },
+		]);
+	});
+
+	it.each(["2.0.24", "2.4.0", undefined])(
+		"leaves direct and older tool declarations alone (%s)",
+		(version) => {
+			const editor = {
+				list: () => [
+					{ id: "codemem_memory_search_index", options: { namespace: "codemem" } },
+					{
+						id: "codemem_memory_get_observations",
+						options: { namespace: "codemem", codemode: false },
+					},
+				],
+				update: vi.fn(),
+			};
+			adapter.pinV2RetrievalCatalog(editor, version);
+			expect(editor.update).not.toHaveBeenCalled();
+			adapter.pinV2RetrievalCatalog(editor, "2.4.1");
+			expect(editor.update).toHaveBeenCalledExactlyOnceWith(
+				"codemem_memory_search_index",
+				expect.any(Function),
+			);
+		},
+	);
 });
 
 describe("OpenCode 2 adapter lifecycle", () => {

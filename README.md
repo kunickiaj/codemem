@@ -183,6 +183,10 @@ hook for an interrupted child. Codemem excludes OpenCode wrappers that report
 memory calls from observer input. Those wrappers and their children may still
 appear in raw events, subject to capture settings.
 
+On OpenCode 2.4.1 and later 2.x releases, the plugin pins the memory search
+index and batch fetch signatures in the Code Mode catalog. Other tools remain
+discoverable, and tools configured for direct calls keep that exposure.
+
 OpenCode 1 also preserves verified delegation provenance for individual task briefs.
 A proven brief-only batch stays in raw storage without an observer call or learned
 memory; later findings recover bounded earlier instructions from the same raw stream.

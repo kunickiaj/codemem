@@ -8,6 +8,7 @@ import {
   isMemoryToolId,
   MEMORY_TOOL_NAMESPACE,
   MEMORY_TOOL_NAMESPACE_DESCRIPTION,
+  memoryToolId,
 } from "./memory-tools.js";
 import { addCallerToPooledMcpTools, createCallSequence } from "./pooled-mcp-caller.js";
 import { createCodememRuntime } from "./runtime.js";
@@ -22,6 +23,10 @@ const FAILED_TOOL_ERROR = Object.freeze({
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const CODEMEM_RECALL_METADATA_VERSION = 1;
 const CODEMEM_V2_PART_METADATA_KEY = "codememPart";
+const PINNED_RETRIEVAL_IDS = new Set([
+  memoryToolId("memory_search_index"),
+  memoryToolId("memory_get_observations"),
+]);
 
 const asRecord = (value) =>
   value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -440,6 +445,26 @@ const addV2MemoryTools = (editor, memoryTools, options) => {
   }
 };
 
+const supportsRetrievalPins = (version) => {
+  const match = /^v?2\.(\d+)\.(\d+)(?:\+.+)?$/.exec(version ?? "");
+  if (!match) return false;
+  const [, minor, patch] = match;
+  return Number(minor) > 4 || (Number(minor) === 4 && Number(patch) >= 1);
+};
+
+export const pinV2RetrievalCatalog = (editor, version) => {
+  if (!supportsRetrievalPins(version)) return;
+  if (typeof editor.list !== "function" || typeof editor.update !== "function") return;
+  for (const tool of editor.list()) {
+    if (!PINNED_RETRIEVAL_IDS.has(tool.id) || tool.options?.namespace !== MEMORY_TOOL_NAMESPACE) continue;
+    if (tool.options.codemode === false) continue;
+    editor.update(tool.id, (target) => {
+      const options = target.options;
+      target.options = { ...options, codemode: { ...asRecord(options.codemode), pinned: true } };
+    });
+  }
+};
+
 const isV2CodememMcpConfigured = async (context) => {
   const response = await context.mcp.list();
   if (!Array.isArray(response?.data)) throw new TypeError("MCP server list unavailable");
@@ -501,6 +526,7 @@ const registerV2Tools = async (context, runtime, isActive) => {
       directory: context.location.directory,
       isActive,
     });
+    pinV2RetrievalCatalog(editor, context.app?.version);
   });
   return mcpObserver ? [tools, mcpObserver] : [tools];
 };

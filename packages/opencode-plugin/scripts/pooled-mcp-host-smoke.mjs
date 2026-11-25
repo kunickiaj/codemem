@@ -407,6 +407,14 @@ async function runCorrectness(launcher, provider, codemode) {
 		check(`${label}.exposure`, provider.state.exposures["alpha-read"] === label, {
 			exposures: provider.state.exposures,
 		});
+		if (label === "codemode" && host.version === "2.4.1") {
+			const shown = provider.state.shown["alpha-read"] ?? [];
+			check(
+				`${label}.retrieval_signatures_pinned`,
+				["memory_search_index", "memory_get_observations"].every((name) => shown.includes(name)),
+				{ shown },
+			);
+		}
 		const processes = mcpProcesses(host);
 		check(`${label}.two_directories_one_process_plus_other_target`, processes.length === 2, {
 			processes,
@@ -542,6 +550,7 @@ async function main() {
 		const correctness = [];
 		for (const codemode of [false, true]) {
 			provider.state.results = {};
+			provider.state.shown = {};
 			provider.state.callerArgumentSeen = false;
 			correctness.push(await runCorrectness(launcher, provider, codemode));
 		}
