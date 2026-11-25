@@ -652,6 +652,19 @@ function inventoryStatuses(project: ProjectScopeCandidate): ProjectScopeInventor
 	return [...statuses].sort();
 }
 
+// The Projects table titles these Projects "No project" (projectHeading in
+// packages/ui/src/tabs/projects/project-view.ts). Keep both copies of the label and
+// the condition in step so searching for the visible title finds the row.
+const UNNAMED_PROJECT_LABEL = "No project";
+
+function isUnnamedWorkspaceProject(project: ProjectScopeInventoryProject): boolean {
+	return (
+		!project.project &&
+		project.identity_source === "workspace_id" &&
+		project.display_project === project.workspace_identity
+	);
+}
+
 function projectMatchesInventoryQuery(
 	project: ProjectScopeInventoryProject,
 	query: string | null | undefined,
@@ -659,6 +672,7 @@ function projectMatchesInventoryQuery(
 	const normalized = clean(query)?.toLowerCase();
 	if (!normalized) return true;
 	return [
+		isUnnamedWorkspaceProject(project) ? UNNAMED_PROJECT_LABEL : null,
 		project.display_project,
 		project.project,
 		project.cwd,
