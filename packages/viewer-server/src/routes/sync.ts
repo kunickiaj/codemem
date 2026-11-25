@@ -123,7 +123,7 @@ import {
 	LocalIdentitySupersededError,
 	legacyPairingAssignmentsConverted,
 	listAuthorizedScopesForPeer,
-	listDeviceIdentityInventory,
+	type listDeviceIdentityInventory,
 	listInboundScopeRejections,
 	listLegacyRecipientPolicyProjections,
 	listPerPeerScopeSyncState,
@@ -240,6 +240,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
+import { readInventoryWithRejoinEvidence } from "./device-rejoin-evidence.js";
 import { listAllEnrollments } from "./device-rename.js";
 import { deviceRoutes } from "./device-retire.js";
 import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
@@ -7003,16 +7004,25 @@ export async function createRecipientInvitation(
 	}
 }
 
-async function readViewerDeviceInventory(
-	store: MemoryStore,
+function registerViewerDeviceInventory(
+	app: Hono,
+	getStore: StoreFactory,
 	readInput: (store: MemoryStore) => Promise<Parameters<typeof listDeviceIdentityInventory>[1]>,
-	options: Pick<SyncRoutesOptions, "deviceLifecycleActions">,
+	options: Pick<SyncRoutesOptions, "deviceLifecycleActions" | "readCoordinatorConfig">,
 ) {
-	ensureStableStoreIdentityForRead(store);
-	const inventory = listDeviceIdentityInventory(store.db, await readInput(store));
-	return options.deviceLifecycleActions
-		? { ...inventory, deviceLifecycleActions: true }
-		: inventory;
+	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
+		const store = getStore();
+		ensureStableStoreIdentityForRead(store);
+		const inventory = await readInventoryWithRejoinEvidence(
+			store,
+			await readInput(store),
+			options.readCoordinatorConfig,
+			c.req.raw.signal,
+		);
+		return c.json(
+			options.deviceLifecycleActions ? { ...inventory, deviceLifecycleActions: true } : inventory,
+		);
+	});
 }
 
 export function syncRoutes(
@@ -7056,9 +7066,7 @@ export function syncRoutes(
 		};
 	};
 
-	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) =>
-		c.json(await readViewerDeviceInventory(getStore(), localInventoryInput, options)),
-	);
+	registerViewerDeviceInventory(app, getStore, localInventoryInput, options);
 
 	app.patch("/api/sync/recipient-policy/v1/teams/:teamId", async (c) => {
 		const raw = await readBoundedRequestBytes(c.req.raw, 8_192);

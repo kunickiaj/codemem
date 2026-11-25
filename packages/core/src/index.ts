@@ -299,6 +299,7 @@ export {
 	queryPeerRemoval,
 } from "./coordinator-peer-revocation.js";
 export { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
+export { readCoordinatorRejoinDiscovery } from "./coordinator-rejoin-discovery.js";
 export { relayAdmissionNamespaces } from "./coordinator-relay-admission-route.js";
 export {
 	type CoordinatorRemovalState,
@@ -449,6 +450,7 @@ export type {
 	DeviceIdentityInventoryV1,
 	DeviceIdentityLocalDeviceEvidence,
 	DeviceIdentityPeerEvidence,
+	DeviceIdentityRejoinEvidenceV1,
 } from "./device-identity-inventory.js";
 export {
 	DEVICE_IDENTITY_INVENTORY_LIMIT,

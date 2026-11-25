@@ -70,3 +70,25 @@ describe("remote device list service role", () => {
 		expect(device).not.toHaveProperty("service_role");
 	});
 });
+
+describe("remote device list rejoin marker", () => {
+	it("keeps a safe nonnegative timestamp", async () => {
+		const [device] = await listWith(undefined, { rejoined_at_ms: 1_700_000_000_000 });
+
+		expect(device?.rejoined_at_ms).toBe(1_700_000_000_000);
+	});
+
+	it.each([
+		["a negative value", -1],
+		["a fractional value", 1.5],
+		["a string", "1700000000000"],
+		["a value no Date can hold", 8.64e15 + 1],
+		["an unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+		["null", null],
+	])("drops %s", async (_label, marker) => {
+		const [device] = await listWith(undefined, { rejoined_at_ms: marker });
+
+		expect(device).toBeDefined();
+		expect(device).not.toHaveProperty("rejoined_at_ms");
+	});
+});

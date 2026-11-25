@@ -1,15 +1,19 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
 	initTestSchema,
 	MemoryStore,
+	readAccountLinkDevice,
 	serializeRecipientPolicyPublicationMutation,
 } from "@codemem/core";
 import Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { generateDeviceKey } from "../../cloudflare-coordinator-worker/test/device-rejoin-ceremony-fixture.js";
+import { readCoordinatorSyncConfig } from "../../core/src/coordinator-sync-config.js";
+import { verifySignature } from "../../core/src/sync-auth.js";
 import { createApp } from "./index.js";
 
 function testStore(): { store: MemoryStore; cleanup: () => void } {
@@ -41,6 +45,103 @@ function testStore(): { store: MemoryStore; cleanup: () => void } {
 		},
 	};
 }
+
+it.each([
+	"exact key",
+	"different key",
+	"unverifiable key",
+	"pin changed during discovery",
+] as const)(
+	"only attaches a signed discovery rejoin marker to the mounted inventory for a verified pin (%s)",
+	async (scenario) => {
+		const { store, cleanup } = testStore();
+		const configPath = join(dirname(store.dbPath), "config.json");
+		const config = {
+			sync_enabled: true,
+			sync_coordinator_url: "https://coordinator.example.test",
+			sync_coordinator_groups: ["group-a"],
+		};
+		writeFileSync(configPath, JSON.stringify(config));
+		vi.stubEnv("CODEMEM_CONFIG", configPath);
+		const pinned = generateDeviceKey();
+		const discovered = scenario === "different key" ? generateDeviceKey() : pinned;
+		const nextPin = scenario === "pin changed during discovery" ? generateDeviceKey() : pinned;
+		const local = readAccountLinkDevice(store.dbPath);
+		const peerId = "reused-device-id";
+		store.db
+			.prepare(`INSERT INTO sync_peers (peer_device_id, name, public_key, pinned_fingerprint, created_at)
+		VALUES (?, 'Pinned laptop', ?, ?, 'then')`)
+			.run(peerId, pinned.publicKey, pinned.fingerprint);
+		vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+			const url = new URL(input);
+			expect(url.origin).toBe(config.sync_coordinator_url);
+			const headers = new Headers(init?.headers);
+			expect(headers.has("x-codemem-coordinator-admin")).toBe(false);
+			if (url.pathname === "/v1/peers") {
+				expect(
+					verifySignature({
+						method: "GET",
+						pathWithQuery: `${url.pathname}${url.search}`,
+						bodyBytes: Buffer.alloc(0),
+						deviceId: local.deviceId,
+						publicKey: local.publicKey,
+						signature: headers.get("x-opencode-signature") ?? "",
+						timestamp: headers.get("x-opencode-timestamp") ?? "",
+						nonce: headers.get("x-opencode-nonce") ?? "",
+					}),
+				).toBe(true);
+				if (scenario === "pin changed during discovery")
+					store.db
+						.prepare(
+							"UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ? WHERE peer_device_id = ?",
+						)
+						.run(nextPin.publicKey, nextPin.fingerprint, peerId);
+				return Response.json({
+					items: [
+						{
+							device_id: peerId,
+							public_key: scenario === "unverifiable key" ? undefined : discovered.publicKey,
+							fingerprint: discovered.fingerprint,
+							rejoined_at_ms: 1_700_000_000_000,
+							stale: true,
+						},
+					],
+				});
+			}
+			if (url.pathname === "/v1/presence") return Response.json({ ok: true });
+			return Response.json({ items: [] });
+		});
+		try {
+			const app = createApp({
+				storeFactory: () => store,
+				readCoordinatorConfig: () => readCoordinatorSyncConfig(config),
+			});
+			const inventory = await app.request("/api/sync/recipient-policy/v1/device-inventory");
+			expect(inventory.status).toBe(200);
+			const { items } = await inventory.json<{ items: Array<Record<string, unknown>> }>();
+			const row = items.find((item) => item.deviceId === peerId);
+			expect(row).toMatchObject({ validatedFingerprint: nextPin.fingerprint });
+			if (scenario === "exact key")
+				expect(row).toMatchObject({
+					rejoin: { deviceId: peerId, rejoinedAtMs: 1_700_000_000_000 },
+				});
+			else expect(row).not.toHaveProperty("rejoin");
+			expect(JSON.stringify(items)).not.toContain(discovered.publicKey);
+			const status = await app.request("/api/sync/status");
+			expect(status.status).toBe(200);
+			const { coordinator } = await status.json<{
+				coordinator: { discovered_devices: unknown[] };
+			}>();
+			expect(coordinator.discovered_devices).toHaveLength(1);
+			expect(coordinator.discovered_devices[0]).not.toHaveProperty("rejoined_at_ms");
+			expect(coordinator.discovered_devices[0]).not.toHaveProperty("public_key");
+		} finally {
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+			cleanup();
+		}
+	},
+);
 
 describe("GET /api/sync/recipient-policy/v1/device-inventory", () => {
 	it("stabilizes a fresh viewer before returning discovery identifiers", async () => {
@@ -323,6 +424,48 @@ describe("device Identity binding configuration", () => {
 			}
 			fixture.cleanup();
 			rmSync(configDirectory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("device inventory rejoin marker", () => {
+	it("carries a coordinator rejoin marker on the item and changes nothing else", async () => {
+		const fixture = testStore();
+		try {
+			const enrollment = {
+				group_id: "group-a",
+				device_id: "rejoined-device",
+				public_key: "rejoined-key",
+				fingerprint: fingerprintPublicKey("rejoined-key"),
+				identity_id: null,
+				display_name: "Rejoined laptop",
+				enabled: 1,
+				created_at: "2026-08-18T12:00:00.000Z",
+			};
+			const read = async (extra: Record<string, unknown>) => {
+				const app = createApp({
+					storeFactory: () => fixture.store,
+					loadDeviceIdentityCoordinatorEvidence: async () => ({
+						availability: "available",
+						safeErrorCode: null,
+						enrollments: [{ ...enrollment, ...extra }],
+					}),
+				});
+				const response = await app.request("/api/sync/recipient-policy/v1/device-inventory");
+				const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+				return body.items.find((item) => item.deviceId === "rejoined-device");
+			};
+
+			const marked = await read({ rejoined_at_ms: 1_700_000_000_000 });
+			const plain = await read({});
+
+			expect(marked?.rejoin).toEqual({
+				deviceId: "rejoined-device",
+				rejoinedAtMs: 1_700_000_000_000,
+			});
+			expect({ ...marked, rejoin: undefined }).toEqual({ ...plain, rejoin: undefined });
+		} finally {
+			fixture.cleanup();
 		}
 	});
 });

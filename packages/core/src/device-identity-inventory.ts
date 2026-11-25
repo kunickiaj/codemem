@@ -1,3 +1,4 @@
+import { isRejoinTimestamp } from "./coordinator-rejoin-timestamp.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
 import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
@@ -84,6 +85,17 @@ export interface DeviceIdentityInventoryItemV1 {
 	isLocal: boolean;
 	sources: DeviceIdentityInventorySource[];
 	conflictCodes: string[];
+	/**
+	 * Display only. The newest enabled coordinator enrollment that Google sign-in rejoin wrote
+	 * for another device. It grants nothing and changes no state or action.
+	 */
+	rejoin?: DeviceIdentityRejoinEvidenceV1;
+}
+
+export interface DeviceIdentityRejoinEvidenceV1 {
+	/** The enrollment's own device ID, which can differ from the item's ID when keys match. */
+	deviceId: string;
+	rejoinedAtMs: number;
 }
 
 export interface DeviceIdentityInventoryV1 {
@@ -109,6 +121,8 @@ interface Evidence {
 	pairingProof: boolean;
 	serviceDevice: boolean;
 	revoked: boolean;
+	/** Only from an enabled coordinator enrollment; see DeviceIdentityInventoryItemV1.rejoin. */
+	rejoinedAtMs: number | null;
 }
 
 function clean(value: unknown): string | null {
@@ -146,6 +160,7 @@ function localEvidence(value: DeviceIdentityLocalDeviceEvidence): Evidence {
 		pairingProof: true,
 		serviceDevice: false,
 		revoked: false,
+		rejoinedAtMs: null,
 	};
 }
 
@@ -167,6 +182,7 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
 		serviceDevice: false,
 		revoked: value.retired === true,
+		rejoinedAtMs: null,
 	};
 }
 
@@ -188,6 +204,7 @@ function bindingEvidence(value: DeviceIdentityBindingEvidence): Evidence {
 		serviceDevice: false,
 		// This device confirmed the retirement, so it holds even when the coordinator is unreachable.
 		revoked: value.retired === true,
+		rejoinedAtMs: null,
 	};
 }
 
@@ -209,6 +226,8 @@ function enrollmentEvidence(value: CoordinatorEnrollment): Evidence {
 		pairingProof: false,
 		serviceDevice: value.service_role === "relay_health_probe",
 		revoked: value.revoked === true,
+		rejoinedAtMs:
+			value.enabled === 1 && isRejoinTimestamp(value.rejoined_at_ms) ? value.rejoined_at_ms : null,
 	};
 }
 
@@ -327,13 +346,41 @@ function isRevokedBinding(item: Evidence): boolean {
 	);
 }
 
-function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
-	const deviceIds = [...new Set(group.map((item) => item.deviceId))].toSorted();
-	const fingerprints = new Set(
+/** The newest rejoin among the group's enrollments; equal timestamps resolve by device ID. */
+function latestRejoin(group: Evidence[]): DeviceIdentityRejoinEvidenceV1 | null {
+	const marked = group.flatMap((item) =>
+		item.rejoinedAtMs === null
+			? []
+			: [{ deviceId: item.deviceId, rejoinedAtMs: item.rejoinedAtMs }],
+	);
+	return (
+		marked.toSorted(
+			(left, right) =>
+				right.rejoinedAtMs - left.rejoinedAtMs || left.deviceId.localeCompare(right.deviceId),
+		)[0] ?? null
+	);
+}
+
+function withInventoryRejoin(
+	item: DeviceIdentityInventoryItemV1,
+	group: Evidence[],
+): DeviceIdentityInventoryItemV1 {
+	if (item.isLocal || ["retired", "service", "conflicted"].includes(item.state)) return item;
+	const rejoin = latestRejoin(group);
+	return rejoin ? { ...item, rejoin } : item;
+}
+
+function groupFingerprints(group: Evidence[]) {
+	return new Set(
 		group.flatMap((item) =>
 			item.fingerprint && !item.fingerprintConflict ? [item.fingerprint] : [],
 		),
 	);
+}
+
+function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
+	const deviceIds = [...new Set(group.map((item) => item.deviceId))].toSorted();
+	const fingerprints = groupFingerprints(group);
 	const activeBindings = group.filter(
 		(item) =>
 			item.source === "identity_binding" &&
@@ -371,7 +418,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 		(item): item is Evidence => item != null,
 	);
 	const sources = SOURCE_ORDER.filter((source) => group.some((item) => item.source === source));
-	return {
+	const item: DeviceIdentityInventoryItemV1 = {
 		version: DEVICE_IDENTITY_INVENTORY_VERSION,
 		deviceId: selected?.deviceId ?? deviceIds[0] ?? "",
 		evidenceDeviceIds: deviceIds,
@@ -387,6 +434,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 		sources,
 		conflictCodes: [...new Set(conflictCodes)].toSorted(),
 	};
+	return withInventoryRejoin(item, group);
 }
 
 export function projectDeviceIdentityInventory(

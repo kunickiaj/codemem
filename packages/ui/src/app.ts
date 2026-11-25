@@ -766,6 +766,13 @@ function renderPreviousDevicesAfterRefreshFailure(mount: HTMLElement): void {
 	);
 }
 
+function readDevicesInventory(options: ReadRequestOptions) {
+	return api
+		.loadDeviceIdentityInventory(options)
+		.then((inventory) => ({ inventory, unavailable: false }))
+		.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true }));
+}
+
 async function runLoadDevicesData(
 	mount: HTMLElement,
 	revision: number,
@@ -781,10 +788,7 @@ async function runLoadDevicesData(
 			loadRecipientPolicyProjects(options),
 			api.loadRecipientPolicyIntent(options),
 			api.loadRecipientPolicyReconciliationStatus(options),
-			api
-				.loadDeviceIdentityInventory(options)
-				.then((inventory) => ({ inventory, unavailable: false }))
-				.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true })),
+			readDevicesInventory(options),
 			loadSyncData({ requiredSurface: "devices", signal: options.signal }),
 		]);
 		if (options.signal?.aborted) return false;
