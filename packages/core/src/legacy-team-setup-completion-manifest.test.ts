@@ -34,6 +34,7 @@ import {
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { renameRecipientPolicyTeam } from "./recipient-policy-team-metadata.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -2645,6 +2646,27 @@ function laptopRemoval(group = GROUP_ID, fingerprint = KEY_A) {
 	return { group_id: group, device_id: "device-a", fingerprint };
 }
 
+/** Caches coordinator scope memberships through the trusted refresh path, with key evidence. */
+async function cacheScopeMembers(
+	db: InstanceType<typeof Database>,
+	members: ReadonlyArray<readonly [scopeId: string, deviceId: string]>,
+) {
+	const insertScope = db.prepare(
+		`INSERT OR IGNORE INTO replication_scopes(
+		 scope_id, label, kind, authority_type, coordinator_id, group_id,
+		 membership_epoch, status, created_at, updated_at
+		 ) VALUES (?, 'Scope', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+	);
+	insertScope.run("scope-group-default", COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	insertScope.run("scope-other-group", COORDINATOR_ID, "other-group", NOW, NOW);
+	const insertMember = db.prepare(
+		`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+		 VALUES (?, ?, 'member', 'active', 1, ?)`,
+	);
+	for (const [scopeId, deviceId] of members) insertMember.run(scopeId, deviceId, NOW);
+	await refreshTestScopeRows(db);
+}
+
 function databaseSnapshot(db: InstanceType<typeof Database>) {
 	const tables = db
 		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -2778,6 +2800,52 @@ describe("legacy Team setup completion manifests after device removal", () => {
 			db.prepare("SELECT finish_digest FROM legacy_team_setup_drafts").pluck().get(),
 		).toBeNull();
 		expect(db.prepare("SELECT count(*) FROM project_scope_mappings").pluck().get()).toBe(0);
+	});
+});
+
+describe("legacy Team setup completion manifests with cached scope access after removal", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = createCompletionFixtureDb();
+	});
+
+	afterEach(() => db.close());
+
+	it.each([
+		["the Team's mapped Project scope", "scope-engineering"],
+		["another coordinator scope of the Team's group", "scope-group-default"],
+	] as const)(
+		"quarantines when removal records cannot be read and the removed device is still cached in %s",
+		async (_case, scopeId) => {
+			// Arrange: binding ended and pin gone, but cached membership alone can
+			// authorize a bootstrap-grant request for this scope.
+			const { reconcile } = await completeTeamThenRemoveLaptop(db);
+			await cacheScopeMembers(db, [[scopeId, "device-a"]]);
+
+			// Act and assert.
+			await expect(reconcile({ status: "unavailable" })).rejects.toThrow(
+				"team_setup_completion_invalid",
+			);
+			expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+			expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("revoked");
+		},
+	);
+
+	it.each([
+		["only another device is cached in the Team's scopes", [["scope-engineering", "device-b"]]],
+		[
+			"the removed device is cached only in another group's scope",
+			[["scope-other-group", "device-a"]],
+		],
+	] as const)("defers with every table unchanged when %s", async (_case, members) => {
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		await cacheScopeMembers(db, members);
+		const before = databaseSnapshot(db);
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
+		);
+		expect(databaseSnapshot(db)).toEqual(before);
 	});
 });
 

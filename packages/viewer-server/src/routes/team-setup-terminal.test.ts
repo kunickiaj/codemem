@@ -19,6 +19,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
 import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
 
 const COORDINATOR_ID = "https://coordinator.example.test";
@@ -2661,6 +2662,29 @@ function removeDeviceLocally(store: MemoryStore, deviceId: string) {
 	});
 }
 
+/**
+ * Caches the removed device as a member of a coordinator scope in the Team's
+ * group, with retained key evidence. A bootstrap grant from another group can
+ * authenticate the device without a pin, and the scope check then reads this.
+ */
+async function retainCachedTeamScopeMembership(store: MemoryStore, deviceId: string) {
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id,
+			 membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-team-alpha', 'Team', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+		)
+		.run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	store.db
+		.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+			 VALUES ('scope-team-alpha', ?, 'member', 'active', 1, ?)`,
+		)
+		.run(deviceId, NOW);
+	await refreshTestScopeRows(store.db);
+}
+
 function appWithoutDevice(
 	store: MemoryStore,
 	completionDependencies: NonNullable<
@@ -2735,6 +2759,31 @@ describe("Team setup terminal routing after device removal", () => {
 				const detail = await app.request(REMOVAL_DETAIL_PATH);
 
 				// Assert: waiting would keep its Team access, so the Team is quarantined.
+				expect(detail.status).toBe(409);
+				expect(listRemovals).toHaveBeenCalledOnce();
+				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"quarantines when removal records cannot be read and the removed device keeps cached scope access: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				// Arrange: binding ended and pin deleted, but scope membership is still cached.
+				const { manifest, removal } = await installCompletedTeam(store);
+				removeDeviceLocally(store, removal.device_id);
+				await retainCachedTeamScopeMembership(store, removal.device_id);
+				const listRemovals = vi.fn().mockRejectedValue(new Error("removal read failed"));
+				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
+
+				// Act.
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				// Assert: quarantined, not deferred with a retryable error.
 				expect(detail.status).toBe(409);
 				expect(listRemovals).toHaveBeenCalledOnce();
 				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });

@@ -41,6 +41,8 @@ import {
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
+import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
 
 export type LegacyTeamSetupCompletionManifestErrorCode =
 	| "team_setup_completion_invalid"
@@ -1087,14 +1089,51 @@ function localTeamDeviceEligibility(db: Database, teamId: string) {
 }
 
 /**
+ * Every scope this Team's setup can route its Projects through: each
+ * completion-bound mapping scope, plus every coordinator scope of the setup's
+ * group, active or retired. The second set is the one quarantine clears
+ * setup mappings from, and it includes any group default scope.
+ */
+function teamSetupScopeIds(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): string[] {
+	const groupScopeIds = db
+		.prepare(
+			`SELECT DISTINCT scope.scope_id FROM replication_scopes AS scope
+			 JOIN legacy_team_setup_drafts AS draft
+			   ON draft.coordinator_id = scope.coordinator_id AND draft.group_id = scope.group_id
+			 WHERE draft.candidate_id = ? AND draft.completed_team_id = ?
+			   AND scope.authority_type = 'coordinator'`,
+		)
+		.pluck()
+		.all(manifest.candidate_ref, manifest.team_id) as string[];
+	const mappedScopeIds = manifest.project_mappings.map((mapping) => mapping.scope_id);
+	return [...new Set([...groupScopeIds, ...mappedScopeIds])];
+}
+
+/**
+ * Whether the sync routes would accept this device for the scope from cached
+ * membership. This is the peer-side check of `parseSyncScopeRequest`. No key
+ * is passed, so a retained authorization for any of the device's keys counts:
+ * a bootstrap grant can present a key this machine no longer pins.
+ */
+function isCachedScopeMember(db: Database, deviceId: string, scopeId: string): boolean {
+	const authorization = getEffectiveCachedScopeAuthorization(db, { deviceId, scopeId });
+	return scopeAuthorizationFailureReason(authorization) === null;
+}
+
+/**
  * True when this machine already gives none of the devices a way to receive
- * the Team's Projects: no active Identity binding, no peer pin (direct sync
- * authenticates peers by pin before any cached scope authorization is read),
- * and no place in the Team's derived device eligibility.
+ * the Team's Projects: no active Identity binding, no peer pin, no place in
+ * the Team's derived device eligibility, and no cached scope authorization for
+ * any scope the Team's setup uses. The last one matters because a bootstrap
+ * grant can authenticate a device without a pin and then rely on cached scope
+ * membership alone.
  */
 function areDevicesDeniedLocallyForTeam(
 	db: Database,
-	teamId: string,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
 	deviceIds: readonly string[],
 ): boolean {
 	const activeBinding = db.prepare(
@@ -1103,9 +1142,13 @@ function areDevicesDeniedLocallyForTeam(
 	const peerPin = db.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ? LIMIT 1");
 	if (deviceIds.some((deviceId) => activeBinding.get(deviceId) || peerPin.get(deviceId)))
 		return false;
-	const eligibility = localTeamDeviceEligibility(db, teamId);
+	const eligibility = localTeamDeviceEligibility(db, manifest.team_id);
 	if (eligibility?.status !== "eligible") return false;
-	return deviceIds.every((deviceId) => !eligibility.eligibleDeviceIds.includes(deviceId));
+	if (deviceIds.some((deviceId) => eligibility.eligibleDeviceIds.includes(deviceId))) return false;
+	const scopeIds = teamSetupScopeIds(db, manifest);
+	return deviceIds.every((deviceId) =>
+		scopeIds.every((scopeId) => !isCachedScopeMember(db, deviceId, scopeId)),
+	);
 }
 
 function replayAfterVerifiedRemoval(
@@ -1123,7 +1166,7 @@ function replayAfterVerifiedRemoval(
 		// Unreadable records neither prove nor disprove the removal. Waiting is
 		// safe only while this machine already denies every missing device.
 		const deviceIds = missing.map((device) => device.device_id);
-		if (!areDevicesDeniedLocallyForTeam(db, manifest.team_id, deviceIds)) return undefined;
+		if (!areDevicesDeniedLocallyForTeam(db, manifest, deviceIds)) return undefined;
 		throw new LegacyTeamSetupDeviceRemovalsUnavailableError();
 	}
 	const proven = missing.every((device) =>
