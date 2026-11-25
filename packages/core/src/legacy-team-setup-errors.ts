@@ -5,7 +5,6 @@ export type LegacyTeamSetupActivationErrorCode =
 	| "team_setup_assignment_changed"
 	| "team_setup_roster_unavailable"
 	| "team_setup_completion_unavailable"
-	| "team_setup_device_removals_unavailable"
 	| "team_setup_completion_conflict"
 	| "team_setup_completion_invalid"
 	| "team_setup_conflict"
@@ -44,6 +43,7 @@ export const LEGACY_TEAM_SETUP_ERROR_REASONS = [
 	"coordinator_unreachable",
 	"local_candidate_scan_budget_exceeded",
 	"coordinator_roster_unavailable",
+	"device_removals_unavailable",
 ] as const;
 
 export type LegacyTeamSetupErrorReason = (typeof LEGACY_TEAM_SETUP_ERROR_REASONS)[number];
@@ -74,7 +74,6 @@ export const LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR = {
 	team_setup_assignment_changed: "team_setup_assignment_changed",
 	team_setup_roster_unavailable: "team_setup_roster_unavailable",
 	team_setup_completion_unavailable: "team_setup_completion_unavailable",
-	team_setup_device_removals_unavailable: "team_setup_device_removals_unavailable",
 	team_setup_completion_conflict: "team_setup_completion_conflict",
 	team_setup_completion_invalid: "team_setup_completion_invalid",
 	team_setup_conflict: "team_setup_conflict",

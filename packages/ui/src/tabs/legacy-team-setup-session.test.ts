@@ -1199,7 +1199,11 @@ describe("legacy Team setup detail with unreadable device removals", () => {
 				kind: "load",
 				id: command.id,
 				generation: command.generation,
-				cause: new LegacyTeamSetupApiError(503, "team_setup_device_removals_unavailable"),
+				cause: new LegacyTeamSetupApiError(
+					503,
+					"team_setup_completion_unavailable",
+					"device_removals_unavailable",
+				),
 			},
 		});
 		if (rejected.status !== "open") throw new Error("expected error view");

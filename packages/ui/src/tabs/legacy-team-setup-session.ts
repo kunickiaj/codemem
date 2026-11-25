@@ -802,7 +802,7 @@ function staleLoadRecoveryMessage(
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_completion_unavailable"
 	)
-		return COMPLETION_UNAVAILABLE_ERROR;
+		return completionUnavailableMessage(recoveryCause);
 	if (
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		isChangedStateCode(recoveryCause.errorCode)
@@ -851,11 +851,6 @@ function completionOrChangedMessage(options: {
 	if (changed) return { completionCode, message: CHANGED_STATE_ERROR, terminalRecoveryCode };
 	if (rosterUnavailable)
 		return { completionCode, message: rosterErrorMessage(command, cause), terminalRecoveryCode };
-	if (
-		cause instanceof LegacyTeamSetupApiError &&
-		cause.errorCode === "team_setup_device_removals_unavailable"
-	)
-		return { completionCode, message: DEVICE_REMOVALS_UNAVAILABLE_ERROR, terminalRecoveryCode };
 	return {
 		completionCode,
 		message: completionError ?? safeError(command.kind),
@@ -874,6 +869,8 @@ function finishCompletionMessage(
 	code: ReturnType<typeof completionErrorCode>,
 	cause: unknown,
 ): string | null {
+	if (kind !== "finish" && code === "team_setup_completion_unavailable")
+		return completionUnavailableMessage(cause);
 	if (kind !== "finish") return completionMessage(code);
 	if (code === "team_setup_completion_unavailable")
 		return completionUnavailableAfterFinishMessage(cause);
@@ -885,6 +882,12 @@ function finishCompletionMessage(
 	)
 		return COORDINATOR_OUTDATED_ERROR;
 	return completionMessage(code);
+}
+
+function completionUnavailableMessage(cause: unknown): string {
+	if (cause instanceof LegacyTeamSetupApiError && cause.reason === "device_removals_unavailable")
+		return DEVICE_REMOVALS_UNAVAILABLE_ERROR;
+	return COMPLETION_UNAVAILABLE_ERROR;
 }
 
 function completionUnavailableAfterFinishMessage(cause: unknown): string {

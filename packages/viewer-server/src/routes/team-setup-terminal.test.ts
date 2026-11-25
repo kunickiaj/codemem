@@ -10,6 +10,7 @@ import {
 	MemoryStore,
 	readCoordinatorSyncConfig,
 	reconstructLegacyTeamSetupCompletionManifest,
+	removePairingState,
 	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
 	serializeRecipientPolicyPublicationMutation,
@@ -2632,6 +2633,34 @@ function databaseSnapshot(store: MemoryStore) {
 	);
 }
 
+type ReconciliationBranch = "coordinator record" | "publication conflict";
+
+/** Coordinator reads that send the canonical manifest through one reconciliation branch. */
+function branchDependencies(
+	branch: ReconciliationBranch,
+	manifest: ReturnType<typeof deriveLegacyTeamSetupCompletionManifest>,
+	listRemovals: ReturnType<typeof vi.fn>,
+) {
+	if (branch === "coordinator record") {
+		return { create: vi.fn(), list: async () => [{ group_id: GROUP_ID, manifest }], listRemovals };
+	}
+	return {
+		create: vi.fn().mockRejectedValue(new Error("completion_conflict")),
+		get: async () => manifest,
+		list: async () => [],
+		listRemovals,
+	};
+}
+
+/** This machine applies the coordinator's removal: binding ended, pairing deleted. */
+function removeDeviceLocally(store: MemoryStore, deviceId: string) {
+	removePairingState(store.db, {
+		localDeviceId: "device-local",
+		reason: "removed",
+		deviceIds: [deviceId],
+	});
+}
+
 function appWithoutDevice(
 	store: MemoryStore,
 	completionDependencies: NonNullable<
@@ -2653,27 +2682,15 @@ describe("Team setup terminal routing after device removal", () => {
 		async (branch) => {
 			const store = new MemoryStore(":memory:");
 			try {
-				// Arrange: the coordinator removed the only device; its removal list read fails once.
+				// Arrange: the coordinator removed the only device and this machine already
+				// ended its binding and pairing. The removal list read fails once.
 				const { manifest, removal } = await installCompletedTeam(store);
+				removeDeviceLocally(store, removal.device_id);
 				const listRemovals = vi
 					.fn()
 					.mockRejectedValueOnce(new Error(`removal read failed at ${COORDINATOR_ID}`))
 					.mockResolvedValue([removal]);
-				const app = appWithoutDevice(
-					store,
-					branch === "coordinator record"
-						? {
-								create: vi.fn(),
-								list: async () => [{ group_id: GROUP_ID, manifest }],
-								listRemovals,
-							}
-						: {
-								create: vi.fn().mockRejectedValue(new Error("completion_conflict")),
-								get: async () => manifest,
-								list: async () => [],
-								listRemovals,
-							},
-				);
+				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
 				const before = databaseSnapshot(store);
 
 				// Act: the failed read, then a retry after the coordinator recovers.
@@ -2684,7 +2701,10 @@ describe("Team setup terminal routing after device removal", () => {
 
 				// Assert: the failure is retryable, leaks nothing, and wrote nothing.
 				expect(failed.status).toBe(503);
-				expect(await failed.json()).toEqual({ error: "team_setup_device_removals_unavailable" });
+				expect(await failed.json()).toEqual({
+					error: "team_setup_completion_unavailable",
+					reason: "device_removals_unavailable",
+				});
 				expect(afterFailure).toEqual(before);
 				// The finish digest survived, so the retry used the keep-active replay.
 				expect(retried.status).toBe(200);
@@ -2701,10 +2721,34 @@ describe("Team setup terminal routing after device removal", () => {
 		},
 	);
 
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"quarantines when removal records cannot be read and the missing device is still bound: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				// Arrange: the device left the roster, but this machine still binds it.
+				const { manifest } = await installCompletedTeam(store);
+				const listRemovals = vi.fn().mockRejectedValue(new Error("removal read failed"));
+				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
+
+				// Act.
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				// Assert: waiting would keep its Team access, so the Team is quarantined.
+				expect(detail.status).toBe(409);
+				expect(listRemovals).toHaveBeenCalledOnce();
+				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			} finally {
+				store.close();
+			}
+		},
+	);
+
 	it("reports an unreadable removal list as a Projects summary blocker without changing the Team", async () => {
 		const store = new MemoryStore(":memory:");
 		try {
-			const { manifest } = await installCompletedTeam(store);
+			const { manifest, removal } = await installCompletedTeam(store);
+			removeDeviceLocally(store, removal.device_id);
 			const app = appWithoutDevice(store, {
 				create: vi.fn(),
 				list: async () => [{ group_id: GROUP_ID, manifest }],
@@ -2714,7 +2758,11 @@ describe("Team setup terminal routing after device removal", () => {
 			expect(summary.status).toBe(200);
 			expect(await summary.json()).toMatchObject({
 				candidates: [
-					{ candidateRef: CANDIDATE_REF, blockingError: "team_setup_device_removals_unavailable" },
+					{
+						candidateRef: CANDIDATE_REF,
+						blockingError: "team_setup_completion_unavailable",
+						blockingReason: "device_removals_unavailable",
+					},
 				],
 			});
 			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });

@@ -1,7 +1,15 @@
-import type { LegacyTeamSetupErrorCode } from "../lib/api/sync";
+import type { LegacyTeamSetupPendingCandidateSummaryV1 } from "../lib/api/sync";
 
 /** Shared by Projects and Sharing so both name a blocked Team setup the same way. */
-export function teamSetupRecoveryReason(error: LegacyTeamSetupErrorCode): string {
+export function teamSetupRecoveryReason(
+	candidate: Pick<LegacyTeamSetupPendingCandidateSummaryV1, "blockingError" | "blockingReason">,
+): string {
+	const error = candidate.blockingError;
+	if (
+		error === "team_setup_completion_unavailable" &&
+		candidate.blockingReason === "device_removals_unavailable"
+	)
+		return "Device removal records could not be read from the coordinator. Nothing changed. View recovery details and try again.";
 	switch (error) {
 		case "team_setup_completion_conflict":
 		case "team_setup_conflict":

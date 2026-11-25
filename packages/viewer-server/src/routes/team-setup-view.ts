@@ -20,6 +20,8 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 > & {
 	status: Exclude<LegacyTeamSetupCandidateSummaryV1["status"], "ready">;
 	blockingError?: LegacyTeamSetupActivationErrorCode;
+	/** Optional detail for `blockingError`; older clients ignore it. */
+	blockingReason?: LegacyTeamSetupErrorReason;
 };
 
 export interface LegacyTeamSetupSummaryResponseV1 {

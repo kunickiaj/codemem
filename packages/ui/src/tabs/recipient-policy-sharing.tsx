@@ -136,7 +136,7 @@ function TeamSetupCandidateStatus({
 				{candidate.blockingError ? "Needs recovery" : teamSetupStatusLabel(candidate.status)}
 			</span>{" "}
 			{candidate.blockingError ? (
-				<span className="small">{teamSetupRecoveryReason(candidate.blockingError)}</span>
+				<span className="small">{teamSetupRecoveryReason(candidate)}</span>
 			) : null}
 		</span>
 	);

@@ -161,6 +161,43 @@ describe("Team setup summary optional recovery blocker API", () => {
 	);
 });
 
+describe("Team setup summary optional blocker detail", () => {
+	it.each([
+		["device_removals_unavailable", "device_removals_unavailable"],
+		["coordinator said https://coordinator.example.invalid", undefined],
+		[42, undefined],
+	] as const)("keeps only a known blocker detail: %s", async (blockingReason, expected) => {
+		const summary = summaryWithOptionalBlocker("team_setup_completion_unavailable");
+		const [candidate] = summary.candidates;
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ ...summary, candidates: [{ ...candidate, blockingReason }] }), {
+				status: 200,
+			}),
+		);
+		const result = await loadLegacyTeamSetupSummary();
+		expect(result.candidates[0]).toEqual(
+			expected ? { ...candidate, blockingReason: expected } : candidate,
+		);
+	});
+
+	it("reads the removal-records detail from a detail error", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					error: "team_setup_completion_unavailable",
+					reason: "device_removals_unavailable",
+				}),
+				{ status: 503 },
+			),
+		);
+		await expect(loadLegacyTeamSetupSummary()).rejects.toMatchObject({
+			statusCode: 503,
+			errorCode: "team_setup_completion_unavailable",
+			reason: "device_removals_unavailable",
+		});
+	});
+});
+
 describe("recipient policy Team metadata API", () => {
 	it("sends the bounded rename contract and validates the response", async () => {
 		const result = {

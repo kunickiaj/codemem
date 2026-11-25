@@ -2579,8 +2579,14 @@ function hiddenSpaceCompletionState(
 	};
 }
 
-/** Completes a two-device Team, then removes the Laptop locally and from the roster. */
-async function completeTeamThenRemoveLaptop(db: InstanceType<typeof Database>) {
+/**
+ * Completes a two-device Team, then removes the Laptop from the roster. By
+ * default this machine has also removed it locally, ending its binding.
+ */
+async function completeTeamThenRemoveLaptop(
+	db: InstanceType<typeof Database>,
+	options: { removedLocally?: string[] } = {},
+) {
 	db.prepare(
 		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
 		 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
@@ -2620,11 +2626,14 @@ async function completeTeamThenRemoveLaptop(db: InstanceType<typeof Database>) {
 	});
 	const input = { coordinatorId: COORDINATOR_ID, groupId: GROUP_ID, manifest };
 	await applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster: roster });
-	removePairingState(db, {
-		localDeviceId: "device-b",
-		reason: "removed",
-		deviceIds: ["device-a"],
-	});
+	const removedLocally = options.removedLocally ?? ["device-a"];
+	if (removedLocally.length > 0) {
+		removePairingState(db, {
+			localDeviceId: "device-local",
+			reason: "removed",
+			deviceIds: removedLocally,
+		});
+	}
 	const reconcile = (
 		deviceRemovals: LegacyTeamSetupDeviceRemovalEvidence,
 		freshRoster = roster.slice(1),
@@ -2703,6 +2712,55 @@ describe("legacy Team setup completion manifests after device removal", () => {
 		});
 		expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("active");
 	});
+
+	it.each([
+		[
+			"the missing device's binding is still active",
+			{ removedLocally: [] },
+			["device-b"],
+			() => {},
+		],
+		[
+			"the missing device's peer pin is still stored",
+			{},
+			["device-b"],
+			(db: InstanceType<typeof Database>) =>
+				db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+						 VALUES ('device-a', 'ssh-ed25519 key', 'pin', ?)`,
+					)
+					.run(NOW),
+		],
+		["a second missing device is still bound", {}, [], () => {}],
+	] as const)(
+		"quarantines when removal records cannot be read and %s",
+		async (_case, options, remainingDeviceIds, prepare) => {
+			// Arrange: a missing device that this machine still serves keeps no Team access.
+			const { reconcile } = await completeTeamThenRemoveLaptop(db, {
+				removedLocally: [...(options.removedLocally ?? ["device-a"])],
+			});
+			prepare(db);
+			const roster = [
+				{
+					deviceId: "device-b",
+					fingerprint: "b".repeat(64),
+					displayName: "Desktop",
+					enabled: true,
+				},
+			].filter((device) => remainingDeviceIds.includes(device.deviceId));
+
+			// Act and assert: the pre-PR quarantine runs exactly as before.
+			await expect(reconcile({ status: "unavailable" }, roster)).rejects.toThrow(
+				"team_setup_completion_invalid",
+			);
+			expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+			expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("revoked");
+			expect(
+				db.prepare("SELECT finish_digest FROM legacy_team_setup_drafts").pluck().get(),
+			).toBeNull();
+		},
+	);
 
 	it("quarantines when removal records cannot be read and a remaining device changed key", async () => {
 		// A key change on a device still in the roster diverges from the reviewed

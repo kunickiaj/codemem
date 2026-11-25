@@ -59,7 +59,7 @@ function recoveryReason(candidate: SetupCandidate): HTMLElement | null {
 	if (!candidate.blockingError) return null;
 	const reason = document.createElement("p");
 	reason.className = "section-meta project-team-setup-recovery-reason";
-	reason.textContent = teamSetupRecoveryReason(candidate.blockingError);
+	reason.textContent = teamSetupRecoveryReason(candidate);
 	return reason;
 }
 

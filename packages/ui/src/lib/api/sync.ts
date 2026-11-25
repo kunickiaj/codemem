@@ -1093,6 +1093,8 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 > & {
 	status: Exclude<LegacyTeamSetupStatusV1, "ready">;
 	blockingError?: LegacyTeamSetupErrorCode;
+	/** Optional detail for `blockingError`. */
+	blockingReason?: LegacyTeamSetupErrorReason;
 };
 
 export interface LegacyTeamSetupSummaryResponseV1 {
@@ -1271,7 +1273,6 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_conflict"
 	| "team_setup_confirmation_stale"
 	| "team_setup_completion_unavailable"
-	| "team_setup_device_removals_unavailable"
 	| "team_setup_completion_conflict"
 	| "team_setup_completion_invalid"
 	| "team_setup_person_listed"
@@ -1283,7 +1284,8 @@ export type LegacyTeamSetupErrorReason =
 	| "coordinator_rejected_manifest"
 	| "coordinator_unreachable"
 	| "local_candidate_scan_budget_exceeded"
-	| "coordinator_roster_unavailable";
+	| "coordinator_roster_unavailable"
+	| "device_removals_unavailable";
 
 const LEGACY_TEAM_SETUP_VERSION = 1;
 const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
@@ -1294,7 +1296,6 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_conflict",
 	"team_setup_confirmation_stale",
 	"team_setup_completion_unavailable",
-	"team_setup_device_removals_unavailable",
 	"team_setup_completion_conflict",
 	"team_setup_completion_invalid",
 	"team_setup_person_listed",
@@ -1307,6 +1308,7 @@ export const LEGACY_TEAM_SETUP_ERROR_REASONS = new Set<LegacyTeamSetupErrorReaso
 	"coordinator_unreachable",
 	"local_candidate_scan_budget_exceeded",
 	"coordinator_roster_unavailable",
+	"device_removals_unavailable",
 ]);
 const LEGACY_TEAM_SETUP_STATUSES = new Set<LegacyTeamSetupStatusV1>([
 	"needs_setup",
@@ -1382,6 +1384,8 @@ function isLegacyTeamSetupPendingCandidateSummary(
 		!("blockingError" in value) ||
 		(typeof value.blockingError === "string" &&
 			LEGACY_TEAM_SETUP_ERROR_CODES.has(value.blockingError as LegacyTeamSetupErrorCode));
+	// `blockingReason` is optional detail: withKnownBlockingReasons drops unknown
+	// values instead of rejecting a summary that also lists healthy Teams.
 	return validBlockingError && isLegacyTeamSetupCandidateSummary(value) && value.status !== "ready";
 }
 
@@ -1748,7 +1752,23 @@ export function loadLegacyTeamSetupSummary(
 	options: ReadRequestOptions = {},
 ): Promise<LegacyTeamSetupSummaryResponseV1> {
 	const init = options.signal ? { signal: options.signal } : undefined;
-	return legacyTeamSetupRequest(legacyTeamSetupPath(), isLegacyTeamSetupSummary, init);
+	return legacyTeamSetupRequest(legacyTeamSetupPath(), isLegacyTeamSetupSummary, init).then(
+		withKnownBlockingReasons,
+	);
+}
+
+/** Keeps a blocker detail only when it is one this UI knows, and drops anything else. */
+function withKnownBlockingReasons(
+	summary: LegacyTeamSetupSummaryResponseV1,
+): LegacyTeamSetupSummaryResponseV1 {
+	return {
+		...summary,
+		candidates: summary.candidates.map(({ blockingReason, ...candidate }) =>
+			blockingReason && LEGACY_TEAM_SETUP_ERROR_REASONS.has(blockingReason)
+				? { ...candidate, blockingReason }
+				: candidate,
+		),
+	};
 }
 
 export function loadLegacyTeamSetupDetail(
