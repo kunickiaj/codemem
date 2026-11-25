@@ -1271,6 +1271,7 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_conflict"
 	| "team_setup_confirmation_stale"
 	| "team_setup_completion_unavailable"
+	| "team_setup_device_removals_unavailable"
 	| "team_setup_completion_conflict"
 	| "team_setup_completion_invalid"
 	| "team_setup_person_listed"
@@ -1293,6 +1294,7 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_conflict",
 	"team_setup_confirmation_stale",
 	"team_setup_completion_unavailable",
+	"team_setup_device_removals_unavailable",
 	"team_setup_completion_conflict",
 	"team_setup_completion_invalid",
 	"team_setup_person_listed",

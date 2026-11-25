@@ -97,6 +97,8 @@ const COMPLETION_UNAVAILABLE_ERROR =
 	"Team setup completion could not be checked. Check the coordinator connection and settings, then retry.";
 const COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team setup could not be confirmed, and no local changes were applied. Retry to check whether setup completed.";
+const DEVICE_REMOVALS_UNAVAILABLE_ERROR =
+	"Device removal records could not be read from the coordinator. Nothing changed. Retry to check again.";
 const COMPLETION_CONFLICT_ERROR =
 	"Another device completed this Team with different reviewed details. Retry to load the completed setup.";
 const COMPLETION_INVALID_ERROR =
@@ -849,6 +851,11 @@ function completionOrChangedMessage(options: {
 	if (changed) return { completionCode, message: CHANGED_STATE_ERROR, terminalRecoveryCode };
 	if (rosterUnavailable)
 		return { completionCode, message: rosterErrorMessage(command, cause), terminalRecoveryCode };
+	if (
+		cause instanceof LegacyTeamSetupApiError &&
+		cause.errorCode === "team_setup_device_removals_unavailable"
+	)
+		return { completionCode, message: DEVICE_REMOVALS_UNAVAILABLE_ERROR, terminalRecoveryCode };
 	return {
 		completionCode,
 		message: completionError ?? safeError(command.kind),

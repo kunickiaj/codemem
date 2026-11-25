@@ -1180,6 +1180,37 @@ describe("legacy Team setup session reducer", () => {
 	});
 });
 
+describe("legacy Team setup detail with unreadable device removals", () => {
+	it("explains the failed removal read and keeps a completion retry", () => {
+		const pending = reduceSetupSession(
+			{
+				...loaded(open(), readyView()),
+				errors: [{ scope: { kind: "global" }, retry: "completion", message: "stale" }],
+			},
+			{ type: "retry" },
+		);
+		if (pending.status !== "open") throw new Error("expected completion check");
+		const command = pending.commands[0];
+		if (!command) throw new Error("expected command");
+		const rejected = reduceSetupSession(pending, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				kind: "load",
+				id: command.id,
+				generation: command.generation,
+				cause: new LegacyTeamSetupApiError(503, "team_setup_device_removals_unavailable"),
+			},
+		});
+		if (rejected.status !== "open") throw new Error("expected error view");
+		expect(globalError(rejected)).toMatchObject({
+			message:
+				"Device removal records could not be read from the coordinator. Nothing changed. Retry to check again.",
+			retry: "completion",
+		});
+	});
+});
+
 describe("legacy Team setup finish against an outdated coordinator", () => {
 	function failFinish(cause: LegacyTeamSetupApiError) {
 		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });

@@ -89,6 +89,31 @@ export class LegacyTeamSetupRosterCapacityError extends Error {
 	}
 }
 
+/**
+ * The coordinator's removal records could not be read while an included device
+ * was missing from the roster. Retrying may prove or disprove the removal, so
+ * the installed setup is left untouched.
+ */
+export class LegacyTeamSetupDeviceRemovalsUnavailableError extends Error {
+	readonly code = "team_setup_device_removals_unavailable" as const;
+
+	constructor() {
+		super("team_setup_device_removals_unavailable");
+		this.name = "LegacyTeamSetupDeviceRemovalsUnavailableError";
+	}
+}
+
+export interface LegacyTeamSetupDeviceRemovalRecord {
+	group_id: string;
+	device_id: string;
+	fingerprint: string;
+}
+
+/** Coordinator removal records, or the fact that they could not be read. */
+export type LegacyTeamSetupDeviceRemovalEvidence =
+	| { status: "read"; removals: readonly LegacyTeamSetupDeviceRemovalRecord[] }
+	| { status: "unavailable" };
+
 function completionApplyFailure(
 	error: unknown,
 	options: { compatibleLocalPolicy: boolean },
@@ -125,7 +150,8 @@ interface ApplyCompletionManifestInput {
 	groupId: string;
 	manifest: unknown;
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
-	verifiedRemovals?: readonly { group_id: string; device_id: string; fingerprint: string }[];
+	/** Omitted when the caller has no removal records to consult. */
+	deviceRemovals?: LegacyTeamSetupDeviceRemovalEvidence;
 	expectedDraftManifest?: CoordinatorLegacyTeamCompletionManifestV1;
 	recipientPolicyLocksHeld?: {
 		publication: true;
@@ -952,35 +978,35 @@ function requireIncludedDeviceEvidence(
 	}
 }
 
-function replayAfterVerifiedRemoval(
-	db: Database,
+type IncludedDeviceDecision = CoordinatorLegacyTeamCompletionManifestV1["device_decisions"][number];
+
+/**
+ * Included devices absent from the fresh roster, or undefined when none are
+ * absent or a remaining device no longer matches its reviewed evidence.
+ */
+function includedDevicesMissingOnlyFromRoster(
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,
-	input: ApplyCompletionManifestInput,
-): LegacyTeamSetupActivationResultV1 | undefined {
-	if (!input.verifiedRemovals?.length || input.expectedDraftManifest) return undefined;
-	const roster = new Map(input.freshRoster.map((device) => [device.deviceId, device]));
-	if (roster.size !== input.freshRoster.length || roster.size > LEGACY_TEAM_SETUP_MAX_DEVICES)
+	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[],
+): IncludedDeviceDecision[] | undefined {
+	const roster = new Map(freshRoster.map((device) => [device.deviceId, device]));
+	if (roster.size !== freshRoster.length || roster.size > LEGACY_TEAM_SETUP_MAX_DEVICES)
 		return undefined;
 	const included = manifest.device_decisions.filter((device) => device.decision === "included");
 	const missing = included.filter((device) => !roster.has(device.device_id));
 	if (!missing.length) return undefined;
-	const proven = missing.every((device) =>
-		input.verifiedRemovals?.some(
-			(removal) =>
-				removal.group_id === input.groupId &&
-				removal.device_id === device.device_id &&
-				removal.fingerprint === device.key_fingerprint,
-		),
-	);
-	if (!proven) return undefined;
-	const remaining = included.filter((device) => roster.has(device.device_id));
-	if (
-		remaining.some((device) => {
-			const fresh = roster.get(device.device_id);
-			return !device.enabled || !fresh?.enabled || fresh.fingerprint !== device.key_fingerprint;
-		})
-	)
-		return undefined;
+	const remainingDiverged = included.some((device) => {
+		if (!roster.has(device.device_id)) return false;
+		const fresh = roster.get(device.device_id);
+		return !device.enabled || !fresh?.enabled || fresh.fingerprint !== device.key_fingerprint;
+	});
+	return remainingDiverged ? undefined : missing;
+}
+
+/** The stored activation result when the installed setup equals the manifest exactly. */
+function exactInstalledCompletionResult(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): LegacyTeamSetupActivationResultV1 | undefined {
 	try {
 		const completed = reconstructLegacyTeamSetupCompletionManifest(db, {
 			candidateRef: manifest.candidate_ref,
@@ -990,13 +1016,38 @@ function replayAfterVerifiedRemoval(
 			canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest)
 		)
 			return undefined;
-		// A removal permits a read-only replay of the already-installed setup. It
-		// must not recreate device bindings, memberships, or Project recipients.
 		return loadCompletedActivationResult(db, loadCompletedDraft(db, manifest.candidate_ref));
 	} catch (error) {
 		if (!(error instanceof LegacyTeamSetupCompletionManifestError)) throw error;
 		return undefined;
 	}
+}
+
+function replayAfterVerifiedRemoval(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	input: ApplyCompletionManifestInput,
+): LegacyTeamSetupActivationResultV1 | undefined {
+	const evidence = input.deviceRemovals;
+	if (!evidence || input.expectedDraftManifest) return undefined;
+	const missing = includedDevicesMissingOnlyFromRoster(manifest, input.freshRoster);
+	if (!missing) return undefined;
+	const installed = exactInstalledCompletionResult(db, manifest);
+	if (!installed) return undefined;
+	// Unreadable records neither prove nor disprove the removal. Leave the exact
+	// installed setup untouched so a later read can decide.
+	if (evidence.status === "unavailable") throw new LegacyTeamSetupDeviceRemovalsUnavailableError();
+	const proven = missing.every((device) =>
+		evidence.removals.some(
+			(removal) =>
+				removal.group_id === input.groupId &&
+				removal.device_id === device.device_id &&
+				removal.fingerprint === device.key_fingerprint,
+		),
+	);
+	// A removal permits a read-only replay of the already-installed setup. It
+	// must not recreate device bindings, memberships, or Project recipients.
+	return proven ? installed : undefined;
 }
 
 function tryRemovalCompletionReplay(
@@ -1005,7 +1056,7 @@ function tryRemovalCompletionReplay(
 	input: ApplyCompletionManifestInput,
 	actorIds: readonly string[],
 ) {
-	if (!input.verifiedRemovals?.length) return undefined;
+	if (!input.deviceRemovals) return undefined;
 	return db.transaction(() => {
 		requireCompletionActorLocks(db, manifest, actorIds);
 		const result = replayAfterVerifiedRemoval(db, manifest, input);

@@ -38,6 +38,8 @@ import {
 	isLegacyTeamCandidateSelectable,
 	isLegacyTeamSetupProjectMappingIdentity,
 	LegacyTeamSetupAdditiveConvergenceError,
+	type LegacyTeamSetupDeviceRemovalEvidence,
+	LegacyTeamSetupDeviceRemovalsUnavailableError,
 	LegacyTeamSetupRosterCapacityError,
 	legacyTeamCandidateId,
 	legacyTeamCandidateProjectInventory,
@@ -232,6 +234,14 @@ function completionFailureHandlers(options: CompletionReconciliationOptions) {
 	return { handledGroupIds, handleFailure, reportFailure };
 }
 
+// Neither failure proves divergence, so the active Team must not be contained.
+function isNonDivergentApplyFailure(error: unknown): boolean {
+	return (
+		error instanceof LegacyTeamSetupAdditiveConvergenceError ||
+		error instanceof LegacyTeamSetupDeviceRemovalsUnavailableError
+	);
+}
+
 function completionConflictError(cause: unknown): Error {
 	return new Error("team_setup_completion_conflict", { cause });
 }
@@ -300,7 +310,9 @@ const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
 	listRemovals: coordinatorListRemovedDevicesAction,
 };
 
-type ListCompletionRemovals = () => ReturnType<typeof coordinatorListRemovedDevicesAction>;
+// Undefined when no removal reader is configured: core then has no removal
+// evidence and handles a missing device as it did before removal replay.
+type ListCompletionRemovals = () => Promise<LegacyTeamSetupDeviceRemovalEvidence | undefined>;
 
 interface LegacyTeamSnapshotLoaderDependencies {
 	readConfig: typeof readCoordinatorSyncConfig;
@@ -1544,7 +1556,11 @@ function viewerSafePreview(
 
 function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 403 | 409 | 503 {
 	if (code === "team_setup_admin_required") return 403;
-	if (code === "team_setup_roster_unavailable" || code === "team_setup_completion_unavailable")
+	if (
+		code === "team_setup_roster_unavailable" ||
+		code === "team_setup_completion_unavailable" ||
+		code === "team_setup_device_removals_unavailable"
+	)
 		return 503;
 	if (code === "team_setup_failed") return 503;
 	if (code === "team_setup_incomplete") return 400;
@@ -2059,13 +2075,16 @@ function completionReadActions(
 	const adminSecret = config.syncCoordinatorAdminSecret;
 	let removals: ReturnType<ListCompletionRemovals> | undefined;
 	const listRemovals: ListCompletionRemovals = () => {
-		removals ??=
-			dependencies
-				.listRemovals?.({
-					includeBlocked: true,
-					remote: { url: remoteUrl, adminSecret, timeoutS, deadlineMs },
-				})
-				.catch(() => []) ?? Promise.resolve([]);
+		const read = dependencies.listRemovals;
+		if (!read) return Promise.resolve(undefined);
+		// A failed read is not an empty list: core must not treat it as missing proof.
+		removals ??= read({
+			includeBlocked: true,
+			remote: { url: remoteUrl, adminSecret, timeoutS, deadlineMs },
+		}).then(
+			(items): LegacyTeamSetupDeviceRemovalEvidence => ({ status: "read", removals: items }),
+			(): LegacyTeamSetupDeviceRemovalEvidence => ({ status: "unavailable" }),
+		);
 		return removals;
 	};
 	const listCompletionRecords = (groupIds: string[]) =>
@@ -2289,7 +2308,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		const missing = manifest.device_decisions.some(
 			(device) => device.decision === "included" && !freshIds.has(device.device_id),
 		);
-		const verifiedRemovals = missing ? await listRemovals() : undefined;
+		const deviceRemovals = missing ? await listRemovals() : undefined;
 		let outcome: "applied" | "unauthorized" = "unauthorized";
 		const ran = await runCandidateMutation(
 			store.db,
@@ -2302,7 +2321,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						groupId: group.groupId,
 						manifest,
 						freshRoster,
-						verifiedRemovals,
+						deviceRemovals,
 						recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(actorIds),
 					});
 					outcome = "applied";
@@ -2639,7 +2658,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						);
 						if (applied !== "applied") continue;
 					} catch (applyError) {
-						if (applyError instanceof LegacyTeamSetupAdditiveConvergenceError) {
+						if (isNonDivergentApplyFailure(applyError)) {
 							handleFailure(group, applyError);
 							continue;
 						}

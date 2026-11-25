@@ -1908,6 +1908,19 @@ describe("Sharing Team setup recovery blockers", () => {
 		},
 	);
 
+	it("explains an unreadable device removal list without exposing its code", () => {
+		const teamSetupSummary: LegacyTeamSetupSummaryResponseV1 = {
+			version: 1,
+			candidates: [recoveryCandidate({ blockingError: "team_setup_device_removals_unavailable" })],
+		};
+		mount(intent(), { teamSetupSummary, onOpenTeamSetup: vi.fn() });
+		const row = document.querySelector<HTMLElement>(".recipient-policy-sharing-team-setup-row");
+		expect(row?.textContent).toContain(
+			"Device removal records could not be read from the coordinator. Nothing changed.",
+		);
+		expect(row?.outerHTML).not.toContain("team_setup_device_removals_unavailable");
+	});
+
 	it("keeps a healthy candidate reviewable beside a blocked candidate with the same name", () => {
 		// Arrange: duplicate labels must not route the healthy action to the blocked candidate.
 		const onOpenTeamSetup = vi.fn();

@@ -5,6 +5,7 @@ export type LegacyTeamSetupActivationErrorCode =
 	| "team_setup_assignment_changed"
 	| "team_setup_roster_unavailable"
 	| "team_setup_completion_unavailable"
+	| "team_setup_device_removals_unavailable"
 	| "team_setup_completion_conflict"
 	| "team_setup_completion_invalid"
 	| "team_setup_conflict"
@@ -73,6 +74,7 @@ export const LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR = {
 	team_setup_assignment_changed: "team_setup_assignment_changed",
 	team_setup_roster_unavailable: "team_setup_roster_unavailable",
 	team_setup_completion_unavailable: "team_setup_completion_unavailable",
+	team_setup_device_removals_unavailable: "team_setup_device_removals_unavailable",
 	team_setup_completion_conflict: "team_setup_completion_conflict",
 	team_setup_completion_invalid: "team_setup_completion_invalid",
 	team_setup_conflict: "team_setup_conflict",

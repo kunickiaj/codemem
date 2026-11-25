@@ -2572,53 +2572,170 @@ describe("Team setup terminal migration routing", () => {
 	});
 });
 
+const REMOVAL_DETAIL_PATH = `/api/sync/team-setup/v1/${CANDIDATE_REF}`;
+
+/** Installs the coordinator's completion for the single-device Team. */
+async function installCompletedTeam(store: MemoryStore) {
+	const setupApp = teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+		completionDependencies: null,
+	});
+	const draft = await readyDraftThroughSummary(store, setupApp);
+	const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: draft.attemptId,
+		completedAt: NOW,
+	});
+	const device = manifest.device_decisions[0];
+	if (!device) throw new Error("Missing included device");
+	const removal = {
+		group_id: GROUP_ID,
+		device_id: device.device_id,
+		fingerprint: device.key_fingerprint,
+		removal_id: "removal-1",
+		removal_seq: 1,
+		key_id: null,
+		display_name: null,
+		identity_id: null,
+		removed_at: NOW,
+	};
+	const listRemovals = vi.fn(async () => [removal]);
+	const installApp = teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+		snapshotLoaderDependencies: completionConfig(),
+		completionDependencies: {
+			create: vi.fn(),
+			list: async () => [{ group_id: GROUP_ID, manifest }],
+			listRemovals,
+		},
+	});
+	// Installing the completion makes this first read report a stale view.
+	await installApp.request(REMOVAL_DETAIL_PATH);
+	expect(listRemovals).not.toHaveBeenCalled();
+	expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+	return { manifest, removal };
+}
+
+function teamStatus(store: MemoryStore) {
+	return store.db.prepare("SELECT status, migration_state FROM policy_teams").get();
+}
+
+function databaseSnapshot(store: MemoryStore) {
+	const tables = store.db
+		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+		.pluck()
+		.all() as string[];
+	return Object.fromEntries(
+		tables.map((table) => [table, store.db.prepare(`SELECT * FROM "${table}"`).all()]),
+	);
+}
+
+function appWithoutDevice(
+	store: MemoryStore,
+	completionDependencies: NonNullable<
+		Parameters<typeof teamSetupRoutes>[0]["completionDependencies"]
+	>,
+) {
+	return teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async () =>
+			SNAPSHOTS.map((snapshot) => ({ ...snapshot, devices: [] })),
+		snapshotLoaderDependencies: completionConfig(),
+		completionDependencies,
+	});
+}
+
 describe("Team setup terminal routing after device removal", () => {
-	it("keeps a completed Team when a fresh roster omits a device the coordinator removed", async () => {
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"keeps a completed Team unchanged when removal records cannot be read, then preserves it on retry: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				// Arrange: the coordinator removed the only device; its removal list read fails once.
+				const { manifest, removal } = await installCompletedTeam(store);
+				const listRemovals = vi
+					.fn()
+					.mockRejectedValueOnce(new Error(`removal read failed at ${COORDINATOR_ID}`))
+					.mockResolvedValue([removal]);
+				const app = appWithoutDevice(
+					store,
+					branch === "coordinator record"
+						? {
+								create: vi.fn(),
+								list: async () => [{ group_id: GROUP_ID, manifest }],
+								listRemovals,
+							}
+						: {
+								create: vi.fn().mockRejectedValue(new Error("completion_conflict")),
+								get: async () => manifest,
+								list: async () => [],
+								listRemovals,
+							},
+				);
+				const before = databaseSnapshot(store);
+
+				// Act: the failed read, then a retry after the coordinator recovers.
+				const failed = await app.request(REMOVAL_DETAIL_PATH);
+				const afterFailure = databaseSnapshot(store);
+				const retried = await app.request(REMOVAL_DETAIL_PATH);
+				const summary = await app.request("/api/sync/team-setup/v1");
+
+				// Assert: the failure is retryable, leaks nothing, and wrote nothing.
+				expect(failed.status).toBe(503);
+				expect(await failed.json()).toEqual({ error: "team_setup_device_removals_unavailable" });
+				expect(afterFailure).toEqual(before);
+				// The finish digest survived, so the retry used the keep-active replay.
+				expect(retried.status).toBe(200);
+				expect(await retried.json()).toMatchObject({
+					candidate: { candidateRef: CANDIDATE_REF, status: "ready" },
+				});
+				expect(listRemovals).toHaveBeenCalledTimes(3);
+				expect(summary.status).toBe(200);
+				expect(await summary.json()).toMatchObject({ candidates: [] });
+				expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("reports an unreadable removal list as a Projects summary blocker without changing the Team", async () => {
 		const store = new MemoryStore(":memory:");
 		try {
-			const setupApp = teamSetupRoutes({
-				getStore: () => store,
-				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
-				completionDependencies: null,
+			const { manifest } = await installCompletedTeam(store);
+			const app = appWithoutDevice(store, {
+				create: vi.fn(),
+				list: async () => [{ group_id: GROUP_ID, manifest }],
+				listRemovals: vi.fn().mockRejectedValue(new Error("removal read failed")),
 			});
-			const draft = await readyDraftThroughSummary(store, setupApp);
-			const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
-				candidateRef: CANDIDATE_REF,
-				attemptId: draft.attemptId,
-				completedAt: NOW,
+			const summary = await app.request("/api/sync/team-setup/v1");
+			expect(summary.status).toBe(200);
+			expect(await summary.json()).toMatchObject({
+				candidates: [
+					{ candidateRef: CANDIDATE_REF, blockingError: "team_setup_device_removals_unavailable" },
+				],
 			});
-			const list = vi.fn(async () => [{ group_id: GROUP_ID, manifest }]);
-			const makeApp = (removed: boolean) =>
-				teamSetupRoutes({
-					getStore: () => store,
-					loadLegacyTeamConfiguredGroupSnapshots: async () =>
-						removed ? SNAPSHOTS.map((snapshot) => ({ ...snapshot, devices: [] })) : SNAPSHOTS,
-					snapshotLoaderDependencies: completionConfig(),
-					completionDependencies: { create: vi.fn(), list, listRemovals },
-				});
-			const device = manifest.device_decisions[0];
-			if (!device) throw new Error("Missing included device");
-			const listRemovals = vi.fn(async () => [
-				{
-					group_id: GROUP_ID,
-					device_id: device.device_id,
-					fingerprint: device.key_fingerprint,
-					removal_id: "removal-1",
-					removal_seq: 1,
-					key_id: null,
-					display_name: null,
-					identity_id: null,
-					removed_at: NOW,
-				},
-			]);
-			const setupPath = `/api/sync/team-setup/v1/${CANDIDATE_REF}`;
-			await makeApp(false).request(setupPath);
-			expect(listRemovals).not.toHaveBeenCalled();
-			expect(store.db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
-			const detail = await makeApp(true).request(setupPath);
-			expect(detail.status).toBe(200);
-			expect(listRemovals).toHaveBeenCalledOnce();
-			expect(store.db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("quarantines a completed Team when the removal list has no record for the missing device", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const { manifest } = await installCompletedTeam(store);
+			const app = appWithoutDevice(store, {
+				create: vi.fn(),
+				list: async () => [{ group_id: GROUP_ID, manifest }],
+				listRemovals: vi.fn(async () => []),
+			});
+			const detail = await app.request(REMOVAL_DETAIL_PATH);
+			expect(detail.status).toBe(409);
+			expect(await detail.json()).toEqual({ error: "team_setup_completion_invalid" });
+			expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
 		} finally {
 			store.close();
 		}

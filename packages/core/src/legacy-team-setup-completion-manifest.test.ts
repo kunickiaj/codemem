@@ -14,6 +14,8 @@ import {
 	containLegacyTeamSetupCompletionConflict,
 	deriveLegacyTeamSetupCompletionManifest,
 	LegacyTeamSetupAdditiveConvergenceError,
+	type LegacyTeamSetupDeviceRemovalEvidence,
+	LegacyTeamSetupDeviceRemovalsUnavailableError,
 	LegacyTeamSetupRosterCapacityError,
 	reconstructLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifest,
@@ -2577,6 +2579,73 @@ function hiddenSpaceCompletionState(
 	};
 }
 
+/** Completes a two-device Team, then removes the Laptop locally and from the roster. */
+async function completeTeamThenRemoveLaptop(db: InstanceType<typeof Database>) {
+	db.prepare(
+		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+		 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
+	).run(NOW, NOW);
+	const roster = [
+		...FRESH_ROSTER,
+		{ deviceId: "device-b", fingerprint: "b".repeat(64), displayName: "Desktop", enabled: true },
+	];
+	let draft = refreshLegacyTeamSetupDraft(db, {
+		candidateId: CANDIDATE,
+		coordinatorId: COORDINATOR_ID,
+		groupId: GROUP_ID,
+		displayName: "Engineering",
+		devices: roster,
+		projects: [HIDDEN_SPACE_PROJECTS[0]],
+		now: NOW,
+	});
+	for (const device of draft.devices) {
+		setLegacyTeamSetupDeviceAssignment(db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			targetIdentityId: device.displayName === "Laptop" ? "identity-a" : "identity-b",
+			expectation: device.expectation,
+			now: NOW,
+		});
+		draft = setLegacyTeamSetupDeviceDecision(db, {
+			attemptId: draft.attemptId,
+			deviceRef: device.deviceRef,
+			decision: "included",
+			now: NOW,
+		});
+	}
+	const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+		candidateRef: draft.candidateRef,
+		attemptId: draft.attemptId,
+		completedAt: NOW,
+	});
+	const input = { coordinatorId: COORDINATOR_ID, groupId: GROUP_ID, manifest };
+	await applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster: roster });
+	removePairingState(db, {
+		localDeviceId: "device-b",
+		reason: "removed",
+		deviceIds: ["device-a"],
+	});
+	const reconcile = (
+		deviceRemovals: LegacyTeamSetupDeviceRemovalEvidence,
+		freshRoster = roster.slice(1),
+	) => applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster, deviceRemovals });
+	return { manifest, reconcile };
+}
+
+function laptopRemoval(group = GROUP_ID, fingerprint = KEY_A) {
+	return { group_id: group, device_id: "device-a", fingerprint };
+}
+
+function databaseSnapshot(db: InstanceType<typeof Database>) {
+	const tables = db
+		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+		.pluck()
+		.all() as string[];
+	return Object.fromEntries(
+		tables.map((table) => [table, db.prepare(`SELECT * FROM "${table}"`).all()]),
+	);
+}
+
 describe("legacy Team setup completion manifests after device removal", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -2587,65 +2656,18 @@ describe("legacy Team setup completion manifests after device removal", () => {
 	afterEach(() => db.close());
 
 	it.each([
-		["verified removal", GROUP_ID, KEY_A, true],
-		["wrong group", "other-group", KEY_A, false],
-		["wrong key", GROUP_ID, "other-key", false],
-	] as const)("reconciles an absent reviewed device: %s", async (_case, group, key, verified) => {
-		db.prepare(
-			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-			 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
-		).run(NOW, NOW);
-		const roster = [
-			...FRESH_ROSTER,
-			{ deviceId: "device-b", fingerprint: "b".repeat(64), displayName: "Desktop", enabled: true },
-		];
-		let draft = refreshLegacyTeamSetupDraft(db, {
-			candidateId: CANDIDATE,
-			coordinatorId: COORDINATOR_ID,
-			groupId: GROUP_ID,
-			displayName: "Engineering",
-			devices: roster,
-			projects: [HIDDEN_SPACE_PROJECTS[0]],
-			now: NOW,
-		});
-		for (const device of draft.devices) {
-			setLegacyTeamSetupDeviceAssignment(db, {
-				attemptId: draft.attemptId,
-				deviceRef: device.deviceRef,
-				targetIdentityId: device.displayName === "Laptop" ? "identity-a" : "identity-b",
-				expectation: device.expectation,
-				now: NOW,
-			});
-			draft = setLegacyTeamSetupDeviceDecision(db, {
-				attemptId: draft.attemptId,
-				deviceRef: device.deviceRef,
-				decision: "included",
-				now: NOW,
-			});
-		}
-		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
-			candidateRef: draft.candidateRef,
-			attemptId: draft.attemptId,
-			completedAt: NOW,
-		});
-		const input = { coordinatorId: COORDINATOR_ID, groupId: GROUP_ID, manifest };
-		await applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster: roster });
-		removePairingState(db, {
-			localDeviceId: "device-b",
-			reason: "removed",
-			deviceIds: ["device-a"],
-		});
-		const reconcile = () =>
-			applyLegacyTeamSetupCompletionManifest(db, {
-				...input,
-				freshRoster: roster.slice(1),
-				verifiedRemovals: [{ group_id: group, device_id: "device-a", fingerprint: key }],
-			});
+		["verified removal", [laptopRemoval()], true],
+		["wrong group", [laptopRemoval("other-group")], false],
+		["wrong key", [laptopRemoval(GROUP_ID, "other-key")], false],
+		["no removal records", [], false],
+	] as const)("reconciles an absent reviewed device: %s", async (_case, removals, verified) => {
+		const { manifest, reconcile } = await completeTeamThenRemoveLaptop(db);
+		const read = () => reconcile({ status: "read", removals });
 		if (verified) {
-			await expect(reconcile()).resolves.toEqual(manifest);
-			await expect(reconcile()).resolves.toEqual(manifest);
+			await expect(read()).resolves.toEqual(manifest);
+			await expect(read()).resolves.toEqual(manifest);
 		} else {
-			await expect(reconcile()).rejects.toThrow("team_setup_completion_invalid");
+			await expect(read()).rejects.toThrow("team_setup_completion_invalid");
 		}
 		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe(
 			verified ? "active" : "inactive",
@@ -2657,6 +2679,47 @@ describe("legacy Team setup completion manifests after device removal", () => {
 			db.prepare("SELECT status FROM identity_devices ORDER BY device_id").pluck().all(),
 		).toEqual(["removed", "active"]);
 		expect(db.prepare("SELECT count(*) FROM policy_team_memberships").pluck().get()).toBe(2);
+	});
+
+	it("leaves the Team untouched when removal records cannot be read, then preserves it on retry", async () => {
+		// Arrange: the only discrepancy is the Laptop that the coordinator removed.
+		const { manifest, reconcile } = await completeTeamThenRemoveLaptop(db);
+		const before = databaseSnapshot(db);
+		expect(db.prepare("SELECT count(*) FROM project_scope_mappings").pluck().get()).toBe(1);
+
+		// Act and assert: a failed read is retryable and writes nothing.
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
+		);
+		expect(databaseSnapshot(db)).toEqual(before);
+
+		// The finish digest survived, so a successful read can still replay.
+		await expect(reconcile({ status: "read", removals: [laptopRemoval()] })).resolves.toEqual(
+			manifest,
+		);
+		expect(db.prepare("SELECT status, migration_state FROM policy_teams").get()).toEqual({
+			status: "active",
+			migration_state: "completed",
+		});
+		expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("active");
+	});
+
+	it("quarantines when removal records cannot be read and a remaining device changed key", async () => {
+		// A key change on a device still in the roster diverges from the reviewed
+		// setup whatever the removal records say, so the read failure is not consulted.
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		const rotated = [
+			{ deviceId: "device-b", fingerprint: "c".repeat(64), displayName: "Desktop", enabled: true },
+		];
+		await expect(reconcile({ status: "unavailable" }, rotated)).rejects.toThrow(
+			"team_setup_completion_invalid",
+		);
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
+		expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe("revoked");
+		expect(
+			db.prepare("SELECT finish_digest FROM legacy_team_setup_drafts").pluck().get(),
+		).toBeNull();
+		expect(db.prepare("SELECT count(*) FROM project_scope_mappings").pluck().get()).toBe(0);
 	});
 });
 
