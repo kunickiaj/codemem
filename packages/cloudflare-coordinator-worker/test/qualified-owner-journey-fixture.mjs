@@ -81,6 +81,9 @@ export { COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL } from './coordinator-own
 			builder.onResolve({ filter: /^@codemem\/embeddings$/ }, () => ({
 				path: fileURLToPath(new URL("../../embeddings/src/index.ts", import.meta.url)),
 			}));
+			builder.onResolve({ filter: /^@codemem\/memory-tools$/ }, () => ({
+				path: fileURLToPath(new URL("../../memory-tools/src/index.ts", import.meta.url)),
+			}));
 			builder.onResolve({ filter: /^[^./]/ }, async ({ path, pluginData, resolveDir }) => {
 				if (pluginData?.resolving) return;
 				if (path.startsWith("node:")) return { path, external: true };

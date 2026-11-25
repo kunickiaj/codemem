@@ -71,6 +71,9 @@ export { oidcFixture, PROVIDER } from './coordinator-oidc-test-fixtures.ts';`,
 					contents: "export const vi = { fn: (implementation) => implementation };",
 					loader: "js",
 				}));
+				builder.onResolve({ filter: /^@codemem\/memory-tools$/ }, () => ({
+					path: fileURLToPath(new URL("../../memory-tools/src/index.ts", import.meta.url)),
+				}));
 				builder.onResolve({ filter: /^[^./]/ }, async ({ path, pluginData }) => {
 					if (pluginData?.resolving) return;
 					if (path.startsWith("node:")) return { path, external: true };
