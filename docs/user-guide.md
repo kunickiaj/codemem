@@ -343,15 +343,16 @@ Wrap text in `<private>` and `</private>` to keep it out of what codemem stores 
 - If a block is left open, codemem removes everything after the opening tag to the end of that message.
 - A closing tag without an opening tag is removed, and the text around it stays.
 - Tool output is protected only where the tags appear inside that output. A block in a tool's input does not hide its output, and the reverse.
-- To mention the tag without triggering it, write the escaped form `&lt;private&gt;`. A self-closing `<private/>` and other tag names, such as `<private-notes>`, are ordinary text.
-- Text with no tags is stored unchanged.
+- To mention the tag without triggering it, write the escaped form `&lt;private&gt;`. A self-closing `<private/>` and other tag names, such as `<private-notes>`, are ordinary text. Inside a block, they are removed with the rest of the block.
+- Text with no tags is stored as written, except that codemem still replaces the values of secret-named fields, such as `token`, `password` or `api_key`, in event data and tool input and output with `[REDACTED]`.
 
 The tags do not cover:
 
 - text stored before you upgraded to a version with these rules;
 - anything you save explicitly with the remember tool;
 - imported prompts or artifacts;
-- numbers and true/false values inside a tool's structured input or output, which are not text.
+- numbers and true/false values inside a tool's structured input or output, which are not text;
+- identifiers that route an event, such as session, event, turn and tool-call IDs and the event type, and transcript file paths, which are stored as sent.
 
 ## Memory persistence
 - A session is created per ingest payload.

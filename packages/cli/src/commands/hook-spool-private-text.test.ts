@@ -1,7 +1,13 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	buildRawEventEnvelopeFromCodexHook,
+	buildRawEventEnvelopeFromHook,
+	TRUSTED_HOOK_MAPPER_OPTIONS,
+} from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ingestClaudeHookPayload } from "./claude-hook-ingest.js";
 import { spoolPayload, spoolPayloadWithReceipt } from "./claude-hook-ingest-spool.js";
 import { trackHookSessionState } from "./claude-hook-session-state.js";
 import { ingestCodexHookPayload } from "./codex-hook-ingest.js";
@@ -186,4 +192,73 @@ describe("plugin hook spools", () => {
 			files_modified: ["src/a.ts"],
 		});
 	});
+});
+
+describe("hook event identity", () => {
+	const prompt = (text: string) => ({
+		hook_event_name: "UserPromptSubmit",
+		session_id: "identity-session",
+		timestamp: "2026-01-01T00:00:00Z",
+		prompt: text,
+		cwd: "/work/repo",
+	});
+	const opts = () => ({ host: "127.0.0.1", port: 38888, db: join(root, "unused.sqlite") });
+
+	/** The ID the Viewer assigns to what the CLI sends, and the ID the standalone hook sends. */
+	async function routeIds(source: "claude" | "codex", payload: Record<string, unknown>) {
+		let sent: Record<string, unknown> = {};
+		const httpIngest = async (request: Record<string, unknown>) => {
+			sent = request;
+			return { ok: true, inserted: 1, skipped: 0 };
+		};
+		const resolveDb = () => join(root, "unused.sqlite");
+		let body = "{}";
+		const postEnvelope = async (envelope: string) => {
+			body = envelope;
+			return true;
+		};
+		if (source === "claude") {
+			await ingestClaudeHookPayload(payload, opts(), { httpIngest, resolveDb });
+			const hook = await import(pluginScript("claude/scripts/ingest-hook.mjs"));
+			await hook.runClaudeIngestHook({
+				readInput: async () => JSON.stringify(payload),
+				postEnvelope,
+				env: process.env,
+			});
+			const cli = buildRawEventEnvelopeFromHook(sent, TRUSTED_HOOK_MAPPER_OPTIONS);
+			return { cli: cli?.event_id, hook: JSON.parse(body).event_id };
+		}
+		await ingestCodexHookPayload(payload, opts(), { httpIngest, resolveDb });
+		const hook = await import(pluginScript("codex/scripts/ingest-hook.mjs"));
+		await hook.runCodexIngestHook({
+			readInput: async () => JSON.stringify(payload),
+			postEnvelope,
+			writeOutput: () => {},
+		});
+		const cli = buildRawEventEnvelopeFromCodexHook(sent, TRUSTED_HOOK_MAPPER_OPTIONS);
+		return { cli: cli?.event_id, hook: JSON.parse(body).event_id };
+	}
+
+	for (const source of ["claude", "codex"] as const) {
+		const build =
+			source === "claude" ? buildRawEventEnvelopeFromHook : buildRawEventEnvelopeFromCodexHook;
+
+		it(`gives a ${source} event with a private block one ID on both routes, from cleaned content`, async () => {
+			const ids = await routeIds(source, prompt(`fix the queue <private>${S}</private> now`));
+
+			expect(ids.hook).toBe(ids.cli);
+			expect(ids.hook).toBe(
+				build(prompt("fix the queue  now"), TRUSTED_HOOK_MAPPER_OPTIONS)?.event_id,
+			);
+		});
+
+		it(`keeps the ID of a ${source} event without markers on both routes`, async () => {
+			const ids = await routeIds(source, prompt("fix the queue now"));
+
+			expect(ids).toEqual({
+				cli: build(prompt("fix the queue now"), TRUSTED_HOOK_MAPPER_OPTIONS)?.event_id,
+				hook: build(prompt("fix the queue now"), TRUSTED_HOOK_MAPPER_OPTIONS)?.event_id,
+			});
+		});
+	}
 });

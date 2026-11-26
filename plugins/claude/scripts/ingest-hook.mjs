@@ -9,6 +9,7 @@ import {
 	buildRawEventEnvelopeFromHook,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./codemem-normalizer.mjs";
+import { sanitizeHookPayload, sanitizeRawEventEnvelope } from "./codemem-private-text.mjs";
 import {
 	identityTarget,
 	resolveDbPath,
@@ -193,6 +194,24 @@ function runFallback(command, args, body, timeoutMs = 8000) {
 	return false;
 }
 
+/**
+ * The hook payload without private blocks. It is cleaned before its event ID is
+ * computed, as the CLI does, so both routes give one event the same ID.
+ */
+function parseNativePayload(raw) {
+	const parsed = JSON.parse(raw);
+	if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
+		throw new Error("payload must be a JSON object");
+	return sanitizeHookPayload(parsed);
+}
+
+/** The envelope, cleaned again for text read from the transcript. */
+function cleanedEnvelope(nativePayload) {
+	return sanitizeRawEventEnvelope(
+		buildRawEventEnvelopeFromHook(nativePayload, TRUSTED_HOOK_MAPPER_OPTIONS),
+	);
+}
+
 export async function runClaudeIngestHook(overrides = {}) {
 	const now = overrides.now ?? Date.now;
 	const hookStartedAt = now();
@@ -200,14 +219,12 @@ export async function runClaudeIngestHook(overrides = {}) {
 	try {
 		const raw = await (overrides.readInput ?? readStdin)();
 		if (!raw.trim() || isTruthy(env.CODEMEM_PLUGIN_IGNORE)) return 0;
-		const nativePayload = JSON.parse(raw);
-		if (nativePayload == null || typeof nativePayload !== "object" || Array.isArray(nativePayload))
-			throw new Error("payload must be a JSON object");
+		const nativePayload = parseNativePayload(raw);
 		if (nativePayload.hook_event_name !== "UserPromptSubmit") {
 			trackClaudeSessionState(nativePayload, env);
 		}
 
-		const envelope = buildRawEventEnvelopeFromHook(nativePayload, TRUSTED_HOOK_MAPPER_OPTIONS);
+		const envelope = cleanedEnvelope(nativePayload);
 		if (envelope === null) return 0;
 		const envelopeBody = JSON.stringify(envelope);
 		const flushBoundary = shouldForceBoundaryFlush(nativePayload, env);

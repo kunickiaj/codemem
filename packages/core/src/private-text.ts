@@ -81,16 +81,25 @@ function removePrivateBlocks(text: string): string {
 	let index = text.indexOf("<");
 	while (index !== -1) {
 		const tag = readPrivateTag(text, index);
-		if (!tag || tag.kind === "self") {
+		if (!tag) {
+			// Not a private tag: only its `<` is passed over.
 			index = text.indexOf("<", index + 1);
+			continue;
+		}
+		// A recognized tag is consumed whole, so a quoted attribute value is never read
+		// as another tag. A self-closing tag is ordinary text outside a block and goes
+		// with the rest of the block inside one.
+		const end = tag.end;
+		if (tag.kind === "self") {
+			index = text.indexOf("<", end);
 			continue;
 		}
 		if (depth === 0) output += text.slice(kept, index);
 		if (tag.kind === "cut") return output;
 		if (tag.kind === "open") depth += 1;
 		else if (depth > 0) depth -= 1;
-		kept = tag.end;
-		index = text.indexOf("<", tag.end);
+		kept = end;
+		index = text.indexOf("<", end);
 	}
 	return depth === 0 ? output + text.slice(kept) : output;
 }
@@ -118,43 +127,87 @@ export function stripPrivateValues(value: unknown): unknown {
 	return value;
 }
 
-const EVENT_METADATA_KEYS = ["cwd", "project", "started_at"] as const;
+/** True when any string or key inside the value carries a private marker. */
+export function containsPrivateMarker(value: unknown): boolean {
+	if (typeof value === "string") return hasPrivateMarker(value);
+	if (Array.isArray(value)) return value.some(containsPrivateMarker);
+	if (value != null && typeof value === "object") {
+		return Object.entries(value as Record<string, unknown>).some(
+			([key, item]) => hasPrivateMarker(key) || containsPrivateMarker(item),
+		);
+	}
+	return false;
+}
 
-function sanitizeEventItem(
-	item: Record<string, unknown>,
-	cleanPayload: (value: unknown) => unknown,
-): Record<string, unknown> {
-	const sanitized = { ...item };
-	if (item.payload != null && typeof item.payload === "object") {
-		sanitized.payload = cleanPayload(item.payload);
+/** Fields that route or identify a raw event. They are kept exactly as sent. */
+const RAW_EVENT_ROUTING_KEYS = new Set([
+	"source",
+	"session_stream_id",
+	"session_id",
+	"stream_id",
+	"opencode_session_id",
+	"event_id",
+	"event_type",
+	"event_seq",
+	"ts_wall_ms",
+	"ts_mono_ms",
+	"host_generation",
+]);
+
+/** Captured content of a raw event. Each is cleaned before it is kept. */
+const RAW_EVENT_CONTENT_KEYS = new Set(["payload", "cwd", "project", "started_at"]);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	value != null && typeof value === "object" && !Array.isArray(value);
+
+type Clean = (value: unknown) => unknown;
+
+/** The kept form of one field of a raw event, or undefined when the field is dropped. */
+function cleanRawEventField(key: string, value: unknown, clean: Clean): unknown {
+	if (RAW_EVENT_ROUTING_KEYS.has(key)) return value;
+	if (RAW_EVENT_CONTENT_KEYS.has(key)) return clean(value);
+	// Provenance is checked as sent, so a context that carries a marker is not kept.
+	if (key === "capture_context" && value != null && !containsPrivateMarker(value)) {
+		return clean(value);
 	}
-	for (const key of EVENT_METADATA_KEYS) {
-		const value = item[key];
-		if (typeof value === "string") sanitized[key] = stripPrivate(value);
-	}
-	return sanitized;
+	return undefined;
 }
 
 /**
- * A raw-event envelope, or a request carrying `events`, with private blocks removed
- * from each event's payload values and session metadata, every event on its own.
- * Routing fields such as source, session, stream and event IDs are left as sent.
+ * One raw event reduced to the fields ingestion reads, in their original order.
+ * Routing fields are kept as sent, content is cleaned, and every other field is
+ * dropped. A request's `events` list is reduced the same way, event by event.
  */
-export function sanitizeRawEventEnvelope<T>(
-	envelope: T,
-	cleanPayload: (value: unknown) => unknown = stripPrivateValues,
-): T {
-	if (envelope == null || typeof envelope !== "object" || Array.isArray(envelope)) return envelope;
-	const request = envelope as Record<string, unknown>;
-	const sanitized = sanitizeEventItem(request, cleanPayload);
-	if (Array.isArray(request.events)) {
-		sanitized.events = request.events.map((event) =>
-			event != null && typeof event === "object" && !Array.isArray(event)
-				? sanitizeEventItem(event as Record<string, unknown>, cleanPayload)
-				: event,
-		);
+function cleanRawEvent(
+	item: Record<string, unknown>,
+	clean: Clean,
+	{ withEvents }: { withEvents: boolean },
+): Record<string, unknown> {
+	const cleaned: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(item)) {
+		if (withEvents && key === "events") {
+			// A malformed list keeps its shape so validation still rejects it.
+			cleaned.events = Array.isArray(value)
+				? value.map((event) =>
+						isRecord(event) ? cleanRawEvent(event, clean, { withEvents: false }) : clean(event),
+					)
+				: clean(value);
+			continue;
+		}
+		const kept = cleanRawEventField(key, value, clean);
+		if (kept !== undefined) cleaned[key] = kept;
 	}
-	return sanitized as T;
+	return cleaned;
+}
+
+/**
+ * The form of a raw-event envelope, or of a request carrying `events`, that may be
+ * stored: each event reduced to the fields ingestion reads and cleaned on its own.
+ * `clean` cleans content values; core also redacts secret-named fields with it.
+ */
+export function sanitizeRawEventEnvelope<T>(envelope: T, clean: Clean = stripPrivateValues): T {
+	if (!isRecord(envelope)) return envelope;
+	return cleanRawEvent(envelope, clean, { withEvents: true }) as T;
 }
 
 /**

@@ -71,6 +71,61 @@
 			"input": "Fix the queue: 2 < 3 > 1, private data stays",
 			"expected": "Fix the queue: 2 < 3 > 1, private data stays"
 		},
-		{ "name": "an empty value", "input": "", "expected": "" }
+		{ "name": "an empty value", "input": "", "expected": "" },
+		{
+			"name": "a closer quoted in a self-closing tag inside a block",
+			"input": "a <private><private note=\"</private>\"/>SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a closer single-quoted in a self-closing tag inside a block",
+			"input": "a <private><private note='</private>'/>SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "an opener quoted in a self-closing tag inside a block",
+			"input": "a <private>x<private note=\"<private>\"/>SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a closer quoted in a self-closing tag outside a block",
+			"input": "a <private note=\"</private>\"/> b",
+			"expected": "a <private note=\"</private>\"/> b"
+		},
+		{
+			"name": "a closer single-quoted in a self-closing tag outside a block",
+			"input": "a <private note='</private>'/> b",
+			"expected": "a <private note='</private>'/> b"
+		},
+		{
+			"name": "an opener quoted in a self-closing tag outside a block",
+			"input": "a <private note=\"<private>\"/> b <private>SECRET</private> c",
+			"expected": "a <private note=\"<private>\"/> b  c"
+		},
+		{
+			"name": "an unbalanced quote in an opener",
+			"input": "a <private note=\"x>SECRET</private> b",
+			"expected": "a "
+		},
+		{
+			"name": "an unbalanced quote in a self-closing tag outside a block",
+			"input": "a <private note='x/> SECRET",
+			"expected": "a "
+		},
+		{
+			"name": "an unbalanced quote in a self-closing tag inside a block",
+			"input": "a <private>s <private note='x/> SECRET</private> b",
+			"expected": "a "
+		},
+		{
+			"name": "an unbalanced quote in a closer",
+			"input": "a <private>SECRET</private note=\"> b",
+			"expected": "a "
+		},
+		{
+			"name": "an opener quoted in another tag's attribute",
+			"input": "a <b title=\"<private>\">SECRET</private> c",
+			"expected": "a <b title=\" c"
+		}
 	]
 }
