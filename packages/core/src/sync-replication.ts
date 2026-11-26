@@ -18,6 +18,7 @@ import {
 	hasMatchingLocalCreation,
 	hasRecordedLocalCreation,
 	recordForeignMemoryRevision,
+	verifiedMemoryCreator,
 } from "./memory-creation-provenance.js";
 import { type LocalCreationContext, localCreationSourceIds } from "./memory-local-capture.js";
 import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
@@ -3901,10 +3902,12 @@ function applyAccessCleanupForLocalDevice(
 	if (!existing) return true;
 	if (hasRecordedLocalCreation(db, op.entity_id)) return false;
 	const sourceDeviceId = cleanText(op.clock_device_id) ?? cleanText(op.device_id);
-	const originDeviceId = cleanText(existing.origin_device_id);
-	if (!sourceDeviceId || !originDeviceId || originDeviceId !== sourceDeviceId) return false;
+	// The creator by immutable evidence; the stored origin only for historical ids that name none.
+	const creatorDeviceId =
+		verifiedMemoryCreator(db, op.entity_id) ?? cleanText(existing.origin_device_id);
+	if (!sourceDeviceId || !creatorDeviceId || creatorDeviceId !== sourceDeviceId) return false;
 	// Local-looking labels preserve ambiguous data, never prove authorship.
-	if (originDeviceId === context.localDeviceId || originDeviceId === "local") return false;
+	if (creatorDeviceId === context.localDeviceId || creatorDeviceId === "local") return false;
 	if (cleanText(existing.scope_id) !== cleanup.cleanup_scope_id) return false;
 	clearRefsBeforeMemoryDeletion(db, Number(existing.id));
 	d.delete(schema.memoryItems).where(eq(schema.memoryItems.id, existing.id)).run();
@@ -4182,7 +4185,12 @@ function applyReplicationOpsInternal(
 								visibility: sql`COALESCE(${payload.visibility}, ${schema.memoryItems.visibility})`,
 								workspace_id: sql`COALESCE(${payload.workspace_id}, ${schema.memoryItems.workspace_id})`,
 								workspace_kind: sql`COALESCE(${payload.workspace_kind}, ${schema.memoryItems.workspace_kind})`,
-								origin_device_id: sql`COALESCE(${payload.origin_device_id}, ${schema.memoryItems.origin_device_id})`,
+								// A stored creator stays: an update can fill in a missing or "local"
+								// origin, as a claimed origin arrives, but never relabel a creator.
+								origin_device_id: sql`CASE
+									WHEN COALESCE(TRIM(${schema.memoryItems.origin_device_id}), '') IN ('', 'local')
+									THEN COALESCE(${payload.origin_device_id}, ${schema.memoryItems.origin_device_id})
+									ELSE ${schema.memoryItems.origin_device_id} END`,
 								origin_source: sql`COALESCE(${payload.origin_source}, ${schema.memoryItems.origin_source})`,
 								trust_state: sql`COALESCE(${payload.trust_state}, ${schema.memoryItems.trust_state})`,
 								narrative: payload.narrative,

@@ -1,5 +1,5 @@
 import type { Database } from "./db.js";
-import { getVerifiedMemorySource } from "./memory-source-identity.js";
+import { getVerifiedMemorySource, memorySourceNamespace } from "./memory-source-identity.js";
 
 // Actor/workspace aliases and replication clocks may change during local adoption.
 // Scope and user-facing content must still match the immutable creation snapshot.
@@ -85,6 +85,19 @@ export function recordForeignMemoryRevision(
 	db.prepare(
 		"INSERT INTO memory_foreign_revisions(entity_id, write_path, created_at) VALUES (?, ?, ?)",
 	).run(entityId, writePath, new Date().toISOString());
+}
+
+/**
+ * The device that created a memory, by evidence no update can change: its
+ * verified source binding, else the creator namespace in its id. Null for a
+ * historical id that names no creator.
+ */
+export function verifiedMemoryCreator(db: Database, entityId: string): string | null {
+	if (hasTable(db, "memory_source_bindings")) {
+		const binding = getVerifiedMemorySource(db, entityId);
+		if (binding) return binding.sourceDeviceId;
+	}
+	return memorySourceNamespace(entityId);
 }
 
 /** Preservation evidence only: this must not authorize a read or mutation. */

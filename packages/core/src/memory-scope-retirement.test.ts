@@ -303,7 +303,11 @@ it("rejects the original peer-overwritten-origin attack on an unverified histori
 		payload_json: JSON.stringify(payload),
 	};
 	expect(applyReplicationOps(db, [forged], "receiver").applied).toBe(1);
-	expect(db.prepare("SELECT origin_device_id FROM memory_items").pluck().get()).toBe("attacker");
+	const origin = db.prepare("SELECT origin_device_id FROM memory_items").pluck();
+	// Replication no longer relabels a stored creator, but older stores can hold one it relabeled.
+	expect(origin.get()).toBe("source");
+	db.prepare("UPDATE memory_items SET origin_device_id = 'attacker'").run();
+	expect(origin.get()).toBe("attacker");
 	expect(() =>
 		db.transaction(() =>
 			retire(
