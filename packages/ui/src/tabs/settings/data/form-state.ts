@@ -51,10 +51,16 @@ export interface ObserverTierPreview {
 	reasoningEffort: string | null;
 	/** What the last request did with that effort, when the connection reports it. */
 	appliedReasoning?: {
-		/** The effort a successful request used; null at the OpenCode default or on failure. */
+		/** The effort a successful request used; null at the service or CLI default, or on failure. */
 		effort: string | null;
 		requestSucceeded: boolean;
-		fallbackReason: "variant_not_listed" | "variants_unavailable" | "variant_rejected" | null;
+		fallbackReason:
+			| "variant_not_listed"
+			| "variants_unavailable"
+			| "variant_rejected"
+			| "effort_not_supported"
+			| "effort_rejected"
+			| null;
 	};
 }
 

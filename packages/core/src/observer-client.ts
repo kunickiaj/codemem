@@ -9,11 +9,10 @@
  * Non-streaming responses via fetch (no SDK deps).
  */
 
-import { execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { type ExecFileOptions, execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { promisify } from "node:util";
 import { codememHomeDir } from "./home.js";
 
 import {
@@ -225,7 +224,7 @@ export interface ObserverStatus {
 	reasoningEffortRequestSucceeded?: boolean | null;
 	/** A successful last request used the service default instead of the requested effort. */
 	reasoningEffortFallbackApplied?: boolean;
-	reasoningEffortFallbackReason?: V2EffortReport["fallbackReason"];
+	reasoningEffortFallbackReason?: ObserverEffortReport["fallbackReason"];
 	/** The last routed request's effort per tier, when tier routing uses separate clients. */
 	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
 	/** Lengths of the last call's instructions and content against `observer_max_chars`. */
@@ -234,6 +233,14 @@ export interface ObserverStatus {
 	tierPromptBudgets?: Partial<Record<"simple" | "rich", ObserverPromptBudget>>;
 	lastError?: { code: string; message: string; providerError?: V2ProviderError } | null;
 }
+
+/**
+ * What one request did with the configured effort. The OpenCode service reports its
+ * own reasons; the Claude CLI adds an effort it has no value for and one it refused.
+ */
+export type ObserverEffortReport = Omit<V2EffortReport, "fallbackReason"> & {
+	fallbackReason: V2EffortReport["fallbackReason"] | "effort_not_supported" | "effort_rejected";
+};
 
 /** Lengths-free summary of what one request did with the configured reasoning effort. */
 export type ObserverEffortStatus = Pick<
@@ -254,6 +261,21 @@ function effortStatus(status: ObserverStatus): ObserverEffortStatus {
 		reasoningEffortRequestSucceeded: status.reasoningEffortRequestSucceeded ?? null,
 		reasoningEffortFallbackApplied: status.reasoningEffortFallbackApplied === true,
 		reasoningEffortFallbackReason: status.reasoningEffortFallbackReason ?? null,
+	};
+}
+
+/** Status fields for what the last request did with the configured effort. */
+function effortReportStatus(
+	requested: string | null,
+	effort: ObserverEffortReport | null,
+): Partial<ObserverStatus> {
+	return {
+		requestedReasoningEffort: requested,
+		attemptedReasoningEffort: effort?.attempted ?? null,
+		actualReasoningEffort: effort?.applied ?? null,
+		reasoningEffortRequestSucceeded: effort?.succeeded ?? null,
+		reasoningEffortFallbackApplied: effort?.succeeded === true && effort.fallbackReason !== null,
+		reasoningEffortFallbackReason: effort?.fallbackReason ?? null,
 	};
 }
 
@@ -995,6 +1017,123 @@ function isAuthStatus(status: number): boolean {
 // Claude sidecar helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Flags that keep a `claude -p` observer call isolated: no saved session, none of the
+ * user's CLAUDE.md files, plugins, hooks or MCP servers, and no tools.
+ */
+const CLAUDE_SIDECAR_ISOLATION_FLAGS = ["--no-session-persistence", "--safe-mode", "--tools", ""];
+
+/** Efforts `claude --effort` accepts; `minimal` maps to the lowest. */
+const CLAUDE_CLI_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/** The `--effort` value for a configured effort, or null when the CLI has no equivalent. */
+function claudeCliEffort(requested: string | null): string | null {
+	const effort = requested?.trim().toLowerCase();
+	if (!effort) return null;
+	if (effort === "minimal") return "low";
+	return CLAUDE_CLI_EFFORTS.has(effort) ? effort : null;
+}
+
+/** An empty folder codemem owns, so the CLI finds no project instructions where it runs. */
+function claudeSidecarWorkingDirectory(): string {
+	const directory = join(codememHomeDir(), ".codemem", "claude-observer");
+	try {
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		return directory;
+	} catch {
+		return tmpdir();
+	}
+}
+
+interface SidecarInvocation {
+	output: string | null;
+	error: string | null;
+	reportedModel: string | null;
+	usage: ObserverTokenUsage | null;
+}
+
+/** Run the Claude CLI with the prompt on stdin, collecting stdout. */
+function runClaudeCli(
+	executable: string,
+	args: string[],
+	input: string,
+	options: ExecFileOptions,
+): Promise<{ stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		// lgtm[js/command-line-injection] execFile receives a constrained executable and argv vector; no shell is used.
+		const child = execFile(
+			executable,
+			args,
+			{ ...options, encoding: "utf8" },
+			(error, stdout, stderr) => {
+				if (error) {
+					reject(
+						Object.assign(error, { stdout: String(stdout ?? ""), stderr: String(stderr ?? "") }),
+					);
+					return;
+				}
+				resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+			},
+		);
+		child.stdin?.on("error", () => {
+			// The CLI can exit before reading stdin; its own error is reported instead.
+		});
+		child.stdin?.end(input);
+	});
+}
+
+/** The output, error, model and token usage in a Claude CLI result payload. */
+function sidecarResult(payload: Record<string, unknown>): SidecarInvocation {
+	const message = String(payload.result ?? "").trim();
+	const reportedModel = extractClaudeReportedModel(payload);
+	const usage = normalizeObserverUsage(payload);
+	if (payload.is_error) {
+		return {
+			output: null,
+			error: message || "claude sidecar returned an error",
+			reportedModel,
+			usage,
+		};
+	}
+	return { output: message || null, error: null, reportedModel, usage };
+}
+
+/** What a failed Claude CLI process reported. */
+function sidecarFailure(err: unknown): SidecarInvocation {
+	const error = err as NodeJS.ErrnoException & {
+		killed?: boolean;
+		code?: string;
+		stderr?: string;
+		stdout?: string;
+	};
+	const failed = (message: string): SidecarInvocation => ({
+		output: null,
+		error: message,
+		reportedModel: null,
+		usage: null,
+	});
+	if (error.code === "ENOENT") {
+		console.warn(
+			"[codemem] observer claude_sidecar unavailable: configured claude command not found",
+		);
+		return failed("configured claude command not found");
+	}
+	// stdout exceeded the configured buffer — distinct from a timeout.
+	if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+		console.warn("[codemem] observer claude_sidecar stdout exceeded buffer limit");
+		return failed("claude sidecar output exceeded buffer limit");
+	}
+	// Timeout (killed by signal after CLAUDE_SIDECAR_TIMEOUT_MS)
+	if (error.killed) {
+		console.warn("[codemem] observer claude_sidecar timed out");
+		return failed("claude sidecar call timed out");
+	}
+	// Non-zero exit — a result payload in stdout says why.
+	const payload = error.stdout ? extractClaudeResultPayload(error.stdout) : null;
+	if (payload !== null) return sidecarResult(payload);
+	return failed((error.stderr || "").trim() || (error.stdout || "").trim() || String(err));
+}
+
 /** Extract the last `{type: "result"}` JSON object from Claude CLI stdout. */
 function extractClaudeResultPayload(output: string): Record<string, unknown> | null {
 	if (!output) return null;
@@ -1675,6 +1814,7 @@ export class ObserverClient {
 	private _lastResolvedModel: string | null = null;
 	private _sidecarModelFallbackApplied = false;
 	private _sidecarModelFallbackReason: string | null = null;
+	private _claudeEffort: ObserverEffortReport | null = null;
 	private _codexSidecarModelFallbackApplied = false;
 	private _codexSidecarModelFallbackReason: string | null = null;
 	private _openCodeV2Effort: V2EffortReport | null = null;
@@ -1982,6 +2122,8 @@ export class ObserverClient {
 				actualModel: this._lastResolvedModel,
 				modelFallbackApplied: this._sidecarModelFallbackApplied,
 				modelFallbackReason: this._sidecarModelFallbackReason,
+				...effortReportStatus(this.reasoningEffort, this._claudeEffort),
+				...this._tierEffortStatus(),
 			};
 		}
 		if (this.runtime === "codex_sidecar") {
@@ -1991,19 +2133,14 @@ export class ObserverClient {
 				modelFallbackReason: this._codexSidecarModelFallbackReason,
 			};
 		}
-		const efforts = tierView(this._tierStatuses, (tier) => ({ ...tier.effort }));
-		const tiers = efforts ? { tierReasoningEfforts: efforts } : {};
+		const tiers = this._tierEffortStatus();
 		if (this.runtime !== "opencode_v2") return tiers;
-		const effort = this._openCodeV2Effort;
-		return {
-			requestedReasoningEffort: this.reasoningEffort,
-			attemptedReasoningEffort: effort?.attempted ?? null,
-			actualReasoningEffort: effort?.applied ?? null,
-			reasoningEffortRequestSucceeded: effort?.succeeded ?? null,
-			reasoningEffortFallbackApplied: effort?.succeeded === true && effort.fallbackReason !== null,
-			reasoningEffortFallbackReason: effort?.fallbackReason ?? null,
-			...tiers,
-		};
+		return { ...effortReportStatus(this.reasoningEffort, this._openCodeV2Effort), ...tiers };
+	}
+
+	private _tierEffortStatus(): Partial<ObserverStatus> {
+		const efforts = tierView(this._tierStatuses, (tier) => ({ ...tier.effort }));
+		return efforts ? { tierReasoningEfforts: efforts } : {};
 	}
 
 	/**
@@ -2715,7 +2852,16 @@ export class ObserverClient {
 	// Claude sidecar (subprocess)
 	// -----------------------------------------------------------------------
 
-	private _buildSidecarCommand(prompt: string, useModel: boolean): string[] {
+	/**
+	 * The `claude -p` argv: flags only, because the prompt goes on stdin. Isolation
+	 * flags keep observer calls out of the user's session history and away from their
+	 * CLAUDE.md files, plugins, hooks, MCP servers and tools. `legacyFlags` drops
+	 * them for a CLI too old to know them.
+	 */
+	private _buildSidecarCommand(
+		useModel: boolean,
+		{ effort = null, legacyFlags = false }: { effort?: string | null; legacyFlags?: boolean } = {},
+	): string[] {
 		const claudeCommand = [
 			...this._claudeCommand,
 			"-p",
@@ -2724,24 +2870,27 @@ export class ObserverClient {
 			"--permission-mode",
 			"bypassPermissions",
 		];
+		if (!legacyFlags) claudeCommand.push(...CLAUDE_SIDECAR_ISOLATION_FLAGS);
 		if (useModel && this._sidecarModel) {
 			claudeCommand.push("--model", this._sidecarModel);
 		}
-		claudeCommand.push(prompt);
+		if (effort && !legacyFlags) claudeCommand.push("--effort", effort);
 		return claudeCommand;
 	}
 
 	private async _invokeSidecar(
 		prompt: string,
 		useModel: boolean,
-	): Promise<{ output: string | null; error: string | null; reportedModel: string | null }> {
-		const cmd = this._buildSidecarCommand(prompt, useModel);
+		options: { effort?: string | null; legacyFlags?: boolean } = {},
+	): Promise<SidecarInvocation> {
+		const cmd = this._buildSidecarCommand(useModel, options);
 		const executable = validateSidecarExecutable(cmd[0] ?? "claude");
 		if (!executable) {
 			return {
 				output: null,
 				error: "configured claude command is invalid",
 				reportedModel: null,
+				usage: null,
 			};
 		}
 		const args = cmd.slice(1);
@@ -2757,91 +2906,19 @@ export class ObserverClient {
 		delete env.CLAUDE_CODE_ENTRYPOINT;
 		delete env.CLAUDE_CODE_SESSION;
 		delete env.CLAUDECODE;
-		const execFileAsync = promisify(execFile);
 		try {
-			// lgtm[js/command-line-injection] execFile receives a constrained executable and argv vector; no shell is used.
-			const { stdout } = await execFileAsync(executable, args, {
+			const { stdout } = await runClaudeCli(executable, args, prompt, {
 				env,
+				cwd: claudeSidecarWorkingDirectory(),
 				...CLAUDE_SIDECAR_EXEC_OPTIONS,
 			});
 			const payload = extractClaudeResultPayload(stdout);
-			if (payload !== null) {
-				const message = String(payload.result ?? "").trim();
-				const isError = Boolean(payload.is_error);
-				const reportedModel = extractClaudeReportedModel(payload);
-				if (isError) {
-					return {
-						output: null,
-						error: message || "claude sidecar returned an error",
-						reportedModel,
-					};
-				}
-				return { output: message || null, error: null, reportedModel };
-			}
-
+			if (payload !== null) return sidecarResult(payload);
 			// No result payload found — treat non-empty stdout as raw output
 			const text = (stdout || "").trim();
-			return { output: text || null, error: null, reportedModel: null };
+			return { output: text || null, error: null, reportedModel: null, usage: null };
 		} catch (err: unknown) {
-			const error = err as NodeJS.ErrnoException & {
-				killed?: boolean;
-				code?: string;
-				stderr?: string;
-				stdout?: string;
-			};
-
-			// Command not found
-			if (error.code === "ENOENT") {
-				console.warn(
-					"[codemem] observer claude_sidecar unavailable: configured claude command not found",
-				);
-				return {
-					output: null,
-					error: "configured claude command not found",
-					reportedModel: null,
-				};
-			}
-
-			// stdout exceeded the configured buffer — distinct from a timeout.
-			if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-				console.warn("[codemem] observer claude_sidecar stdout exceeded buffer limit");
-				return {
-					output: null,
-					error: "claude sidecar output exceeded buffer limit",
-					reportedModel: null,
-				};
-			}
-
-			// Timeout (killed by signal after CLAUDE_SIDECAR_TIMEOUT_MS)
-			if (error.killed) {
-				console.warn("[codemem] observer claude_sidecar timed out");
-				return {
-					output: null,
-					error: "claude sidecar call timed out",
-					reportedModel: null,
-				};
-			}
-
-			// Non-zero exit — check for result payload in stdout first
-			if (error.stdout) {
-				const payload = extractClaudeResultPayload(error.stdout);
-				if (payload !== null) {
-					const message = String(payload.result ?? "").trim();
-					const isError = Boolean(payload.is_error);
-					const reportedModel = extractClaudeReportedModel(payload);
-					if (isError) {
-						return {
-							output: null,
-							error: message || "claude sidecar returned an error",
-							reportedModel,
-						};
-					}
-					return { output: message || null, error: null, reportedModel };
-				}
-			}
-
-			const message = (error.stderr || "").trim() || (error.stdout || "").trim() || String(err);
-			return { output: null, error: message, reportedModel: null };
+			return sidecarFailure(err);
 		}
 	}
 
@@ -2850,33 +2927,64 @@ export class ObserverClient {
 		userPrompt: string,
 	): Promise<ObserverCallResult> {
 		const prompt = `${systemPrompt}\n\n${userPrompt}`;
+		const requested = this.reasoningEffort;
+		const effort = claudeCliEffort(requested);
+		let fallbackReason: ObserverEffortReport["fallbackReason"] =
+			requested && !effort ? "effort_not_supported" : null;
+		let sentEffort = effort;
+		let legacyFlags = false;
+		this._claudeEffort = null;
 
-		let { output, error, reportedModel } = await this._invokeSidecar(prompt, true);
-		if (reportedModel) this._lastResolvedModel = reportedModel;
-		if (error && this._sidecarModel && isSidecarModelError(error)) {
+		let result = await this._invokeSidecar(prompt, true, { effort: sentEffort });
+		if (result.error && sentEffort && /effort/i.test(result.error)) {
+			// The CLI or model refused the effort: run once at the CLI default and say so.
+			fallbackReason = "effort_rejected";
+			sentEffort = null;
+			result = await this._invokeSidecar(prompt, true);
+		}
+		if (result.error && /unknown option/i.test(result.error)) {
+			console.warn(
+				"[codemem] observer claude_sidecar CLI does not support isolation flags; retrying without them",
+			);
+			legacyFlags = true;
+			if (sentEffort) fallbackReason = "effort_rejected";
+			sentEffort = null;
+			result = await this._invokeSidecar(prompt, true, { legacyFlags });
+		}
+		if (result.reportedModel) this._lastResolvedModel = result.reportedModel;
+		if (result.error && this._sidecarModel && isSidecarModelError(result.error)) {
 			console.warn(
 				`[codemem] observer claude_sidecar model unsupported; retrying with default model (model=${this._sidecarModel})`,
 			);
 			this._sidecarModelFallbackApplied = true;
 			this._sidecarModelFallbackReason =
 				"configured sidecar tier model unavailable; retried with default Claude model";
-			({ output, error, reportedModel } = await this._invokeSidecar(prompt, false));
+			result = await this._invokeSidecar(prompt, false, { effort: sentEffort, legacyFlags });
 			// Only update the resolved-model marker when the sidecar actually
 			// reports one. If the retry payload omits the model, leave
 			// _lastResolvedModel unchanged (or null) rather than asserting a
 			// default — the sidecar's own default may differ per environment.
-			if (reportedModel) this._lastResolvedModel = reportedModel;
-			else this._lastResolvedModel = null;
+			this._lastResolvedModel = result.reportedModel ?? null;
 		}
-		if (error) {
-			return this._sidecarErrorResult(error, {
+		if (requested) {
+			const succeeded = !result.error;
+			this._claudeEffort = {
+				attempted: effort,
+				applied: succeeded && fallbackReason === null ? sentEffort : null,
+				succeeded,
+				fallbackReason,
+			};
+		}
+		if (result.error) {
+			return this._sidecarErrorResult(result.error, {
 				providerLabel: "Claude",
 				model: this._sidecarModel || this.model,
 				isAuthError: isSidecarAuthError,
 				isModelError: isSidecarModelError,
+				authMessage: "Claude CLI is not signed in; run `claude auth login`.",
 			});
 		}
-		return emptyCallResult(output);
+		return { ...emptyCallResult(result.output), usage: result.usage };
 	}
 
 	// -----------------------------------------------------------------------
@@ -3285,11 +3393,14 @@ export class ObserverClient {
 			model: string;
 			isAuthError: (message: string) => boolean;
 			isModelError: (message: string) => boolean;
+			/** What status shows for an authentication failure, when more specific than the default. */
+			authMessage?: string;
 		},
 	): ObserverCallResult {
 		if (opts.isAuthError(error)) {
 			const detail = this._setLastError(
-				`${opts.providerLabel} authentication failed. Refresh credentials and retry.`,
+				opts.authMessage ??
+					`${opts.providerLabel} authentication failed. Refresh credentials and retry.`,
 				"auth_failed",
 			);
 			throw new ObserverAuthError(error, detail);
