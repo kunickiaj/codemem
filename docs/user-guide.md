@@ -342,9 +342,10 @@ Wrap text in `<private>` and `</private>` to keep it out of what codemem stores 
 - A block must open and close in the same message. It never reaches into the next message, a reply, or another event.
 - If a block is left open, codemem removes everything after the opening tag to the end of that message.
 - A closing tag without an opening tag is removed, and the text around it stays.
+- Inside a block, every `<` starts a tag, including one followed by a space or a digit. Other tags, comments and CDATA sections are removed with the block, so a closing tag inside their quotes or bodies does not end it. If such a tag is never finished, everything after it to the end of the message is removed.
 - Tool output is protected only where the tags appear inside that output. A block in a tool's input does not hide its output, and the reverse.
 - To mention the tag without triggering it, write the escaped form `&lt;private&gt;`. A self-closing `<private/>` and other tag names, such as `<private-notes>`, are ordinary text. Inside a block, they are removed with the rest of the block.
-- Text with no tags is stored as written, except that codemem still replaces the values of secret-named fields, such as `token`, `password` or `api_key`, in event data and tool input and output with `[REDACTED]`.
+- Text with no tags is stored as written, except that codemem still replaces the values of secret-named fields, such as `token`, `password` or `api_key`, in event data and tool input and output with `[REDACTED]`. That redaction happens when the Viewer receives an event. The OpenCode plugin's retry file, which holds events while the Viewer is unreachable, has private blocks removed but keeps secret-named fields as captured until the Viewer receives them.
 
 The tags do not cover:
 

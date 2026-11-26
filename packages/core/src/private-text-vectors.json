@@ -126,6 +126,86 @@
 			"name": "an opener quoted in another tag's attribute",
 			"input": "a <b title=\"<private>\">SECRET</private> c",
 			"expected": "a <b title=\" c"
+		},
+		{
+			"name": "a closer quoted in another tag inside a block",
+			"input": "a <private><span title=\"</private>\">SECRET</span></private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a closer single-quoted in another tag inside a block",
+			"input": "a <private><span title='</private>'>SECRET</span></private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a > quoted in another tag inside a block",
+			"input": "a <private><b data-x=\"1 > 0\">SECRET</b></private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a closer in a comment inside a block",
+			"input": "a <private><!-- </private> -->SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a closer in CDATA inside a block",
+			"input": "a <private><![CDATA[ </private> ]]>SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "an unterminated comment inside a block",
+			"input": "a <private><!-- </private> SECRET b",
+			"expected": "a "
+		},
+		{
+			"name": "an unbalanced quote in another tag inside a block",
+			"input": "a <private><span title=\"</private>>SECRET b",
+			"expected": "a "
+		},
+		{
+			"name": "a < and a space inside a block",
+			"input": "a <private>x < 3</private> SECRET",
+			"expected": "a "
+		},
+		{
+			"name": "a < and a digit inside a block",
+			"input": "a <private>x <3 y</private> SECRET",
+			"expected": "a "
+		},
+		{
+			"name": "a doubled < before an opener inside a block",
+			"input": "a <private><<private>SECRET</private></private> b",
+			"expected": "a "
+		},
+		{
+			"name": "an unquoted < inside an opener",
+			"input": "a <private a=<private>>x</private> SECRET</private> b",
+			"expected": "a "
+		},
+		{
+			"name": "a < and a space outside a block",
+			"input": "a < 3 b <private>x</private> c",
+			"expected": "a < 3 b  c"
+		},
+		{
+			"name": "another tag outside a block",
+			"input": "a <span title=\"x\">b</span> <private>x</private> c",
+			"expected": "a <span title=\"x\">b</span>  c"
+		},
+		{
+			"name": "nested blocks that leaked before",
+			"input": "a <private>s1<private>s2</private>SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "an attribute opener that leaked before",
+			"input": "a <private reason=\"x\">SECRET</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a stray closer that leaked before",
+			"input": "a kept </private> <private>SECRET</private> b",
+			"expected": "a kept   b"
 		}
 	]
 }

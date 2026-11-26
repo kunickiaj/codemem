@@ -1,6 +1,10 @@
 //#region packages/core/src/private-text.ts
 var TAG_NAME_CHAR = /[A-Za-z0-9_.:-]/;
 var WHITESPACE = /\s/;
+var CUT = (text) => ({
+	kind: "cut",
+	end: text.length
+});
 function skipWhitespace(text, index) {
 	let next = index;
 	while (next < text.length && WHITESPACE.test(text.charAt(next))) next += 1;
@@ -18,7 +22,8 @@ function readPrivateTag(text, start) {
 }
 /**
 * Where a tag ends: the first `>` outside a quoted attribute value. A tag that
-* reaches the end of the text, or ends inside an unclosed quote, is cut off.
+* reaches the end of the text, ends inside an unclosed quote, or meets an unquoted
+* `<` before its `>` is malformed and cut off, so it can never hide another tag.
 */
 function readTagEnd(text, start, closer) {
 	let lastSignificant = "";
@@ -30,12 +35,10 @@ function readTagEnd(text, start, closer) {
 			index = closingQuote;
 			lastSignificant = char;
 		} else if (char === ">") return tagEnding(index + 1, closer, lastSignificant);
+		else if (char === "<") break;
 		else if (!WHITESPACE.test(char)) lastSignificant = char;
 	}
-	return {
-		kind: "cut",
-		end: text.length
-	};
+	return CUT(text);
 }
 /** A tag ending at `end`; an opener whose last character before `>` is `/` is self-closing. */
 function tagEnding(end, closer, lastSignificant) {
@@ -48,36 +51,66 @@ function tagEnding(end, closer, lastSignificant) {
 		end
 	};
 }
+/** Block content running to `terminator`, or a cut when the terminator never comes. */
+function readUntil(text, start, terminator) {
+	const at = text.indexOf(terminator, start);
+	return at === -1 ? CUT(text) : {
+		kind: "other",
+		end: at + terminator.length
+	};
+}
+/**
+* The tag at a `<` inside a block. Every `<` there starts a tag, including one
+* followed by a space or digit, because reading it as a tag removes more. A private
+* tag changes depth; any other tag, comment or CDATA section is skipped whole as
+* block content, so a closer in its quoted attributes or body cannot end the block.
+*/
+function readBlockTag(text, start) {
+	const privateTag = readPrivateTag(text, start);
+	if (privateTag) return privateTag;
+	if (text.startsWith("<!--", start)) return readUntil(text, start + 4, "-->");
+	if (text.startsWith("<![CDATA[", start)) return readUntil(text, start + 9, "]]>");
+	const tag = readTagEnd(text, start + 1, false);
+	return tag.kind === "cut" ? tag : {
+		kind: "other",
+		end: tag.end
+	};
+}
 /** Remove private blocks from one text value, scanned on its own. Non-strings become "". */
 function stripPrivate(text) {
 	if (typeof text !== "string" || !text) return "";
 	if (!text.toLowerCase().includes("private")) return text;
 	return removePrivateBlocks(text);
 }
+/** The output once scanning stops at `end`; text after an open block is removed. */
+function finish(state, text, end) {
+	return state.depth === 0 ? state.output + text.slice(state.kept, end) : state.output;
+}
+/** A private opener or closer: keep the text before it when outside a block, then move depth. */
+function applyMarker(state, text, start, tag) {
+	if (state.depth === 0) state.output += text.slice(state.kept, start);
+	if (tag.kind === "open") state.depth += 1;
+	else if (state.depth > 0) state.depth -= 1;
+	state.kept = tag.end;
+}
 function removePrivateBlocks(text) {
-	let output = "";
-	let depth = 0;
-	let kept = 0;
+	const state = {
+		output: "",
+		depth: 0,
+		kept: 0
+	};
 	let index = text.indexOf("<");
 	while (index !== -1) {
-		const tag = readPrivateTag(text, index);
+		const tag = state.depth > 0 ? readBlockTag(text, index) : readPrivateTag(text, index);
 		if (!tag) {
 			index = text.indexOf("<", index + 1);
 			continue;
 		}
-		const end = tag.end;
-		if (tag.kind === "self") {
-			index = text.indexOf("<", end);
-			continue;
-		}
-		if (depth === 0) output += text.slice(kept, index);
-		if (tag.kind === "cut") return output;
-		if (tag.kind === "open") depth += 1;
-		else if (depth > 0) depth -= 1;
-		kept = end;
-		index = text.indexOf("<", end);
+		if (tag.kind === "cut") return finish(state, text, index);
+		if (tag.kind === "open" || tag.kind === "close") applyMarker(state, text, index, tag);
+		index = text.indexOf("<", tag.end);
 	}
-	return depth === 0 ? output + text.slice(kept) : output;
+	return finish(state, text, text.length);
 }
 /** True when the text contains a private marker that stripping would remove. */
 function hasPrivateMarker(text) {

@@ -15,10 +15,16 @@
  * Text without markers is returned unchanged.
  */
 
-type PrivateTag = { kind: "open" | "close" | "self" | "cut"; end: number };
+/**
+ * One tag read from a `<`: a private opener, closer or self-closing tag, another
+ * tag, comment or CDATA section read inside a block (`other`), or a tag that never
+ * ends (`cut`), which removes the rest of the value.
+ */
+type PrivateTag = { kind: "open" | "close" | "self" | "other" | "cut"; end: number };
 
 const TAG_NAME_CHAR = /[A-Za-z0-9_.:-]/;
 const WHITESPACE = /\s/;
+const CUT = (text: string): PrivateTag => ({ kind: "cut", end: text.length });
 
 function skipWhitespace(text: string, index: number): number {
 	let next = index;
@@ -40,7 +46,8 @@ function readPrivateTag(text: string, start: number): PrivateTag | null {
 
 /**
  * Where a tag ends: the first `>` outside a quoted attribute value. A tag that
- * reaches the end of the text, or ends inside an unclosed quote, is cut off.
+ * reaches the end of the text, ends inside an unclosed quote, or meets an unquoted
+ * `<` before its `>` is malformed and cut off, so it can never hide another tag.
  */
 function readTagEnd(text: string, start: number, closer: boolean): PrivateTag {
 	let lastSignificant = "";
@@ -53,17 +60,40 @@ function readTagEnd(text: string, start: number, closer: boolean): PrivateTag {
 			lastSignificant = char;
 		} else if (char === ">") {
 			return tagEnding(index + 1, closer, lastSignificant);
+		} else if (char === "<") {
+			break;
 		} else if (!WHITESPACE.test(char)) {
 			lastSignificant = char;
 		}
 	}
-	return { kind: "cut", end: text.length };
+	return CUT(text);
 }
 
 /** A tag ending at `end`; an opener whose last character before `>` is `/` is self-closing. */
 function tagEnding(end: number, closer: boolean, lastSignificant: string): PrivateTag {
 	if (closer) return { kind: "close", end };
 	return { kind: lastSignificant === "/" ? "self" : "open", end };
+}
+
+/** Block content running to `terminator`, or a cut when the terminator never comes. */
+function readUntil(text: string, start: number, terminator: string): PrivateTag {
+	const at = text.indexOf(terminator, start);
+	return at === -1 ? CUT(text) : { kind: "other", end: at + terminator.length };
+}
+
+/**
+ * The tag at a `<` inside a block. Every `<` there starts a tag, including one
+ * followed by a space or digit, because reading it as a tag removes more. A private
+ * tag changes depth; any other tag, comment or CDATA section is skipped whole as
+ * block content, so a closer in its quoted attributes or body cannot end the block.
+ */
+function readBlockTag(text: string, start: number): PrivateTag {
+	const privateTag = readPrivateTag(text, start);
+	if (privateTag) return privateTag;
+	if (text.startsWith("<!--", start)) return readUntil(text, start + 4, "-->");
+	if (text.startsWith("<![CDATA[", start)) return readUntil(text, start + 9, "]]>");
+	const tag = readTagEnd(text, start + 1, false);
+	return tag.kind === "cut" ? tag : { kind: "other", end: tag.end };
 }
 
 /** Remove private blocks from one text value, scanned on its own. Non-strings become "". */
@@ -74,34 +104,43 @@ export function stripPrivate(text: string): string {
 	return removePrivateBlocks(text);
 }
 
+interface ScanState {
+	output: string;
+	depth: number;
+	/** Start of the text not yet copied to the output or removed. */
+	kept: number;
+}
+
+/** The output once scanning stops at `end`; text after an open block is removed. */
+function finish(state: ScanState, text: string, end: number): string {
+	return state.depth === 0 ? state.output + text.slice(state.kept, end) : state.output;
+}
+
+/** A private opener or closer: keep the text before it when outside a block, then move depth. */
+function applyMarker(state: ScanState, text: string, start: number, tag: PrivateTag): void {
+	if (state.depth === 0) state.output += text.slice(state.kept, start);
+	if (tag.kind === "open") state.depth += 1;
+	else if (state.depth > 0) state.depth -= 1;
+	state.kept = tag.end;
+}
+
 function removePrivateBlocks(text: string): string {
-	let output = "";
-	let depth = 0;
-	let kept = 0;
+	const state: ScanState = { output: "", depth: 0, kept: 0 };
 	let index = text.indexOf("<");
 	while (index !== -1) {
-		const tag = readPrivateTag(text, index);
+		// Outside a block only private tags matter; a `<` that starts none is text.
+		const tag = state.depth > 0 ? readBlockTag(text, index) : readPrivateTag(text, index);
 		if (!tag) {
-			// Not a private tag: only its `<` is passed over.
 			index = text.indexOf("<", index + 1);
 			continue;
 		}
-		// A recognized tag is consumed whole, so a quoted attribute value is never read
-		// as another tag. A self-closing tag is ordinary text outside a block and goes
-		// with the rest of the block inside one.
-		const end = tag.end;
-		if (tag.kind === "self") {
-			index = text.indexOf("<", end);
-			continue;
-		}
-		if (depth === 0) output += text.slice(kept, index);
-		if (tag.kind === "cut") return output;
-		if (tag.kind === "open") depth += 1;
-		else if (depth > 0) depth -= 1;
-		kept = end;
-		index = text.indexOf("<", end);
+		if (tag.kind === "cut") return finish(state, text, index);
+		// Every recognized tag is consumed whole. A self-closing private tag is text
+		// outside a block, and it goes with the rest of the block inside one.
+		if (tag.kind === "open" || tag.kind === "close") applyMarker(state, text, index, tag);
+		index = text.indexOf("<", tag.end);
 	}
-	return depth === 0 ? output + text.slice(kept) : output;
+	return finish(state, text, text.length);
 }
 
 /** True when the text contains a private marker that stripping would remove. */
