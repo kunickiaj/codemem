@@ -48,8 +48,9 @@ import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js"
 import {
 	budgetObserverPrompts,
 	DEFAULT_OBSERVER_MAX_CHARS,
-	type ObserverContentSection,
+	MIN_OBSERVER_MAX_CHARS,
 	type ObserverPromptBudget,
+	type PreparedObserverContent,
 } from "./observer-prompt-budget.js";
 import { parseObserverSSE } from "./observer-sse.js";
 import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
@@ -223,6 +224,8 @@ export interface ObserverStatus {
 	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
 	/** Lengths of the last call's instructions and content against `observer_max_chars`. */
 	promptBudget?: ObserverPromptBudget | null;
+	/** The last routed call's prompt budget per tier, when tier routing uses separate clients. */
+	tierPromptBudgets?: Partial<Record<"simple" | "rich", ObserverPromptBudget>>;
 	lastError?: { code: string; message: string } | null;
 }
 
@@ -402,6 +405,16 @@ function parseIntSafe(value: unknown, fallback: number): number {
 	if (value == null) return fallback;
 	const n = typeof value === "string" ? Number.parseInt(value, 10) : Number(value);
 	return Number.isFinite(n) ? n : fallback;
+}
+
+/** A configured `observer_max_chars`, raised to the minimum with a warning when lower. */
+function maxCharsFrom(value: unknown, fallback: number): number {
+	const parsed = parseIntSafe(value, fallback);
+	if (parsed >= MIN_OBSERVER_MAX_CHARS) return parsed;
+	console.warn(
+		`[codemem] observer_max_chars ${parsed} is below the minimum of ${MIN_OBSERVER_MAX_CHARS}; using ${MIN_OBSERVER_MAX_CHARS}.`,
+	);
+	return MIN_OBSERVER_MAX_CHARS;
 }
 
 function coerceStringMap(value: unknown): Record<string, string> | null {
@@ -750,7 +763,7 @@ export function loadObserverConfig(
 		const n = Number(data.observer_max_output_tokens);
 		cfg.observerMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerMaxOutputTokens;
 	}
-	cfg.observerMaxChars = parseIntSafe(data.observer_max_chars, cfg.observerMaxChars);
+	cfg.observerMaxChars = maxCharsFrom(data.observer_max_chars, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(data.observer_max_tokens, cfg.observerMaxTokens);
 	if (typeof data.observer_auth_source === "string")
 		cfg.observerAuthSource = data.observer_auth_source;
@@ -833,7 +846,7 @@ export function loadObserverConfig(
 	}
 	cfg.observerAuthSource = authSourceWithOverride(cfg.observerAuthSource, options);
 	cfg.observerAuthFile = process.env.CODEMEM_OBSERVER_AUTH_FILE ?? cfg.observerAuthFile;
-	cfg.observerMaxChars = parseIntSafe(process.env.CODEMEM_OBSERVER_MAX_CHARS, cfg.observerMaxChars);
+	cfg.observerMaxChars = maxCharsFrom(process.env.CODEMEM_OBSERVER_MAX_CHARS, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(
 		process.env.CODEMEM_OBSERVER_MAX_TOKENS,
 		cfg.observerMaxTokens,
@@ -1557,6 +1570,26 @@ function nowMs(): number {
 	return Date.now();
 }
 
+type ObserverTier = "simple" | "rich";
+
+/** A tier client's last request, kept on the configured client for live status. */
+interface TierRequestStatus {
+	effort: ObserverEffortStatus;
+	promptBudget: ObserverPromptBudget | null;
+}
+
+/** One view of the recorded tier requests, or undefined when the view has nothing. */
+function tierView<T>(
+	statuses: Partial<Record<ObserverTier, TierRequestStatus>>,
+	pick: (status: TierRequestStatus) => T | null,
+): Partial<Record<ObserverTier, T>> | undefined {
+	const entries = Object.entries(statuses).flatMap(([tier, status]) => {
+		const value = status ? pick(status) : null;
+		return value == null ? [] : [[tier, value] as const];
+	});
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 function copyPromptBudget(budget: ObserverPromptBudget | null): ObserverPromptBudget | null {
 	if (!budget) return null;
 	return { ...budget, sections: budget.sections?.map((section) => ({ ...section })) ?? null };
@@ -1638,9 +1671,9 @@ export class ObserverClient {
 	private _codexSidecarModelFallbackApplied = false;
 	private _codexSidecarModelFallbackReason: string | null = null;
 	private _openCodeV2Effort: V2EffortReport | null = null;
-	private readonly _tierEfforts: Partial<Record<"simple" | "rich", ObserverEffortStatus>> = {};
+	private readonly _tierStatuses: Partial<Record<ObserverTier, TierRequestStatus>> = {};
 	private _lastPromptBudget: ObserverPromptBudget | null = null;
-	private _nextContentSections: ObserverContentSection[] | null = null;
+	private _nextPreparedContent: PreparedObserverContent | null = null;
 	private _reportedOverBudgetInstructionChars: number | null = null;
 
 	constructor(config?: ObserverConfig) {
@@ -1915,6 +1948,9 @@ export class ObserverClient {
 				hasToken: !!this.auth.token,
 			},
 			promptBudget: copyPromptBudget(this._lastPromptBudget),
+			tierPromptBudgets: tierView(this._tierStatuses, (tier) =>
+				copyPromptBudget(tier.promptBudget),
+			),
 		};
 		Object.assign(status, this._requestedVersusActualStatus());
 		if (this._lastErrorMessage) {
@@ -1942,10 +1978,8 @@ export class ObserverClient {
 				modelFallbackReason: this._codexSidecarModelFallbackReason,
 			};
 		}
-		const tiers =
-			Object.keys(this._tierEfforts).length > 0
-				? { tierReasoningEfforts: { ...this._tierEfforts } }
-				: {};
+		const efforts = tierView(this._tierStatuses, (tier) => ({ ...tier.effort }));
+		const tiers = efforts ? { tierReasoningEfforts: efforts } : {};
 		if (this.runtime !== "opencode_v2") return tiers;
 		const effort = this._openCodeV2Effort;
 		return {
@@ -1959,9 +1993,15 @@ export class ObserverClient {
 		};
 	}
 
-	/** Keep a tier client's last effort outcome where this client's status can report it. */
-	recordTierStatus(tier: "simple" | "rich", status: ObserverStatus): void {
-		this._tierEfforts[tier] = effortStatus(status);
+	/**
+	 * Keep a tier client's last request, its effort outcome and prompt budget, where this
+	 * client's status can report it.
+	 */
+	recordTierStatus(tier: ObserverTier, status: ObserverStatus): void {
+		this._tierStatuses[tier] = {
+			effort: effortStatus(status),
+			promptBudget: copyPromptBudget(status.promptBudget ?? null),
+		};
 	}
 
 	/** Force-refresh auth credentials. */
@@ -2018,27 +2058,30 @@ export class ObserverClient {
 		return this._buildResponse(call, startedAt, authRetry);
 	}
 
+	/** Attach the section lengths of the content the next call sends, for status and replay. */
+	noteContentSections(prepared: PreparedObserverContent): void {
+		this._nextPreparedContent = {
+			contentChars: prepared.contentChars,
+			sections: prepared.sections.map((section) => ({ ...section })),
+		};
+	}
+
 	/**
 	 * Fit a call into `observer_max_chars` without cutting its instructions. Instructions
 	 * longer than the whole budget are a configuration error: log it once per length and
 	 * still send them in full.
 	 */
-	/** Attach the section lengths of the content the next call sends, for status and replay. */
-	noteContentSections(sections: ObserverContentSection[]): void {
-		this._nextContentSections = sections.map((section) => ({ ...section }));
-	}
-
 	private _budgetPrompts(
 		systemPrompt: string,
 		userPrompt: string,
 	): { system: string; user: string } {
-		const sections = this._nextContentSections;
-		this._nextContentSections = null;
+		const prepared = this._nextPreparedContent;
+		this._nextPreparedContent = null;
 		const { system, user, budget } = budgetObserverPrompts(
 			systemPrompt,
 			userPrompt,
 			this.maxChars,
-			sections,
+			prepared,
 		);
 		this._lastPromptBudget = budget;
 		if (

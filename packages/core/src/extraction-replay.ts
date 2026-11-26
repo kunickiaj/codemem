@@ -758,7 +758,7 @@ async function replayPreparedBatch(
 		outputMode: outputCapability.actualMode,
 		maxChars: observer.maxChars,
 	});
-	observer.noteContentSections?.(prompt.sections);
+	observer.noteContentSections?.(prompt);
 	const response = await observeAndNormalizeObserverOutput(
 		observer,
 		prompt.system,

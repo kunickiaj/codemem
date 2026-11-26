@@ -10,7 +10,7 @@ import { MemoryStore } from "./store.js";
 
 /*
  * Text a user marks <private> never reaches the observer: not in the request, the
- * summary context, delegated briefs or tool events.
+ * summary context, delegated briefs or tool events, within or over budget.
  */
 
 const SECRET = "SYNTHETIC_PRIVATE_VALUE";
@@ -49,15 +49,30 @@ const variants = [
 
 describe("private blocks in the observer prompt", () => {
 	for (const [name, includeSummary, outputMode] of variants) {
-		it(`leaves them out of ${name} content and of the repair prompt`, () => {
-			const prompt = buildObserverPrompt(privateBatch({ includeSummary }), { outputMode });
-			const repair = buildObserverRepairPrompt(prompt.system, prompt.user, "<summary/>");
+		it(`leaves them out of ${name} content within budget`, () => {
+			const prompt = buildObserverPrompt(privateBatch({ includeSummary }), {
+				outputMode,
+				maxChars: 48_000,
+			});
 
 			expect(prompt.user).not.toContain(SECRET);
 			expect(prompt.user).not.toContain("<private>");
 			expect(prompt.user).toContain("REQUEST before");
 			expect(prompt.user).toContain("BRIEF before");
 			if (includeSummary) expect(prompt.user).toContain("ASSISTANT before");
+		});
+
+		it(`leaves them out of ${name} content over budget and of the repair prompt`, () => {
+			const context = privateBatch({
+				includeSummary,
+				transcript: `${hidden("TRANSCRIPT")} ${"filler ".repeat(4_000)}`,
+				lastAssistantMessage: `${hidden("ASSISTANT")} ${"more ".repeat(400)}`,
+			});
+			const prompt = buildObserverPrompt(context, { outputMode, maxChars: 12_000 });
+			const repair = buildObserverRepairPrompt(prompt.system, prompt.user, "<summary/>");
+
+			expect(prompt.contentChars).toBeGreaterThan(prompt.user.length);
+			expect(prompt.user).not.toContain(SECRET);
 			expect(repair.user).not.toContain(SECRET);
 		});
 	}

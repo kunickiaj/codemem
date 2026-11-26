@@ -893,11 +893,12 @@ async function runObserverInference(
 ): Promise<ObserverInferenceStage> {
 	const selection = selectObserverForIngest(stage, prepared, options);
 	const outputCapability = resolveObserverOutputCapability(selection.observer);
-	const { system, user, sections } = buildObserverPrompt(prepared.observerContext, {
+	const prompt = buildObserverPrompt(prepared.observerContext, {
 		outputMode: outputCapability.actualMode,
 		maxChars: selection.observer.maxChars ?? stage.observerMaxChars,
 	});
-	selection.observer.noteContentSections?.(sections);
+	selection.observer.noteContentSections?.(prompt);
+	const { system, user } = prompt;
 	options.historicalRecovery?.onObserverInferenceStart?.();
 	const output = await observeRawEventOutput(selection.observer, system, user, outputCapability, {
 		store,

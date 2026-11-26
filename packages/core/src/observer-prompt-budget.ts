@@ -6,6 +6,12 @@
 /** Default `observer_max_chars`, shared by the observer client, ingest and replay. */
 export const DEFAULT_OBSERVER_MAX_CHARS = 12_000;
 
+/**
+ * The lowest `observer_max_chars` the configuration accepts. Its quarter-budget content
+ * floor (500) always holds the content header and the repair prompt's labels.
+ */
+export const MIN_OBSERVER_MAX_CHARS = 2_000;
+
 /** The content budget never drops below this share of the budget. */
 const MIN_CONTENT_SHARE = 0.25;
 
@@ -38,18 +44,27 @@ export function observerContentBudget(maxChars: number, instructionChars: number
 	return Math.max(Math.floor(maxChars * MIN_CONTENT_SHARE), maxChars - instructionChars);
 }
 
-/** Send the instructions whole and clip only the content to the budget they leave. */
+/** Content its builder already fitted by section, with its length before fitting. */
+export interface PreparedObserverContent {
+	contentChars: number;
+	sections: ObserverContentSection[];
+}
+
+/**
+ * Send the instructions whole and clip only the content to the budget they leave.
+ * Prepared content reports its length before the builder fitted it, so a fitted
+ * batch counts as clipped.
+ */
 export function budgetObserverPrompts(
 	systemPrompt: string,
 	userPrompt: string,
 	maxChars: number,
-	sections: ObserverContentSection[] | null = null,
+	prepared: PreparedObserverContent | null = null,
 ): { system: string; user: string; budget: ObserverPromptBudget } {
 	const contentBudgetChars = observerContentBudget(maxChars, systemPrompt.length);
-	const contentClipped = userPrompt.length > contentBudgetChars;
-	const user = (
-		contentClipped ? userPrompt.slice(0, contentBudgetChars) : userPrompt
-	).toWellFormed();
+	const clippedHere = userPrompt.length > contentBudgetChars;
+	const user = (clippedHere ? userPrompt.slice(0, contentBudgetChars) : userPrompt).toWellFormed();
+	const contentChars = Math.max(prepared?.contentChars ?? 0, userPrompt.length);
 	return {
 		system: systemPrompt.toWellFormed(),
 		user,
@@ -57,11 +72,11 @@ export function budgetObserverPrompts(
 			maxChars,
 			instructionChars: systemPrompt.length,
 			contentBudgetChars,
-			contentChars: userPrompt.length,
+			contentChars,
 			sentContentChars: user.length,
-			contentClipped,
+			contentClipped: contentChars > user.length,
 			instructionsOverBudget: systemPrompt.length > maxChars,
-			sections,
+			sections: prepared?.sections.map((section) => ({ ...section })) ?? null,
 		},
 	};
 }

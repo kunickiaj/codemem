@@ -160,16 +160,16 @@ describe("observer prompt budget reporting", () => {
 
 	it("sends instructions longer than the budget in full and reports it once in the log", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const observer = serviceObserver(1_000);
-		const instructions = "i".repeat(2_000);
+		const observer = serviceObserver(2_000);
+		const instructions = "i".repeat(3_000);
 
 		await observer.observe(instructions, "c".repeat(5_000));
 		await observer.observe(instructions, "c".repeat(5_000));
 
-		expect(generate.mock.calls[0]?.[0].prompt).toBe(`${instructions}\n\n${"c".repeat(250)}`);
+		expect(generate.mock.calls[0]?.[0].prompt).toBe(`${instructions}\n\n${"c".repeat(500)}`);
 		expect(observer.getStatus().promptBudget).toMatchObject({
-			maxChars: 1_000,
-			instructionChars: 2_000,
+			maxChars: 2_000,
+			instructionChars: 3_000,
 			instructionsOverBudget: true,
 			sections: null,
 		});
@@ -177,7 +177,7 @@ describe("observer prompt budget reporting", () => {
 			String(message).includes("observer_max_chars"),
 		);
 		expect(budgetWarnings).toHaveLength(1);
-		expect(String(budgetWarnings[0]?.[0])).toContain("2000 characters");
+		expect(String(budgetWarnings[0]?.[0])).toContain("3000 characters");
 	});
 
 	it("reports the last call's lengths in observer status and replay metadata", async () => {

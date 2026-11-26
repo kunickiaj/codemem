@@ -164,7 +164,7 @@ describe("observer content over budget", () => {
 		expect(sentLengths(context, 12_000)).toEqual({
 			request: 306,
 			transcript: 756,
-			tool_events: 1_154,
+			tool_events: 1_155,
 			summary_context: 750,
 		});
 		expect(prompt.user.length).toBeLessThanOrEqual(3_000);
@@ -269,5 +269,104 @@ describe("observer content over budget", () => {
 		});
 
 		expect(second).toEqual(first);
+	});
+});
+
+/** Every emitted tool event opens and closes each of its tags exactly once, in order. */
+function expectWellFormedEvents(user: string) {
+	const events =
+		user.match(
+			/<observed_from_primary_session>\n {2}<what_happened>[\s\S]*?<\/observed_from_primary_session>/g,
+		) ?? [];
+	for (const event of events) {
+		for (const tag of ["what_happened", "parameters", "outcome", "error"]) {
+			const opens = event.split(`<${tag}>`).length - 1;
+			const closes = event.split(`</${tag}>`).length - 1;
+			expect(opens, `${tag} in ${event.slice(0, 120)}`).toBe(closes);
+			expect(opens).toBeLessThanOrEqual(1);
+		}
+	}
+	// No entity is cut short: every & starts a complete entity.
+	expect(user).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/);
+	return events;
+}
+
+describe("tool events cut to fit", () => {
+	it("cuts oversized parameters inside their tags", () => {
+		const event: ToolEvent = {
+			toolName: "bash",
+			toolInput: { command: `PARAM_START ${"echo x && ".repeat(1_500)} PARAM_END` },
+			toolOutput: `OUTPUT_START ${"line ".repeat(1_000)} OUTPUT_END`,
+			toolError: null,
+			timestamp: null,
+			cwd: null,
+		};
+		const prompt = buildObserverPrompt(exampleBatch({ toolEvents: [event] }), {
+			outputMode: "legacy_xml",
+			maxChars: 12_000,
+		});
+
+		const [emitted] = expectWellFormedEvents(prompt.user);
+		expect(emitted).toContain("PARAM_START");
+		expect(emitted).toContain("PARAM_END");
+		expect(emitted).toContain("[...]");
+		expect(emitted).toContain("<outcome>OUTPUT_START");
+		expect(emitted).toContain("OUTPUT_END</outcome>");
+	});
+
+	it("never cuts inside an escaped entity", () => {
+		for (let length = 1_000; length < 1_040; length += 1) {
+			const event: ToolEvent = {
+				toolName: "read",
+				toolInput: { path: "a.ts" },
+				toolOutput: `${"<&>".repeat(length)}`,
+				toolError: null,
+				timestamp: null,
+				cwd: null,
+			};
+			const prompt = buildObserverPrompt(exampleBatch({ toolEvents: [event, toolEvent(1)] }), {
+				outputMode: "legacy_xml",
+				maxChars: 12_000,
+			});
+
+			expectWellFormedEvents(prompt.user);
+		}
+	});
+
+	it("leaves out an event that cannot fit and marks the omission once", () => {
+		const event: ToolEvent = {
+			toolName: "read",
+			toolInput: { path: "a.ts" },
+			toolOutput: "x".repeat(4_000),
+			toolError: null,
+			timestamp: null,
+			// The fixed markup alone is larger than the event's share.
+			cwd: `/${"deep/".repeat(400)}`,
+		};
+		const prompt = buildObserverPrompt(exampleBatch({ toolEvents: [event] }), {
+			outputMode: "legacy_xml",
+			maxChars: 12_000,
+		});
+
+		expect(prompt.user).not.toContain("<what_happened>");
+		expect(prompt.user.match(/\[\.\.\.\]/g)?.length).toBeGreaterThanOrEqual(1);
+		expect(sentLengths(exampleBatch({ toolEvents: [event] }), 12_000).tool_events).toBe(5);
+	});
+
+	it("keeps every emitted event well formed in a batch far over budget", () => {
+		const events = Array.from({ length: 30 }, (_, index) => ({
+			...toolEvent(index, index % 3 === 0 ? "edit" : "read", 3_000),
+			toolInput: { path: `f${index}.ts`, text: '<tag attr="v">&</tag>'.repeat(100) },
+		}));
+		for (const maxChars of [12_000, 24_000, 48_000]) {
+			const prompt = buildObserverPrompt(exampleBatch({ toolEvents: events }), {
+				outputMode: "legacy_xml",
+				maxChars,
+			});
+
+			const emitted = expectWellFormedEvents(prompt.user);
+			expect(emitted.length).toBeGreaterThan(0);
+			for (const block of emitted) expect(block.length).toBeGreaterThanOrEqual(300);
+		}
 	});
 });

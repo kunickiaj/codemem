@@ -348,6 +348,32 @@ describe("prompt budget labels", () => {
 	});
 });
 
+describe("benchmark output for a batch its builder fitted", () => {
+	it("reports the content as clipped with its length before fitting", () => {
+		const fitted = {
+			maxChars: 12_000,
+			instructionChars: 10_419,
+			contentBudgetChars: 3_000,
+			contentChars: 13_358,
+			sentContentChars: 3_000,
+			contentClipped: true,
+			instructionsOverBudget: false,
+			sections: [
+				{ name: "request", chars: 306, sentChars: 306 },
+				{ name: "transcript", chars: 4_788, sentChars: 756 },
+				{ name: "tool_events", chars: 7_308, sentChars: 1_155 },
+				{ name: "summary_context", chars: 923, sentChars: 750 },
+			],
+		};
+
+		expect(formatBenchmarkPromptBudget([{ promptBudget: fitted }])).toBe(
+			"12000; content clipped in 1/1 run(s); instructions over budget in 0",
+		);
+		expect(formatPromptBudget(fitted)).toContain("content 13358 -> 3000 (clipped)");
+		expect(formatPromptBudget(fitted)).toContain("tool_events 7308 -> 1155");
+	});
+});
+
 describe("benchmark reasoning summaries", () => {
 	it("preserves explicit null reasoning from tier-routed benchmark runs", () => {
 		expect(
