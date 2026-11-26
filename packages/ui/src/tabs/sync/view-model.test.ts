@@ -290,10 +290,45 @@ describe("deriveTeamSyncPrimaryStatus policy precedence", () => {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
 			meta: "Team: Acme. A Project access reconciliation needs review.",
+			nextActionTitle: "Project access needs review",
 			nextAction: "Open Sharing, review this Project's access decision, then sync again.",
 		});
 		expect(view.nextAction).not.toContain("Project sharing below");
 		expect(view.nextAction).not.toContain("git:roadmap");
+	});
+
+	it("counts every reconciliation item that needs attention", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			reconciliation: {
+				items: [
+					{ canonicalProjectIdentity: "git:roadmap", state: "needs_attention" },
+					{ canonicalProjectIdentity: "git:billing", state: "active" },
+					{ canonicalProjectIdentity: "git:search", state: "needs_attention" },
+					{ canonicalProjectIdentity: "git:docs", state: "needs_attention" },
+				],
+			},
+		});
+
+		expect(view.nextActionTitle).toBe("Project access needs review");
+		expect(view.nextAction).toBe(
+			"Open Sharing, review the access decision for each of the 3 Projects, then sync again.",
+		);
+	});
+
+	it("leaves the next-action title unset when the badge already names the problem", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			shareOperations: [
+				{ projects: [{ display_name: "Roadmap" }], lifecycle: { state: "needs_attention" } },
+			],
+		});
+
+		expect(view.nextActionTitle).toBeUndefined();
 	});
 });
 

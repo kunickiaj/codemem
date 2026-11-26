@@ -1,19 +1,22 @@
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
-import { deriveTeamSyncPrimaryStatus } from "../view-model";
+import { deriveTeamSyncPrimaryStatus, type UiSyncAttentionItem } from "../view-model";
 import { type TeamSyncDiscoveredRow, TeamSyncPanel } from "./team-sync-panel";
 
 let mount: HTMLDivElement | null = null;
 
-function renderPrimaryStatus(primaryStatus: ReturnType<typeof deriveTeamSyncPrimaryStatus>) {
+function renderPrimaryStatus(
+	primaryStatus: ReturnType<typeof deriveTeamSyncPrimaryStatus>,
+	actionItems: UiSyncAttentionItem[] = [],
+) {
 	mount = document.createElement("div");
 	document.body.appendChild(mount);
 	act(() => {
 		render(
 			<TeamSyncPanel
-				actionItems={[]}
-				actionableCount={0}
+				actionItems={actionItems}
+				actionableCount={actionItems.length}
 				discoveredListMount={null}
 				discoveredRows={[]}
 				joinRequestsMount={null}
@@ -235,6 +238,63 @@ describe("TeamSyncPanel primary status", () => {
 		// Assert
 		expect(root.textContent).toContain("No urgent team work right now.");
 		expect(root.querySelector("[data-primary-sync-state]")).toBeNull();
+	});
+});
+
+describe("TeamSyncPanel when Project access needs review", () => {
+	const reviewStatus = (itemCount: number) =>
+		deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: {
+				configured: true,
+				sync_enabled: true,
+				groups: ["Acme"],
+				presence_status: "posted",
+			},
+			peers: [{ peer_device_id: "peer-healthy", status: { peer_state: "online" } }],
+			reconciliation: {
+				items: Array.from({ length: itemCount }, (_, index) => ({
+					canonicalProjectIdentity: `git:project-${index}`,
+					state: "needs_attention" as const,
+				})),
+			},
+		});
+	const attentionItem: UiSyncAttentionItem = {
+		id: "name:device-a",
+		kind: "name-device",
+		priority: 30,
+		title: "Name Desk Mini",
+		summary: "Give this device a friendly name so it is easier to recognize later.",
+		actionLabel: "Name device",
+		deviceId: "device-a",
+	};
+
+	it("names the problem on the row and shows no repeated section label", () => {
+		const root = renderPrimaryStatus(reviewStatus(1));
+
+		const row = root.querySelector("[data-primary-sync-state]");
+		expect(row?.querySelector(".sync-action-text")?.firstChild?.textContent).toBe(
+			"Project access needs review",
+		);
+		expect(root.textContent).not.toContain("Needs attention");
+		expect(root.querySelector(".sync-section-label")).toBeNull();
+	});
+
+	it("describes the guidance as text, not as a command", () => {
+		const root = renderPrimaryStatus(reviewStatus(2));
+
+		expect(root.querySelector(".sync-action-guidance")?.textContent).toBe(
+			"Open Sharing, review the access decision for each of the 2 Projects, then sync again.",
+		);
+		expect(root.querySelector(".sync-action-command")).toBeNull();
+	});
+
+	it("labels the section only when attention rows follow", () => {
+		const root = renderPrimaryStatus(reviewStatus(1), [attentionItem]);
+
+		expect(root.querySelector(".sync-section-label")?.textContent).toBe("Needs attention");
+		expect(root.querySelectorAll(".sync-action .sync-action-guidance")).toHaveLength(2);
+		expect(root.querySelector(".sync-action-command")).toBeNull();
 	});
 });
 

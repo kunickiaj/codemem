@@ -136,9 +136,9 @@ function derivePolicyStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrim
 	const operationAttention = input.operations.find(
 		(operation) => operation.lifecycle?.state === "needs_attention",
 	);
-	const reconciliationAttention = input.reconciliationItems.find(
+	const reconciliationAttentionCount = input.reconciliationItems.filter(
 		(item) => item.state === "needs_attention",
-	);
+	).length;
 	if (operationAttention) {
 		return {
 			state: "needs-attention",
@@ -147,12 +147,16 @@ function derivePolicyStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrim
 			nextAction: "Retry the stopped Project access update below.",
 		};
 	}
-	if (reconciliationAttention) {
+	if (reconciliationAttentionCount > 0) {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
 			meta: `Team: ${input.label}. A Project access reconciliation needs review.`,
-			nextAction: "Open Sharing, review this Project's access decision, then sync again.",
+			nextActionTitle: "Project access needs review",
+			nextAction:
+				reconciliationAttentionCount === 1
+					? "Open Sharing, review this Project's access decision, then sync again."
+					: `Open Sharing, review the access decision for each of the ${reconciliationAttentionCount} Projects, then sync again.`,
 		};
 	}
 	return null;

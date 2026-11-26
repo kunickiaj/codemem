@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The Devices tab no longer shows a **Service devices** section. Relay health probes and other devices the coordinator runs are listed in a collapsed **Coordinator services** list at the bottom of the tab. On the Advanced tab, they no longer appear under **Devices waiting for review** or trigger **Pairing needed**.
+- The Advanced tab titles the Project access row **Project access needs review** and counts every Project that needs review. The **Needs attention** label appears only above a list of attention items.
+
 ### Fixed
 
 - The Claude Code and Codex plugins on the default branch pin the latest stable release again. Preparing a prerelease had moved them onto the beta, and plugin installs failed where only stable versions are available.

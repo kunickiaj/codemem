@@ -115,6 +115,8 @@ export interface UiTeamSyncPrimaryStatus {
 	badgeLabel: string;
 	meta: string;
 	nextAction: string | null;
+	/** Names the next-action row when the badge label alone says too little. */
+	nextActionTitle?: string;
 }
 
 export interface ProjectShareOperationLike {

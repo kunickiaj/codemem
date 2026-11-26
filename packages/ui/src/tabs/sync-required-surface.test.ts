@@ -241,3 +241,81 @@ describe("sync refresh ownership", () => {
 		expect(renderTeamSync).toHaveBeenCalledOnce();
 	});
 });
+
+describe("coordinator service devices on the Advanced tab", () => {
+	const serviceInventory = {
+		version: 1,
+		items: [
+			{
+				version: 1,
+				deviceId: "relay-health-probe",
+				evidenceDeviceIds: ["relay-health-probe"],
+				displayName: "Relay health probe",
+				state: "service",
+				identityId: null,
+				suggestedIdentityId: null,
+				validatedFingerprint: null,
+				isLocal: false,
+				sources: ["coordinator_enrollment"],
+				conflictCodes: [],
+			},
+		],
+		coordinatorEvidence: { availability: "available", safeErrorCode: null },
+		truncated: false,
+	};
+	const serviceDevice = {
+		device_id: "relay-health-probe",
+		display_name: "Relay health probe",
+		groups: ["Acme"],
+		stale: true,
+		waiting_for_peer_approval: true,
+	};
+	const realDevice = {
+		device_id: "laptop",
+		display_name: "Laptop",
+		groups: ["Acme"],
+		stale: false,
+	};
+
+	function loadWith(devices: object[], inventory: object | null) {
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			peers: [],
+			coordinator: {
+				configured: true,
+				sync_enabled: true,
+				groups: ["Acme"],
+				presence_status: "posted",
+				discovered_devices: devices,
+			},
+		} as never);
+		if (inventory) {
+			vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue(inventory as never);
+		} else {
+			vi.mocked(api.loadDeviceIdentityInventory).mockRejectedValue(new Error("unavailable"));
+			state.lastDeviceIdentityInventory = null;
+		}
+		return loadSyncData();
+	}
+
+	it("counts only the real device and does not ask for pairing because of a service device", async () => {
+		await loadWith([serviceDevice, realDevice], serviceInventory);
+
+		expect(state.lastSyncViewModel?.summary.seenOnTeamCount).toBe(1);
+		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).not.toBe("Pairing needed");
+	});
+
+	it("shows no devices to review when the only discovered device is a service", async () => {
+		await loadWith([serviceDevice], serviceInventory);
+
+		expect(state.lastSyncViewModel?.summary.seenOnTeamCount).toBe(0);
+		expect(state.lastSyncViewModel?.primaryStatus.state).not.toBe("trust-blocked");
+	});
+
+	it("keeps every device in the view model while the inventory is unavailable", async () => {
+		await loadWith([serviceDevice, realDevice], null);
+
+		expect(state.lastSyncViewModel?.summary.seenOnTeamCount).toBe(2);
+		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).toBe("Pairing needed");
+	});
+});

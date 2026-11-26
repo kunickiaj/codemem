@@ -6,6 +6,7 @@
 
 import { h } from "preact";
 import * as api from "../../../../lib/api";
+import { withoutServiceDevices } from "../../../../lib/device-identity-inventory";
 import { friendlyError } from "../../../../lib/form";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { type DiscoveredDevice, isSyncRedactionEnabled, state } from "../../../../lib/state";
@@ -342,9 +343,7 @@ export function renderTeamSync() {
 	const localPeers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
 	const attentionItems = Array.isArray(syncView.attentionItems) ? syncView.attentionItems : [];
 
-	const discoveredDevices = Array.isArray(coordinator.discovered_devices)
-		? coordinator.discovered_devices
-		: [];
+	const discoveredDevices = devicesToReview(coordinator);
 	const coordinatorUrl = String(coordinator.coordinator_url || "").trim();
 	const discoveredRows: TeamSyncDiscoveredRow[] = discoveredDevices.map((device) => {
 		const deviceId = String(device.device_id || "").trim();
@@ -596,6 +595,18 @@ function renderAdvancedSyncStatus(primaryStatus: UiTeamSyncPrimaryStatus) {
 	}
 	const detail = document.getElementById("syncPrimaryStatusDetail");
 	if (detail) detail.textContent = primaryStatus.meta;
+}
+
+/**
+ * Discovered devices a person can review. Coordinator service devices are left out
+ * once the device inventory has loaded; before that nothing is known to be a service.
+ */
+function devicesToReview(coordinator: NonNullable<typeof state.lastSyncCoordinator>) {
+	const { discovered_devices: devices } = withoutServiceDevices(
+		coordinator,
+		state.lastDeviceIdentityInventory,
+	);
+	return Array.isArray(devices) ? devices : [];
 }
 
 function currentSyncView() {

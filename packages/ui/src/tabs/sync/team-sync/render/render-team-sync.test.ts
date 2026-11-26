@@ -537,3 +537,106 @@ describe("renderTeamSync coordinator approval state", () => {
 		);
 	});
 });
+
+describe("renderTeamSync service devices", () => {
+	const serviceItem = {
+		version: 1 as const,
+		deviceId: "relay-health-probe",
+		evidenceDeviceIds: ["relay-health-probe"],
+		displayName: "Relay health probe",
+		state: "service" as const,
+		identityId: null,
+		suggestedIdentityId: null,
+		validatedFingerprint: null,
+		isLocal: false,
+		sources: ["coordinator_enrollment" as const],
+		conflictCodes: [],
+	};
+	const discovered = (deviceId: string, displayName: string) => ({
+		device_id: deviceId,
+		display_name: displayName,
+		fingerprint: `fingerprint-${deviceId}`,
+		groups: ["Acme"],
+		addresses: [],
+		address_count: 0,
+		stale: true,
+	});
+
+	function mountAdvancedCard(deviceIds: Array<[string, string]>) {
+		document.body.innerHTML = `
+			<div id="syncTeamMeta"></div>
+			<div id="syncSetupPanel"></div>
+			<div id="syncTeamActions"></div>
+			<div id="syncCoordinatorDiscovered"></div>
+			<div id="syncCoordinatorDiscoveredMeta"></div>
+			<div id="syncCoordinatorDiscoveredList"></div>
+		`;
+		state.lastSyncStatus = { enabled: true, daemon_state: "ok", daemon_running: true };
+		state.lastSyncPeers = [];
+		state.lastSyncCoordinator = {
+			configured: true,
+			coordinator_url: "https://coord.example.test",
+			sync_enabled: true,
+			groups: ["Acme"],
+			presence_status: "posted",
+			discovered_devices: deviceIds.map(([id, name]) => discovered(id, name)),
+		};
+		state.lastSyncViewModel = deriveSyncViewModel({
+			coordinator: state.lastSyncCoordinator,
+			peers: state.lastSyncPeers,
+			status: state.lastSyncStatus,
+		});
+	}
+
+	afterEach(() => {
+		state.lastDeviceIdentityInventory = null;
+	});
+
+	it("lists only the real device when the inventory marks the other one as a service", () => {
+		mountAdvancedCard([
+			["relay-health-probe", "Relay health probe"],
+			["laptop", "Laptop"],
+		]);
+		state.lastDeviceIdentityInventory = {
+			version: 1,
+			items: [serviceItem],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+
+		act(() => renderTeamSync());
+
+		const list = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
+		expect(list.querySelectorAll("[data-discovered-device-id]")).toHaveLength(1);
+		expect(list.querySelector('[data-discovered-device-id="laptop"]')).not.toBeNull();
+		expect(list.textContent).not.toContain("Relay health probe");
+	});
+
+	it("hides the review section when the only discovered device is a service", () => {
+		mountAdvancedCard([["relay-health-probe", "Relay health probe"]]);
+		state.lastDeviceIdentityInventory = {
+			version: 1,
+			items: [serviceItem],
+			coordinatorEvidence: { availability: "available", safeErrorCode: null },
+			truncated: false,
+		};
+
+		act(() => renderTeamSync());
+
+		expect(document.getElementById("syncCoordinatorDiscovered")?.hidden).toBe(true);
+		expect(document.getElementById("syncCoordinatorDiscoveredList")?.textContent).toBe("");
+	});
+
+	it("shows every discovered device until the inventory has loaded", () => {
+		mountAdvancedCard([
+			["relay-health-probe", "Relay health probe"],
+			["laptop", "Laptop"],
+		]);
+		state.lastDeviceIdentityInventory = null;
+
+		act(() => renderTeamSync());
+
+		const list = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
+		expect(list.querySelectorAll("[data-discovered-device-id]")).toHaveLength(2);
+	});
+});

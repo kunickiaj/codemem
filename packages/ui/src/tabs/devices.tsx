@@ -2573,7 +2573,7 @@ function DevicesView({
 	const hasOtherInventoryItems = (options.inventory?.items ?? []).some(
 		(item) => !item.isLocal && item.state !== "service" && item.state !== "retired",
 	);
-	const serviceDevices = <ServiceDevices items={serviceDeviceItems(options.inventory)} />;
+	const coordinatorServices = <CoordinatorServices items={serviceDeviceItems(options.inventory)} />;
 	const coordinatorUnavailable =
 		options.inventory?.coordinatorEvidence.availability === "unavailable" &&
 		options.inventory.coordinatorEvidence.safeErrorCode !== "coordinator_not_configured";
@@ -2599,8 +2599,8 @@ function DevicesView({
 				{inventoryWorkflow}
 				{configuredFallbackWorkflow}
 				{hasOtherInventoryItems ? null : <DevicesEmptyState onOpenPairing={onOpenPairing} />}
-				{serviceDevices}
 				<RevokedDeviceNote count={projection.revokedDeviceCount} />
+				{coordinatorServices}
 			</>
 		);
 	}
@@ -2618,8 +2618,8 @@ function DevicesView({
 				intent={intent}
 				options={options}
 			/>
-			{serviceDevices}
 			<RevokedDeviceNote count={projection.revokedDeviceCount} />
+			{coordinatorServices}
 		</>
 	);
 }
@@ -2634,26 +2634,21 @@ function RevokedDeviceNote({ count }: { count: number }) {
 	);
 }
 
-function ServiceDevices({ items }: { items: DeviceIdentityInventoryItemV1[] }) {
+/** Devices the coordinator runs. They need no action, so they sit in a collapsed list. */
+function CoordinatorServices({ items }: { items: DeviceIdentityInventoryItemV1[] }) {
 	if (items.length === 0) return null;
 	return (
-		<section aria-labelledby="service-devices-heading" className="devices-service-devices">
-			<h3 id="service-devices-heading">Service devices</h3>
-			<p className="small">
-				The coordinator runs these devices to check sync health. They don't need pairing or an
-				Identity.
-			</p>
-			<ul>
+		<details className="device-sync-details devices-coordinator-services">
+			<summary>Coordinator services</summary>
+			<ul className="devices-coordinator-services-list">
 				{items.map((item) => (
-					<li className="peer-card peer-card--padded" key={item.deviceId}>
-						<div className="peer-title">
-							<strong>{item.displayName}</strong>
-							<span className="badge actor-badge">Service device</span>
-						</div>
+					<li key={item.deviceId}>
+						{item.displayName}
+						<span className="devices-coordinator-services-note"> · Run by the coordinator</span>
 					</li>
 				))}
 			</ul>
-		</section>
+		</details>
 	);
 }
 

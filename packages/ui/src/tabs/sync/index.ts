@@ -1,6 +1,7 @@
 /* Sync tab orchestrator — re-exports public API and coordinates sub-modules. */
 
 import * as api from "../../lib/api";
+import { withoutServiceDevices } from "../../lib/device-identity-inventory";
 import {
 	type CachedSyncCoordinator,
 	type DiscoveredDevice,
@@ -110,6 +111,11 @@ function reconcilePendingCoordinatorApprovals(
 			state.pendingCoordinatorApprovalsByDeviceId.delete(deviceId);
 		}
 	}
+}
+
+/** Service devices are infrastructure, so they don't count toward pairing status or totals. */
+function coordinatorWithoutServiceDevices() {
+	return withoutServiceDevices(state.lastSyncCoordinator, state.lastDeviceIdentityInventory);
 }
 
 function pendingCoordinatorApprovalHashInput(): Array<readonly [string, string, string]> {
@@ -383,7 +389,7 @@ async function runLoadSyncData(
 		state.lastSyncViewModel = deriveSyncViewModel({
 			actors: state.lastSyncActors,
 			peers: state.lastSyncPeers,
-			coordinator: state.lastSyncCoordinator,
+			coordinator: coordinatorWithoutServiceDevices(),
 			status: statusPayload,
 			shareOperations: state.lastShareOperations,
 			shareOperationsLoadError,

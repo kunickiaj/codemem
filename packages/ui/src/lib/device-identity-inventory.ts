@@ -27,7 +27,34 @@ export function revokedDeviceTotal(
 export function serviceDeviceItems(
 	inventory: DeviceIdentityInventoryV1 | undefined,
 ): DeviceIdentityInventoryItemV1[] {
-	return inventory?.items.filter((item) => item.state === "service") ?? [];
+	// A malformed or partial response has no items; treat it as having no service devices.
+	return inventory?.items?.filter((item) => item.state === "service") ?? [];
+}
+
+/**
+ * Drops coordinator service devices from the coordinator's discovered devices, so
+ * infrastructure never shows up as a device to review. Discovered devices carry no
+ * service marker, so this reuses the inventory classification. Until the inventory
+ * has loaded nothing is known to be a service device, so the input is returned as is.
+ */
+export function withoutServiceDevices<
+	T extends { discovered_devices?: Array<{ device_id?: string | null }> } | null | undefined,
+>(coordinator: T, inventory: DeviceIdentityInventoryV1 | null | undefined): T {
+	const devices = coordinator?.discovered_devices;
+	if (!coordinator || !Array.isArray(devices)) return coordinator;
+	const serviceIds = new Set(
+		serviceDeviceItems(inventory ?? undefined).flatMap((item) => [
+			item.deviceId,
+			...item.evidenceDeviceIds,
+		]),
+	);
+	if (serviceIds.size === 0) return coordinator;
+	return {
+		...coordinator,
+		discovered_devices: devices.filter(
+			(device) => !serviceIds.has(String(device.device_id ?? "").trim()),
+		),
+	};
 }
 
 export function deviceIdentityAttentionItems(
