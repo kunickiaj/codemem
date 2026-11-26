@@ -263,6 +263,19 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
   2. workspace-scoped config derived from `CODEMEM_RUNTIME_ROOT` or `CODEMEM_WORKSPACE_ID`
   3. legacy global config (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`)
 
+### Recommended observer models and effort
+
+| Tier | Model | Reasoning effort |
+|---|---|---|
+| Rich | `gpt-6.1-terra` | `medium` |
+| Simple | `gpt-6-luna` | `low` or `medium` |
+| Rich, lower cost | `gpt-6-luna` | `high`, with about 0.1 lower recall |
+
+`xhigh` is not recommended for either model, and Claude 5.5 models have not been tested. These recommendations come from a benchmark run on 2026-11-26: the balanced profile, a 24,000-character budget, four repetitions, through an OpenCode account. Only 11 of its batches carry required-fact labels, so small differences are within run-to-run spread.
+- In that benchmark, `gpt-6.1-terra` recalled 0.82 to 0.88 of the required facts on rich batches at every effort. `gpt-6-luna` recalled 0.68 at `medium` and 0.75 at `high`. `xhigh` added about 20 seconds per rich batch with no gain. Luna costs about $0.001 per batch and Terra about $0.011.
+- Set the simple tier's effort with `observer_reasoning_effort` (`CODEMEM_OBSERVER_REASONING_EFFORT`). Set the rich tier's effort with `observer_rich_reasoning_effort` (`CODEMEM_OBSERVER_RICH_REASONING_EFFORT`), which falls back to the shared setting. In Settings, the Processing tab has **Reasoning effort** under **Shared reasoning defaults** and the rich tier's **Reasoning effort override**.
+- Built-in tier defaults already send `medium` for both tiers on the direct OpenAI API. The **OpenCode account** connection sends no effort unless you set one, so the service default applies. Local Codex sessions do not send an effort.
+
 ## Extraction replay and benchmarks
 
 Proven delegated brief-only batches produce a context-only outcome instead of an
