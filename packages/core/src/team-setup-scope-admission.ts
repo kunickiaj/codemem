@@ -102,7 +102,9 @@ function scopeHoldsTeamProject(db: Database, team: SetupTeam, scopeId: string): 
 }
 
 // Answers are reused until any connection commits or this one writes, so a sync
-// pass that checks the same scope for every op reads the tables once.
+// pass that checks the same scope for every op reads the tables once. Inside a
+// transaction nothing is cached or reused: total_changes() keeps counting writes
+// a rollback undoes, so an answer made there could outlive the rolled-back state.
 const answerCache = new WeakMap<Database, { version: string; answers: Map<string, boolean> }>();
 
 function storeVersion(db: Database): string {
@@ -117,6 +119,7 @@ export function teamSetupRefusesScope(
 	db: Database,
 	input: { scopeId: string; deviceId: string },
 ): boolean {
+	if (db.inTransaction) return decideTeamSetupRefusal(db, input);
 	const version = storeVersion(db);
 	let cached = answerCache.get(db);
 	if (!cached || cached.version !== version) {

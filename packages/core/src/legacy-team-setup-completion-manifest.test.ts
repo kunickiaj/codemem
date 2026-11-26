@@ -42,6 +42,7 @@ import { renameRecipientPolicyTeam } from "./recipient-policy-team-metadata.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { getSyncResetState, loadMemorySnapshotPageForPeer } from "./sync-replication.js";
 import { parseSyncScopeRequest } from "./sync-scope-protocol.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -3147,6 +3148,49 @@ describe("legacy Team setup quarantine at scope admission", () => {
 			expect(servesScope(db, device, "scope-engineering"), device).toBe(false);
 		for (const device of ["device-a2", "device-c", "device-service"])
 			expect(servesScope(db, device, "scope-group-default"), device).toBe(true);
+	});
+
+	it("serves a Team device no snapshot page of the Team's scope after quarantine", async () => {
+		// Arrange: a shared memory in the Team's scope.
+		await quarantinedTeam(db);
+		const session = db
+			.prepare("INSERT INTO sessions(started_at, project) VALUES (?, 'api')")
+			.run(NOW).lastInsertRowid;
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+			 import_key, origin_device_id, rev, visibility, scope_id)
+			 VALUES (?, 'discovery', 'Team memory', 'Body', ?, ?, 'key:team', 'device-local', 1,
+			 'shared', 'scope-engineering')`,
+		).run(session, NOW, NOW);
+		const boundary = getSyncResetState(db, "scope-engineering");
+		const page = (peerDeviceId: string) =>
+			loadMemorySnapshotPageForPeer(db, {
+				peerDeviceId,
+				scopeId: "scope-engineering",
+				generation: boundary.generation,
+				snapshotId: boundary.snapshot_id,
+				baselineCursor: boundary.baseline_cursor,
+			}).items.map((item) => item.entity_id);
+
+		// Act and assert: the replication snapshot loader refuses the Team device itself.
+		expect(page("device-b")).toEqual([]);
+		expect(page("device-c")).toEqual(["key:team"]);
+	});
+
+	it("refuses a Team device again after a transaction that activated the Team rolls back", async () => {
+		// Arrange
+		await quarantinedTeam(db);
+		const activateThenRollBack = db.transaction(() => {
+			db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+			// Act: an admission check inside the transaction sees the Team active.
+			expect(servesScope(db, "device-b", "scope-engineering")).toBe(true);
+			throw new Error("roll back");
+		});
+
+		// Assert: once rolled back, the Team is quarantined again and so is the device.
+		expect(activateThenRollBack).toThrow("roll back");
+		expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+		expect(servesScope(db, "device-b", "scope-engineering")).toBe(false);
 	});
 
 	it("refuses a Team device whose membership a refresh cached after quarantine", async () => {
