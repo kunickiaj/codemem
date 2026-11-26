@@ -69,6 +69,7 @@ describe("observer prompt budget", () => {
 			sentContentChars: 3_000,
 			contentClipped: true,
 			instructionsOverBudget: false,
+			sections: null,
 		});
 	});
 
@@ -170,6 +171,7 @@ describe("observer prompt budget reporting", () => {
 			maxChars: 1_000,
 			instructionChars: 2_000,
 			instructionsOverBudget: true,
+			sections: null,
 		});
 		const budgetWarnings = warn.mock.calls.filter(([message]) =>
 			String(message).includes("observer_max_chars"),
@@ -192,6 +194,7 @@ describe("observer prompt budget reporting", () => {
 			sentContentChars: 3_000,
 			contentClipped: true,
 			instructionsOverBudget: false,
+			sections: null,
 		};
 		expect(observer.getStatus().promptBudget).toEqual(expected);
 		expect(extractionReplayObserverIdentity(observer, null).promptBudget).toEqual(expected);

@@ -48,6 +48,7 @@ import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js"
 import {
 	budgetObserverPrompts,
 	DEFAULT_OBSERVER_MAX_CHARS,
+	type ObserverContentSection,
 	type ObserverPromptBudget,
 } from "./observer-prompt-budget.js";
 import { parseObserverSSE } from "./observer-sse.js";
@@ -1557,7 +1558,8 @@ function nowMs(): number {
 }
 
 function copyPromptBudget(budget: ObserverPromptBudget | null): ObserverPromptBudget | null {
-	return budget ? { ...budget } : null;
+	if (!budget) return null;
+	return { ...budget, sections: budget.sections?.map((section) => ({ ...section })) ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1638,6 +1640,7 @@ export class ObserverClient {
 	private _openCodeV2Effort: V2EffortReport | null = null;
 	private readonly _tierEfforts: Partial<Record<"simple" | "rich", ObserverEffortStatus>> = {};
 	private _lastPromptBudget: ObserverPromptBudget | null = null;
+	private _nextContentSections: ObserverContentSection[] | null = null;
 	private _reportedOverBudgetInstructionChars: number | null = null;
 
 	constructor(config?: ObserverConfig) {
@@ -2020,11 +2023,23 @@ export class ObserverClient {
 	 * longer than the whole budget are a configuration error: log it once per length and
 	 * still send them in full.
 	 */
+	/** Attach the section lengths of the content the next call sends, for status and replay. */
+	noteContentSections(sections: ObserverContentSection[]): void {
+		this._nextContentSections = sections.map((section) => ({ ...section }));
+	}
+
 	private _budgetPrompts(
 		systemPrompt: string,
 		userPrompt: string,
 	): { system: string; user: string } {
-		const { system, user, budget } = budgetObserverPrompts(systemPrompt, userPrompt, this.maxChars);
+		const sections = this._nextContentSections;
+		this._nextContentSections = null;
+		const { system, user, budget } = budgetObserverPrompts(
+			systemPrompt,
+			userPrompt,
+			this.maxChars,
+			sections,
+		);
 		this._lastPromptBudget = budget;
 		if (
 			budget.instructionsOverBudget &&

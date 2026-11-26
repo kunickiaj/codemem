@@ -118,6 +118,7 @@ describe("observer status prompt budget", () => {
 			sentContentChars: 3_000,
 			contentClipped: true,
 			instructionsOverBudget: false,
+			sections: null,
 		};
 		const observer = {
 			getStatus: () => ({

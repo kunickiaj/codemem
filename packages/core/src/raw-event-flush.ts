@@ -95,6 +95,11 @@ export function observerForRawEvents(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Prepare transcript and tool output with the same budget the observer enforces. */
+function withObserverBudget(options: IngestOptions): IngestOptions {
+	return { ...options, observerMaxChars: options.observerMaxChars ?? options.observer.maxChars };
+}
+
 function truncateErrorMessage(message: string, limit = 280): string {
 	const text = message.replace(/\s+/g, " ").trim();
 	if (text.length <= limit) return text;
@@ -752,7 +757,7 @@ export async function flushRawEvents(
 	// Run ingest pipeline
 	try {
 		await ingest(payload, store, {
-			...observerForRawEvents(events, ingestOpts, source),
+			...withObserverBudget(observerForRawEvents(events, ingestOpts, source)),
 			rawFlushPersistence,
 		});
 	} catch (exc) {

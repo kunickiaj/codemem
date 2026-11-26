@@ -9,6 +9,13 @@ export const DEFAULT_OBSERVER_MAX_CHARS = 12_000;
 /** The content budget never drops below this share of the budget. */
 const MIN_CONTENT_SHARE = 0.25;
 
+/** Lengths only: one section of the observed content before and after fitting. */
+export interface ObserverContentSection {
+	name: string;
+	chars: number;
+	sentChars: number;
+}
+
 /** Lengths only: what one observer call was allowed and what it sent. */
 export interface ObserverPromptBudget {
 	/** The configured `observer_max_chars`. */
@@ -22,6 +29,8 @@ export interface ObserverPromptBudget {
 	contentClipped: boolean;
 	/** The instructions alone exceed the budget: a configuration error, sent in full anyway. */
 	instructionsOverBudget: boolean;
+	/** Per-section lengths when the caller built the content by section, otherwise null. */
+	sections: ObserverContentSection[] | null;
 }
 
 /** Characters left for content after instructions of this length, with a floor. */
@@ -34,6 +43,7 @@ export function budgetObserverPrompts(
 	systemPrompt: string,
 	userPrompt: string,
 	maxChars: number,
+	sections: ObserverContentSection[] | null = null,
 ): { system: string; user: string; budget: ObserverPromptBudget } {
 	const contentBudgetChars = observerContentBudget(maxChars, systemPrompt.length);
 	const contentClipped = userPrompt.length > contentBudgetChars;
@@ -51,6 +61,7 @@ export function budgetObserverPrompts(
 			sentContentChars: user.length,
 			contentClipped,
 			instructionsOverBudget: systemPrompt.length > maxChars,
+			sections,
 		},
 	};
 }

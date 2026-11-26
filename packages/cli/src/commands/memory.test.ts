@@ -308,6 +308,7 @@ describe("prompt budget labels", () => {
 		sentContentChars: 3_000,
 		contentClipped: true,
 		instructionsOverBudget: false,
+		sections: null,
 	};
 
 	it("labels one call's lengths", () => {
@@ -318,6 +319,15 @@ describe("prompt budget labels", () => {
 			"; instructions exceed the budget",
 		);
 		expect(formatPromptBudget(null)).toBe("not measured");
+		expect(
+			formatPromptBudget({
+				...budget,
+				sections: [
+					{ name: "request", chars: 306, sentChars: 306 },
+					{ name: "transcript", chars: 4_788, sentChars: 756 },
+				],
+			}),
+		).toContain("; sections request 306 -> 306, transcript 4788 -> 756");
 	});
 
 	it("counts clipped runs across a benchmark", () => {

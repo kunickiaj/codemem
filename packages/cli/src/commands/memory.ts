@@ -1075,7 +1075,10 @@ export function formatPromptBudget(budget: ObserverPromptBudget | null): string 
 	if (!budget) return "not measured";
 	const clipped = budget.contentClipped ? " (clipped)" : "";
 	const over = budget.instructionsOverBudget ? "; instructions exceed the budget" : "";
-	return `instructions ${budget.instructionChars}, content ${budget.contentChars} -> ${budget.sentContentChars}${clipped} of budget ${budget.maxChars}${over}`;
+	const sections = budget.sections
+		? `; sections ${budget.sections.map((section) => `${section.name} ${section.chars} -> ${section.sentChars}`).join(", ")}`
+		: "";
+	return `instructions ${budget.instructionChars}, content ${budget.contentChars} -> ${budget.sentContentChars}${clipped} of budget ${budget.maxChars}${over}${sections}`;
 }
 
 /** The budget across benchmark runs and how many runs clipped content or overran it. */

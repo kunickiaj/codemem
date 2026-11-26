@@ -969,6 +969,7 @@ export * from "./observer-output.js";
 export * from "./observer-output-schema.js";
 export {
 	DEFAULT_OBSERVER_MAX_CHARS,
+	type ObserverContentSection,
 	type ObserverPromptBudget,
 } from "./observer-prompt-budget.js";
 export { generateWithOpenCodeV2, listOpenCodeV2Models } from "./opencode-v2-generation.js";
