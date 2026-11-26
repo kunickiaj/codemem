@@ -23,6 +23,7 @@ import {
 	SessionContextBackfillRunner,
 	SUMMARY_DEDUP_BACKFILL_JOB,
 	SummaryDedupBackfillRunner,
+	SyncAttemptRetentionRunner,
 	SyncRetentionRunner,
 	VectorModelMigrationRunner,
 } from "@codemem/core";
@@ -233,6 +234,21 @@ function startWalCheckpointTimer(
 	return timer;
 }
 
+function createRetentionRunners(
+	dbPath: string,
+	syncConfig: { syncRetentionEnabled: boolean },
+	logger: MaintenanceWorkerLogger,
+	signal?: AbortSignal,
+): ManagedMaintenanceRunner[] {
+	const runners: ManagedMaintenanceRunner[] = [];
+	if (syncConfig.syncRetentionEnabled) runners.push(new SyncRetentionRunner({ dbPath, signal }));
+	// Retrieval attempts and outcome evidence carry their own retention dates, and sync attempt
+	// history is local diagnostics, so both are trimmed whatever the sync settings are.
+	runners.push(new LedgerRetentionRunner({ dbPath, signal, logger }));
+	runners.push(new SyncAttemptRetentionRunner({ dbPath, signal, logger }));
+	return runners;
+}
+
 export function startMaintenanceWorkerRuntime(
 	options: MaintenanceWorkerRuntimeOptions = {},
 ): ManagedMaintenanceRunner {
@@ -291,13 +307,7 @@ export function startMaintenanceWorkerRuntime(
 		),
 	);
 
-	if (syncConfig.syncRetentionEnabled) {
-		runners.push(new SyncRetentionRunner({ dbPath, signal: options.signal }));
-	}
-
-	// Retrieval attempts and outcome evidence carry their own retention dates; expired rows
-	// are removed whatever the sync settings are.
-	runners.push(new LedgerRetentionRunner({ dbPath, signal: options.signal, logger }));
+	runners.push(...createRetentionRunners(dbPath, syncConfig, logger, options.signal));
 
 	for (const runner of runners) runner.start();
 	logger.step("Maintenance worker started");

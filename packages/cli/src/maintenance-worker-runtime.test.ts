@@ -2,6 +2,7 @@ import {
 	connect,
 	type Database,
 	LedgerRetentionRunner,
+	SyncAttemptRetentionRunner,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 	VectorModelMigrationRunner,
@@ -118,6 +119,28 @@ describe("maintenance worker runtime", () => {
 		await runtime.stop();
 
 		// Assert: one runner, logging through the worker's logger.
+		expect(start).toHaveBeenCalledTimes(1);
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect((started[0] as unknown as { logger: MaintenanceWorkerLogger }).logger).toBe(logger);
+	});
+
+	it("starts and stops sync attempt retention whatever the sync settings are", async () => {
+		// Arrange
+		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+		const started: SyncAttemptRetentionRunner[] = [];
+		const start = vi
+			.spyOn(SyncAttemptRetentionRunner.prototype, "start")
+			.mockImplementation(function (this: SyncAttemptRetentionRunner) {
+				started.push(this);
+			});
+		const stop = vi.spyOn(SyncAttemptRetentionRunner.prototype, "stop").mockResolvedValue();
+		const logger: MaintenanceWorkerLogger = { step: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+		// Act
+		const runtime = startMaintenanceWorkerRuntime({ dbPath: ":memory:", logger });
+		await runtime.stop();
+
+		// Assert
 		expect(start).toHaveBeenCalledTimes(1);
 		expect(stop).toHaveBeenCalledTimes(1);
 		expect((started[0] as unknown as { logger: MaintenanceWorkerLogger }).logger).toBe(logger);

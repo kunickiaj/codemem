@@ -2025,6 +2025,8 @@ describe("sync_attempts.failure_category compatibility", () => {
 
 	it("adds sync_attempts.failure_category to an existing database on open", () => {
 		ensureAdditiveSchemaCompatibility(db);
+		// A store from before the column has no index over it either.
+		db.exec("DROP INDEX idx_sync_attempts_peer_kind_started");
 		db.exec("ALTER TABLE sync_attempts DROP COLUMN failure_category");
 		db.prepare(
 			`INSERT INTO sync_attempts(peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error)

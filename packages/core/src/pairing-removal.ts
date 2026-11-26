@@ -200,7 +200,8 @@ function emptyCounts(): PairingRemovalCounts {
  * Removes each device's pairing and sync progress, and ends its Identity binding
  * and cached scope authorization unless the reason is `disconnect` or `policy`.
  * Memory retirement trust is retained first, and
- * `sync_attempts` and `sync_scope_rejections` stay as diagnostic history. One
+ * `sync_attempts` and `sync_scope_rejections` stay as diagnostic history (sync attempt
+ * retention trims a removed peer's attempts by the same rule as any peer's). One
  * immediate transaction: any failure leaves every table unchanged.
  */
 export function removePairingState(db: Database, input: PairingRemovalInput): PairingRemovalCounts {

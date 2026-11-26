@@ -831,6 +831,13 @@ export const syncAttempts = sqliteTable(
 	},
 	(table) => [
 		index("idx_sync_attempts_peer_started").on(table.peer_device_id, table.started_at),
+		// Sync attempt retention finds each peer's latest attempt of every kind by index seeks.
+		index("idx_sync_attempts_peer_kind_started").on(
+			table.peer_device_id,
+			table.ok,
+			table.failure_category,
+			table.started_at,
+		),
 		index("idx_sync_attempts_occurred").on(
 			sql`CASE WHEN ${table.finished_at} IS NULL THEN ${table.started_at} ELSE ${table.finished_at} END`,
 			table.id,
