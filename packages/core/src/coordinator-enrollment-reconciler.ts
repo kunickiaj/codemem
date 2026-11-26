@@ -16,6 +16,7 @@ import {
 } from "./recipient-policy-identifiers.js";
 import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
+import { isTeamMemberRemoved } from "./team-member-removal-policy.js";
 import {
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
@@ -311,16 +312,37 @@ function bindEnrolledDevice(
 	}).assignmentVersion;
 }
 
+export interface CoordinatorEnrollmentSnapshotInput {
+	coordinatorId: string;
+	groupId: string;
+	enrollments: CoordinatorEnrollment[];
+	consumedTeamInvites: CoordinatorConsumedTeamInvite[];
+	localDeviceId?: string;
+	now?: string;
+}
+
+/**
+ * The accepted Team invitations whose person was not removed from the Team. A
+ * removed person stays removed, whichever invitation they hold, so each of
+ * theirs is reported instead.
+ */
+function invitesOfMembersNotRemoved(
+	db: Database,
+	input: CoordinatorEnrollmentSnapshotInput,
+	issue: (kind: "team_membership", referenceId: unknown, code: string) => void,
+): CoordinatorConsumedTeamInvite[] {
+	return input.consumedTeamInvites.filter((invite) => {
+		const removed =
+			invite.group_id === input.groupId &&
+			isTeamMemberRemoved(db, invite.policy_team_id, invite.assigned_identity_id);
+		if (removed) issue("team_membership", invite.invite_id, "team_member_removed");
+		return !removed;
+	});
+}
+
 export async function reconcileCoordinatorEnrollmentSnapshot(
 	db: Database,
-	input: {
-		coordinatorId: string;
-		groupId: string;
-		enrollments: CoordinatorEnrollment[];
-		consumedTeamInvites: CoordinatorConsumedTeamInvite[];
-		localDeviceId?: string;
-		now?: string;
-	},
+	input: CoordinatorEnrollmentSnapshotInput,
 ): Promise<CoordinatorEnrollmentReconcileResult> {
 	if (!isStrictRecipientPolicyId(input.coordinatorId)) throw new Error("coordinator_id_invalid");
 	if (!isStrictRecipientPolicyId(input.groupId)) throw new Error("coordinator_group_id_invalid");
@@ -375,7 +397,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 		const recordActiveRosterDevice = (identityId: string, deviceId: string, version: number) =>
 			addRosterDevice(activeRosterDevicesByIdentity, identityId, deviceId, version);
 
-		for (const invite of input.consumedTeamInvites) {
+		for (const invite of invitesOfMembersNotRemoved(db, input, issue)) {
 			const identityId = invite.assigned_identity_id;
 			const recipientDisplayName = displayNameOrFallback(
 				invite.recipient_display_name,

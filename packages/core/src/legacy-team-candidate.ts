@@ -39,6 +39,7 @@ import {
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
 	type StrictRecipientPolicyEffectiveDeviceDerivation,
 } from "./recipient-policy-reconciliation.js";
+import { isTeamMemberRemoved } from "./team-member-removal-policy.js";
 
 export interface LegacyTeamRosterDeviceSnapshot {
 	deviceId: string;
@@ -407,6 +408,37 @@ function canonicalCompletedDraftRow(db: Database, candidateId: string): DraftFre
 	);
 }
 
+interface ExpectedTeamDevices {
+	teamId: string;
+	eligibleDeviceIds: ReadonlySet<string>;
+	/** Device ID to identity ID, for every device that must receive the Team's Projects. */
+	devices: Map<string, string>;
+}
+
+function expectedTeamDevices(teamId: string, eligible: Iterable<string>): ExpectedTeamDevices {
+	return { teamId, eligibleDeviceIds: new Set(eligible), devices: new Map() };
+}
+
+/**
+ * Whether an included device matches the completed setup, recording the
+ * Project access it must have. A person removed from the Team keeps their
+ * reviewed devices, which must not receive the Team's Projects: that is the
+ * completed setup, not drift.
+ */
+function expectIncludedDevice(
+	db: Database,
+	expected: ExpectedTeamDevices,
+	deviceId: string,
+	assignment: { identity_id: string },
+	canonicalDecision: { decision: string } | undefined,
+): boolean {
+	const eligible = expected.eligibleDeviceIds.has(deviceId);
+	if (isTeamMemberRemoved(db, expected.teamId, assignment.identity_id)) return !eligible;
+	if (canonicalDecision?.decision !== "included" || !eligible) return false;
+	expected.devices.set(deviceId, assignment.identity_id);
+	return true;
+}
+
 /**
  * A completed setup is Ready only while every canonical row it committed still
  * holds: the Team header, each included device's assignment, decision, and
@@ -544,9 +576,8 @@ function isCompatibleReadyTeam(
 		})),
 	});
 	if (eligibility.status === "blocked") return false;
-	const eligibleDeviceIds = new Set(eligibility.eligibleDeviceIds);
+	const expected = expectedTeamDevices(completedTeamId, eligibility.eligibleDeviceIds);
 	const decisionsByDeviceId = new Map(canonicalDecisions.map((row) => [row.device_id, row]));
-	const expectedEffectiveDevices = new Map<string, string>();
 	const activeAssignment = db.prepare(
 		`SELECT identity_id, assignment_version FROM identity_devices
 		 WHERE device_id = ? AND status = 'active' LIMIT 1`,
@@ -599,8 +630,7 @@ function isCompatibleReadyTeam(
 			| { identity_id: string }
 			| undefined;
 		if (!assignment || assignment.identity_id !== device.target_identity_id) return false;
-		if (decision?.decision !== "included" || !eligibleDeviceIds.has(device.device_id)) return false;
-		expectedEffectiveDevices.set(device.device_id, device.target_identity_id);
+		if (!expectIncludedDevice(db, expected, device.device_id, assignment, decision)) return false;
 	}
 	// Merged resolutions map several confirmed source patterns onto one
 	// canonical identity; selection can pick only one of those mappings. Keep
@@ -645,7 +675,7 @@ function isCompatibleReadyTeam(
 		// grant that the strict post-write readiness derivation would reject.
 		if (effectiveDevices.status === "blocked") return false;
 		if (recipientActive) {
-			for (const [deviceId, identityId] of expectedEffectiveDevices) {
+			for (const [deviceId, identityId] of expected.devices) {
 				if (
 					!effectiveDevices.devices.some(
 						(device) => device.deviceId === deviceId && device.identityId === identityId,

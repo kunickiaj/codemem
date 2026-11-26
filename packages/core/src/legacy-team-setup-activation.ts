@@ -46,8 +46,10 @@ import {
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
+import { removedTeamMemberIdentityIds } from "./team-member-removal-policy.js";
 import {
 	classifyTeamPolicyOwnership,
+	planRemovedMemberSetupTransition,
 	planSetupDeviceDecisionTransition,
 	planSetupMembershipTransition,
 } from "./team-ownership-transitions.js";
@@ -246,6 +248,8 @@ interface ActivationModel {
 	identities: IdentitySnapshotRow[];
 	historicalResolutions: HistoricalResolution[];
 	desiredIdentityIds: string[];
+	/** Identities removed from this Team. Never desired, and revoked if still active. */
+	removedIdentityIds: Set<string>;
 	desiredDeviceIds: string[];
 }
 
@@ -442,6 +446,36 @@ function droppedSetupMappings(model: ActivationModel): MappingRow[] {
 	);
 }
 
+/**
+ * People with an included device. A person removed from the Team stays
+ * removed: their devices keep the reviewed decision, but the setup never makes
+ * them a member again.
+ */
+function desiredSetupMembers(
+	devices: ReadonlyArray<{ decision: string | null; target_identity_id: string | null }>,
+	removedIdentityIds: ReadonlySet<string>,
+): string[] {
+	return [
+		...new Set(
+			devices
+				.filter((device) => device.decision === "included")
+				.map((device) => device.target_identity_id as string)
+				.filter((identityId) => !removedIdentityIds.has(identityId)),
+		),
+	].toSorted(compareText);
+}
+
+/** Plans one membership for this setup, honoring the Team's removals. */
+function planMembership(
+	model: Pick<ActivationModel, "removedIdentityIds">,
+	membership: MembershipRow,
+	desired: boolean,
+) {
+	return model.removedIdentityIds.has(membership.identity_id)
+		? planRemovedMemberSetupTransition(membership)
+		: planSetupMembershipTransition(membership, desired);
+}
+
 function loadModel(
 	db: Database,
 	input: PreviewLegacyTeamSetupActivationInput & {
@@ -513,13 +547,12 @@ function loadModel(
 	}
 
 	const activeIdentityIds = new Set(activeUnmergedActorIds(db));
-	const desiredIdentityIds = [
-		...new Set(
-			devices
-				.filter((device) => device.decision === "included")
-				.map((device) => device.target_identity_id as string),
-		),
-	].toSorted(compareText);
+	const removedIdentityIds = removedTeamMemberIdentityIds(
+		db,
+		deterministicPolicyTeamId(draft.candidate_id),
+		{ settingUpFrom: { coordinatorId: draft.coordinator_id, groupId: draft.group_id } },
+	);
+	const desiredIdentityIds = desiredSetupMembers(devices, removedIdentityIds);
 	if (desiredIdentityIds.some((identityId) => !activeIdentityIds.has(identityId))) {
 		activationError("team_setup_conflict");
 	}
@@ -636,6 +669,7 @@ function loadModel(
 				? loadHistoricalTeamResolutions(db, draft.candidate_id)
 				: [],
 		desiredIdentityIds,
+		removedIdentityIds,
 		desiredDeviceIds: devices
 			.filter((device) => device.decision === "included")
 			.map((device) => device.device_id)
@@ -1016,7 +1050,7 @@ function simulatedDerivationRows(model: ActivationModel): DerivationRows {
 			continue;
 		}
 		seenThisTeamMembers.add(row.identity_id);
-		const transition = planSetupMembershipTransition(row, desired.has(row.identity_id));
+		const transition = planMembership(model, row, desired.has(row.identity_id));
 		const status =
 			transition === "upsert_setup" || transition === "normalize_invite"
 				? "reviewed_active"
@@ -1196,7 +1230,7 @@ function buildAccessDelta(model: ActivationModel): LegacyTeamSetupAccessDeltaV1 
 	}
 	for (const membership of model.memberships) {
 		if (model.desiredIdentityIds.includes(membership.identity_id)) continue;
-		const transition = planSetupMembershipTransition(membership, false);
+		const transition = planMembership(model, membership, false);
 		if (transition === "revoke_setup") {
 			accessDelta.membershipChanges.push({
 				teamId: model.teamId,
@@ -1679,10 +1713,8 @@ function applyActivation(
 		);
 	}
 	for (const membership of existingMemberships.values()) {
-		const transition = planSetupMembershipTransition(
-			membership,
-			desiredIdentityIds.has(membership.identity_id),
-		);
+		const desired = desiredIdentityIds.has(membership.identity_id);
+		const transition = planMembership(model, membership, desired);
 		if (transition === "normalize_invite") {
 			db.prepare(
 				`UPDATE policy_team_memberships SET status = 'reviewed_active', updated_at = ?

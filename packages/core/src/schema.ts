@@ -1138,6 +1138,31 @@ export const policyTeamDeviceDecisions = sqliteTable(
 	],
 );
 
+/**
+ * People removed from one Team, as each coordinator group records them. A
+ * removal is permanent for that identity: rows are only added, and setups and
+ * invitations never restore a removed membership. A row applies only to a Team
+ * that its coordinator group set up.
+ */
+export const policyTeamMemberRemovals = sqliteTable(
+	"policy_team_member_removals",
+	{
+		team_id: text("team_id").notNull(),
+		identity_id: text("identity_id").notNull(),
+		coordinator_id: text("coordinator_id").notNull(),
+		group_id: text("group_id").notNull(),
+		removal_seq: integer("removal_seq").notNull(),
+		removed_at: text("removed_at").notNull(),
+		removed_by_device_id: text("removed_by_device_id"),
+		recorded_at: text("recorded_at").notNull(),
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.coordinator_id, table.group_id, table.team_id, table.identity_id],
+		}),
+	],
+);
+
 export type PolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferSelect;
 export type NewPolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferInsert;
 
@@ -1573,6 +1598,7 @@ export const schema = {
 	policyTeams,
 	policyTeamMemberships,
 	policyTeamDeviceDecisions,
+	policyTeamMemberRemovals,
 	identityDevices,
 	projectRecipients,
 	legacyTeamSetupDrafts,
