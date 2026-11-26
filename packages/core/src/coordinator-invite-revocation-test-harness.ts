@@ -125,24 +125,48 @@ export function registerInviteRevocationContract(test: InviteRevocationTest) {
 	});
 
 	registerRaceAndRefusals(test);
+	registerOtherKinds(test);
+}
+
+function registerOtherKinds(test: InviteRevocationTest) {
+	test("refuses an older device invitation and leaves it open", async ({ fixture: f }) => {
+		const t = await teamInvitation(f);
+		const legacy = await f.store.createInvite({
+			groupId: t.groupId,
+			policy: "auto_admit",
+			expiresAt: "2099-01-01T00:00:00Z",
+		});
+
+		expect(await f.store.revokeInvite({ groupId: t.groupId, inviteId: legacy.invite_id })).toEqual({
+			status: "not_team_invite",
+			invite_id: legacy.invite_id,
+		});
+
+		const stored = await f.store.listInvites(t.groupId);
+		expect(stored.find((row) => row.invite_id === legacy.invite_id)?.revoked_at).toBeNull();
+	});
 }
 
 function registerRaceAndRefusals(test: InviteRevocationTest) {
-	test("lets exactly one of a revocation and an acceptance win when they race", async ({
-		fixture: f,
-	}) => {
-		const t = await teamInvitation(f);
+	test.for(["revocation first", "acceptance first"])(
+		"lets exactly one of a revocation and an acceptance win when they race, %s",
+		async (order, { fixture: f }) => {
+			const t = await teamInvitation(f);
 
-		const [revoked, accepted] = await Promise.allSettled([t.revoke(), t.accept()]);
+			const [revoked, accepted] =
+				order === "revocation first"
+					? await Promise.allSettled([t.revoke(), t.accept()])
+					: await Promise.allSettled([t.accept(), t.revoke()]).then(([a, r]) => [r, a] as const);
 
-		if (revoked.status !== "fulfilled") throw revoked.reason;
-		if (revoked.value.status === "revoked") {
-			expect(accepted.status).toBe("rejected");
-		} else {
-			expect(revoked.value.status).toBe("consumed");
-			expect(accepted.status === "fulfilled" && accepted.value.status).toBe("accepted");
-		}
-	});
+			if (revoked.status !== "fulfilled") throw revoked.reason;
+			if (revoked.value.status === "revoked") {
+				expect(accepted.status).toBe("rejected");
+			} else {
+				expect(revoked.value.status).toBe("consumed");
+				expect(accepted.status === "fulfilled" && accepted.value.status).toBe("accepted");
+			}
+		},
+	);
 
 	test("refuses identifiers that are empty, padded or not text", async ({ fixture: f }) => {
 		const t = await teamInvitation(f);

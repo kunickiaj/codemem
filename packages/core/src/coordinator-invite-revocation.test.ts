@@ -30,6 +30,7 @@ describe("invitation revocation admin route", () => {
 	let path: string;
 	let inviteId: string;
 	let consumedInviteId: string;
+	let deviceInviteId: string;
 	beforeEach(async () => {
 		directory = mkdtempSync(join(tmpdir(), "invite-revoke-route-"));
 		path = join(directory, "coordinator.sqlite");
@@ -43,6 +44,13 @@ describe("invitation revocation admin route", () => {
 			});
 		inviteId = (await create()).invite_id;
 		consumedInviteId = (await create()).invite_id;
+		deviceInviteId = (await create()).invite_id;
+		// Only the route's kind check matters here; the contract tests use real Team invitations.
+		store.db
+			.prepare(
+				"UPDATE coordinator_invites SET invite_kind = 'team_member' WHERE invite_id IN (?, ?)",
+			)
+			.run(inviteId, consumedInviteId);
 		store.db
 			.prepare("UPDATE coordinator_invites SET consumed_at = 'then' WHERE invite_id = ?")
 			.run(consumedInviteId);
@@ -92,6 +100,30 @@ describe("invitation revocation admin route", () => {
 
 		expect([consumed.status, await consumed.json()]).toEqual([409, { error: "invite_consumed" }]);
 		expect([unknown.status, await unknown.json()]).toEqual([404, { error: "invite_not_found" }]);
+	});
+
+	it.each([
+		["an older device invitation", null],
+		["an add-device invitation", "add_device"],
+	])("answers 409 for %s and leaves it open", async (_name, kind) => {
+		const store = new BetterSqliteCoordinatorStore(path);
+		store.db
+			.prepare("UPDATE coordinator_invites SET invite_kind = ? WHERE invite_id = ?")
+			.run(kind, deviceInviteId);
+		await store.close();
+
+		const response = await post({ group_id: "group-a", invite_id: deviceInviteId });
+
+		expect([response.status, await response.json()]).toEqual([
+			409,
+			{ error: "invite_kind_unsupported" },
+		]);
+		const reread = new BetterSqliteCoordinatorStore(path);
+		const [row] = (await reread.listInvites("group-a")).filter(
+			(i) => i.invite_id === deviceInviteId,
+		);
+		await reread.close();
+		expect(row?.revoked_at).toBeNull();
 	});
 
 	it.each([

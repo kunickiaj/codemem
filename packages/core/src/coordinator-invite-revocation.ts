@@ -10,6 +10,11 @@ import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
  * `revoked_at IS NULL` and `consumed_at IS NULL` in the statement that accepts,
  * so a revocation and an acceptance cannot both win. An accepted invitation is
  * refused here, because revoking it would not take away what it already granted.
+ *
+ * Only Team invitations can be revoked. The statement that accepts a Team
+ * invitation rechecks `revoked_at`, while older device invitations are admitted
+ * through writers that check revocation earlier and never mark the token
+ * accepted, so a revocation there could race an admission and lose.
  */
 
 export interface CoordinatorRevokeInviteInput {
@@ -24,6 +29,8 @@ export type CoordinatorRevokeInviteResult =
 	| { status: "already_revoked"; invite_id: string; revoked_at: string }
 	/** It was accepted, so it was not revoked. */
 	| { status: "consumed"; invite_id: string }
+	/** It is not a Team invitation, so it was not revoked. */
+	| { status: "not_team_invite"; invite_id: string }
 	/** No invitation of the group has this ID. */
 	| { status: "not_found"; invite_id: string };
 
@@ -32,9 +39,10 @@ export interface CoordinatorInviteRevocationStore {
 }
 
 const REVOKE_SQL = `UPDATE coordinator_invites SET revoked_at = ?
- WHERE invite_id = ? AND group_id = ? AND consumed_at IS NULL AND revoked_at IS NULL`;
+ WHERE invite_id = ? AND group_id = ? AND invite_kind = 'team_member'
+ AND consumed_at IS NULL AND revoked_at IS NULL`;
 
-const READ_SQL = `SELECT revoked_at, consumed_at FROM coordinator_invites
+const READ_SQL = `SELECT revoked_at, consumed_at, invite_kind FROM coordinator_invites
  WHERE invite_id = ? AND group_id = ?`;
 
 function captureRevoke(raw: CoordinatorRevokeInviteInput): CoordinatorRevokeInviteInput {
@@ -50,6 +58,29 @@ function captureRevoke(raw: CoordinatorRevokeInviteInput): CoordinatorRevokeInvi
 
 function incomplete(): never {
 	throw new Error("invite_revocation_incomplete");
+}
+
+interface InviteRow {
+	revoked_at?: unknown;
+	consumed_at?: unknown;
+	invite_kind?: unknown;
+}
+
+/** The outcome of one revoke batch, from the row read after the write. */
+function revokeResult(
+	row: InviteRow | undefined,
+	changes: number,
+	inviteId: string,
+): CoordinatorRevokeInviteResult {
+	if (!row) return { status: "not_found", invite_id: inviteId };
+	if (row.invite_kind !== "team_member") return { status: "not_team_invite", invite_id: inviteId };
+	if (row.consumed_at != null) return { status: "consumed", invite_id: inviteId };
+	if (typeof row.revoked_at !== "string") return incomplete();
+	return {
+		status: changes === 1 ? "revoked" : "already_revoked",
+		invite_id: inviteId,
+		revoked_at: row.revoked_at,
+	};
 }
 
 /** Internal storage capability. The caller authenticates the admin. */
@@ -69,15 +100,7 @@ export class InviteRevocationOperations implements CoordinatorInviteRevocationSt
 		const changes = (results[0] as { meta?: { changes?: unknown } } | null)?.meta?.changes;
 		const rows = (results[1] as { results?: unknown } | null)?.results;
 		if (typeof changes !== "number" || !Array.isArray(rows)) return incomplete();
-		const row = rows[0] as { revoked_at?: unknown; consumed_at?: unknown } | undefined;
-		if (!row) return { status: "not_found", invite_id: inviteId };
-		if (row.consumed_at != null) return { status: "consumed", invite_id: inviteId };
-		if (typeof row.revoked_at !== "string") return incomplete();
-		return {
-			status: changes === 1 ? "revoked" : "already_revoked",
-			invite_id: inviteId,
-			revoked_at: row.revoked_at,
-		};
+		return revokeResult(rows[0] as InviteRow | undefined, changes, inviteId);
 	}
 }
 
@@ -103,7 +126,15 @@ function parseRevokeBody(
 	return { groupId, inviteId };
 }
 
-/** Admin-only route that revokes an invitation nobody has accepted. */
+const REFUSALS: Partial<
+	Record<CoordinatorRevokeInviteResult["status"], { error: string; status: 404 | 409 }>
+> = {
+	not_found: { error: "invite_not_found", status: 404 },
+	consumed: { error: "invite_consumed", status: 409 },
+	not_team_invite: { error: "invite_kind_unsupported", status: 409 },
+};
+
+/** Admin-only route that revokes a Team invitation nobody has accepted. */
 export function registerCoordinatorInviteRevocationRoute(
 	app: Hono,
 	deps: InviteRevocationRouteDeps,
@@ -124,8 +155,8 @@ export function registerCoordinatorInviteRevocationRoute(
 		const store = deps.storeFactory();
 		try {
 			const result = await store.revokeInvite(input);
-			if (result.status === "not_found") return c.json({ error: "invite_not_found" }, 404);
-			if (result.status === "consumed") return c.json({ error: "invite_consumed" }, 409);
+			const refusal = REFUSALS[result.status];
+			if (refusal) return c.json({ error: refusal.error }, refusal.status);
 			return c.json({ version: 1, ...result });
 		} finally {
 			await store.close();
