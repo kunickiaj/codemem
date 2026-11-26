@@ -263,6 +263,41 @@ function parseAccessCleanupPayload(op: ReplicationOp): AccessCleanupPayload {
 	};
 }
 
+/**
+ * Whether an untargeted cleanup may go to this peer. It names the memory and the
+ * scope it left, so it goes only to a device that could have received the memory
+ * there: a peer with any membership record in that scope, or, for the local
+ * default scope, a peer the older Project sharing rules would have sent it to.
+ * A cleanup addressed to one peer is that peer's own notice and is not limited.
+ */
+function untargetedCleanupReachesPriorRecipient(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+): boolean {
+	const cleanup = parseAccessCleanupPayload(op);
+	if (cleanup.target_peer_device_id !== null) return true;
+	const peerId = cleanText(peerDeviceId);
+	if (!peerId || !cleanup.cleanup_scope_id) return false;
+	if (cleanup.cleanup_scope_id === DEFAULT_SYNC_SCOPE_ID)
+		return legacyDefaultReassignAllowed(db, op, peerId);
+	return (
+		db
+			.prepare("SELECT 1 FROM scope_memberships WHERE scope_id = ? AND device_id = ? LIMIT 1")
+			.get(cleanup.cleanup_scope_id, peerId) !== undefined
+	);
+}
+
+function accessCleanupSendable(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+	options: { applyScopeFilter: boolean },
+): boolean {
+	if (!accessCleanupTargetsPeer(op, peerDeviceId)) return false;
+	return !options.applyScopeFilter || untargetedCleanupReachesPriorRecipient(db, op, peerDeviceId);
+}
+
 function accessCleanupTargetsPeer(op: ReplicationOp, peerDeviceId: string | null): boolean {
 	const cleanup = parseAccessCleanupPayload(op);
 	if (!cleanup.cleanup_scope_id) return false;
@@ -2513,7 +2548,7 @@ export function filterReplicationOpsForSyncWithStatus(
 				continue;
 			}
 			if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
-				if (!accessCleanupTargetsPeer(op, peerDeviceId)) {
+				if (!accessCleanupSendable(db, op, peerDeviceId, { applyScopeFilter })) {
 					addSkipped(skipped, op, {
 						reason: "scope_filter",
 						scope_id: cleanText(payload?.cleanup_scope_id ?? op.scope_id),
