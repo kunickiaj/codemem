@@ -599,6 +599,7 @@ Example agent requests:
 ## Observer model defaults
 
 - OpenAI: `gpt-6-luna` (tier routing uses `gpt-6-luna` for simple batches and `gpt-6.1-terra` for rich batches)
+- Recommended reasoning effort: `medium` for the rich tier (`observer_rich_reasoning_effort`) and `low` or `medium` for the simple tier (`observer_reasoning_effort`). See [Recommended observer models and effort](user-guide.md#recommended-observer-models-and-effort) for the evidence.
 - Anthropic: `claude-4.5-haiku` (mapped to Anthropic direct API alias `claude-haiku-4-5` when using `api_http`)
 
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
