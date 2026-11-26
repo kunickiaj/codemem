@@ -973,6 +973,7 @@ export {
 	type ObserverContentSection,
 	type ObserverPromptBudget,
 } from "./observer-prompt-budget.js";
+export type { V2ProviderError } from "./opencode-v2-generation.js";
 export { generateWithOpenCodeV2, listOpenCodeV2Models } from "./opencode-v2-generation.js";
 export * from "./operational-status.js";
 export * from "./outcome-evidence.js";

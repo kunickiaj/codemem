@@ -53,7 +53,11 @@ import {
 	type PreparedObserverPrompt,
 } from "./observer-prompt-budget.js";
 import { parseObserverSSE } from "./observer-sse.js";
-import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
+import {
+	generateWithOpenCodeV2,
+	type V2EffortReport,
+	type V2ProviderError,
+} from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
 
 // ---------------------------------------------------------------------------
@@ -171,6 +175,8 @@ export interface ObserverResponse {
 export interface ObserverCallError {
 	code: string;
 	message: string;
+	/** The provider's refusal as the OpenCode service reported it, in bounded fields only. */
+	providerError?: V2ProviderError;
 }
 
 export interface ObserverAuthRetryOutcome {
@@ -226,7 +232,7 @@ export interface ObserverStatus {
 	promptBudget?: ObserverPromptBudget | null;
 	/** The last routed call's prompt budget per tier, when tier routing uses separate clients. */
 	tierPromptBudgets?: Partial<Record<"simple" | "rich", ObserverPromptBudget>>;
-	lastError?: { code: string; message: string } | null;
+	lastError?: { code: string; message: string; providerError?: V2ProviderError } | null;
 }
 
 /** Lengths-free summary of what one request did with the configured reasoning effort. */
@@ -1664,6 +1670,7 @@ export class ObserverClient {
 	// Error tracking
 	private _lastErrorCode: string | null = null;
 	private _lastErrorMessage: string | null = null;
+	private _lastProviderError: V2ProviderError | null = null;
 	private readonly _observerExplicitConfigKeys: string[];
 	private _lastResolvedModel: string | null = null;
 	private _sidecarModelFallbackApplied = false;
@@ -1953,13 +1960,19 @@ export class ObserverClient {
 			),
 		};
 		Object.assign(status, this._requestedVersusActualStatus());
-		if (this._lastErrorMessage) {
-			status.lastError = {
-				code: this._lastErrorCode ?? "observer_error",
-				message: this._lastErrorMessage,
-			};
-		}
+		const lastError = this._lastErrorStatus();
+		if (lastError) status.lastError = lastError;
 		return status;
+	}
+
+	private _lastErrorStatus(): ObserverStatus["lastError"] {
+		if (!this._lastErrorMessage) return null;
+		const lastError: NonNullable<ObserverStatus["lastError"]> = {
+			code: this._lastErrorCode ?? "observer_error",
+			message: this._lastErrorMessage,
+		};
+		if (this._lastProviderError) lastError.providerError = { ...this._lastProviderError };
+		return lastError;
 	}
 
 	/** What the last request applied, for runtimes that can fall back from the configured value. */
@@ -2542,11 +2555,12 @@ export class ObserverClient {
 		// Record only what the transport reports it sent.
 		this._openCodeV2Effort = result.effort;
 		if (result.error) {
-			const message = `OpenCode account request failed: ${result.error}. Check the OpenCode connection and selected model in Settings.`;
-			this._setLastError(message, result.error);
+			const providerError = result.providerError;
+			const message = `OpenCode account request failed: ${openCodeFailureText(result.error, providerError)}. Check the OpenCode connection and selected model in Settings.`;
+			const detail = this._setLastError(message, result.error, providerError);
 			// Retain the raw-event range. Changing the selected model or restarting the
 			// service must not require replaying an already-advanced stream cursor.
-			throw new ObserverAuthError(message, { code: result.error, message });
+			throw new ObserverAuthError(message, detail);
 		}
 		// The service returns the text only, so these requests report no token usage.
 		return emptyCallResult(result.text);
@@ -3344,24 +3358,42 @@ export class ObserverClient {
 		);
 	}
 
-	private _setLastError(message: string, code?: string): ObserverCallError {
+	private _setLastError(
+		message: string,
+		code?: string,
+		providerError?: V2ProviderError,
+	): ObserverCallError {
 		const text = message.trim();
 		const normalizedCode = (code ?? "observer_error").trim() || "observer_error";
+		this._lastProviderError = providerError ? { ...providerError } : null;
 		if (!text) return { code: normalizedCode, message: "Observer request failed." };
 		this._lastErrorMessage = text;
 		this._lastErrorCode = normalizedCode;
-		return { code: normalizedCode, message: text };
+		return providerError
+			? { code: normalizedCode, message: text, providerError: { ...providerError } }
+			: { code: normalizedCode, message: text };
 	}
 
 	private _clearLastError(): void {
 		this._lastErrorCode = null;
 		this._lastErrorMessage = null;
+		this._lastProviderError = null;
 	}
 }
 
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
+
+/** The failure code, or the provider's reported reason, for an OpenCode account error. */
+function openCodeFailureText(code: string, providerError: V2ProviderError | undefined): string {
+	if (!providerError) return code;
+	const provider = providerError.providerId
+		? `the ${providerError.providerId} provider`
+		: "the provider";
+	const status = providerError.status == null ? "" : ` (upstream status ${providerError.status})`;
+	return `${provider} reported ${providerError.reason}${status}`;
+}
 
 function capitalize(s: string): string {
 	return s.charAt(0).toUpperCase() + s.slice(1);
