@@ -298,7 +298,7 @@ describe("reassign_scope replication", () => {
 			{ localDeviceId: "owner", supportsReassignScope: true },
 		);
 
-		expect(allowed).toEqual([oldSide]);
+		expect(allowed.map((op) => op.op_type)).toEqual(["access_cleanup"]); // not in the new Space
 		expect(allowedCursor).toContain(oldSide.op_id);
 		expect(blocked).toEqual([]);
 		expect(blockedCursor).toContain(oldSide.op_id);

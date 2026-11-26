@@ -263,6 +263,77 @@ function parseAccessCleanupPayload(op: ReplicationOp): AccessCleanupPayload {
 	};
 }
 
+/**
+ * The op that tells this peer a memory left the local default scope. A peer in
+ * the destination scope gets the move itself. Any other peer gets a cleanup
+ * notice addressed to it, under its own op id, that removes its copy without
+ * naming the destination. The sender of such a move always created the memory,
+ * so the peer accepts the notice by the same rule. Other moves are unchanged.
+ */
+function outboundOldSideMove(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+	options: { applyScopeFilter: boolean },
+): ReplicationOp {
+	const peerId = cleanText(peerDeviceId);
+	if (!options.applyScopeFilter || !peerId) return op;
+	const move = parseReassignScopePayload(op);
+	if (move.side !== "old" || move.old_scope_id !== DEFAULT_SYNC_SCOPE_ID) return op;
+	const destination = getPeerCachedScopeAuthorization(db, {
+		deviceId: peerId,
+		scopeId: move.new_scope_id,
+	});
+	if (destination.authorized && destination.scope?.authority_type !== "local") return op;
+	return {
+		...op,
+		op_id: `${op.op_id}:cleanup:${peerId}`,
+		op_type: ACCESS_CLEANUP_OP_TYPE,
+		payload_json: toJson({
+			cleanup_scope_id: DEFAULT_SYNC_SCOPE_ID,
+			reason: "scope_reassignment",
+			target_peer_device_id: peerId,
+		}),
+	};
+}
+
+/**
+ * Whether an untargeted cleanup may go to this peer. It names the memory and the
+ * scope it left, so a cleanup for a Space goes only to a device with a membership
+ * record in that Space, which every device that could have received it there has.
+ * A cleanup for the local default scope still goes to every peer: nothing records
+ * which devices received a local default memory, the peer's Project filters may
+ * have changed since, and the default-scope delete never syncs, so this notice is
+ * the only way an old copy is removed. It names no Space.
+ * A cleanup addressed to one peer is that peer's own notice and is not limited.
+ */
+function untargetedCleanupReachesPriorRecipient(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+): boolean {
+	const cleanup = parseAccessCleanupPayload(op);
+	if (cleanup.target_peer_device_id !== null) return true;
+	const peerId = cleanText(peerDeviceId);
+	if (!peerId || !cleanup.cleanup_scope_id) return false;
+	if (cleanup.cleanup_scope_id === DEFAULT_SYNC_SCOPE_ID) return true;
+	return (
+		db
+			.prepare("SELECT 1 FROM scope_memberships WHERE scope_id = ? AND device_id = ? LIMIT 1")
+			.get(cleanup.cleanup_scope_id, peerId) !== undefined
+	);
+}
+
+function accessCleanupSendable(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+	options: { applyScopeFilter: boolean },
+): boolean {
+	if (!accessCleanupTargetsPeer(op, peerDeviceId)) return false;
+	return !options.applyScopeFilter || untargetedCleanupReachesPriorRecipient(db, op, peerDeviceId);
+}
+
 function accessCleanupTargetsPeer(op: ReplicationOp, peerDeviceId: string | null): boolean {
 	const cleanup = parseAccessCleanupPayload(op);
 	if (!cleanup.cleanup_scope_id) return false;
@@ -2513,7 +2584,7 @@ export function filterReplicationOpsForSyncWithStatus(
 				continue;
 			}
 			if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
-				if (!accessCleanupTargetsPeer(op, peerDeviceId)) {
+				if (!accessCleanupSendable(db, op, peerDeviceId, { applyScopeFilter })) {
 					addSkipped(skipped, op, {
 						reason: "scope_filter",
 						scope_id: cleanText(payload?.cleanup_scope_id ?? op.scope_id),
@@ -2533,7 +2604,7 @@ export function filterReplicationOpsForSyncWithStatus(
 				if (decision === "skip") {
 					addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
 				} else if (decision === "send") {
-					allowed.push(op);
+					allowed.push(outboundOldSideMove(db, op, peerDeviceId, { applyScopeFilter }));
 				}
 				if (decision !== "check") {
 					nextCursor = computeCursor(op.created_at, op.op_id);
