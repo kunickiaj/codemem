@@ -8,7 +8,6 @@ import {
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
-	projectInventoryGroupKey,
 	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
 } from "./project-scope-settings.js";
@@ -2077,20 +2076,6 @@ describe("projects with no memories", () => {
 			"retired-api",
 			"shared-idle",
 		]);
-	});
-});
-
-// The same cases pin projectClusterKey in packages/ui/src/tabs/projects/project-view.test.ts.
-describe("project inventory group key", () => {
-	it.each([
-		[
-			{ git_remote: "https://example.test/acme/api.git", project: "api", workspace_identity: "a" },
-			"git:https://example.test/acme/api.git",
-		],
-		[{ git_remote: null, project: "api", workspace_identity: "/workspace/api" }, "project:api"],
-		[{ git_remote: null, project: null, workspace_identity: "ws-1" }, "identity:ws-1"],
-	])("groups %o under %s", (project, key) => {
-		expect(projectInventoryGroupKey(project)).toBe(key);
 	});
 });
 

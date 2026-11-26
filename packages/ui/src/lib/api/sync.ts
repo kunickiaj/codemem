@@ -601,9 +601,12 @@ export type ProjectScopeInventoryStatus =
 	| "needs_attention"
 	| "received"
 	| "suggested"
-	| "unmapped";
+	| "unmapped"
+	| "unnamed";
 
 export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
+	/** Another entry has the same name, so sharing this one stays unavailable. */
+	ambiguous_name?: boolean;
 	memory_count: number | null;
 	origin_devices?: Array<{ device_id: string; display_name: string | null }>;
 	session_count: number;
@@ -674,6 +677,8 @@ export interface ProjectScopeInventoryResult {
 	has_more: boolean;
 	/** Empty Projects left out by `include_empty: false`. Older servers omit it. */
 	hidden_empty_count?: number;
+	/** Entries without a usable Project name left out by `include_empty: false`. */
+	hidden_unnamed_count?: number;
 }
 
 export interface ProjectInvitePreviewProject {

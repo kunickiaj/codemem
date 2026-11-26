@@ -12,7 +12,7 @@ import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
 import { renderProjectInventory as renderProjectInventoryView } from "./projects/ProjectInventory";
-import { projectClusterKey } from "./projects/project-view";
+import { projectClusterKeys } from "./projects/project-view";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
@@ -50,6 +50,7 @@ const STATUS_OPTIONS = [
 	["legacy_review", "Older shared data"],
 	["unmapped", "Missing project identity"],
 	["empty", "No memories"],
+	["unnamed", "No usable name"],
 ] as const;
 
 let refreshProjects: RefreshFn | null = null;
@@ -153,6 +154,7 @@ function isProjectShareEligible(project: ProjectScopeInventoryProject): boolean 
 	return (
 		isLocallyAssignableProject(project) &&
 		project.memory_count != null &&
+		!project.ambiguous_name &&
 		project.guardrail_warnings.every((warning) => !warning.requires_confirmation)
 	);
 }
@@ -600,7 +602,7 @@ async function reassignInventoryProject(project: ProjectScopeInventoryProject) {
 interface ProjectRepairTarget {
 	offset: number;
 	project: ProjectScopeInventoryProject;
-	status: "" | "empty";
+	status: "" | "empty" | "unnamed";
 }
 
 async function projectForRepair(
@@ -609,17 +611,20 @@ async function projectForRepair(
 ): Promise<ProjectRepairTarget | null> {
 	const cached = projectInventoryByIdentity.get(projectIdentity);
 	if (cached && !isPeerReceivedProject(cached)) {
-		const status = readProjectInventoryFilters().status === "empty" ? "empty" : "";
+		const filter = readProjectInventoryFilters().status;
+		const status = filter === "empty" || filter === "unnamed" ? filter : "";
 		return { offset: currentOffset, project: cached, status };
 	}
 	// Search the same lists the display loads so the returned offset is valid there.
-	const listed = await findRepairTarget(projectIdentity, "");
-	if (listed || projectNavigationChanged(navigation)) return listed;
-	return findRepairTarget(projectIdentity, "empty");
+	for (const status of ["", "empty", "unnamed"] as const) {
+		const found = await findRepairTarget(projectIdentity, status);
+		if (found || projectNavigationChanged(navigation)) return found;
+	}
+	return null;
 }
 
 function repairLookupFilter(status: ProjectRepairTarget["status"]) {
-	return status === "empty" ? { status } : { include_empty: false };
+	return status ? { status } : { include_empty: false };
 }
 
 async function findRepairTarget(
@@ -810,12 +815,27 @@ function repairRecipientPolicyItem(repair: RecipientPolicyBlockedItemV1["repair"
 	return operation;
 }
 
+/** The row key of a Project on the listed page, by workspace identity. */
+function listedClusterKeys(): Map<string, string> {
+	const keys = projectClusterKeys(latestInventoryResult.projects);
+	return new Map([...keys].map(([project, key]) => [project.workspace_identity, key] as const));
+}
+
+function projectClusterKey(project: ProjectScopeInventoryProject): string {
+	return (
+		listedClusterKeys().get(project.workspace_identity) ??
+		projectClusterKeys([project]).get(project) ??
+		`identity:${project.workspace_identity}`
+	);
+}
+
 function projectClusters(
 	projects: ProjectScopeInventoryProject[],
 ): ProjectScopeInventoryProject[][] {
+	const keys = projectClusterKeys(projects);
 	const byKey = new Map<string, ProjectScopeInventoryProject[]>();
 	for (const project of projects) {
-		const key = projectClusterKey(project);
+		const key = keys.get(project) ?? `identity:${project.workspace_identity}`;
 		byKey.set(key, [...(byKey.get(key) ?? []), project]);
 	}
 	return [...byKey.values()];
@@ -947,11 +967,14 @@ function projectInventoryMetaText(result: {
 	total: number;
 	offset: number;
 	hidden_empty_count?: number;
+	hidden_unnamed_count?: number;
 }): string {
 	const hidden = result.hidden_empty_count ?? 0;
-	const count = projectCountText(result);
-	if (hidden <= 0) return count;
-	return `${count} · ${hidden.toLocaleString()} empty not shown`;
+	const unnamed = result.hidden_unnamed_count ?? 0;
+	const parts = [projectCountText(result)];
+	if (hidden > 0) parts.push(`${hidden.toLocaleString()} empty not shown`);
+	if (unnamed > 0) parts.push(`${unnamed.toLocaleString()} without a usable name not shown`);
+	return parts.join(" · ");
 }
 
 function renderCurrentProjectInventory(error?: string): void {
@@ -967,6 +990,7 @@ function renderProjectInventory(result: {
 	offset: number;
 	has_more: boolean;
 	hidden_empty_count?: number;
+	hidden_unnamed_count?: number;
 }) {
 	hasProjectInventoryResult = true;
 	latestInventoryResult = {
@@ -1040,7 +1064,7 @@ async function loadShareChoicesPage(
 ) {
 	if (sharedPage?.offset === offset) {
 		const page = await sharedPage.promise;
-		if (!page.hidden_empty_count) return page;
+		if (!page.hidden_empty_count && !page.hidden_unnamed_count) return page;
 	}
 	return api.loadProjectScopeInventory({ limit: lastLimit, offset, signal: options.signal });
 }

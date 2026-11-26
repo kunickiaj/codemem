@@ -1337,9 +1337,13 @@ function resolveProjectInviteSelection(
 	return requestedIds.map((projectId) => {
 		const project = byIdentity.get(projectId);
 		if (!project) throw new Error("project_selection_unknown");
-		const ambiguous = project.guardrail_warnings.some(
-			(warning) => warning.code === "basename_collision_review" && warning.requires_confirmation,
-		);
+		// Any other entry with the same name makes the selection ambiguous, whether or not the
+		// inventory asks for review between the two rows.
+		const ambiguous =
+			project.ambiguous_name === true ||
+			project.guardrail_warnings.some(
+				(warning) => warning.code === "basename_collision_review" && warning.requires_confirmation,
+			);
 		if (ambiguous) throw new Error("project_selection_ambiguous");
 		if (
 			project.read_only ||

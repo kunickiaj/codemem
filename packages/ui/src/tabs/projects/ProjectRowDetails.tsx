@@ -337,6 +337,7 @@ function ProjectDetailsActions(props: DetailsContentProps) {
 	const canShare =
 		assignable &&
 		project.memory_count != null &&
+		!project.ambiguous_name &&
 		!project.guardrail_warnings.some((warning) => warning.requires_confirmation);
 	return (
 		<div className="project-inventory-actions">
