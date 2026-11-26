@@ -423,7 +423,8 @@ function expectedTeamDevices(teamId: string, eligible: Iterable<string>): Expect
  * Whether an included device matches the completed setup, recording the
  * Project access it must have. A person removed from the Team keeps their
  * reviewed devices, which must not receive the Team's Projects: that is the
- * completed setup, not drift.
+ * completed setup, not drift. Sync admission refuses such a device the Team's
+ * scopes for as long as the removal applies, so it is never served meanwhile.
  */
 function expectIncludedDevice(
 	db: Database,

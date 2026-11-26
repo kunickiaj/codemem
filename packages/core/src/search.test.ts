@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
-import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import { resolveVisibleScopeIds } from "./scope-visibility.js";
 import {
 	expandQuery,
 	kindBonus,

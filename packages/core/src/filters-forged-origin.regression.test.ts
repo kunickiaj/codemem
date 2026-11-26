@@ -12,7 +12,7 @@ import {
 	cacheTime,
 	cacheWireSnapshot,
 } from "./scope-membership-cache-test-fixtures.js";
-import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import { resolveVisibleScopeIds } from "./scope-visibility.js";
 import { initTestSchema } from "./test-utils.js";
 
 const paths = ["scopeVisibilityDb", "visibleScopeIds", "DB-less SQL"] as const;

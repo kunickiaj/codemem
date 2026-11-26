@@ -67,12 +67,12 @@ import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import { resolveSameActorPeerIds } from "./same-actor-peers.js";
 import * as schema from "./schema.js";
-import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
 import {
 	ensureMemoryScopeId,
 	resolveMemoryScopeId,
 	resolveSessionScopeId,
 } from "./scope-stamping.js";
+import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-visibility.js";
 import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import {
 	type ExplainOptions,

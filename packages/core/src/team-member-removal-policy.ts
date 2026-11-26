@@ -13,7 +13,8 @@ export {
  * Local enforcement of per-Team member removals. The coordinator keeps the
  * removals; this machine keeps a copy so its policy code can honor them inside
  * its own transactions. A removal is permanent for that identity: the copy only
- * grows, a removed membership is revoked when the removal arrives, and Team
+ * grows, a removed membership is revoked when the removal arrives, sync
+ * admission refuses the person's devices for the Team's scopes, and Team
  * setups and invitations never make it active again. A person comes back only through a new Team invitation,
  * under a new identity. Each copy is keyed by the coordinator group that
  * recorded it, and applies only to a Team that group set up.
@@ -73,6 +74,8 @@ function recordRemovals(
 /**
  * Revokes the membership if it is still active. Recipient policies are woken
  * before the revocation, while the membership still selects their Projects.
+ * Delivery ends without waiting for them: sync admission refuses the person's
+ * devices for the Team's scopes as soon as the removal is recorded.
  */
 function revokeRemovedMembership(
 	db: Database,
@@ -95,10 +98,11 @@ function revokeRemovedMembership(
 
 /**
  * Records removals from one coordinator group and revokes each removed
- * membership that is still active, in one transaction. A record for a Team
- * this group did not set up is kept without effect and reported as ignored. A
- * record that is malformed or names another group is refused as a whole, so a
- * broken list changes nothing.
+ * membership that is still active, in one transaction. From the moment a
+ * removal is recorded, sync admission refuses the person's devices for the
+ * Team's scopes. A record for a Team this group did not set up is kept without
+ * effect and reported as ignored. A record that is malformed or names another
+ * group is refused as a whole, so a broken list changes nothing.
  */
 export function applyTeamMemberRemovals(
 	db: Database,

@@ -22,9 +22,9 @@ import {
 	canonicalWorkspaceIdentity,
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
-	resolveVisibleScopeIds,
 	type ScopeMapping,
 } from "./scope-resolution.js";
+import { resolveVisibleScopeIds } from "./scope-visibility.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";

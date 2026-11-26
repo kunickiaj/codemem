@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
-import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import { resolveVisibleScopeIds } from "./scope-visibility.js";
 import { initTestSchema, seedMixedScopeFixture } from "./test-utils.js";
 
 const connections: Database.Database[] = [];

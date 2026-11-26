@@ -5,7 +5,8 @@ import { buildBaseUrl } from "./sync-http-client.js";
 /*
  * Reading this machine's copy of per-Team member removals. A copy is keyed by
  * the coordinator group that recorded it and applies only to a Team that group
- * set up, so a group cannot remove members of a Team it does not hold.
+ * set up, so a group cannot remove members of a Team it does not hold. Kept
+ * free of policy writers so sync admission can read it.
  */
 
 /**
@@ -94,4 +95,31 @@ export function removedTeamMemberIdentityIds(
 /** Whether one of the Team's own coordinator groups removed the identity from it. */
 export function isTeamMemberRemoved(db: Database, teamId: string, identityId: string): boolean {
 	return removedTeamMemberIdentityIds(db, teamId).has(identityId);
+}
+
+/**
+ * The Teams whose own coordinator group removed the person this device is
+ * bound to. A device bound to another person now is not affected.
+ */
+export function teamMemberRemovalsForDevice(
+	db: Database,
+	deviceId: string,
+): Array<{ teamId: string; identityId: string }> {
+	const rows = db
+		.prepare(
+			`SELECT DISTINCT removal.team_id, removal.identity_id
+			 FROM policy_team_member_removals AS removal
+			 JOIN identity_devices AS binding ON binding.identity_id = removal.identity_id
+			 WHERE binding.device_id = ?
+			   AND NOT EXISTS (
+			     SELECT 1 FROM identity_devices AS other
+			     WHERE other.device_id = binding.device_id AND other.status = 'active'
+			       AND other.identity_id <> removal.identity_id
+			   )
+			 ORDER BY removal.team_id, removal.identity_id`,
+		)
+		.all(deviceId) as Array<{ team_id: string; identity_id: string }>;
+	return rows
+		.filter((row) => isTeamMemberRemoved(db, row.team_id, row.identity_id))
+		.map((row) => ({ teamId: row.team_id, identityId: row.identity_id }));
 }
