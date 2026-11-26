@@ -5,7 +5,10 @@ import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { removePairingState } from "./pairing-removal.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
-import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
+import {
+	recordTestLocalIdentity,
+	refreshTestScopeRows,
+} from "./scope-membership-cache-test-fixtures.js";
 import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
 import {
@@ -18,6 +21,7 @@ import {
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncHttpClient from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
+import { fingerprintPublicKey } from "./sync-identity.js";
 import {
 	consecutiveConnectivityFailures,
 	cursorAdvances,
@@ -208,10 +212,11 @@ async function grantProvenScopeForSyncPass(
 
 /** Gives the granted scopes retained coordinator proofs, as a trusted refresh would. */
 async function proveScopesForSyncPass(db: InstanceType<typeof Database>): Promise<void> {
-	// The pins name the key the proofs are for.
+	// The pins and this device's identity name the key the proofs are for.
 	db.prepare("UPDATE sync_peers SET public_key = ? WHERE public_key IS NULL").run(
 		CANONICAL_PUBLIC_KEY,
 	);
+	recordTestLocalIdentity(db, "local-device-id");
 	db.prepare(
 		`UPDATE replication_scopes SET coordinator_id = 'coordinator-1', group_id = 'group-1'
 		 WHERE authority_type = 'coordinator' AND coordinator_id IS NULL AND group_id IS NULL`,
@@ -3721,8 +3726,11 @@ describe("syncOnce with a Project this device withdrew from", () => {
 	});
 });
 
-describe("syncOnce when the peer loses access during a push", () => {
+describe("syncOnce when the peer or this device loses access during a push", () => {
 	const { SCOPE, PEER, LOCAL, statusResponse, defaultOpsResponse } = WITHDRAWN;
+	// A valid key that no retained proof names.
+	const OTHER_PUBLIC_KEY =
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH";
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
@@ -3759,6 +3767,34 @@ describe("syncOnce when the peer loses access during a push", () => {
 					reasonCode: "pending_revoke",
 					now: "2026-01-01T00:00:00Z",
 				}),
+		],
+		[
+			"this device is denied the Project",
+			(db: InstanceType<typeof Database>) =>
+				putRecipientPolicyDenyOverlay(db, {
+					canonicalProjectIdentity: "git:acme/internal",
+					scopeId: SCOPE,
+					deviceId: LOCAL,
+					generation: 1,
+					reasonCode: "pending_revoke",
+					now: "2026-01-01T00:00:00Z",
+				}),
+		],
+		[
+			"this device's proof no longer matches its signing key",
+			(db: InstanceType<typeof Database>) =>
+				db
+					.prepare("UPDATE sync_device SET public_key = ?, fingerprint = ? WHERE device_id = ?")
+					.run(OTHER_PUBLIC_KEY, fingerprintPublicKey(OTHER_PUBLIC_KEY), LOCAL),
+		],
+		[
+			"this device loses its retained proof",
+			(db: InstanceType<typeof Database>) =>
+				db
+					.prepare(
+						"DELETE FROM scope_membership_authorization_evidence WHERE scope_id = ? AND device_id = ?",
+					)
+					.run(SCOPE, LOCAL),
 		],
 	])("sends no later batch of a split push after %s", async (_case, endAccess) => {
 		// Arrange: three ops split into batches; access ends after the first batch lands.

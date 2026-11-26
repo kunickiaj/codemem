@@ -2,7 +2,10 @@ import { generateKeyPairSync } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
-import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
+import {
+	recordTestLocalIdentity,
+	refreshTestScopeRows,
+} from "./scope-membership-cache-test-fixtures.js";
 import * as syncAuth from "./sync-auth.js";
 import { fetchAllSnapshotPages } from "./sync-bootstrap.js";
 import { SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
@@ -105,7 +108,8 @@ beforeEach(async () => {
 			timestamp,
 		);
 	}
-	// The push rechecks each batch against retained coordinator proofs.
+	// The push rechecks each batch against retained coordinator proofs for both devices.
+	recordTestLocalIdentity(db, localId);
 	await refreshTestScopeRows(db);
 });
 

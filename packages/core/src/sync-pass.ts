@@ -1998,9 +1998,10 @@ function carriedScope(op: ReplicationOp): string | null {
 }
 
 /**
- * Throws when the peer may no longer receive a batch: its pin is gone or now
- * pins another key, or the effective authorization the serving routes use,
- * with retained proofs and deny overlays, no longer allows a carried scope.
+ * Throws when a batch may no longer be sent. The peer's pin must still exist
+ * and pin the same key, and the effective authorization the serving routes
+ * use, with retained proofs and deny overlays, must still allow every carried
+ * scope for both the peer and this device under its current signing key.
  * The pass start filtered with raw membership, and a push spans network waits.
  */
 function requirePeerStillAuthorized(context: SyncExchangeContext, ops: ReplicationOp[]): void {
@@ -2013,6 +2014,11 @@ function requirePeerStillAuthorized(context: SyncExchangeContext, ops: Replicati
 	if (!pin || !binding || pin.pinned_fingerprint !== context.pinnedFingerprint)
 		throw new Error("peer access ended during push");
 	const scopeIds = new Set(ops.map(carriedScope).filter((scopeId) => scopeId !== null));
+	if (scopeIds.size === 0) return;
+	const localPublicKey = context.db
+		.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+		.pluck()
+		.get(context.deviceId) as string | null | undefined;
 	for (const scopeId of scopeIds) {
 		const authorization = getEffectiveCachedScopeAuthorization(context.db, {
 			deviceId: context.peerDeviceId,
@@ -2021,6 +2027,14 @@ function requirePeerStillAuthorized(context: SyncExchangeContext, ops: Replicati
 		});
 		if (scopeAuthorizationFailureReason(authorization))
 			throw new Error("peer access ended during push");
+		// An absent key must not match any proof, so it is passed as an empty key.
+		const localAuthorization = getEffectiveCachedScopeAuthorization(context.db, {
+			deviceId: context.deviceId,
+			scopeId,
+			expectedPublicKey: localPublicKey ?? "",
+		});
+		if (scopeAuthorizationFailureReason(localAuthorization))
+			throw new Error("this device's access ended during push");
 	}
 }
 
