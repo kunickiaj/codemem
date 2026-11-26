@@ -245,6 +245,19 @@ export function clearOpenCodeV2ModelVariantCache(): void {
 	unlistedVariants.clear();
 }
 
+/**
+ * What the service said about a provider's refusal, limited to fields with a known,
+ * bounded shape. The provider's message text and headers are never kept.
+ */
+export interface V2ProviderError {
+	/** The service's reason code, such as `rate_limit`. */
+	reason: string;
+	/** The HTTP status the provider returned to the service, when reported. */
+	status: number | null;
+	/** The service's provider ID, such as `anthropic`, when reported. */
+	providerId: string | null;
+}
+
 export type V2GenerationResult =
 	| { text: string; error: null }
 	| {
@@ -255,7 +268,48 @@ export type V2GenerationResult =
 				| "auth_failed"
 				| "response_too_large"
 				| "request_failed";
+			/** Set when the service reported why the provider refused the request. */
+			providerError?: V2ProviderError;
 	  };
+
+const PROVIDER_REASON = /^[a-z][a-z0-9_]{0,63}$/;
+const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/**
+ * The provider refusal in a service error body, or null for any other shape. Only a
+ * `ProviderRequestError` with a well-formed reason code counts.
+ */
+export function providerErrorFromBody(body: unknown): V2ProviderError | null {
+	if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+	const { _tag, reason, status, providerID } = body as Record<string, unknown>;
+	if (_tag !== "ProviderRequestError") return null;
+	if (typeof reason !== "string" || !PROVIDER_REASON.test(reason)) return null;
+	return {
+		reason,
+		status:
+			typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+				? status
+				: null,
+		providerId: typeof providerID === "string" && PROVIDER_ID.test(providerID) ? providerID : null,
+	};
+}
+
+/** A failed request, with the provider's refusal when the service described one. */
+async function failedRequest(
+	response: Response,
+	controller: AbortController,
+): Promise<V2GenerationResult> {
+	let body: unknown = null;
+	try {
+		body = await readLimitedJson(response, controller);
+	} catch {
+		// An unreadable body leaves the failure without detail.
+	}
+	const providerError = providerErrorFromBody(body);
+	return providerError
+		? { text: null, error: "request_failed", providerError }
+		: { text: null, error: "request_failed" };
+}
 
 async function readBoundedResponse(
 	response: Response,
@@ -332,7 +386,7 @@ async function requestGeneration(
 		const rejection = await preGenerationRejection(response, controller, input);
 		return { text: null, error: rejection ?? "request_failed" };
 	}
-	if (!response.ok) return { text: null, error: "request_failed" };
+	if (!response.ok) return failedRequest(response, controller);
 	return readBoundedResponse(response, controller);
 }
 
