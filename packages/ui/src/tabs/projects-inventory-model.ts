@@ -46,8 +46,16 @@ export interface ProjectInventoryClusterViewModel {
 	worktreesOpen: boolean;
 	detailsOpen: boolean;
 	draftScopeId: string | null;
+	/** The server's answer for the chosen Space, or null before one is chosen. */
+	scopeCheck: {
+		scopeId: string;
+		state: ClusterMappingCheckState;
+		warnings: ProjectScopeGuardrailWarning[];
+	} | null;
 	recipients: ProjectInventoryRecipientViewModel[];
 }
+
+export type ClusterMappingCheckState = "accepted" | "checking" | "failed" | "review";
 
 export interface ProjectsInventoryViewModel {
 	rows: Array<ProjectInventoryProjectViewModel | ProjectInventoryClusterViewModel>;

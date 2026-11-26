@@ -121,6 +121,11 @@ export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	 * such an entry, as before, even when its row needs no review.
 	 */
 	ambiguous_name?: boolean;
+	/**
+	 * The row this entry belongs to, computed against every entry in the inventory, so it does
+	 * not depend on paging or filters. The UI groups rows by this key alone.
+	 */
+	group_key?: string;
 	memory_count: number | null;
 	origin_devices: Array<{ device_id: string }>;
 	session_count: number;
@@ -2339,6 +2344,7 @@ function withInventoryGuardrails<T extends ProjectScopeInventoryProject>(project
 		return {
 			...project,
 			ambiguous_name: ambiguousName,
+			group_key: groupKeys.get(project),
 			guardrail_warnings: [...kept, ...collision],
 		};
 	});
@@ -2375,8 +2381,15 @@ export function isUnusableProjectName(
 	);
 }
 
+/**
+ * The default list hides unnamed and empty entries. Each filter lists its own hidden entries
+ * again, and an entry that is both stays reachable through either, so every entry a hidden
+ * count includes can be revealed.
+ */
+const REVEALING_STATUSES = new Set(["empty", "unnamed"]);
+
 function shouldHideUnnamedProjects(options: ProjectScopeInventoryOptions): boolean {
-	return options.includeEmpty === false && options.status !== "unnamed";
+	return options.includeEmpty === false && !REVEALING_STATUSES.has(options.status ?? "");
 }
 
 /** An unnamed entry leaves the default list only when nothing about it needs a decision. */
@@ -2423,7 +2436,7 @@ function compareInventoryProjects(
 }
 
 function shouldPruneEmptyProjects(options: ProjectScopeInventoryOptions): boolean {
-	return options.includeEmpty === false && options.status !== "empty";
+	return options.includeEmpty === false && !REVEALING_STATUSES.has(options.status ?? "");
 }
 
 /**
@@ -2478,13 +2491,10 @@ function pruneEmptyProjects(
 	const prunable = new Set(
 		projects.filter((project) => isPrunableEmptyProject(project, withRecipients)),
 	);
-	const groupKeys = projectInventoryGroupKeys(projects);
-	const listedGroups = new Set(
-		projects.filter((project) => !prunable.has(project)).map((project) => groupKeys.get(project)),
-	);
-	return projects.filter(
-		(project) => !prunable.has(project) || listedGroups.has(groupKeys.get(project)),
-	);
+	const groupOf = (project: ProjectScopeInventoryProject) =>
+		project.group_key ?? `identity:${project.workspace_identity}`;
+	const listedGroups = new Set(projects.filter((project) => !prunable.has(project)).map(groupOf));
+	return projects.filter((project) => !prunable.has(project) || listedGroups.has(groupOf(project)));
 }
 
 function projectRowsForScopeReassignment(db: Database): ProjectScopeCandidateRow[] {

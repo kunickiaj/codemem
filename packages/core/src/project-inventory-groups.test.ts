@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectInventoryGroupKeys } from "./project-inventory-groups.js";
 
-// The same cases pin projectClusterKeys in packages/ui/src/tabs/projects/project-view.test.ts.
 const entry = (
 	workspace: string,
 	overrides: Partial<{

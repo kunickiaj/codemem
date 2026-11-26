@@ -109,3 +109,93 @@ describe("isUnusableProjectName", () => {
 		expect(isUnusableProjectName({ display_project: name, project: name })).toBe(unusable);
 	});
 });
+
+describe("Projects inventory row keys", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		seedProjectInventoryNoiseFixture(db);
+	});
+
+	afterEach(() => db.close());
+
+	it("returns the same row key on every page and under filters", () => {
+		// Arrange
+		const full = new Map(
+			listProjectScopeInventory(db, { includeEmpty: false, limit: 250 }).projects.map((project) => [
+				project.workspace_identity,
+				project.group_key,
+			]),
+		);
+
+		// Act: page through in small pages, and search for one old folder on its own.
+		const paged = new Map<string, string | undefined>();
+		for (let offset = 0; offset < full.size; offset += 7) {
+			for (const project of listProjectScopeInventory(db, { includeEmpty: false, limit: 7, offset })
+				.projects)
+				paged.set(project.workspace_identity, project.group_key);
+		}
+		const [alone] = listProjectScopeInventory(db, {
+			includeEmpty: false,
+			query: "/fixture/worktrees/alpha-repo-7",
+		}).projects;
+
+		// Assert: the lone folder keeps the key of the repository row it was folded into.
+		expect([...full.values()].every((key) => typeof key === "string" && key.length > 0)).toBe(true);
+		expect(paged).toEqual(full);
+		expect(alone?.group_key).toBe(full.get("/fixture/worktrees/alpha-repo-7"));
+		expect(alone?.group_key).toBe(
+			full.get("https://git.example.invalid/fixture-org/alpha-repo.git"),
+		);
+	});
+});
+
+describe("Projects hidden from the default list", () => {
+	it("can reveal every hidden entry through the filter that counts it", () => {
+		// Arrange: add unnamed entries with no memories, which are both unnamed and empty.
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			seedProjectInventoryNoiseFixture(db);
+			for (const [index, name] of ["/", "GitError: spawn git EACCES"].entries())
+				db.prepare(
+					`INSERT INTO sessions(started_at, cwd, project, user, tool_version)
+					 VALUES ('2026-10-01T00:00:00.000Z', ?, ?, 'fixture-user', 'test')`,
+				).run(`/fixture/junk/empty-${index}`, name);
+			db.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, user, tool_version)
+				 VALUES ('2026-10-01T00:00:00.000Z', '/fixture/idle/quiet', 'quiet', 'fixture-user', 'test')`,
+			).run();
+			const ids = (projects: Array<{ workspace_identity: string }>) =>
+				new Set(projects.map((project) => project.workspace_identity));
+			const everything = listProjectScopeInventory(db, { limit: 250 }).projects;
+
+			// Act
+			const listed = listProjectScopeInventory(db, { includeEmpty: false, limit: 250 });
+			const unnamed = ids(
+				listProjectScopeInventory(db, { includeEmpty: false, limit: 250, status: "unnamed" })
+					.projects,
+			);
+			const empty = ids(
+				listProjectScopeInventory(db, { includeEmpty: false, limit: 250, status: "empty" })
+					.projects,
+			);
+
+			// Assert
+			const shown = ids(listed.projects);
+			const hidden = everything.filter((project) => !shown.has(project.workspace_identity));
+			const hiddenUnnamed = hidden.filter((project) => project.statuses.includes("unnamed"));
+			const hiddenEmpty = hidden.filter((project) => !project.statuses.includes("unnamed"));
+			expect([listed.hidden_unnamed_count, listed.hidden_empty_count]).toEqual([6, 1]);
+			expect(hiddenUnnamed).toHaveLength(listed.hidden_unnamed_count);
+			expect(hiddenEmpty).toHaveLength(listed.hidden_empty_count);
+			for (const project of hiddenUnnamed) expect(unnamed).toContain(project.workspace_identity);
+			for (const project of hidden.filter((entry) => entry.statuses.includes("empty")))
+				expect(empty).toContain(project.workspace_identity);
+		} finally {
+			db.close();
+		}
+	});
+});

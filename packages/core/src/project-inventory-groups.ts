@@ -1,9 +1,7 @@
 /**
  * How entries of the Projects inventory form rows. Presentation only: grouping never changes
- * which scope a memory or session resolves to.
- *
- * Keep this rule identical to projectClusterKeys in packages/ui/src/tabs/projects/project-view.ts;
- * both have tests pinned to the same cases.
+ * which scope a memory or session resolves to. The inventory computes each entry's key against
+ * every entry and returns it as `group_key`; the UI groups by that key alone.
  */
 
 export interface ProjectInventoryGroupEntry {
@@ -22,7 +20,7 @@ function isAbsolutePath(value: string): boolean {
 
 /**
  * The Project name a row shows, lower-cased, or null when the entry has no name of its own (a
- * generated workspace ID). Matches projectHeading in the UI.
+ * generated workspace ID). It is the title projectHeading shows in the UI.
  */
 export function projectInventoryNameKey(entry: ProjectInventoryGroupEntry): string | null {
 	const name = entry.display_project.trim();
@@ -48,7 +46,7 @@ function repositoryOf(entry: ProjectInventoryGroupEntry): string | null {
 export function projectInventoryGroupKeys<T extends ProjectInventoryGroupEntry>(
 	entries: readonly T[],
 ): Map<T, string> {
-	const base = (entry: T, name: string) => `name:${name}\u0000scope:${entry.resolved_scope_id}`;
+	const base = (entry: T, name: string) => JSON.stringify(["name", name, entry.resolved_scope_id]);
 	const repositories = new Map<string, Set<string>>();
 	for (const entry of entries) {
 		const name = projectInventoryNameKey(entry);
@@ -67,7 +65,7 @@ export function projectInventoryGroupKeys<T extends ProjectInventoryGroupEntry>(
 		const shared = base(entry, name);
 		const known = repositories.get(shared);
 		const only = known?.size === 1 ? [...known][0] : null;
-		keys.set(entry, `${shared}\u0000repo:${repositoryOf(entry) ?? only ?? ""}`);
+		keys.set(entry, JSON.stringify([shared, repositoryOf(entry) ?? only ?? ""]));
 	}
 	return keys;
 }
