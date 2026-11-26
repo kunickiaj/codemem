@@ -511,7 +511,7 @@ describe("live status for tier-routed requests", () => {
 			reasoningEffortRequestSucceeded: true,
 		});
 		expect(status.tierPromptBudgets?.simple).toMatchObject({
-			maxChars: 12_000,
+			maxChars: 24_000,
 			contentClipped: false,
 		});
 		expect(status.tierPromptBudgets?.simple?.sections?.map((section) => section.name)).toEqual([

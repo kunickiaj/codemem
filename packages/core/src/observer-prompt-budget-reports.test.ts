@@ -83,10 +83,11 @@ describe("replay of a batch fitted to its budget", () => {
 	it("reports the content length before fitting and counts it as clipped", async () => {
 		const dbPath = replayFixture(`${"Explain the queue invalidation. ".repeat(420)}DONE`);
 
-		const result = await replayBatchExtraction(dbPath, serviceObserver(), {
-			batchId: 50001,
-			scenarioId: "simple-batch-shape",
-		});
+		const result = await replayBatchExtraction(
+			dbPath,
+			serviceObserver({ observer_max_chars: 12_000 }),
+			{ batchId: 50001, scenarioId: "simple-batch-shape" },
+		);
 
 		const budget = result.observer.promptBudget;
 		expect(budget?.contentChars).toBeGreaterThan(13_000);
@@ -210,7 +211,7 @@ describe("tier-routed prompt budgets in live status", () => {
 			expect(generate).toHaveBeenCalledOnce();
 			expect(status.promptBudget).toBeNull();
 			expect(status.tierPromptBudgets?.simple).toMatchObject({
-				maxChars: 12_000,
+				maxChars: 24_000,
 				contentClipped: false,
 			});
 			expect(status.tierPromptBudgets?.simple?.sections?.[0]?.name).toBe("request");

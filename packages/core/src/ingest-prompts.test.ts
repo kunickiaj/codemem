@@ -103,7 +103,7 @@ describe("buildObserverPrompt", () => {
 			"When a durable lesson exists, emit it as an <observation>; do not leave it only in <summary>.",
 		);
 		expect(system).toContain(
-			"Routine status, review, setup, and workflow narration belongs only in <summary>.",
+			"Routine status, review, setup, and workflow narration belongs only in <summary>, and only when the batch also contains work worth summarizing.",
 		);
 		expect(system).toContain(
 			"Zero observations is valid when the session contains no durable lesson.",
@@ -174,10 +174,10 @@ describe("buildObserverPrompt", () => {
 		expect(truncated.endsWith("Z".repeat(16))).toBe(true);
 	});
 
-	it("puts repair context before content clipped by the default observer budget", () => {
+	it("puts repair context before content clipped by a 12,000-character budget", () => {
 		const previousRaw = `PREVIOUS_START${"P".repeat(6_000)}PREVIOUS_TAIL`;
 		const user = `USER_START${"U".repeat(6_000)}USER_TAIL`;
-		const prompt = buildObserverRepairPrompt("S".repeat(12_000), user, previousRaw);
+		const prompt = buildObserverRepairPrompt("S".repeat(12_000), user, previousRaw, 12_000);
 
 		expect(prompt.system.slice(0, 9_000)).toContain("previous reply was invalid");
 		expect(prompt.system).toContain("using only wording supported verbatim");
@@ -208,4 +208,45 @@ it("does not request an XML recap in observations-only recovery mode", () => {
 	expect(system).not.toContain("Summary XML schema:");
 	expect(system).not.toContain("Also emit a <summary> block");
 	expect(system).not.toContain("emit a <summary> and zero");
+});
+
+describe("observer skip rule", () => {
+	it.each(["legacy_xml", "json_schema"] as const)(
+		"makes skipping a low-signal batch take precedence over the summary in %s mode",
+		(outputMode) => {
+			const { system } = buildObserverPrompt(
+				{
+					project: "codemem",
+					userPrompt: "Read the handoff",
+					promptNumber: 1,
+					transcript: "User: read the handoff\nAssistant: read it",
+					toolEvents: [],
+					lastAssistantMessage: null,
+					diffSummary: "",
+					recentFiles: "",
+					includeSummary: true,
+				},
+				{ outputMode },
+			);
+
+			for (const shape of [
+				"Reading notes, a handoff or other context and only acknowledging it",
+				"A request that could not be carried out and produced no result",
+				"Conversation unrelated to the project's work, with nothing to carry forward",
+				"This rule holds however much observed content there is",
+			]) {
+				expect(system).toContain(shape);
+			}
+			expect(system).toContain("session progress unless the skip rule above applies");
+			// The skip rule comes before the summary template, which applies only without it.
+			const skipAt = system.indexOf("If nothing meaningful happened AND nothing was learned");
+			expect(skipAt).toBeGreaterThan(-1);
+			if (outputMode === "legacy_xml") {
+				expect(system).toContain(
+					"Summary XML schema (use it only when the skip rule does not apply):",
+				);
+				expect(skipAt).toBeLessThan(system.indexOf("<request>"));
+			}
+		},
+	);
 });

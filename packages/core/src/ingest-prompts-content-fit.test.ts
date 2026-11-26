@@ -172,9 +172,9 @@ describe("observer content over budget", () => {
 		expect(prompt.user).toContain("TRANSCRIPT_END");
 	});
 
-	it("keeps the example batch whole at 24,000 and 48,000", () => {
+	it("keeps the example batch whole at 30,000 and 48,000", () => {
 		const whole = { request: 306, transcript: 4_788, tool_events: 7_308, summary_context: 923 };
-		expect(sentLengths(exampleBatch(), 24_000)).toEqual(whole);
+		expect(sentLengths(exampleBatch(), 30_000)).toEqual(whole);
 		expect(sentLengths(exampleBatch(), 48_000)).toEqual(whole);
 	});
 

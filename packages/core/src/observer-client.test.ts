@@ -172,7 +172,7 @@ describe("loadObserverConfig", () => {
 		const cfg = loadObserverConfig();
 		expect(cfg.observerProvider).toBeNull();
 		expect(cfg.observerModel).toBeNull();
-		expect(cfg.observerMaxChars).toBe(12_000);
+		expect(cfg.observerMaxChars).toBe(24_000);
 		expect(cfg.observerMaxTokens).toBe(4_000);
 		expect(cfg.observerTemperature).toBe(0.2);
 		expect(cfg.observerAuthSource).toBe("auto");

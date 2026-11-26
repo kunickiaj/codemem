@@ -49,13 +49,13 @@ function previousClip(system: string, user: string, maxChars: number) {
 }
 
 describe("observer prompt budget", () => {
-	it("keeps the full summary XML instructions that the default budget used to cut", () => {
+	it("keeps the full summary XML instructions that the earlier 12,000 default used to cut", () => {
 		const system = systemPrompt({ includeSummary: true, outputMode: "legacy_xml" });
 		const content = "c".repeat(12_000);
 		expect(system.length).toBeGreaterThan(9_000);
 		expect(previousClip(system, content, 12_000).system).not.toContain(SKIP_SUMMARY_RULE);
 
-		const sent = budgetObserverPrompts(system, content, DEFAULT_OBSERVER_MAX_CHARS);
+		const sent = budgetObserverPrompts(system, content, 12_000);
 
 		expect(sent.system).toBe(system);
 		expect(sent.system).toContain(SKIP_SUMMARY_RULE);
@@ -127,7 +127,12 @@ describe("observer prompt budget", () => {
 	});
 
 	it("is the default observer_max_chars", () => {
+		expect(DEFAULT_OBSERVER_MAX_CHARS).toBe(24_000);
 		expect(loadObserverConfig({}).observerMaxChars).toBe(DEFAULT_OBSERVER_MAX_CHARS);
+	});
+
+	it("keeps a configured observer_max_chars over the default", () => {
+		expect(loadObserverConfig({ observer_max_chars: 12_000 }).observerMaxChars).toBe(12_000);
 	});
 });
 
