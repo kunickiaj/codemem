@@ -8,6 +8,7 @@ import {
 	hasPendingSessionContextBackfill,
 	hasPendingSummaryDedupBackfill,
 	isEmbeddingDisabled,
+	LedgerRetentionRunner,
 	type MemoryStore,
 	MemoryStore as MemoryStoreCtor,
 	REF_BACKFILL_JOB,
@@ -212,15 +213,11 @@ function createVectorMigrationRunner(
 	});
 }
 
-export function startMaintenanceWorkerRuntime(
-	options: MaintenanceWorkerRuntimeOptions = {},
-): ManagedMaintenanceRunner {
-	const logger = options.logger ?? defaultLogger;
-	const dbPath = resolveDbPath(options.dbPath ?? undefined);
-	const store = new MemoryStoreCtor(dbPath);
-	const syncConfig = readWorkerSyncConfig(options.configPath);
-	const runners: ManagedMaintenanceRunner[] = [];
-	const walCheckpointTimer = setInterval(
+function startWalCheckpointTimer(
+	store: MemoryStore,
+	logger: MaintenanceWorkerLogger,
+): ReturnType<typeof setInterval> {
+	const timer = setInterval(
 		() => {
 			try {
 				checkpointWalWithoutBlocking(store.db, logger);
@@ -232,7 +229,19 @@ export function startMaintenanceWorkerRuntime(
 		},
 		5 * 60 * 1000,
 	);
-	walCheckpointTimer.unref();
+	timer.unref();
+	return timer;
+}
+
+export function startMaintenanceWorkerRuntime(
+	options: MaintenanceWorkerRuntimeOptions = {},
+): ManagedMaintenanceRunner {
+	const logger = options.logger ?? defaultLogger;
+	const dbPath = resolveDbPath(options.dbPath ?? undefined);
+	const store = new MemoryStoreCtor(dbPath);
+	const syncConfig = readWorkerSyncConfig(options.configPath);
+	const runners: ManagedMaintenanceRunner[] = [];
+	const walCheckpointTimer = startWalCheckpointTimer(store, logger);
 
 	if (!isEmbeddingDisabled()) {
 		runners.push(createVectorMigrationRunner(dbPath, options.signal));
@@ -285,6 +294,10 @@ export function startMaintenanceWorkerRuntime(
 	if (syncConfig.syncRetentionEnabled) {
 		runners.push(new SyncRetentionRunner({ dbPath, signal: options.signal }));
 	}
+
+	// Retrieval attempts and outcome evidence carry their own retention dates; expired rows
+	// are removed whatever the sync settings are.
+	runners.push(new LedgerRetentionRunner({ dbPath, signal: options.signal, logger }));
 
 	for (const runner of runners) runner.start();
 	logger.step("Maintenance worker started");

@@ -1523,11 +1523,46 @@ export function tryFinalizeRetrievalAttemptRetention(
 	}
 }
 
-function purgeRetrievalAttemptsWhere(
-	db: Database,
+/** Options for a purge that deletes at most `limit` attempts, earliest expiry first. */
+export interface RetrievalPurgeBatchOptions {
+	limit?: number;
+}
+
+function batchLimit(limit: number | undefined): number | null {
+	if (limit === undefined) return null;
+	if (!Number.isSafeInteger(limit) || limit < 1) {
+		throw new RetrievalLedgerValidationError("limit must be a positive integer");
+	}
+	return limit;
+}
+
+/**
+ * Narrows a purge to its first `limit` matching attempts by expiry. Every statement of the
+ * purge runs inside one IMMEDIATE transaction and retrieval_attempts is deleted last, so each
+ * statement selects the same attempts.
+ */
+function limitPurgeSelection(
 	whereClause: string,
 	params: Array<string | number>,
+	limit: number | null,
+): { whereClause: string; params: Array<string | number> } {
+	if (limit === null) return { whereClause, params };
+	return {
+		whereClause: `attempt_id IN (
+			SELECT attempt_id FROM retrieval_attempts WHERE ${whereClause}
+			ORDER BY retention_until LIMIT ?
+		)`,
+		params: [...params, limit],
+	};
+}
+
+function purgeRetrievalAttemptsWhere(
+	db: Database,
+	matchClause: string,
+	matchParams: Array<string | number>,
+	limit: number | null = null,
 ): number {
+	const { whereClause, params } = limitPurgeSelection(matchClause, matchParams, limit);
 	return db
 		.transaction(() => {
 			const attributionTables = new Set(
@@ -1614,19 +1649,27 @@ function purgeRetrievalAttemptsWhere(
 		.immediate();
 }
 
+/**
+ * Deletes unpinned version 1 attempts whose retention date has passed, with their exposures
+ * and dependent assessments. With `limit`, it deletes at most that many attempts, earliest
+ * expiry first, so a caller can work through a large backlog in short transactions.
+ */
 export function purgeExpiredRetrievalAttempts(
 	db: Database,
 	now: string = new Date().toISOString(),
+	options: RetrievalPurgeBatchOptions = {},
 ): number {
 	const timestamp = isoTimestamp(now, "now");
 	if (timestamp == null) {
 		throw new RetrievalLedgerValidationError("now must be an ISO-8601 timestamp");
 	}
+	const limit = batchLimit(options.limit);
 	// Contract v1 defines these retention fields; future versions own their expiry semantics.
 	return purgeRetrievalAttemptsWhere(
 		db,
 		"contract_version = ? AND retention_pinned = 0 AND retention_until IS NOT NULL AND retention_until <= ?",
 		[RETRIEVAL_LEDGER_CONTRACT_VERSION, timestamp],
+		limit,
 	);
 }
 

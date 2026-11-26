@@ -269,3 +269,33 @@ describe("stats command", () => {
 		}
 	});
 });
+
+describe("stats command retrieval ledger", () => {
+	it("reports retrieval ledger counts beside the store stats", async () => {
+		// Arrange
+		const dir = mkdtempSync(join(tmpdir(), "codemem-stats-ledger-"));
+		vi.stubEnv("CODEMEM_CONFIG", join(dir, "config.json"));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			// Act
+			await statsCommand.parseAsync(["--db-path", join(dir, "mem.sqlite"), "--json"], {
+				from: "user",
+			});
+
+			// Assert
+			const result = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+			expect(result.retrieval_ledger).toEqual({
+				retrieval_attempts: 0,
+				retrieval_exposures: 0,
+				expired_retrieval_attempts: 0,
+				oldest_retrieval_attempt_started_at: null,
+				outcome_evidence: 0,
+				expired_outcome_evidence: 0,
+			});
+		} finally {
+			logSpy.mockRestore();
+			vi.unstubAllEnvs();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

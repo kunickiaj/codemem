@@ -431,6 +431,12 @@ codemem memory stats --attribution --json
 - Findings include counts of stale and harmful assessments.
 - It contains no raw transcript, per-memory ROI, or composite productivity score. It makes no causal claim absent a preregistered randomized contrast.
 
+### Retrieval history retention
+
+Each time codemem builds memory context, it records the attempt and every candidate memory it considered. These rows, and the outcome evidence linked to them, are kept for 90 days by default. While the Viewer runs, its maintenance worker deletes rows past their retention date in short batches: at most 5 seconds of work per pass, and another pass 30 seconds later while expired rows remain. Study rows pinned for an evaluation and rows without a retention date are never deleted. `codemem memory stats` shows how many attempts, candidates and evidence rows are stored and how many are past retention.
+
+To delete expired rows at once, run `codemem maintenance database prune-retrieval-ledger`. Add `--dry-run` to see the counts first, and `--json` for machine-readable output. Deleted space is reused for new data; the database file only shrinks after `codemem maintenance database vacuum`.
+
 ## Semantic recall
 
 Codemem combines FTS5 keyword retrieval with sqlite-vec semantic retrieval.

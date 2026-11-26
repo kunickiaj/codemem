@@ -1372,6 +1372,7 @@ export {
 } from "./repository-mapping-aliases.js";
 export { canonicalKeyId } from "./retired-device-aliases.js";
 export * from "./retrieval-ledger.js";
+export * from "./retrieval-ledger-retention.js";
 export * from "./retrieval-surface-ledger.js";
 export type {
 	IdentityDevice,

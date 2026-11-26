@@ -1,6 +1,7 @@
 import {
 	connect,
 	type Database,
+	LedgerRetentionRunner,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 	VectorModelMigrationRunner,
@@ -98,6 +99,28 @@ describe("maintenance worker runtime", () => {
 		expect(configuredIdleInterval).toBeGreaterThanOrEqual(60_000);
 		// Several short batches per tick, each with its own write transaction.
 		expect(configuredTickBudget).toBe(5_000);
+	});
+
+	it("starts and stops retrieval ledger retention whatever the sync settings are", async () => {
+		// Arrange
+		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+		const started: LedgerRetentionRunner[] = [];
+		const start = vi.spyOn(LedgerRetentionRunner.prototype, "start").mockImplementation(function (
+			this: LedgerRetentionRunner,
+		) {
+			started.push(this);
+		});
+		const stop = vi.spyOn(LedgerRetentionRunner.prototype, "stop").mockResolvedValue();
+		const logger: MaintenanceWorkerLogger = { step: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+		// Act
+		const runtime = startMaintenanceWorkerRuntime({ dbPath: ":memory:", logger });
+		await runtime.stop();
+
+		// Assert: one runner, logging through the worker's logger.
+		expect(start).toHaveBeenCalledTimes(1);
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect((started[0] as unknown as { logger: MaintenanceWorkerLogger }).logger).toBe(logger);
 	});
 });
 
