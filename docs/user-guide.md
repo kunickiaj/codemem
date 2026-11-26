@@ -1628,6 +1628,7 @@ The wire error is intentionally generic. Check the peer serving the bootstrap sn
 - Feed cards you own include a visibility control so shared/private intent can be changed without editing raw metadata.
 - `Redact sensitive details` lives above Recent sync attempts so it is easier to find before you inspect peer addresses and attempt history.
 - Recent sync attempts intentionally show only the latest few rows in the viewer; use CLI diagnostics for deeper history if needed.
+- Sync attempt history keeps 7 days. While the Viewer runs, its maintenance worker deletes older attempts in short batches, except each peer's 10 newest attempts, its latest success and latest failure of each kind, and the 500 newest attempts overall. These are the rows peer health, sync status and the sync pass's backoff still read. A removed peer's history follows the same rule.
 
 ## Review and accept recipient invitations
 

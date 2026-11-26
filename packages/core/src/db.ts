@@ -702,6 +702,14 @@ function ensureSyncAttemptsDiagnosticIndexes(db: DatabaseType): void {
 				)
 				WHERE ok <> 0;
 		`);
+		// Old stores gain failure_category in an earlier step of the same pass; never index a
+		// column a store does not have.
+		if (columnExists(db, "sync_attempts", "failure_category")) {
+			db.exec(`
+				CREATE INDEX IF NOT EXISTS idx_sync_attempts_peer_kind_started
+					ON sync_attempts(peer_device_id, ok, failure_category, started_at);
+			`);
+		}
 	} catch {
 		// Keep additive compatibility best-effort for index creation.
 	}

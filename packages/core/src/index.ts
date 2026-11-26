@@ -1554,6 +1554,7 @@ export {
 	isSummaryLikeMemory,
 	summaryLikeSqlPredicate,
 } from "./summary-memory.js";
+export * from "./sync-attempt-retention.js";
 export type {
 	AuthHeaders,
 	BuildAuthHeadersOptions,

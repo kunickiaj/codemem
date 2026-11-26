@@ -393,6 +393,8 @@ describe("recordSyncAttempt", () => {
 	});
 
 	it("adds the failure category column for databases created before it existed", () => {
+		// A store from before the column has no index over it either.
+		db.exec("DROP INDEX IF EXISTS idx_sync_attempts_peer_kind_started");
 		db.exec("ALTER TABLE sync_attempts DROP COLUMN failure_category");
 
 		recordSyncAttempt(db, "peer-1", { ok: false, error: "connection refused" });
