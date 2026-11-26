@@ -247,7 +247,7 @@ export function resultBarrier(store: MemoryStore, options: { pauseFirstOnly?: bo
 		const worker = new Worker(new URL("./semantic-worker-entry.ts", import.meta.url), {
 			workerData: { dbPath: store.dbPath, fileIdentity: `${stat.dev}:${stat.ino}` },
 			env: {},
-			execArgv: ["--experimental-transform-types"],
+			execArgv: [],
 		});
 		worker.on("error", (error) => {
 			ranked.reject(error);

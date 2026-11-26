@@ -4,10 +4,14 @@ Thanks for helping improve codemem.
 
 ## Local setup
 
+Develop on Node 24, the version the required CI jobs use. `mise.toml` pins it for [mise](https://mise.jdx.dev): run `mise install` once in the checkout. With another version manager, select Node 24 yourself.
+
 ```text
 pnpm install
 pnpm run codemem --help
 ```
+
+Published packages support Node 24.15 and later, including Node 26. On pull requests, the `Node 26 Compatibility (not required)` job builds on Node 26, runs the packaged CLI smoke test and runs the affected tests. It is not a required check, but treat its failures as regressions.
 
 This repo is TypeScript-first. The legacy Python runtime has been removed from `main`; use git history or the archive ref if you need to inspect the old implementation.
 

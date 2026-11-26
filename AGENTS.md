@@ -1,7 +1,7 @@
 # codemem
 
 - Public repo: never add secrets, internal hostnames, private identifiers, or local artifact paths. Keep `.tmp/`, `.venv/`, `*.sqlite`, `packages/*/dist/`, `packages/viewer-server/static/`, and `.opencode/package-lock.json` out of git.
-- Default to the TypeScript toolchain: this repo is a pnpm workspace on Node 24; use the pnpm version pinned by the root `packageManager` field.
+- Default to the TypeScript toolchain: this repo is a pnpm workspace developed on Node 24 (pinned in `mise.toml`); use the pnpm version pinned by the root `packageManager` field. Published packages also support Node 26, which a CI job that is not required checks on pull requests.
 
 ## What runs where
 

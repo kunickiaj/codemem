@@ -591,6 +591,29 @@ describe("required OpenCode host workflow contract", () => {
 	});
 });
 
+describe("Node 26 compatibility job", () => {
+	it("builds, smokes the packed CLI and runs only a pull request's affected tests on Node 26", () => {
+		// Arrange
+		const job = getJob(ciWorkflow, "node-26-compat");
+		// Act
+		const commands = [...job.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
+		const build = commands.indexOf("pnpm run build");
+		const smoke = commands.indexOf("pnpm --filter codemem test:packed-artifact");
+		const affected = commands.indexOf("node scripts/ci-changed-tests.mjs test:ci:parallel");
+		// Assert: its name says it is not required, and it always passes the PR base, so even
+		// ci:full does not turn it into a full-suite run. Required jobs stay on Node 24.
+		assert.match(job, /^ {4}name: Node 26 Compatibility \(not required\)$/m);
+		assert.match(job, /^ {4}if: github\.event_name == 'pull_request'$/m);
+		assert.match(job, /^ {10}node-version: 26$/m);
+		assert.match(job, /fetch-depth: 0/u);
+		assert.match(job, /^ {10}CI_TEST_BASE: \$\{\{ github\.event\.pull_request\.base\.sha \}\}$/m);
+		assert.ok(build >= 0 && smoke > build && affected > smoke);
+		assert.doesNotMatch(job, /CI_TEST_SHARD|test:ci(?=\s|$)|continue-on-error/mu);
+		for (const id of ["tsc", "ts-test-common", "ts-test-shards", "ts-lint"])
+			assert.match(getJob(ciWorkflow, id), /^ {10}node-version: 24$/m);
+	});
+});
+
 describe("normal CI E2E workflow contract", () => {
 	it("defines the regular E2E Smoke check without an event condition", () => {
 		const smokeJob = getJob(ciWorkflow, "e2e-smoke");

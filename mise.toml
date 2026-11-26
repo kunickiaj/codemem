@@ -1,0 +1,4 @@
+# Development runtime. Published packages support Node >=24.15.0 (package.json engines),
+# which includes Node 26. The required CI jobs use Node 24, so local development does too.
+[tools]
+node = "24"
