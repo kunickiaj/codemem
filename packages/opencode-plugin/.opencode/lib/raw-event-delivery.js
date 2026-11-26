@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { sanitizeRawEventEnvelope } from "./private-text.js";
+import { sanitizeRawEventEnvelope } from "./private-text.mjs";
 import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,

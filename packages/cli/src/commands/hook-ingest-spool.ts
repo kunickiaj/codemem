@@ -22,6 +22,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { sanitizeHookPayload } from "@codemem/core";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 import {
 	type HookDeliveryOutcome,
@@ -375,7 +376,8 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 			return false;
 		}
 
-		const payloadText = JSON.stringify(payload);
+		// Private blocks never reach the spool directory.
+		const payloadText = JSON.stringify(sanitizeHookPayload(payload));
 		const tmpName = `.hook-tmp-${process.pid}-${Date.now()}-${randomInt(1000, 10000)}.json`;
 		const tmpPath = join(dir, tmpName);
 		try {

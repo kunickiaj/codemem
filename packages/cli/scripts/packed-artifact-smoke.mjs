@@ -162,7 +162,10 @@ export async function smokeAdapterWrapper(source, isolatedRoot) {
 	const sourceScriptsDirectory = resolve(workspaceRoot, relativeRoot, "scripts");
 	const wrapperPath = join(scriptsDirectory, "ingest-hook.mjs");
 	for (const scriptName of readdirSync(sourceScriptsDirectory)) {
-		if (scriptName === "codemem-normalizer.mjs") continue;
+		// Generated files come from the isolated build, not the checked-in copies.
+		if (scriptName === "codemem-normalizer.mjs" || scriptName === "codemem-private-text.mjs") {
+			continue;
+		}
 		cpSync(join(sourceScriptsDirectory, scriptName), join(scriptsDirectory, scriptName), {
 			recursive: true,
 		});

@@ -25,6 +25,7 @@ import {
 	MemoryStore,
 	ObserverClient,
 	resolveDbPath,
+	sanitizeHookPayload,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -603,7 +604,9 @@ export async function ingestPiHookPayload(
 ): Promise<IngestResult> {
 	// Only recovered receipts may carry a previously captured ceiling. A live
 	// caller cannot choose a ceiling that skips its pending extraction work.
-	const { [BOUNDARY_CEILING_FIELD]: _ignoredCeiling, ...livePayload } = payload;
+	// Clean once, so the request and the spool carry the same payload and event ID.
+	const { [BOUNDARY_CEILING_FIELD]: _ignoredCeiling, ...livePayload } =
+		sanitizeHookPayload(payload);
 	const stablePayload = stabilizePiBoundaryPayload(livePayload);
 	const runtime = createPiIngestRuntime(stablePayload, opts, deps);
 	const boundaryRequested = shouldForcePiBoundaryFlush(stablePayload);

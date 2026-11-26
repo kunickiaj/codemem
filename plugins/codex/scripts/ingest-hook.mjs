@@ -18,6 +18,7 @@ import {
 	buildRawEventEnvelopeFromCodexHook,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./codemem-normalizer.mjs";
+import { sanitizeRawEventEnvelope } from "./codemem-private-text.mjs";
 import { identityTarget, resolveDbPath, viewerBaseUrl } from "./user-prompt-hook.mjs";
 
 export { viewerBaseUrl };
@@ -204,9 +205,10 @@ export async function runCodexIngestHook(overrides = {}) {
 			}
 
 			const nativePayload = normalizeTimestampAndNonce(parsed);
-			const envelope = buildRawEventEnvelopeFromCodexHook(
-				nativePayload,
-				TRUSTED_HOOK_MAPPER_OPTIONS,
+			// Remove private blocks once, so the request, the spool and both command
+			// fallbacks carry the same body.
+			const envelope = sanitizeRawEventEnvelope(
+				buildRawEventEnvelopeFromCodexHook(nativePayload, TRUSTED_HOOK_MAPPER_OPTIONS),
 			);
 			if (envelope !== null) {
 				const envelopeBody = JSON.stringify(envelope);

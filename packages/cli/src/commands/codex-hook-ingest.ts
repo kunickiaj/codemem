@@ -12,6 +12,7 @@ import {
 	ingestRawEvents,
 	loadSqliteVec,
 	resolveDbPath,
+	sanitizeHookPayload,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -332,7 +333,8 @@ export async function ingestCodexHookPayload(
 	const httpIngest = deps.httpIngest ?? tryHttpIngest;
 	const resolveDb = deps.resolveDb ?? resolveDbPath;
 	const port = typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10);
-	const ingestPayload = normalizePayloadForIngest(payload);
+	// Clean once, so the request and the spool carry the same payload and event ID.
+	const ingestPayload = normalizePayloadForIngest(sanitizeHookPayload(payload));
 	let cachedDbPath: string | null = null;
 	const getDbPath = (): string => {
 		if (cachedDbPath === null) cachedDbPath = resolveDb(resolveDbOpt(opts));

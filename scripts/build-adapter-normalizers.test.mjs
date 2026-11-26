@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { buildAdapterNormalizers } from "./build-adapter-normalizers.mjs";
+import { buildAdapterNormalizers, privateTextOutputs } from "./build-adapter-normalizers.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const fixturePath = resolve(
@@ -40,6 +40,35 @@ test("generated normalizers have deterministic checked-in bytes", async () => {
 			);
 		}
 	});
+});
+
+test("every plugin copy of the private-text lexer is generated from core", async () => {
+	await withGeneratedArtifacts(async (directory) => {
+		for (const relativePath of privateTextOutputs) {
+			const [generated, checkedIn] = await Promise.all([
+				readFile(resolve(directory, relativePath)),
+				readFile(resolve(repoRoot, relativePath)),
+			]);
+			assert.deepEqual(
+				generated,
+				checkedIn,
+				`${relativePath} differs from core's private-text.ts; run pnpm run build:adapter-normalizers`,
+			);
+			assert.doesNotMatch(generated.toString("utf8"), /\bimport\b/);
+		}
+	});
+});
+
+test("every plugin copy of the private-text lexer passes the shared vectors", async () => {
+	const { vectors } = JSON.parse(
+		await readFile(resolve(repoRoot, "packages/core/src/private-text-vectors.json"), "utf8"),
+	);
+	for (const relativePath of privateTextOutputs) {
+		const copy = await import(pathToFileURL(resolve(repoRoot, relativePath)).href);
+		for (const { name, input, expected } of vectors) {
+			assert.equal(copy.stripPrivate(input), expected, `${relativePath}: ${name}`);
+		}
+	}
 });
 
 test("generated normalizers import without workspace dependencies", async () => {

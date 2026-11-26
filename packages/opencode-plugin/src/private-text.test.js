@@ -6,8 +6,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	sanitizeRawEventEnvelope,
 	stripPrivate,
-	stripPrivateObj,
-} from "../.opencode/lib/private-text.js";
+	stripPrivateValues,
+} from "../.opencode/lib/private-text.mjs";
 import { createRawEventDelivery } from "../.opencode/lib/raw-event-delivery.js";
 import { loadRawEventSpoolEntries } from "../.opencode/lib/raw-event-spool.js";
 
@@ -28,7 +28,7 @@ describe("plugin private-text lexer", () => {
 
 	test("scans each value of an object on its own and drops a marked key", () => {
 		expect(
-			stripPrivateObj({ a: "x <private>open", b: "kept", "<private>k</private>": "gone", n: 3 }),
+			stripPrivateValues({ a: "x <private>open", b: "kept", "<private>k</private>": "gone", n: 3 }),
 		).toEqual({ a: "x ", b: "kept", n: 3 });
 	});
 

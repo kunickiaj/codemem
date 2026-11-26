@@ -23,6 +23,7 @@ import {
 	MemoryStore,
 	ObserverClient,
 	resolveDbPath,
+	sanitizeHookPayload,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -543,10 +544,13 @@ async function spoolClaudeHttpFailure(
  * Boundary events retain locked direct ingestion as the terminal fallback.
  */
 export async function ingestClaudeHookPayload(
-	payload: Record<string, unknown>,
+	nativePayload: Record<string, unknown>,
 	opts: IngestOpts,
 	deps: IngestDeps = {},
 ): Promise<IngestResult> {
+	// Clean once, so the request, the spool and the session state carry the same payload
+	// and its stable event ID does not depend on the delivery path.
+	const payload = sanitizeHookPayload(nativePayload);
 	// Update per-session state alongside ingestion so claude-hook-inject's
 	// retrieval query can draw on prompts/files seen on the ingest path.
 	// Failures must never crash the hook command.

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { type DelegatedBriefContext, normalizeCaptureContext } from "./capture-context.js";
 import { type Database, toJsonNullable } from "./db.js";
 import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
+import { sanitizeRawEventEnvelope } from "./private-text.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { ensureRawEventCaptureContextSchema } from "./schema-bootstrap.js";
 
@@ -576,39 +577,10 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 		.immediate();
 }
 
-const EVENT_METADATA_KEYS = ["cwd", "project", "started_at"] as const;
-
-/**
- * Remove private blocks from one event's content: its payload values and its
- * session metadata. Routing fields such as source, session, stream and event IDs
- * are left exactly as sent.
- */
-function sanitizeRawEventItem(item: Record<string, unknown>): Record<string, unknown> {
-	const sanitized = { ...item };
-	if (item.payload != null && typeof item.payload === "object") {
-		sanitized.payload = stripPrivateObj(item.payload);
-	}
-	for (const key of EVENT_METADATA_KEYS) {
-		if (typeof item[key] === "string") sanitized[key] = stripPrivate(item[key] as string);
-	}
-	return sanitized;
-}
-
-/** Each event of a request is cleaned on its own, so one event cannot hide another's fields. */
-function sanitizeRawEventRequest(request: Record<string, unknown>): Record<string, unknown> {
-	const sanitized = sanitizeRawEventItem(request);
-	if (Array.isArray(request.events)) {
-		sanitized.events = request.events.map((event) =>
-			event != null && typeof event === "object" && !Array.isArray(event)
-				? sanitizeRawEventItem(event as Record<string, unknown>)
-				: event,
-		);
-	}
-	return sanitized;
-}
-
 export function validateRawEvents(request: object): RawEventValidationResult {
-	const sanitized = sanitizeRawEventRequest(request as Record<string, unknown>);
+	// Each event of a request is cleaned on its own, so one event cannot hide another's
+	// fields. Payloads also lose sensitive fields; routing fields are left as sent.
+	const sanitized = sanitizeRawEventEnvelope(request as Record<string, unknown>, stripPrivateObj);
 	const normalized = normalizeRequest(sanitized);
 	return { received: normalized.received, request: sanitized };
 }

@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sanitizeHookPayload } from "@codemem/core";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 
 export function spoolLiveHookPayload(
@@ -23,7 +24,8 @@ export function spoolLiveHookPayload(
 	const finalName = `zz-hook-live-${wallTime}-z${monotonicTime}-${suffix}`;
 	const tmpPath = join(dir, tmpName);
 	try {
-		writeFileSync(tmpPath, JSON.stringify(payload), { encoding: "utf8" });
+		// Private blocks never reach the spool directory.
+		writeFileSync(tmpPath, JSON.stringify(sanitizeHookPayload(payload)), { encoding: "utf8" });
 		renameSync(tmpPath, join(dir, finalName));
 	} catch {
 		try {
