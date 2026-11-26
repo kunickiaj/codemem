@@ -57,9 +57,9 @@ it("never asks to pair a coordinator-managed relay health probe", () => {
 		},
 	});
 	mount(intent({ identityDevices: [] }), reconciliation(), { inventory: projected });
-	expect(
-		document.querySelector('[aria-labelledby="service-devices-heading"]')?.textContent,
-	).toContain("Relay health probe");
+	expect(document.querySelector(".devices-coordinator-services")?.textContent).toContain(
+		"Relay health probe",
+	);
 	expect(document.body.textContent).not.toContain("Pairing required");
 	expect(document.body.textContent).not.toContain("Manual pairing requires");
 	expect(document.querySelector('[aria-label="Pair Relay health probe"]')).toBeNull();
@@ -648,7 +648,7 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("2 unknown");
 	});
 
-	it("lists service devices separately without pairing or availability counts", () => {
+	it("lists service devices in a collapsed list without pairing or availability counts", () => {
 		mount(intent({ identityDevices: [] }), reconciliation(), {
 			inventory: inventory([
 				inventoryItem("pair-device", "Pair device", "pairing_required"),
@@ -658,13 +658,27 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 			]),
 		});
 
-		const services = document.querySelector('[aria-labelledby="service-devices-heading"]');
-		expect(services?.textContent).toContain("Relay health probe");
-		expect(services?.textContent).toContain("Service device");
+		const services = document.querySelector<HTMLDetailsElement>(".devices-coordinator-services");
+		expect(services?.open).toBe(false);
+		expect(services?.querySelector("summary")?.textContent).toBe("Coordinator services");
+		const rows = [...(services?.querySelectorAll("li") ?? [])];
+		expect(rows.map((row) => row.textContent)).toEqual([
+			"Relay health probe · Run by the coordinator",
+		]);
+		expect(document.querySelector("#service-devices-heading")).toBeNull();
+		expect(document.body.textContent).not.toContain("Service devices");
 		expect(document.querySelector('[aria-label="Pair Relay health probe"]')).toBeNull();
 		expect(document.querySelector("#device-identity-card-relay-probe")).toBeNull();
 		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("1 unknown");
 		expect(document.querySelector(".devices-heading-count")?.textContent).toBe("· 1");
+	});
+
+	it("omits the coordinator services list when there are no service devices", () => {
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: inventory([inventoryItem("pair-device", "Pair device", "pairing_required")]),
+		});
+
+		expect(document.querySelector(".devices-coordinator-services")).toBeNull();
 	});
 
 	it("counts a retired device as revoked instead of listing it", () => {
