@@ -5,7 +5,7 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const MODEL_READINESS_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
 /** How long a service's model catalog answers variant lookups before it is fetched again. */
 const VARIANT_CACHE_TTL_MS = 10 * 60_000;
-/** A catalog that lacked the model or the requested variant is fetched again sooner. */
+/** How long a variant a fresh catalog did not list falls back without fetching again. */
 const VARIANT_MISS_TTL_MS = 60_000;
 
 class ResponseTooLargeError extends Error {}
@@ -138,7 +138,9 @@ function loadVariantCatalog(target: ServiceTarget): Promise<VariantCatalog | nul
 	if (pending) return pending;
 	const load = fetchModelCatalog(target)
 		.then((models) => {
-			if (!models) return null;
+			// While the service loads its providers it can answer with an empty list. That
+			// says nothing about any model, so it is neither used nor cached.
+			if (!models || models.length === 0) return null;
 			const catalog = {
 				fetchedAt: Date.now(),
 				byModel: new Map(
@@ -166,9 +168,21 @@ type VariantSelection =
 	| { variant: string; reason: null }
 	| { variant: null; reason: Exclude<V2EffortReport["fallbackReason"], null> };
 
+/** Variants a fresh catalog did not list for a model that it did list, with when to look again. */
+const unlistedVariants = new Map<string, number>();
+
+function cachedCatalog(target: ServiceTarget): VariantCatalog | null {
+	const catalog = variantCatalogs.get(target.url.origin);
+	if (!catalog || Date.now() - catalog.fetchedAt > VARIANT_CACHE_TTL_MS) return null;
+	return catalog;
+}
+
 /**
- * The variant this service lists for the requested effort. A model without the
- * variant, or a service whose catalog reports no variants, gets nothing sent.
+ * The variant this service lists for the requested effort. A cached catalog that
+ * misses, or a fetched one that does not describe the model, can be stale or caught
+ * while the service loads its providers, so the catalog is fetched once more before
+ * the effort is dropped. Only a fresh catalog that lists the model without the
+ * variant is remembered as a miss.
  */
 async function selectVariant(
 	target: ServiceTarget,
@@ -177,17 +191,25 @@ async function selectVariant(
 	requested: string,
 ): Promise<VariantSelection> {
 	const key = `${provider}/${model}`;
-	const find = (catalog: VariantCatalog) =>
-		catalog.byModel.get(key)?.find((variant) => variant.toLowerCase() === requested) ?? null;
-	let catalog = variantCatalogs.get(target.url.origin) ?? null;
-	const age = catalog ? Date.now() - catalog.fetchedAt : Number.POSITIVE_INFINITY;
-	const listed = catalog ? find(catalog) : null;
-	if (age > (listed ? VARIANT_CACHE_TTL_MS : VARIANT_MISS_TTL_MS)) {
-		catalog = await loadVariantCatalog(target);
+	const missKey = rejectedVariantKey(target, provider, model, requested);
+	const find = (catalog: VariantCatalog | null) =>
+		catalog?.byModel.get(key)?.find((variant) => variant.toLowerCase() === requested) ?? null;
+	const cached = cachedCatalog(target);
+	let catalog = cached ?? (await loadVariantCatalog(target));
+	// Whether this call's lookup used a catalog fetched just now.
+	let fresh = !cached && catalog !== null;
+	let variant = find(catalog);
+	const knownMiss = Date.now() < (unlistedVariants.get(missKey) ?? 0);
+	if (!variant && !knownMiss && (cached || !catalog?.byModel.has(key))) {
+		const refreshed = await loadVariantCatalog(target);
+		// A failed refresh confirms nothing; the cached list stays for other lookups.
+		if (!refreshed) return { variant: null, reason: "variants_unavailable" };
+		catalog = refreshed;
+		fresh = true;
+		variant = find(catalog);
 	}
-	if (!catalog) return { variant: null, reason: "variants_unavailable" };
-	const variant = find(catalog);
-	if (!variant) return { variant: null, reason: "variant_not_listed" };
+	if (!variant) return missingVariant(catalog, key, missKey, { confirmed: fresh || knownMiss });
+	unlistedVariants.delete(missKey);
 	// A catalog can keep listing a variant the service rejects; skip it for a while.
 	const retryAt = rejectedVariants.get(rejectedVariantKey(target, provider, model, variant)) ?? 0;
 	return Date.now() < retryAt
@@ -195,11 +217,32 @@ async function selectVariant(
 		: { variant, reason: null };
 }
 
+/**
+ * Why no variant is sent: a fresh catalog, now or within the last minute, lists the
+ * model without it, or no usable catalog describes the model.
+ */
+function missingVariant(
+	catalog: VariantCatalog | null,
+	key: string,
+	missKey: string,
+	{ confirmed }: { confirmed: boolean },
+): VariantSelection {
+	if (!confirmed || !catalog?.byModel.has(key)) {
+		return { variant: null, reason: "variants_unavailable" };
+	}
+	// Keep an earlier miss's deadline, so a miss is looked up again after a minute.
+	if (!(Date.now() < (unlistedVariants.get(missKey) ?? 0))) {
+		unlistedVariants.set(missKey, Date.now() + VARIANT_MISS_TTL_MS);
+	}
+	return { variant: null, reason: "variant_not_listed" };
+}
+
 /** Forget every cached model catalog, so the next lookup fetches again. */
 export function clearOpenCodeV2ModelVariantCache(): void {
 	variantCatalogs.clear();
 	pendingCatalogs.clear();
 	rejectedVariants.clear();
+	unlistedVariants.clear();
 }
 
 export type V2GenerationResult =
