@@ -19,16 +19,16 @@ describe("extraction benchmarks", () => {
 			expect.objectContaining({ batchId: 18476 }),
 		]);
 		expect(profile?.recommendedTruthModel.model).toBe("gpt-5.4");
-		expect(profile?.cheapCandidate.model).toBe("gpt-5.6-luna");
+		expect(profile?.cheapCandidate.model).toBe("gpt-6-luna");
 		expect(profile?.modelCandidates).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					model: "gpt-5.6-luna",
+					model: "gpt-6-luna",
 					role: "simple_baseline",
 					reasoningEffort: "medium",
 				}),
 				expect.objectContaining({
-					model: "gpt-5.6-terra",
+					model: "gpt-6.1-terra",
 					role: "rich_baseline",
 					reasoningEffort: "medium",
 				}),
@@ -72,11 +72,11 @@ describe("extraction benchmarks", () => {
 		);
 		expect(profile?.modelCandidates).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({ model: "gpt-5.4", role: "rich_baseline" }),
+				expect.objectContaining({ model: "gpt-6.1-terra", role: "rich_baseline" }),
 				expect.objectContaining({ model: "gpt-5.5", role: "quality_ceiling" }),
 				expect.objectContaining({
 					model: "gpt-5.6-terra",
-					role: "cost_matched_challenger",
+					role: "legacy_rich_baseline",
 				}),
 			]),
 		);
@@ -190,5 +190,33 @@ describe("extraction benchmarks", () => {
 		expect(
 			freshReview?.status === "reviewed" ? freshReview.labels[0]?.keywordGroups[0] : [],
 		).not.toContain("mutated keyword");
+	});
+});
+
+describe("extraction benchmark tier baselines", () => {
+	it.each(["balanced-observer-quality-v1", "rich-batch-shape-v1", "mixed-batch-routing-v1"])(
+		"%s names the current tier defaults as baselines and earlier models as legacy",
+		(id) => {
+			const candidates = getExtractionBenchmarkProfile(id)?.modelCandidates ?? [];
+			const models = (role: string) =>
+				candidates.filter((candidate) => candidate.role === role).map((c) => c.model);
+
+			expect(models("simple_baseline")).toEqual(["gpt-6-luna"]);
+			expect(models("rich_baseline")).toEqual(["gpt-6.1-terra"]);
+			expect(models("legacy_rich_baseline")).toContain("gpt-5.4");
+		},
+	);
+
+	it("keeps both GPT-5.6 tier models as legacy baselines in the balanced profile", () => {
+		const candidates = getExtractionBenchmarkProfile(
+			"balanced-observer-quality-v1",
+		)?.modelCandidates;
+
+		expect(candidates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ model: "gpt-5.6-luna", role: "legacy_simple_baseline" }),
+				expect.objectContaining({ model: "gpt-5.6-terra", role: "legacy_rich_baseline" }),
+			]),
+		);
 	});
 });

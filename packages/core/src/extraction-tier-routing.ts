@@ -57,7 +57,7 @@ export const SIMPLE_TIER_DEFAULTS: Partial<ObserverConfig> = {
 
 export const RICH_TIER_DEFAULTS: Partial<ObserverConfig> = {
 	observerProvider: "openai",
-	observerModel: "gpt-5.6-terra",
+	observerModel: "gpt-6.1-terra",
 	observerTemperature: 0.2,
 	observerOpenAIUseResponses: true,
 	observerReasoningEffort: "medium",

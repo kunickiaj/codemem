@@ -26,7 +26,7 @@ it.each(["openai", "anthropic"])(
 				provider === "openai" ? "gpt-6-luna" : "claude-haiku-4-5",
 			);
 			expect(rich.observer.observerModel).toBe(
-				provider === "openai" ? "gpt-5.6-terra" : "claude-sonnet-4-6",
+				provider === "openai" ? "gpt-6.1-terra" : "claude-sonnet-4-6",
 			);
 		}
 	},

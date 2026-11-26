@@ -18,7 +18,7 @@ it.each(["", "  "])("uses tier defaults when environment overrides are blank (%j
 		const config = loadObserverConfig({ observer_runtime: "codex_sidecar" });
 		for (const [tier, model] of [
 			["simple", "gpt-6-luna"],
-			["rich", "gpt-5.6-terra"],
+			["rich", "gpt-6.1-terra"],
 		] as const) {
 			expect(
 				buildTieredObserverSelection(config, { tier, reasons: [], observer: {} }).observer
@@ -32,7 +32,7 @@ it.each(["", "  "])("uses tier defaults when environment overrides are blank (%j
 
 it.each([
 	{ tier: "simple", expectedModel: "gpt-6-luna" },
-	{ tier: "rich", expectedModel: "gpt-5.6-terra" },
+	{ tier: "rich", expectedModel: "gpt-6.1-terra" },
 ] as const)(
 	"uses the Codex $tier default without an explicit base model",
 	({ tier, expectedModel }) => {

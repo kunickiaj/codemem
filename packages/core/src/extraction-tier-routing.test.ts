@@ -53,7 +53,7 @@ describe("extraction tier routing", () => {
 		});
 
 		expect(decision.tier).toBe("rich");
-		expect(decision.observer.observerModel).toBe("gpt-5.6-terra");
+		expect(decision.observer.observerModel).toBe("gpt-6.1-terra");
 		expect(decision.observer.observerOpenAIUseResponses).toBe(true);
 		expect(decision.observer.observerReasoningEffort).toBe("medium");
 		expect(decision.reasons.length).toBeGreaterThan(0);
@@ -102,7 +102,7 @@ describe("extraction tier routing", () => {
 		});
 		const config = buildTieredObserverConfig(baseConfig(), decision);
 		expect(config.observerOpenAIUseResponses).toBe(true);
-		expect(config.observerModel).toBe("gpt-5.6-terra");
+		expect(config.observerModel).toBe("gpt-6.1-terra");
 		expect(config.observerReasoningEffort).toBe("medium");
 	});
 
@@ -459,7 +459,7 @@ describe("extraction tier routing", () => {
 			expect.objectContaining({
 				requestedTier: "rich",
 				requestedProvider: "openai",
-				requestedModel: "gpt-5.6-terra",
+				requestedModel: "gpt-6.1-terra",
 				requestedRuntime: "api_http",
 				requestedOpenAIResponses: true,
 				fallbackApplied: false,

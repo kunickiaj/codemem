@@ -6,46 +6,43 @@ import {
 } from "./extraction-model-pricing.js";
 
 describe("extraction model pricing", () => {
-	it("lists the explicit benchmark model prices", () => {
-		expect(listExtractionModelPricing()).toEqual([
-			expect.objectContaining({
-				model: "gpt-6-luna",
-				inputUsdPerMillionTokens: 0.1,
-				outputUsdPerMillionTokens: 0.5,
-			}),
-			expect.objectContaining({
-				model: "gpt-5.4-mini",
-				inputUsdPerMillionTokens: 0.75,
-				outputUsdPerMillionTokens: 4.5,
-			}),
-			expect.objectContaining({
-				model: "gpt-5.4",
-				inputUsdPerMillionTokens: 2.5,
-				outputUsdPerMillionTokens: 15,
-			}),
-			expect.objectContaining({
-				model: "gpt-5.5",
-				inputUsdPerMillionTokens: 5,
-				outputUsdPerMillionTokens: 30,
-			}),
-			expect.objectContaining({
-				model: "gpt-5.6-luna",
-				inputUsdPerMillionTokens: 1,
-				outputUsdPerMillionTokens: 6,
-			}),
-			expect.objectContaining({ model: "gpt-5.6-terra" }),
-			expect.objectContaining({ model: "gpt-5.6-sol" }),
+	it("lists the published list rates for every priced model", () => {
+		expect(
+			listExtractionModelPricing().map((pricing) => [
+				pricing.model,
+				pricing.inputUsdPerMillionTokens,
+				pricing.outputUsdPerMillionTokens,
+			]),
+		).toEqual([
+			["gpt-6-luna", 0.1, 0.5],
+			["gpt-6.1-terra", 1, 5],
+			["gpt-6.2-sol", 2, 10],
+			["gpt-6.2-astra", 8, 40],
+			["gpt-5.4-mini", 0.75, 4.5],
+			["gpt-5.4", 2.5, 15],
+			["gpt-5.5", 5, 30],
+			["gpt-5.6-luna", 0.2, 1.2],
+			["gpt-5.6-terra", 2, 12],
+			["gpt-5.6-sol", 4, 20],
+			["claude-haiku-4-5", 1, 5],
+			["claude-sonnet-4-6", 3, 15],
+			["claude-haiku-5-5", 0.1, 0.5],
+			["claude-sonnet-5-5", 2, 10],
 		]);
 	});
 
 	it.each([
 		["gpt-6-luna", "gpt-6-luna", 0.1, 0.5],
-		["gpt-5.6-luna", "gpt-5.6-luna", 1, 6],
-		["Luna", "gpt-5.6-luna", 1, 6],
-		["gpt-5.6-terra", "gpt-5.6-terra", 2.5, 15],
-		["Terra", "gpt-5.6-terra", 2.5, 15],
-		["gpt-5.6-sol", "gpt-5.6-sol", 5, 30],
-		["Sol", "gpt-5.6-sol", 5, 30],
+		["gpt-6.1-terra", "gpt-6.1-terra", 1, 5],
+		["gpt-5.6-luna", "gpt-5.6-luna", 0.2, 1.2],
+		["Luna", "gpt-5.6-luna", 0.2, 1.2],
+		["gpt-5.6-terra", "gpt-5.6-terra", 2, 12],
+		["Terra", "gpt-5.6-terra", 2, 12],
+		["gpt-5.6-sol", "gpt-5.6-sol", 4, 20],
+		["Sol", "gpt-5.6-sol", 4, 20],
+		["claude-4.5-haiku", "claude-haiku-4-5", 1, 5],
+		["claude-haiku-4-5-20251001", "claude-haiku-4-5", 1, 5],
+		["claude-4.6-sonnet", "claude-sonnet-4-6", 3, 15],
 	] as const)("resolves the %s alias", (alias, model, inputRate, outputRate) => {
 		expect(getExtractionModelPricing(alias)).toEqual(
 			expect.objectContaining({

@@ -1224,7 +1224,7 @@ describe("ObserverClient.observe()", () => {
 
 	it.each([
 		{ tier: "simple", expectedModel: "gpt-6-luna" },
-		{ tier: "rich", expectedModel: "gpt-5.6-terra" },
+		{ tier: "rich", expectedModel: "gpt-6.1-terra" },
 	] as const)("sends the shipped $tier tier over OAuth codex_consumer", async (scenario) => {
 		const prevHome = process.env.HOME;
 		const savedApiKeys = {

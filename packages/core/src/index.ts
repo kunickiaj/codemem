@@ -596,6 +596,7 @@ export type {
 	ExtractionBenchmarkLabelDisposition,
 	ExtractionBenchmarkModelCandidate,
 	ExtractionBenchmarkProfile,
+	ExtractionBenchmarkReasoningEffort,
 	ExtractionBenchmarkReview,
 } from "./extraction-benchmarks.js";
 export {

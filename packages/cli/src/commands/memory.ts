@@ -1678,6 +1678,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					quality: ExtractionBenchmarkScore | null;
 				}>;
 				const contextOnlySkips: ExtractionBenchmarkContextOnlySkip[] = [];
+				const callFailures: BenchmarkCallFailure[] = [];
 				for (let iteration = 1; iteration <= repetitions; iteration += 1) {
 					for (const batch of benchmark.batches) {
 						const scenarioId = batch.scenarioId ?? benchmark.scenarioId;
@@ -1717,7 +1718,9 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 								!(error instanceof ObserverOutputError) &&
 								!(error instanceof ObserverOutputTransportError)
 							) {
-								throw error;
+								// Keep the finished batches: record this one and report it at the end.
+								callFailures.push(benchmarkCallFailure(error, iteration, batch));
+								continue;
 							}
 							if (opts.observerTierRouting !== true) {
 								selectedObserver = extractionReplayObserverIdentity(observer, null);
@@ -1944,7 +1947,11 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					),
 					output: summarizeExtractionBenchmarkReporting(attempts),
 					outputFailures,
+					callFailed: callFailures.length,
+					callFailures,
 				};
+				// A failed observer call does not stop the run, but the run did not finish cleanly.
+				if (callFailures.length > 0) process.exitCode = 1;
 				const uniqueObserverKeys = Array.from(
 					new Set(attempts.map((run) => `${run.provider}::${run.model}::${run.transport}`)),
 				);
@@ -2056,20 +2063,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`  [${run.batchId}#${run.iteration}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} mode=${run.requestedOutputMode}/${run.actualOutputMode} valid=${run.outputValidation} disposition=${run.quality?.summaryDisposition.actual ?? "n/a"}/${run.expectedSummaryDisposition} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model} [${run.transport}] initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o quality=${qualityLabel} coverage=${run.quality?.weightedQualityCoverage?.toFixed(3) ?? "n/a"} required_missing=${missingRequired} cost=${costLabel} latency=${latencyLabel} schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} fallback=${run.modelFallbackApplied ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} retry=${run.retryAttempted ? (run.retryReason ?? "yes") : "no"} — ${run.label}`,
 					);
 				}
-				for (const failure of outputFailures.toSorted(
-					(left, right) => left.iteration - right.iteration || left.batchId - right.batchId,
-				)) {
-					const costLabel =
-						failure.cost.total == null ? "n/a" : `$${failure.cost.total.totalCostUsd.toFixed(6)}`;
-					const latencyLabel =
-						failure.telemetry.totalElapsedMs == null
-							? "n/a"
-							: `${failure.telemetry.totalElapsedMs}ms`;
-					p.log.error(
-						`  [${failure.batchId}#${failure.iteration}] output_failure tier=${failure.tier ?? "n/a"} expected=${failure.expectedTier ?? "n/a"} mode=${failure.requestedOutputMode}/${failure.actualOutputMode} model=${failure.model ?? "unresolved"} cost=${costLabel} latency=${latencyLabel} — ${failure.reason}`,
-					);
-				}
-				p.outro("done");
+				logBenchmarkFailures(outputFailures, callFailures);
+				p.outro(
+					callFailures.length > 0 ? `done with ${callFailures.length} failed call(s)` : "done",
+				);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : "Extraction benchmark failed";
 				if (opts.json) {
@@ -2243,6 +2240,70 @@ export function createMemoryDiagnosticsCommand(): Command {
 		.addCommand(createMemoryArtifactReportCommand().name("artifacts"))
 		.addCommand(createMemoryRelinkReportCommand().name("relink"))
 		.addCommand(createMemoryRelinkPlanCommand());
+}
+
+interface BenchmarkFailureLogEntry {
+	iteration: number;
+	batchId: number;
+	tier: string | null;
+	expectedTier: string | null;
+	requestedOutputMode: string;
+	actualOutputMode: string;
+	model: string | null;
+	reason: string;
+	cost: { total: ExtractionModelCostEstimate | null };
+	telemetry: { totalElapsedMs: number | null };
+}
+
+/** Text-mode lines for batches whose output or observer call failed. */
+function logBenchmarkFailures(
+	outputFailures: readonly BenchmarkFailureLogEntry[],
+	callFailures: readonly BenchmarkCallFailure[],
+): void {
+	for (const failure of outputFailures.toSorted(
+		(left, right) => left.iteration - right.iteration || left.batchId - right.batchId,
+	)) {
+		const costLabel =
+			failure.cost.total == null ? "n/a" : `$${failure.cost.total.totalCostUsd.toFixed(6)}`;
+		const latencyLabel =
+			failure.telemetry.totalElapsedMs == null ? "n/a" : `${failure.telemetry.totalElapsedMs}ms`;
+		p.log.error(
+			`  [${failure.batchId}#${failure.iteration}] output_failure tier=${failure.tier ?? "n/a"} expected=${failure.expectedTier ?? "n/a"} mode=${failure.requestedOutputMode}/${failure.actualOutputMode} model=${failure.model ?? "unresolved"} cost=${costLabel} latency=${latencyLabel} — ${failure.reason}`,
+		);
+	}
+	for (const failure of callFailures) {
+		p.log.error(
+			`  [${failure.batchId}#${failure.iteration}] call_failure ${failure.error} — ${failure.message}`,
+		);
+	}
+}
+
+/** A benchmark batch whose observer call failed outright. The run records it and continues. */
+interface BenchmarkCallFailure {
+	iteration: number;
+	batchId: number;
+	purpose: string;
+	status: "call_failure";
+	error: string;
+	message: string;
+}
+
+const MAX_CALL_FAILURE_MESSAGE_CHARS = 500;
+
+function benchmarkCallFailure(
+	error: unknown,
+	iteration: number,
+	batch: Pick<BenchmarkCallFailure, "batchId" | "purpose">,
+): BenchmarkCallFailure {
+	const message = error instanceof Error ? error.message : String(error);
+	return {
+		iteration,
+		batchId: batch.batchId,
+		purpose: batch.purpose,
+		status: "call_failure",
+		error: error instanceof Error ? error.name : "Error",
+		message: message.slice(0, MAX_CALL_FAILURE_MESSAGE_CHARS),
+	};
 }
 
 export function createExtractionDiagnosticsCommand(): Command {

@@ -598,7 +598,7 @@ Example agent requests:
 
 ## Observer model defaults
 
-- OpenAI: `gpt-6-luna` (tier routing uses `gpt-6-luna` for simple batches and `gpt-5.6-terra` for rich batches)
+- OpenAI: `gpt-6-luna` (tier routing uses `gpt-6-luna` for simple batches and `gpt-6.1-terra` for rich batches)
 - Anthropic: `claude-4.5-haiku` (mapped to Anthropic direct API alias `claude-haiku-4-5` when using `api_http`)
 
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
@@ -650,9 +650,9 @@ Observer connections support API keys, an OpenCode account, and local Claude or 
 - codemem auto-selects `codex_sidecar` only when no `observer_runtime` is set, no API key is available from any provider, the OpenCode OAuth cache has no usable credentials, the `codex` CLI is resolvable, and `~/.codex/auth.json` exists. Otherwise set `observer_runtime = "codex_sidecar"` (or `CODEMEM_OBSERVER_RUNTIME=codex_sidecar`) explicitly.
 - Default models:
 - `api_key` and legacy `api_http`: `gpt-6-luna` for OpenAI unless `observer_model` is set.
-- `opencode_v2`: the selected provider's default model unless `observer_model` is set; OpenAI uses `gpt-6-luna`. With OpenAI tier routing enabled, simple/rich defaults are `gpt-6-luna` / `gpt-5.6-terra`.
+- `opencode_v2`: the selected provider's default model unless `observer_model` is set; OpenAI uses `gpt-6-luna`. With OpenAI tier routing enabled, simple/rich defaults are `gpt-6-luna` / `gpt-6.1-terra`.
 - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
-- `codex_sidecar`: `gpt-6-luna` unless `observer_model` is set; with tier routing enabled, simple/rich defaults are `gpt-6-luna` / `gpt-5.6-terra`. Explicit tier models take precedence over an explicit base model, which takes precedence over these defaults. The selected model is passed to `codex exec` via `-m`.
+- `codex_sidecar`: `gpt-6-luna` unless `observer_model` is set; with tier routing enabled, simple/rich defaults are `gpt-6-luna` / `gpt-6.1-terra`. Explicit tier models take precedence over an explicit base model, which takes precedence over these defaults. The selected model is passed to `codex exec` via `-m`.
 - Anthropic direct API calls accept Anthropic model IDs/aliases; use `claude-haiku-4-5-20251001` if you need a pinned snapshot instead of the moving alias.
 - If `observer_model` is unsupported in Claude CLI, codemem retries once without `--model`. The same fallback applies to `codex_sidecar`: an unavailable tier model is retried once without `-m`.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
