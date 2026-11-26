@@ -250,6 +250,42 @@ describe("sync admission after a Team member removal", () => {
 		expect(admitted("stored-scope", REMOVED)).toBe(false);
 	});
 
+	it("refuses a scope whose stored memories name the Project only through their session's remote", async () => {
+		// The checkout path held two repositories, so only each session's remote says which one.
+		scope("reused-path-scope");
+		await refreshTestScopeRows(db);
+		row("sessions", {
+			id: 10,
+			started_at: NOW,
+			cwd: "/work/reused",
+			project: "project",
+			git_remote: TEAM_PROJECT,
+		});
+		row("sessions", {
+			id: 11,
+			started_at: NOW,
+			cwd: "/work/reused",
+			project: "own",
+			git_remote: OTHER_PROJECT,
+		});
+		row("memory_items", {
+			session_id: 10,
+			kind: "discovery",
+			title: "Stored",
+			body_text: "Stored",
+			active: 1,
+			created_at: NOW,
+			updated_at: NOW,
+			scope_id: "reused-path-scope",
+			project: "project",
+		});
+		expect(admitted("reused-path-scope", REMOVED)).toBe(true);
+
+		remove();
+
+		expect(admitted("reused-path-scope", REMOVED)).toBe(false);
+	});
+
 	it("does not refuse anything for a removal from another group", () => {
 		const result = remove("group-b");
 

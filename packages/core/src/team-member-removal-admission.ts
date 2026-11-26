@@ -3,6 +3,7 @@ import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-p
 import {
 	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
 import { teamMemberRemovalsForDevice } from "./team-member-removal-lookup.js";
 
@@ -30,6 +31,14 @@ function teamProjects(db: Database, teamId: string): string[] {
 		.all(teamId) as string[];
 }
 
+interface StoredProjectEvidence {
+	project: string | null;
+	cwd: string | null;
+	session_project: string | null;
+	git_remote: string | null;
+	metadata_json: string | null;
+}
+
 /** Every Project the scope holds, canonical, from its mappings and its stored memories. */
 function projectsHeldByScope(db: Database, scopeId: string): Set<string> {
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
@@ -40,18 +49,17 @@ function projectsHeldByScope(db: Database, scopeId: string): Set<string> {
 			"SELECT workspace_identity, project_pattern FROM project_scope_mappings WHERE scope_id = ?",
 		)
 		.all(scopeId) as Array<{ workspace_identity: string | null; project_pattern: string }>;
+	// Each session's own repository evidence counts, because the global alias map
+	// leaves out a checkout path that held more than one repository.
 	const stored = db
 		.prepare(
-			`SELECT DISTINCT memory.project, session.cwd, session.project AS session_project
+			`SELECT DISTINCT memory.project, session.cwd, session.project AS session_project,
+			        session.git_remote, session.metadata_json
 			 FROM memory_items AS memory
 			 LEFT JOIN sessions AS session ON session.id = memory.session_id
 			 WHERE memory.scope_id = ?`,
 		)
-		.all(scopeId) as Array<{
-		project: string | null;
-		cwd: string | null;
-		session_project: string | null;
-	}>;
+		.all(scopeId) as StoredProjectEvidence[];
 	return new Set([
 		...mappings.flatMap((row) => [
 			...canonical(row.workspace_identity),
@@ -61,6 +69,13 @@ function projectsHeldByScope(db: Database, scopeId: string): Set<string> {
 			...canonical(row.project),
 			...canonical(row.cwd),
 			...canonical(row.session_project),
+			...canonical(
+				repositoryIdentityForWorkspace(repositoryIdentities, {
+					cwd: row.cwd,
+					gitRemote: row.git_remote,
+					metadataJson: row.metadata_json,
+				}),
+			),
 		]),
 	]);
 }
