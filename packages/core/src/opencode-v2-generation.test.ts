@@ -203,17 +203,25 @@ describe("reasoning effort variants", () => {
 		});
 	});
 
-	it("answers every model from one catalog fetch", async () => {
+	it("answers every listed model from one catalog fetch and checks a miss once", async () => {
 		const fetcher = route();
 
 		const efforts = [
 			(await generate("openai", "gpt-6-luna", "high")).effort,
 			(await generate("anthropic", "claude-sonnet-4-6", "max")).effort,
 			(await generate("openai", "plain", "high")).effort,
+			(await generate("openai", "plain", "high")).effort,
 		];
 
-		expect(catalogCalls(fetcher)).toBe(1);
-		expect(sentModels(fetcher).map((model) => model.variant)).toEqual(["high", "max", undefined]);
+		// The miss fetches the catalog once more; the second miss within a minute does not.
+		expect(catalogCalls(fetcher)).toBe(2);
+		expect(sentModels(fetcher).map((model) => model.variant)).toEqual([
+			"high",
+			"max",
+			undefined,
+			undefined,
+		]);
+		expect(efforts[3]?.fallbackReason).toBe("variant_not_listed");
 		expect(efforts[2]).toEqual({
 			attempted: null,
 			applied: null,
@@ -235,12 +243,24 @@ describe("reasoning effort variants", () => {
 		expect(catalogCalls(fetcher)).toBe(2);
 	});
 
-	it("does not cache an unavailable catalog", async () => {
+	it("does not cache an unavailable catalog and fetches it once more", async () => {
 		const fetcher = route();
 		fetcher.mockImplementationOnce(async () => new Response("{}", { status: 503 }));
 
 		const first = await generate("openai", "gpt-6-luna", "high");
 		const second = await generate("openai", "gpt-6-luna", "high");
+
+		expect(first.effort?.applied).toBe("high");
+		expect(second.effort?.applied).toBe("high");
+		expect(catalogCalls(fetcher)).toBe(2);
+	});
+
+	it("reports the catalog as unavailable when the second fetch also fails", async () => {
+		const fetcher = route();
+		fetcher.mockImplementationOnce(async () => new Response("{}", { status: 503 }));
+		fetcher.mockImplementationOnce(async () => new Response("{}", { status: 503 }));
+
+		const first = await generate("openai", "gpt-6-luna", "high");
 
 		expect(first.effort).toEqual({
 			attempted: null,
@@ -248,7 +268,87 @@ describe("reasoning effort variants", () => {
 			succeeded: true,
 			fallbackReason: "variants_unavailable",
 		});
+		expect(catalogCalls(fetcher)).toBe(2);
+	});
+});
+
+describe("variant lookups against a stale or partial catalog", () => {
+	type Entry = { providerID: string; id: string; variants?: Array<{ id: string }> };
+	const luna = (...ids: string[]): Entry => ({
+		providerID: "openai",
+		id: "gpt-6-luna",
+		variants: ids.map((id) => ({ id })),
+	});
+	const other: Entry = { providerID: "anthropic", id: "claude-sonnet-4-6", variants: [] };
+	/** Serve each catalog fetch the next list; the last one repeats. */
+	const serve = (...catalogs: Entry[][]) =>
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			if (new URL(String(input)).pathname !== "/api/model") {
+				return new Response(JSON.stringify({ data: { text: "OK" } }));
+			}
+			const data = catalogs.length > 1 ? catalogs.shift() : catalogs[0];
+			return new Response(JSON.stringify({ data }));
+		});
+	const generate = (reasoningEffort: string) =>
+		generateWithOpenCodeV2({
+			provider: "openai",
+			model: "gpt-6-luna",
+			prompt: "Hi",
+			reasoningEffort,
+		});
+	const catalogCalls = (fetcher: ReturnType<typeof serve>) =>
+		fetcher.mock.calls.filter(([url]) => String(url).endsWith("/api/model")).length;
+
+	beforeEach(() => {
+		clearOpenCodeV2ModelVariantCache();
+	});
+
+	it("applies an effort a cached catalog lacked once a fresh catalog lists it", async () => {
+		const fetcher = serve([luna("low")], [luna("low", "high")]);
+		await generate("low");
+
+		const result = await generate("high");
+
+		expect(result.effort).toEqual({
+			attempted: "high",
+			applied: "high",
+			succeeded: true,
+			fallbackReason: null,
+		});
+		expect(catalogCalls(fetcher)).toBe(2);
+	});
+
+	it.each([
+		["an empty catalog", []],
+		["a catalog without the model", [other]],
+	])("does not let %s poison later calls", async (_name, partial) => {
+		const fetcher = serve(partial, [other, luna("low", "high")]);
+
+		const first = await generate("high");
+		const second = await generate("high");
+
+		expect(first.effort?.applied).toBe("high");
 		expect(second.effort?.applied).toBe("high");
+		// One extra fetch replaces the partial read; the full catalog then answers from cache.
+		expect(catalogCalls(fetcher)).toBe(2);
+	});
+
+	it("falls back once for a variant the model does not list and reports it", async () => {
+		const fetcher = serve([luna("low", "high")]);
+		await generate("low");
+
+		const first = await generate("xhigh");
+		const second = await generate("xhigh");
+
+		for (const result of [first, second]) {
+			expect(result.effort).toEqual({
+				attempted: null,
+				applied: null,
+				succeeded: true,
+				fallbackReason: "variant_not_listed",
+			});
+		}
+		// The miss is checked against one fresh catalog, then remembered for a minute.
 		expect(catalogCalls(fetcher)).toBe(2);
 	});
 });
