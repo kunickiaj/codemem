@@ -1768,6 +1768,12 @@ export {
 } from "./sync-transfer-activity.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 export { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
+export {
+	commitTeamMemberRemoval,
+	previewTeamMemberRemoval,
+	type TeamMemberRemovalContext,
+	type TeamMemberRemovalRejection,
+} from "./team-member-removal-review.js";
 // Test utilities (exported for consumer packages like viewer-server)
 export type { MixedScopeFixture } from "./test-utils.js";
 export { initTestSchema, insertTestSession, seedMixedScopeFixture } from "./test-utils.js";
