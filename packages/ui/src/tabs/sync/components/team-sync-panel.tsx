@@ -79,7 +79,7 @@ function AttentionRow({
 		<div className="sync-action">
 			<div className="sync-action-text">
 				{item.title}
-				<span className="sync-action-command">{item.summary}</span>
+				<span className="sync-action-guidance">{item.summary}</span>
 			</div>
 			<button
 				type="button"
@@ -317,17 +317,16 @@ function DiscoveredDeviceRow({
 function ActionContent(props: TeamSyncPanelProps) {
 	const hasAttentionItems = props.actionItems.length > 0;
 	const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
-	const showNextStepsLabel =
-		hasAttentionItems || hasOtherActionableWork || props.primaryStatus.state !== "healthy";
+	const { primaryStatus } = props;
 
 	return (
 		<>
-			{showNextStepsLabel ? <SectionHeading label="Needs attention" /> : null}
-			{props.primaryStatus.nextAction ? (
-				<div className="sync-action" data-primary-sync-state={props.primaryStatus.state}>
+			{hasAttentionItems ? <SectionHeading label="Needs attention" /> : null}
+			{primaryStatus.nextAction ? (
+				<div className="sync-action" data-primary-sync-state={primaryStatus.state}>
 					<div className="sync-action-text">
-						{props.primaryStatus.badgeLabel}
-						<span className="sync-action-command">{props.primaryStatus.nextAction}</span>
+						{primaryStatus.nextActionTitle ?? primaryStatus.badgeLabel}
+						<span className="sync-action-guidance">{primaryStatus.nextAction}</span>
 					</div>
 				</div>
 			) : null}

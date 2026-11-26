@@ -804,6 +804,7 @@ function testRecipientFocusedTeamViews() {
 		expect(advancedStatus).toMatchObject({
 			state: "needs-attention",
 			meta: "Team: ExampleCo. A Project access reconciliation needs review.",
+			nextActionTitle: "Project access needs review",
 			nextAction: "Open Sharing, review this Project's access decision, then sync again.",
 		});
 		expect(advancedStatus.meta).not.toContain(sharedProject.canonicalProjectIdentity);
