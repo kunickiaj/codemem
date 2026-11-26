@@ -299,9 +299,12 @@ function outboundOldSideMove(
 
 /**
  * Whether an untargeted cleanup may go to this peer. It names the memory and the
- * scope it left, so it goes only to a device that could have received the memory
- * there: a peer with any membership record in that scope, or, for the local
- * default scope, a peer the older Project sharing rules would have sent it to.
+ * scope it left, so a cleanup for a Space goes only to a device with a membership
+ * record in that Space, which every device that could have received it there has.
+ * A cleanup for the local default scope still goes to every peer: nothing records
+ * which devices received a local default memory, the peer's Project filters may
+ * have changed since, and the default-scope delete never syncs, so this notice is
+ * the only way an old copy is removed. It names no Space.
  * A cleanup addressed to one peer is that peer's own notice and is not limited.
  */
 function untargetedCleanupReachesPriorRecipient(
@@ -313,8 +316,7 @@ function untargetedCleanupReachesPriorRecipient(
 	if (cleanup.target_peer_device_id !== null) return true;
 	const peerId = cleanText(peerDeviceId);
 	if (!peerId || !cleanup.cleanup_scope_id) return false;
-	if (cleanup.cleanup_scope_id === DEFAULT_SYNC_SCOPE_ID)
-		return legacyDefaultReassignAllowed(db, op, peerId);
+	if (cleanup.cleanup_scope_id === DEFAULT_SYNC_SCOPE_ID) return true;
 	return (
 		db
 			.prepare("SELECT 1 FROM scope_memberships WHERE scope_id = ? AND device_id = ? LIMIT 1")

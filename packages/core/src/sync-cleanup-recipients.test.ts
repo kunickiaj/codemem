@@ -96,14 +96,16 @@ describe("untargeted cleanup records", () => {
 		expect(sent(op, "peer-new")).toBe(false);
 	});
 
-	it("from the local default scope go only to devices the Project sharing rules would have sent the memory to", () => {
+	it("from the local default scope still reach a device whose Project filters changed since", () => {
+		// Nothing records who received a local default memory, and this notice is the
+		// only way an old copy is removed, so current filters cannot withhold it.
 		insertMovedMemory();
 		pairPeer("peer-api", ["api"]);
 		pairPeer("peer-docs", ["docs"]);
 		const op = cleanup(DEFAULT_SYNC_SCOPE_ID);
 
 		expect(sent(op, "peer-api")).toBe(true);
-		expect(sent(op, "peer-docs")).toBe(false);
+		expect(sent(op, "peer-docs")).toBe(true);
 	});
 
 	it("leave a cleanup addressed to one device for that device", () => {
