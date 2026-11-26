@@ -142,6 +142,10 @@ try {
 		"Packed artifact is missing .opencode/lib/raw-event-spool.js",
 	);
 	assert(
+		tarListing.includes("package/.opencode/lib/private-text.js"),
+		"Packed artifact is missing .opencode/lib/private-text.js",
+	);
+	assert(
 		tarListing.includes("package/.opencode/package.json"),
 		"Packed artifact is missing .opencode/package.json",
 	);

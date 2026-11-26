@@ -6,6 +6,8 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 See the [Settings guide](user-guide.md#settings-modal) for connection modes, model choices, and save/apply behavior.
 
+For what `<private>` tags protect and where they apply, see [Keep text out of memory](user-guide.md#keep-text-out-of-memory-with-private). The OpenCode plugin removes private blocks before it sends an event or writes it to its retry spool.
+
 ## Running OpenCode with the plugin
 
 This plugin's CLI calls require the grouped command tree. Update the CLI and plugin together, then restart OpenCode. An older CLI without these command paths cannot serve the plugin's CLI calls or fallbacks.

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type DelegatedBriefContext, normalizeCaptureContext } from "./capture-context.js";
 import { type Database, toJsonNullable } from "./db.js";
-import { stripPrivateObj } from "./ingest-sanitize.js";
+import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { ensureRawEventCaptureContextSchema } from "./schema-bootstrap.js";
 
@@ -134,12 +134,18 @@ function optionalString(value: Record<string, unknown>, key: string): string | n
 	return raw || null;
 }
 
+/** Session metadata is captured content, so it loses private blocks before storage. */
 function optionalProjectIdentity(
 	value: Record<string, unknown>,
 	key: "cwd" | "project",
 ): string | null {
 	const identity = optionalString(value, key);
-	return cleanProjectIdentity(identity);
+	return cleanProjectIdentity(identity == null ? null : stripPrivate(identity) || null);
+}
+
+function optionalContentString(value: Record<string, unknown>, key: string): string | null {
+	const text = optionalString(value, key);
+	return text == null ? null : stripPrivate(text) || null;
 }
 
 function optionalNumber(value: Record<string, unknown>, key: string): number | null {
@@ -282,7 +288,7 @@ function normalizeEvent(
 		tsMonoMs,
 		cwd: optionalProjectIdentity(item, "cwd"),
 		project: optionalProjectIdentity(item, "project"),
-		startedAt: optionalString(item, "started_at"),
+		startedAt: optionalContentString(item, "started_at"),
 	};
 }
 
@@ -306,7 +312,7 @@ function normalizeRequest(request: Record<string, unknown>): NormalizedRequest {
 		requestMeta: {
 			cwd: optionalProjectIdentity(request, "cwd"),
 			project: optionalProjectIdentity(request, "project"),
-			startedAt: optionalString(request, "started_at"),
+			startedAt: optionalContentString(request, "started_at"),
 		},
 	};
 }
@@ -570,8 +576,39 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 		.immediate();
 }
 
+const EVENT_METADATA_KEYS = ["cwd", "project", "started_at"] as const;
+
+/**
+ * Remove private blocks from one event's content: its payload values and its
+ * session metadata. Routing fields such as source, session, stream and event IDs
+ * are left exactly as sent.
+ */
+function sanitizeRawEventItem(item: Record<string, unknown>): Record<string, unknown> {
+	const sanitized = { ...item };
+	if (item.payload != null && typeof item.payload === "object") {
+		sanitized.payload = stripPrivateObj(item.payload);
+	}
+	for (const key of EVENT_METADATA_KEYS) {
+		if (typeof item[key] === "string") sanitized[key] = stripPrivate(item[key] as string);
+	}
+	return sanitized;
+}
+
+/** Each event of a request is cleaned on its own, so one event cannot hide another's fields. */
+function sanitizeRawEventRequest(request: Record<string, unknown>): Record<string, unknown> {
+	const sanitized = sanitizeRawEventItem(request);
+	if (Array.isArray(request.events)) {
+		sanitized.events = request.events.map((event) =>
+			event != null && typeof event === "object" && !Array.isArray(event)
+				? sanitizeRawEventItem(event as Record<string, unknown>)
+				: event,
+		);
+	}
+	return sanitized;
+}
+
 export function validateRawEvents(request: object): RawEventValidationResult {
-	const sanitized = stripPrivateObj(request) as Record<string, unknown>;
+	const sanitized = sanitizeRawEventRequest(request as Record<string, unknown>);
 	const normalized = normalizeRequest(sanitized);
 	return { received: normalized.received, request: sanitized };
 }

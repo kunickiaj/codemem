@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { stripPrivate } from "./ingest-sanitize.js";
+import { hasPrivateMarker, stripPrivate } from "./ingest-sanitize.js";
 
 export interface DelegatedBriefContext {
 	version: 1;
@@ -92,6 +92,8 @@ export function normalizeCaptureContext(
 	] as const;
 	for (const key of keys) {
 		if (typeof context[key] !== "string" || !context[key] || context[key].length > 256) return null;
+		// Provenance is stored as sent, so a value that carries private text is not stored at all.
+		if (hasPrivateMarker(context[key] as string)) return null;
 	}
 	const text = briefPayloadText(payload, streamId);
 	if (!text) return null;

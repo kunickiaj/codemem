@@ -7,7 +7,7 @@
 
 import { captureContextFields, promptOriginLabel } from "./capture-context.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
-import { newPrivateScan, scanPrivate } from "./ingest-sanitize.js";
+import { stripPrivate } from "./ingest-sanitize.js";
 import type { ParsedSummary } from "./ingest-types.js";
 
 // ---------------------------------------------------------------------------
@@ -129,20 +129,18 @@ export function deriveRequest(summary: ParsedSummary): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The visible text of each user prompt and assistant message, scanned in order as
- * one stream: a private block left open in one message stays open through the next
- * messages of these events until it closes, and an open block ends with the events.
+ * The visible text of each user prompt and assistant message. Each message is
+ * scanned on its own: a private block never spans messages.
  */
 export function visibleMessageTexts(
 	events: Record<string, unknown>[],
 ): Map<Record<string, unknown>, string> {
-	const scan = newPrivateScan();
 	const texts = new Map<Record<string, unknown>, string>();
 	for (const event of events) {
 		if (event.type === "user_prompt") {
-			texts.set(event, scanPrivate(String(event.prompt_text ?? ""), scan).trim());
+			texts.set(event, stripPrivate(String(event.prompt_text ?? "")).trim());
 		} else if (event.type === "assistant_message") {
-			texts.set(event, scanPrivate(String(event.assistant_text ?? ""), scan).trim());
+			texts.set(event, stripPrivate(String(event.assistant_text ?? "")).trim());
 		}
 	}
 	return texts;

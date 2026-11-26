@@ -6,12 +6,7 @@
  * tools, deduplicates, and budgets the list to fit observer token limits.
  */
 
-import {
-	newPrivateScan,
-	sanitizePayload,
-	sanitizeToolOutput,
-	scanPrivate,
-} from "./ingest-sanitize.js";
+import { sanitizePayload, sanitizeToolOutput, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ToolEvent } from "./ingest-types.js";
 import { isV2Event } from "./raw-event-host-generation.js";
 
@@ -98,32 +93,38 @@ export function eventToToolEvent(
 	lowSignalTools: Set<string> = LOW_SIGNAL_TOOLS,
 ): ToolEvent | null {
 	if (event.type !== "tool.execute.after" || event.contains_memory_calls === true) return null;
-	const tool = normalizeToolName(event);
+	// Scan each original value on its own before it is normalized, compacted or used as
+	// a fallback, so normalization cannot turn a marker into ordinary text.
+	const original = stripPrivateObj({
+		tool: event.tool,
+		args: event.args,
+		result: event.result,
+		error: event.error,
+		timestamp: event.timestamp,
+		cwd: event.cwd,
+	}) as Record<string, unknown>;
+	const tool = normalizeToolName({ ...original, type: event.type });
 	if (isInternalMemoryTool(tool)) return null;
 	if (lowSignalTools.has(tool)) return null;
 
-	const rawArgs = event.args;
+	const rawArgs = original.args;
 	const args =
 		rawArgs != null && typeof rawArgs === "object" && !Array.isArray(rawArgs)
 			? (rawArgs as Record<string, unknown>)
 			: {};
 
-	// One scan per event, so a private block opened in one field closes in a later one.
-	const scan = newPrivateScan();
-	const toolInput = sanitizePayload(args, maxChars, scan);
-	const result = compactToolOutput(tool, sanitizeToolOutput(tool, event.result, maxChars, scan));
-	const error = sanitizePayload(event.error, maxChars, scan);
-	const cwd =
-		(typeof event.cwd === "string" ? event.cwd : null) ??
-		(typeof args.cwd === "string" ? args.cwd : null);
+	const result = compactToolOutput(tool, sanitizeToolOutput(tool, original.result, maxChars));
+	const error = sanitizePayload(original.error, maxChars);
 
 	return {
-		toolName: scanPrivate(tool, scan),
-		toolInput,
+		toolName: tool,
+		toolInput: sanitizePayload(args, maxChars),
 		toolOutput: result,
 		toolError: error,
-		timestamp: typeof event.timestamp === "string" ? scanPrivate(event.timestamp, scan) : null,
-		cwd: cwd == null ? null : scanPrivate(cwd, scan),
+		timestamp: typeof original.timestamp === "string" ? original.timestamp : null,
+		cwd:
+			(typeof original.cwd === "string" ? original.cwd : null) ??
+			(typeof args.cwd === "string" ? args.cwd : null),
 	};
 }
 

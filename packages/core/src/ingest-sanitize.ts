@@ -9,58 +9,97 @@
 // Private content stripping
 // ---------------------------------------------------------------------------
 
-/**
- * A `<private>` opener or closer, case-insensitive, with optional whitespace and
- * attributes. A tag without its `>` runs to the end of the text, so it still counts.
+/*
+ * Contract: a private block protects text inside the single text value where it is
+ * written, one message or one string field of a tool event. It never spans values,
+ * messages or events. Markers are literal `<private ...>` and `</private>` tags in
+ * any case, with optional whitespace and attributes, and nest by depth. An opener
+ * with no closer in the same value removes the rest of that value; a tag cut off
+ * before its `>` at the end of a value counts as an unterminated opener. A closer
+ * with no opener is removed and nothing else is. `<private/>`, escaped forms such
+ * as `&lt;private&gt;`, and other tag names such as `<private-notes>` are text.
+ * Text without markers is returned unchanged.
  */
-const PRIVATE_TAG = /<\s*(\/)?\s*private\b([^>]*)(>|$)/gi;
 
-/** Scan state carried across consecutive pieces of one message or stream. */
-export interface PrivateScan {
-	/** How many private blocks are open. */
-	depth: number;
+type PrivateTag = { kind: "open" | "close" | "self" | "cut"; end: number };
+
+const TAG_NAME_CHAR = /[A-Za-z0-9_.:-]/;
+const WHITESPACE = /\s/;
+
+function skipWhitespace(text: string, index: number): number {
+	let next = index;
+	while (next < text.length && WHITESPACE.test(text.charAt(next))) next += 1;
+	return next;
 }
 
-export function newPrivateScan(): PrivateScan {
-	return { depth: 0 };
+/** The private tag starting at `text[start]` (a `<`), or null when it is not one. */
+function readPrivateTag(text: string, start: number): PrivateTag | null {
+	let index = skipWhitespace(text, start + 1);
+	const closer = text.charAt(index) === "/";
+	index = skipWhitespace(text, closer ? index + 1 : index);
+	const nameStart = index;
+	while (index < text.length && TAG_NAME_CHAR.test(text.charAt(index))) index += 1;
+	// The name must be exactly `private`; `<private-notes>` is another tag.
+	if (text.slice(nameStart, index).toLowerCase() !== "private") return null;
+	return readTagEnd(text, index, closer);
 }
 
 /**
- * Remove private regions from one piece of text, continuing `scan` from the
- * previous piece. Blocks nest by depth. An opener left open removes the rest of the
- * piece and stays open for the next piece. A closer with no open block removes it and
- * everything before it in this piece, since that text may continue a block opened
- * in an earlier piece. `<private/>` and escaped forms such as `&lt;private&gt;` are
- * text, not markers.
+ * Where a tag ends: the first `>` outside a quoted attribute value. A tag that
+ * reaches the end of the text, or ends inside an unclosed quote, is cut off.
  */
-export function scanPrivate(text: string, scan: PrivateScan): string {
-	if (!text) return "";
-	let output = "";
-	let last = 0;
-	for (const match of text.matchAll(PRIVATE_TAG)) {
-		const closer = match[1] === "/";
-		const selfClosing = !closer && match[3] === ">" && (match[2] ?? "").trimEnd().endsWith("/");
-		if (selfClosing) continue;
-		const index = match.index ?? 0;
-		if (scan.depth === 0) output += text.slice(last, index);
-		if (!closer) scan.depth += 1;
-		else if (scan.depth > 0) scan.depth -= 1;
-		else output = "";
-		last = index + match[0].length;
+function readTagEnd(text: string, start: number, closer: boolean): PrivateTag {
+	let lastSignificant = "";
+	for (let index = start; index < text.length; index += 1) {
+		const char = text.charAt(index);
+		if (char === '"' || char === "'") {
+			const closingQuote = text.indexOf(char, index + 1);
+			if (closingQuote === -1) break;
+			index = closingQuote;
+			lastSignificant = char;
+		} else if (char === ">") {
+			return tagEnding(index + 1, closer, lastSignificant);
+		} else if (!WHITESPACE.test(char)) {
+			lastSignificant = char;
+		}
 	}
-	if (scan.depth === 0) output += text.slice(last);
-	return output;
+	return { kind: "cut", end: text.length };
 }
 
-/** Remove private regions from text scanned on its own; an open block runs to its end. */
+/** A tag ending at `end`; an opener whose last character before `>` is `/` is self-closing. */
+function tagEnding(end: number, closer: boolean, lastSignificant: string): PrivateTag {
+	if (closer) return { kind: "close", end };
+	return { kind: lastSignificant === "/" ? "self" : "open", end };
+}
+
+/** Remove private blocks from one text value, scanned on its own. */
 export function stripPrivate(text: string): string {
-	return scanPrivate(text, newPrivateScan());
+	if (!text) return "";
+	// Without the tag name there is no marker, and the text comes back unchanged.
+	if (!text.toLowerCase().includes("private")) return text;
+	let output = "";
+	let depth = 0;
+	let kept = 0;
+	let index = text.indexOf("<");
+	while (index !== -1) {
+		const tag = readPrivateTag(text, index);
+		if (!tag || tag.kind === "self") {
+			index = text.indexOf("<", index + 1);
+			continue;
+		}
+		if (depth === 0) output += text.slice(kept, index);
+		if (tag.kind === "cut") return output;
+		if (tag.kind === "open") depth += 1;
+		else if (depth > 0) depth -= 1;
+		kept = tag.end;
+		index = text.indexOf("<", tag.end);
+	}
+	return depth === 0 ? output + text.slice(kept) : output;
 }
 
-/** Remove private regions from consecutive pieces, carrying an open block from one to the next. */
-export function stripPrivateSequence(pieces: readonly string[]): string[] {
-	const scan = newPrivateScan();
-	return pieces.map((piece) => scanPrivate(piece, scan));
+/** True when the text contains a private marker that stripping would remove. */
+export function hasPrivateMarker(text: string): boolean {
+	return stripPrivate(text) !== text;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,20 +149,18 @@ export function isSensitiveFieldName(fieldName: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Remove private regions from every key and string value, in traversal order, with
- * one scan carried across them. An entry whose key carried a private marker is
- * dropped with its value.
+ * Remove private blocks from every string value, each scanned on its own. An entry
+ * whose key carries a private marker is dropped with its value. Numbers, booleans
+ * and null are not text, so a block in a neighbouring string does not hide them.
  */
-export function stripPrivateObj(value: unknown, scan: PrivateScan = newPrivateScan()): unknown {
-	if (typeof value === "string") return scanPrivate(value, scan);
-	if (Array.isArray(value)) return value.map((item) => stripPrivateObj(item, scan));
+export function stripPrivateObj(value: unknown): unknown {
+	if (typeof value === "string") return stripPrivate(value);
+	if (Array.isArray(value)) return value.map(stripPrivateObj);
 	if (value != null && typeof value === "object") {
 		const result: Record<string, unknown> = {};
 		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-			const visibleKey = scanPrivate(key, scan);
-			const cleaned = stripPrivateObj(item, scan);
-			if (visibleKey !== key) continue;
-			result[key] = isSensitiveFieldName(key) ? REDACTED_VALUE : cleaned;
+			if (hasPrivateMarker(key)) continue;
+			result[key] = isSensitiveFieldName(key) ? REDACTED_VALUE : stripPrivateObj(item);
 		}
 		return result;
 	}
@@ -140,17 +177,12 @@ function truncateText(text: string, maxChars: number): string {
 	return `${text.slice(0, maxChars)}... (truncated)`;
 }
 
-/** `scan` carries an open private block across the values of one event. */
-export function sanitizePayload(
-	value: unknown,
-	maxChars: number,
-	scan: PrivateScan = newPrivateScan(),
-): unknown {
+export function sanitizePayload(value: unknown, maxChars: number): unknown {
 	if (value == null) return null;
 	if (typeof value === "string") {
-		return truncateText(scanPrivate(value, scan), maxChars);
+		return truncateText(stripPrivate(value), maxChars);
 	}
-	const cleaned = stripPrivateObj(value, scan);
+	const cleaned = stripPrivateObj(value);
 	try {
 		const serialized = JSON.stringify(cleaned);
 		if (maxChars > 0 && serialized.length > maxChars) {
@@ -189,14 +221,9 @@ function isLowSignalOutput(output: string): boolean {
 	return lines.every((line) => LOW_SIGNAL_OUTPUTS.has(line.toLowerCase()));
 }
 
-export function sanitizeToolOutput(
-	_tool: string,
-	output: unknown,
-	maxChars: number,
-	scan: PrivateScan = newPrivateScan(),
-): unknown {
+export function sanitizeToolOutput(_tool: string, output: unknown, maxChars: number): unknown {
 	if (output == null) return null;
-	const sanitized = sanitizePayload(output, maxChars, scan);
+	const sanitized = sanitizePayload(output, maxChars);
 	const text = String(sanitized ?? "");
 	if (isLowSignalOutput(text)) return "";
 	return sanitized;

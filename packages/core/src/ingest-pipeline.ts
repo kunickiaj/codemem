@@ -31,6 +31,7 @@ import {
 import { isLowSignalObservation } from "./ingest-filters.js";
 import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
 import { type CaptureRoutedObservation, routeObservationsForCapture } from "./ingest-routing.js";
+import { stripPrivate } from "./ingest-sanitize.js";
 import {
 	buildTranscript,
 	deriveRequest,
@@ -1707,6 +1708,33 @@ function retainDeniedIngestSession(stage: IngestSessionStage): boolean {
  * builds a transcript, calls the observer LLM, parses the response,
  * filters low-signal content, and persists observations + summary.
  */
+/**
+ * The session metadata a payload brings, without private blocks, before any of it is
+ * stored: working directory, project, start time and the captured session context.
+ * Routing fields in the session context are left as sent.
+ */
+function privateFreePayload(payload: IngestPayload): IngestPayload {
+	const text = (value: string | undefined) =>
+		value == null ? value : stripPrivate(value) || undefined;
+	const context = payload.sessionContext;
+	return {
+		...payload,
+		cwd: text(payload.cwd),
+		project: text(payload.project),
+		startedAt: text(payload.startedAt),
+		...(context
+			? {
+					sessionContext: {
+						...context,
+						firstPrompt: text(context.firstPrompt),
+						filesModified: context.filesModified?.map(stripPrivate),
+						filesRead: context.filesRead?.map(stripPrivate),
+					},
+				}
+			: {}),
+	};
+}
+
 export async function ingest(
 	payload: IngestPayload,
 	store: MemoryStore,
@@ -1715,7 +1743,7 @@ export async function ingest(
 	const createSession = () => {
 		if (options.rawFlushPersistence)
 			requireRawEventFlushClaim(store, options.rawFlushPersistence.claim);
-		return createIngestSession(payload, store, options);
+		return createIngestSession(privateFreePayload(payload), store, options);
 	};
 	const stage = options.rawFlushPersistence
 		? store.db.transaction(createSession).immediate()

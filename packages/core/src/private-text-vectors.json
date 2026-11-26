@@ -1,0 +1,76 @@
+{
+	"description": "Shared vectors for the private-text lexer in core and in the OpenCode plugin. Each input is one text value.",
+	"vectors": [
+		{ "name": "a block", "input": "a <private>secret</private> b", "expected": "a  b" },
+		{
+			"name": "nested blocks",
+			"input": "a <private>s1<private>s2</private>s3</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "an opener with attributes",
+			"input": "a <private reason=\"x\">secret</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "mixed case and whitespace",
+			"input": "a < PRIVATE >secret</ Private > b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a > inside a quoted attribute",
+			"input": "a <private note=\"1 > 0\">secret</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "a /> inside a quoted attribute",
+			"input": "a <private note='x/>'>secret</private> b",
+			"expected": "a  b"
+		},
+		{ "name": "an unterminated opener", "input": "a <private>secret b", "expected": "a " },
+		{
+			"name": "a tag cut off before its >",
+			"input": "a <private reason=\"x secret",
+			"expected": "a "
+		},
+		{ "name": "a tag cut off inside its name", "input": "a b <priv", "expected": "a b <priv" },
+		{ "name": "an opener cut off after its name", "input": "a b <private", "expected": "a b " },
+		{ "name": "a stray closer", "input": "a </private> b", "expected": "a  b" },
+		{
+			"name": "a stray closer after a block",
+			"input": "a <private>x</private> b </private> c",
+			"expected": "a  b  c"
+		},
+		{
+			"name": "a self-closing tag",
+			"input": "a <private/> b <private /> c",
+			"expected": "a <private/> b <private /> c"
+		},
+		{
+			"name": "an escaped tag",
+			"input": "a &lt;private&gt;b&lt;/private&gt; c",
+			"expected": "a &lt;private&gt;b&lt;/private&gt; c"
+		},
+		{
+			"name": "a JSON-escaped tag",
+			"input": "a \\u003cprivate\\u003eb c",
+			"expected": "a \\u003cprivate\\u003eb c"
+		},
+		{
+			"name": "another tag name",
+			"input": "a <private-notes>b</private-notes> <privately> c",
+			"expected": "a <private-notes>b</private-notes> <privately> c"
+		},
+		{
+			"name": "a self-closing tag inside a block",
+			"input": "a <private>x <private/> y</private> b",
+			"expected": "a  b"
+		},
+		{
+			"name": "text without markers",
+			"input": "Fix the queue: 2 < 3 > 1, private data stays",
+			"expected": "Fix the queue: 2 < 3 > 1, private data stays"
+		},
+		{ "name": "an empty value", "input": "", "expected": "" }
+	]
+}

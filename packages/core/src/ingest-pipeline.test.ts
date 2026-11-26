@@ -1970,8 +1970,8 @@ describe("ingest-sanitize", () => {
 			expect(stripPrivate("a <PRIVATE>b</PRIVATE> c")).toBe("a  c");
 		});
 
-		it("removes a stray closing tag and the text before it, which may continue a block", () => {
-			expect(stripPrivate("a </private> b <private>secret</private> c")).toBe(" b  c");
+		it("removes stray closing tags before later private blocks", () => {
+			expect(stripPrivate("a </private> b <private>secret</private> c")).toBe("a  b  c");
 		});
 	});
 

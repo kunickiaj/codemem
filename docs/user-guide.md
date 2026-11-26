@@ -335,6 +335,24 @@ Command/file token caching notes:
 - Successful `file`/`command` token resolutions are cached for `observer_auth_cache_ttl_s`.
 - Failed `file`/`command` resolutions are not cached (codemem clears stale cache and retries on the next call).
 
+## Keep text out of memory with `<private>`
+
+Wrap text in `<private>` and `</private>` to keep it out of what codemem stores and sends to the observer model. The tags work in any letter case and may carry attributes, such as `<private reason="key">`, and blocks can be nested.
+
+- A block must open and close in the same message. It never reaches into the next message, a reply, or another event.
+- If a block is left open, codemem removes everything after the opening tag to the end of that message.
+- A closing tag without an opening tag is removed, and the text around it stays.
+- Tool output is protected only where the tags appear inside that output. A block in a tool's input does not hide its output, and the reverse.
+- To mention the tag without triggering it, write the escaped form `&lt;private&gt;`. A self-closing `<private/>` and other tag names, such as `<private-notes>`, are ordinary text.
+- Text with no tags is stored unchanged.
+
+The tags do not cover:
+
+- text stored before you upgraded to a version with these rules;
+- anything you save explicitly with the remember tool;
+- imported prompts or artifacts;
+- numbers and true/false values inside a tool's structured input or output, which are not text.
+
 ## Memory persistence
 - A session is created per ingest payload.
 - Observations and summaries persist when the observer emits meaningful content.

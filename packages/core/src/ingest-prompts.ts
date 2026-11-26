@@ -10,7 +10,7 @@ import {
 	DELEGATED_BRIEF_LABEL,
 	MAX_DELEGATED_CONTEXT_CHARS,
 } from "./capture-context.js";
-import { newPrivateScan, scanPrivate, stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
+import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
@@ -261,18 +261,14 @@ function formatJson(value: unknown): string {
 	}
 }
 
-/**
- * Every rendered value of a tool event, keys included, loses its private regions
- * before escaping, with one scan carried across the event's fields in order.
- */
+/** Every rendered value of a tool event, keys included, loses its private blocks before escaping. */
 function formatToolEvent(event: ToolEvent): string {
-	const scan = newPrivateScan();
-	const toolName = scanPrivate(event.toolName, scan);
-	const timestamp = scanPrivate(event.timestamp ?? "", scan);
-	const cwd = scanPrivate(event.cwd ?? "", scan);
-	const params = escapeXml(formatJson(stripPrivateObj(event.toolInput, scan)));
-	const outcome = escapeXml(formatJson(stripPrivateObj(event.toolOutput, scan)));
-	const error = escapeXml(formatJson(stripPrivateObj(event.toolError, scan)));
+	const toolName = stripPrivate(event.toolName);
+	const timestamp = stripPrivate(event.timestamp ?? "");
+	const cwd = stripPrivate(event.cwd ?? "");
+	const params = escapeXml(formatJson(stripPrivateObj(event.toolInput)));
+	const outcome = escapeXml(formatJson(stripPrivateObj(event.toolOutput)));
+	const error = escapeXml(formatJson(stripPrivateObj(event.toolError)));
 	const parts = ["<observed_from_primary_session>"];
 	parts.push(`  <what_happened>${escapeXml(toolName)}</what_happened>`);
 	if (timestamp) {
