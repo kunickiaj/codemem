@@ -401,6 +401,8 @@ export {
 	isCoordinatorAdminDevice,
 	readBoundaryMigrationMode,
 } from "./coordinator-sync-config.js";
+export { coordinatorListTeamMemberRemovalsAction } from "./coordinator-team-member-removal-client.js";
+export type { CoordinatorTeamMemberRemoval } from "./coordinator-team-member-removals.js";
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,

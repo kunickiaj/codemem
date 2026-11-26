@@ -14,6 +14,7 @@ import type {
 	CoordinatorEnrollmentReconcileResult,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
+	CoordinatorTeamMemberRemoval,
 	DeviceIdentityBindingCommitRequestV1,
 	DeviceIdentityBindingPreviewRequestV1,
 	DeviceIdentityCoordinatorEvidence,
@@ -81,6 +82,7 @@ import {
 	coordinatorListReviewedRecipientInviteEvidenceAction,
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
+	coordinatorListTeamMemberRemovalsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorRenameGroupAction,
@@ -1984,6 +1986,7 @@ export type CoordinatorEnrollmentMaintenanceStage =
 	| "complete_device_setup"
 	| "list_devices"
 	| "list_consumed_team_invites"
+	| "list_team_member_removals"
 	| "reconcile_snapshot";
 
 export interface CoordinatorEnrollmentMaintenanceFailure {
@@ -2022,6 +2025,9 @@ function coordinatorEnrollmentFailureCode(error: unknown): string {
 			"coordinator_invite_group_mismatch",
 			"coordinator_invite_list_malformed",
 			"reconciliation_time_invalid",
+			"team_member_removal_invalid",
+			"team_member_removal_list_invalid",
+			"team_member_removal_list_too_long",
 		]).has(message)
 	) {
 		return message;
@@ -2055,6 +2061,11 @@ interface ConfiguredCoordinatorEnrollmentOptions {
 		remoteUrl: string;
 		adminSecret: string;
 	}) => Promise<CoordinatorConsumedTeamInvite[]>;
+	listTeamMemberRemovals?: (input: {
+		groupId: string;
+		remoteUrl: string;
+		adminSecret: string;
+	}) => Promise<CoordinatorTeamMemberRemoval[]>;
 	reconcileSnapshot?: (
 		input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
 	) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
@@ -2174,6 +2185,7 @@ async function reconcileConfiguredCoordinatorGroup(
 	const adminSecret = config.syncCoordinatorAdminSecret.trim();
 	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
 	const listInvites = options.listConsumedTeamInvites ?? coordinatorListConsumedTeamInvitesAction;
+	const listRemovals = options.listTeamMemberRemovals ?? coordinatorListTeamMemberRemovalsAction;
 	const reconcile =
 		options.reconcileSnapshot ??
 		((input) => reconcileCoordinatorEnrollmentSnapshot(store.db, input));
@@ -2200,6 +2212,10 @@ async function reconcileConfiguredCoordinatorGroup(
 		);
 		stage = "list_consumed_team_invites";
 		const invites = await listInvites({ groupId, remoteUrl, adminSecret });
+		// Read after the invitations: a removal recorded between the two reads is
+		// still applied, so no invitation in this snapshot restores that member.
+		stage = "list_team_member_removals";
+		const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret });
 		stage = "complete_device_setup";
 		context.assertCurrent();
 		stage = "reconcile_snapshot";
@@ -2209,6 +2225,7 @@ async function reconcileConfiguredCoordinatorGroup(
 				groupId,
 				enrollments,
 				consumedTeamInvites: invites,
+				teamMemberRemovals,
 				localDeviceId: store.deviceId,
 			}),
 		};

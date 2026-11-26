@@ -82,6 +82,10 @@ beforeEach(() => {
 			calls.push("invites");
 			return [];
 		}),
+		listTeamMemberRemovals: vi.fn(async () => {
+			calls.push("removals");
+			return [];
+		}),
 		reconcileSnapshot: vi.fn(() => {
 			calls.push("reconcile");
 			return { devicesAdded: 0, membershipsAdded: 0, identitiesAdded: 0, unchanged: 1, issues: [] };
@@ -193,8 +197,10 @@ it.each([null, LEGACY_SETUP.identityId])(
 				"POST /v1/auth/device-binding",
 				"GET /v1/admin/devices",
 				"GET /v1/admin/invites",
+				"GET /v1/admin/team-member-removals",
 				"GET /v1/admin/devices",
 				"GET /v1/admin/invites",
+				"GET /v1/admin/team-member-removals",
 			]);
 			expect(
 				(await f.coordinator.store.listEnrolledDevices(LEGACY_SETUP.groupId)).find(
@@ -240,7 +246,7 @@ describe("maintenance origins without a completion write", () => {
 			expect(options.completeDeviceSetup).not.toHaveBeenCalled();
 			expect(options.listConsumedTeamInvites).toHaveBeenCalledOnce();
 			expect(options.reconcileSnapshot).toHaveBeenCalledOnce();
-			expect(calls).toEqual(["devices", "invites", "reconcile"]);
+			expect(calls).toEqual(["devices", "invites", "removals", "reconcile"]);
 		},
 	);
 
@@ -340,7 +346,7 @@ describe("canonical ownership and compatibility", () => {
 		// Assert
 		expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
 		expect(options.completeDeviceSetup).not.toHaveBeenCalled();
-		expect(calls).toEqual(["devices", "invites", "reconcile"]);
+		expect(calls).toEqual(["devices", "invites", "removals", "reconcile"]);
 	});
 
 	it.each([null, "identity-local"])(
@@ -357,7 +363,7 @@ describe("canonical ownership and compatibility", () => {
 			// Assert
 			expect(options.completeDeviceSetup).toHaveBeenCalledOnce();
 			expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
-			expect(calls).toEqual(["devices", "POST", "invites", "reconcile"]);
+			expect(calls).toEqual(["devices", "POST", "invites", "removals", "reconcile"]);
 		},
 	);
 
@@ -517,6 +523,46 @@ it.each(["Identity", "key", "profile", "generation", "config", "coordinator", "g
 		expect(options.listConsumedTeamInvites).not.toHaveBeenCalled();
 	},
 );
+
+it("applies the group's Team member removals in the same reconciliation", async () => {
+	// Arrange
+	const removal = {
+		removal_seq: 3,
+		group_id: "group-a",
+		team_id: "team-a",
+		identity_id: "identity-removed",
+		removed_by_device_id: null,
+		removed_at: "2026-07-26T00:00:00.000Z",
+	};
+	options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
+	options.listTeamMemberRemovals = vi.fn(async () => [removal]);
+	// Act
+	const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
+	// Assert
+	expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
+	expect(options.reconcileSnapshot).toHaveBeenCalledWith(
+		expect.objectContaining({ teamMemberRemovals: [removal] }),
+	);
+});
+
+it("reconciles nothing when the Team member removals cannot be read", async () => {
+	// Arrange
+	options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
+	options.listTeamMemberRemovals = vi.fn(async () => {
+		throw new Error("team_member_removal_list_invalid");
+	});
+	// Act
+	const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
+	// Assert
+	expect(result.failures).toEqual([
+		{
+			groupId: "group-a",
+			stage: "list_team_member_removals",
+			code: "team_member_removal_list_invalid",
+		},
+	]);
+	expect(options.reconcileSnapshot).not.toHaveBeenCalled();
+});
 
 it("rechecks a healthy canonical context after the asynchronous invite read", async () => {
 	// Arrange

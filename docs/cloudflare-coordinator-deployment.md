@@ -294,6 +294,14 @@ page, and accepts `team_id` and the previous page's `next_after_seq` as `after_s
 admin secret. A removal grants and revokes nothing on the coordinator. Clients that support Team member removal
 read the removals to keep those memberships removed.
 
+An admin device's Viewer reads the full list for each configured group on every enrollment check, after it reads
+the accepted invitations, and applies both in one local transaction. It revokes each removed membership, wakes
+the affected Project access, and keeps every Team setup and Team invitation from making that person a member
+again. A coordinator from before 0052 answers the route with its plain not-found page, and the Viewer reads that
+as no removals. Any other failure, including `503 team_member_removal_unavailable` from a Worker deployed
+without the migration, stops that group's enrollment check at the `list_team_member_removals` stage until the
+list can be read. That is why the migration goes in before the Worker.
+
 ### Device rebind storage (0038)
 
 Migration `0038_add_device_rebind.sql` adds two tables for signing in on a device whose
