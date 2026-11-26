@@ -10,6 +10,7 @@ import {
 	DELEGATED_BRIEF_LABEL,
 	MAX_DELEGATED_CONTEXT_CHARS,
 } from "./capture-context.js";
+import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
@@ -269,9 +270,9 @@ function formatToolEvent(event: ToolEvent): string {
 	if (event.cwd) {
 		parts.push(`  <working_directory>${escapeXml(event.cwd)}</working_directory>`);
 	}
-	const params = escapeXml(formatJson(event.toolInput));
-	const outcome = escapeXml(formatJson(event.toolOutput));
-	const error = escapeXml(formatJson(event.toolError));
+	const params = escapeXml(formatJson(stripPrivateObj(event.toolInput)));
+	const outcome = escapeXml(formatJson(stripPrivateObj(event.toolOutput)));
+	const error = escapeXml(formatJson(stripPrivateObj(event.toolError)));
 	if (params) parts.push(`  <parameters>${params}</parameters>`);
 	if (outcome) parts.push(`  <outcome>${outcome}</outcome>`);
 	if (error) parts.push(`  <error>${error}</error>`);
@@ -414,37 +415,44 @@ export function buildObserverPrompt(
 	const outputMode = options.outputMode ?? "legacy_xml";
 	const system = buildObserverSystemPrompt(context, outputMode);
 
-	// User prompt: observed session context
+	// User prompt: observed session context. User and assistant text loses its private
+	// blocks here, whatever path built the context.
 	const userBlocks: string[] = ["Observed session context:"];
+	const userPrompt = stripPrivate(context.userPrompt);
+	const project = stripPrivate(context.project ?? "");
+	const transcript = stripPrivate(context.transcript);
+	const diffSummary = stripPrivate(context.diffSummary);
+	const recentFiles = stripPrivate(context.recentFiles);
+	const assistant = stripPrivate(context.lastAssistantMessage ?? "");
 
-	if (context.userPrompt) {
+	if (userPrompt) {
 		const promptBlock = ["<observed_from_primary_session>"];
-		promptBlock.push(`  <user_request>${escapeXml(context.userPrompt)}</user_request>`);
+		promptBlock.push(`  <user_request>${escapeXml(userPrompt)}</user_request>`);
 		if (context.promptNumber != null) {
 			promptBlock.push(`  <prompt_number>${context.promptNumber}</prompt_number>`);
 		}
-		if (context.project) {
-			promptBlock.push(`  <project>${escapeXml(context.project)}</project>`);
+		if (project) {
+			promptBlock.push(`  <project>${escapeXml(project)}</project>`);
 		}
 		promptBlock.push("</observed_from_primary_session>");
 		userBlocks.push(promptBlock.join("\n"));
 	}
 
-	if (context.transcript.trim()) {
+	if (transcript.trim()) {
 		userBlocks.push(
-			`<conversation_transcript>\n${escapeXml(context.transcript)}\n</conversation_transcript>`,
+			`<conversation_transcript>\n${escapeXml(transcript)}\n</conversation_transcript>`,
 		);
 	}
 
-	if (context.diffSummary) {
+	if (diffSummary) {
 		userBlocks.push(
-			`<observed_from_primary_session>\n  <diff_summary>${escapeXml(context.diffSummary)}</diff_summary>\n</observed_from_primary_session>`,
+			`<observed_from_primary_session>\n  <diff_summary>${escapeXml(diffSummary)}</diff_summary>\n</observed_from_primary_session>`,
 		);
 	}
 
-	if (context.recentFiles) {
+	if (recentFiles) {
 		userBlocks.push(
-			`<observed_from_primary_session>\n  <recent_files>${escapeXml(context.recentFiles)}</recent_files>\n</observed_from_primary_session>`,
+			`<observed_from_primary_session>\n  <recent_files>${escapeXml(recentFiles)}</recent_files>\n</observed_from_primary_session>`,
 		);
 	}
 
@@ -452,10 +460,10 @@ export function buildObserverPrompt(
 		userBlocks.push(formatToolEvent(event));
 	}
 
-	if (context.includeSummary && context.lastAssistantMessage) {
+	if (context.includeSummary && assistant) {
 		userBlocks.push("Summary context:");
 		userBlocks.push(
-			`<summary_context>\n  <assistant_response>${escapeXml(context.lastAssistantMessage)}</assistant_response>\n</summary_context>`,
+			`<summary_context>\n  <assistant_response>${escapeXml(assistant)}</assistant_response>\n</summary_context>`,
 		);
 	}
 

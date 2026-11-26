@@ -151,12 +151,12 @@ export function buildTranscript(events: Record<string, unknown>[]): string {
 // Extraction helpers
 // ---------------------------------------------------------------------------
 
-/** Extract assistant text messages from raw events. */
+/** Extract assistant text messages from raw events, without private blocks. */
 export function extractAssistantMessages(events: Record<string, unknown>[]): string[] {
 	const messages: string[] = [];
 	for (const event of events) {
 		if (event.type !== "assistant_message") continue;
-		const text = String(event.assistant_text ?? "").trim();
+		const text = stripPrivate(String(event.assistant_text ?? "")).trim();
 		if (text) messages.push(text);
 	}
 	return messages;
@@ -187,7 +187,7 @@ export function extractAssistantUsage(events: Record<string, unknown>[]): Record
 	return usageEvents;
 }
 
-/** Extract user prompts with prompt numbers from raw events. */
+/** Extract user prompts with prompt numbers from raw events, without private blocks. */
 export function extractPrompts(
 	events: Record<string, unknown>[],
 ): { promptText: string; promptNumber: number | null; timestamp: string | null }[] {
@@ -195,7 +195,7 @@ export function extractPrompts(
 		[];
 	for (const event of events) {
 		if (event.type !== "user_prompt") continue;
-		const promptText = String(event.prompt_text ?? "").trim();
+		const promptText = stripPrivate(String(event.prompt_text ?? "")).trim();
 		if (!promptText) continue;
 		prompts.push({
 			promptText,
