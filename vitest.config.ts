@@ -2,9 +2,9 @@ import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		// Standard GitHub-hosted runners for public repos have 4 vCPUs; keep one
-		// free for the main process and SQLite I/O.
-		maxWorkers: process.env.CI ? 3 : undefined,
+		// Standard GitHub-hosted runners for public repos have 4 vCPUs. On a 4-CPU Linux
+		// container, one parallel shard took 278-279 s with 4 workers against 344-359 s with 3.
+		maxWorkers: process.env.CI ? 4 : undefined,
 		// PR test selection (`--changed`) runs everything when one of these changes.
 		forceRerunTriggers: [
 			...configDefaults.forceRerunTriggers,

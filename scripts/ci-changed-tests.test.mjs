@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
 	expandScripts,
 	isUntraced,
+	main,
 	parseVitest,
 	selectFiles,
+	shardArgs,
 	supportImports,
 } from "./ci-changed-tests.mjs";
 
@@ -156,5 +160,42 @@ describe("selectFiles", () => {
 		const files = selectFiles({ all, changed: new Set(["/other.test.ts"]), untraced: new Set() });
 		// Assert: an empty selection skips the command.
 		assert.deepEqual(files, []);
+	});
+});
+
+describe("shardArgs", () => {
+	it("adds nothing without a shard", () => {
+		assert.deepEqual(shardArgs("", { selected: true }), []);
+	});
+
+	it("lets a shard of a selection pass with no files, but not a shard of a full run", () => {
+		// Assert: Vitest otherwise fails when a small selection leaves a shard without files.
+		assert.deepEqual(shardArgs("2/2", { selected: true }), ["--shard=2/2", "--passWithNoTests"]);
+		assert.deepEqual(shardArgs("1/2", { selected: false }), ["--shard=1/2"]);
+	});
+
+	it("rejects a malformed shard instead of running every file", () => {
+		for (const shard of ["2", "0/2", "1/0", "1/2 --project x", "a/b"])
+			assert.throws(() => shardArgs(shard, { selected: true }), /Invalid CI_TEST_SHARD/u, shard);
+	});
+});
+
+describe("main with a shard", () => {
+	it("refuses to run a command that is not a Vitest run, which every shard would repeat", () => {
+		// Arrange
+		const cwd = mkdtempSync(join(tmpdir(), "ci-changed-tests-"));
+		const scripts = {
+			"test:mixed": "node --test a.test.mjs && pnpm exec vitest run",
+		};
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ scripts }));
+		try {
+			// Act + Assert: it fails before running anything.
+			assert.throws(
+				() => main(["test:mixed"], { cwd, env: { CI_TEST_SHARD: "1/2", CI_TEST_BASE: "" } }),
+				/CI_TEST_SHARD cannot split: node --test a\.test\.mjs/u,
+			);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });

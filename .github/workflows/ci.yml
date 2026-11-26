@@ -68,11 +68,12 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # The shard jobs run the affected parallel suite; this job runs the rest once.
       - name: Affected PR tests
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci:full')
         env:
           CI_TEST_BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
-        run: node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci
+        run: node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci:isolated
 
       - name: Full auxiliary tests and isolated owner proof
         if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
@@ -80,7 +81,6 @@ jobs:
 
   ts-test-shards:
     name: TypeScript Test Shard ${{ matrix.shard }}/2
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -90,7 +90,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # The automatic-recall baseline test archives a pinned historical main commit.
+          # The automatic-recall baseline test archives a pinned historical main commit,
+          # and PR test selection diffs against the base commit.
           fetch-depth: 0
 
       - name: Install pnpm
@@ -113,8 +114,13 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # A pull request runs its affected files; ci:full and non-PR events pass no base and run
+      # the whole parallel suite. Each shard selects the same files and runs its half.
       - name: Test shard
-        run: pnpm run test:ci:parallel --shard=${{ matrix.shard }}/2
+        env:
+          CI_TEST_BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
+          CI_TEST_SHARD: ${{ matrix.shard }}/2
+        run: node scripts/ci-changed-tests.mjs test:ci:parallel
 
   ts-test:
     name: TypeScript Test
@@ -124,15 +130,13 @@ jobs:
     steps:
       - name: Require expected test jobs
         env:
-          FULL_RUN: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
           COMMON_RESULT: ${{ needs.ts-test-common.result }}
           SHARDS_RESULT: ${{ needs.ts-test-shards.result }}
         run: |
           node --input-type=module <<'NODE'
-          const { FULL_RUN, COMMON_RESULT, SHARDS_RESULT } = process.env;
-          const expectedShards = FULL_RUN === 'true' ? 'success' : 'skipped';
-          if (!['true', 'false'].includes(FULL_RUN) || COMMON_RESULT !== 'success' || SHARDS_RESULT !== expectedShards) {
-            console.error(`TypeScript Test failed: common=${COMMON_RESULT || 'missing'}, shards=${SHARDS_RESULT || 'missing'}, full=${FULL_RUN || 'missing'}. Expected common=success and shards=${expectedShards}.`);
+          const { COMMON_RESULT, SHARDS_RESULT } = process.env;
+          if (COMMON_RESULT !== 'success' || SHARDS_RESULT !== 'success') {
+            console.error(`TypeScript Test failed: common=${COMMON_RESULT || 'missing'}, shards=${SHARDS_RESULT || 'missing'}. Expected both to succeed.`);
             process.exitCode = 1;
           }
           NODE
