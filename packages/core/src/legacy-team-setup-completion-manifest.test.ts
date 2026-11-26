@@ -2266,15 +2266,22 @@ describe("legacy Team setup completion manifests", () => {
 			 'local-revision', 'completed', 'local-source', 'local-key', ?, ?)`,
 		).run(canonicalManifest.team_id, NOW, NOW);
 		db.prepare("UPDATE actors SET status = 'inactive' WHERE actor_id = 'identity-b'").run();
-		// The setup group's scope also holds a device outside the roster and this device.
-		addScopeMembers(db, "scope-engineering", ["device-a", "device-c", "device-local"]);
+		// The Team's Project is mapped to the setup group's scope, which also holds
+		// a device outside the roster and this device.
+		db.prepare(
+			`INSERT INTO project_scope_mappings(workspace_identity, project_pattern, scope_id, source, created_at, updated_at)
+			 VALUES ('project-private', 'project-private', 'scope-engineering', 'user', ?, ?)`,
+		).run(NOW, NOW);
+		await cacheScopeMembers(db, [
+			["scope-engineering", "device-a"],
+			["scope-engineering", "device-c"],
+			["scope-engineering", "device-local"],
+		]);
 
 		await expect(applyCanonical()).rejects.toThrow("team_setup_conflict");
-		// The quarantine denied the scope to every member but this device.
-		expect(quarantineDenials(db)).toEqual([
-			{ scope_id: "scope-engineering", device_id: "device-a" },
-			{ scope_id: "scope-engineering", device_id: "device-c" },
-		]);
+		// Quarantine refuses the Team's scope to its device only.
+		expect(servesScope(db, "device-a", "scope-engineering")).toBe(false);
+		expect(servesScope(db, "device-c", "scope-engineering")).toBe(true);
 		expect(
 			db
 				.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
@@ -2333,10 +2340,8 @@ describe("legacy Team setup completion manifests", () => {
 			canonicalManifest.team_id,
 		);
 		await expect(applyCanonical()).resolves.toEqual(canonicalManifest);
-		// The reviewed activation lifted the denial for the device it includes only.
-		expect(quarantineDenials(db)).toEqual([
-			{ scope_id: "scope-engineering", device_id: "device-c" },
-		]);
+		// The reviewed activation includes the device again.
+		expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
 		expect(
 			db
 				.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
@@ -2873,7 +2878,8 @@ describe("legacy Team setup completion manifests with cached scope access after 
 			workspace_identity: mapping.workspace_identity,
 			project_pattern: mapping.project_pattern,
 			scope_id: "scope-other-group",
-			source: "reviewed_team_setup",
+			// The Viewer's Project mapping route saves every mapping it edits as "user".
+			source: "user",
 		});
 		expect(
 			db
@@ -3022,28 +3028,6 @@ const LAPTOP_FINGERPRINT = fingerprintPublicKey(CANONICAL_PUBLIC_KEY);
 const verifiedRemoval = () =>
 	({ status: "read", removals: [laptopRemoval(GROUP_ID, LAPTOP_FINGERPRINT)] }) as const;
 
-/** Records active scope memberships without proofs, as an older cache holds them. */
-function addScopeMembers(db: InstanceType<typeof Database>, scopeId: string, deviceIds: string[]) {
-	for (const deviceId of deviceIds) {
-		db.prepare(
-			`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
-			 VALUES (?, ?, 'member', 'active', 1, ?)`,
-		).run(scopeId, deviceId, NOW);
-	}
-}
-
-/** The deny overlays a quarantine wrote, which only its key and reason identify. */
-function quarantineDenials(db: InstanceType<typeof Database>) {
-	return db
-		.prepare(
-			`SELECT scope_id, device_id FROM recipient_policy_deny_overlays
-			 WHERE canonical_project_identity GLOB 'team-setup-quarantine:*'
-			   AND reason_code = 'team_setup_quarantine'
-			 ORDER BY scope_id, device_id`,
-		)
-		.all();
-}
-
 function quarantined(db: InstanceType<typeof Database>) {
 	return {
 		team: db.prepare("SELECT status FROM policy_teams").pluck().get(),
@@ -3109,6 +3093,88 @@ function laptopRecords(db: InstanceType<typeof Database>) {
 		]),
 	);
 }
+
+/** Binds a device to an Identity, as an earlier assignment left it. */
+function bindDevice(db: InstanceType<typeof Database>, deviceId: string, identityId: string) {
+	db.prepare(
+		`INSERT INTO identity_devices(device_id, identity_id, display_name, status, provenance,
+		 revision, migration_state, idempotency_key, created_at, updated_at)
+		 VALUES (?, ?, ?, 'active', 'user', 'r1', 'completed', ?, ?, ?)`,
+	).run(deviceId, identityId, deviceId, `bind-${deviceId}`, NOW, NOW);
+}
+
+/**
+ * A completed Team with its Project in scope-engineering, quarantined by the
+ * Viewer's containment. Person A also has a second device that setup never
+ * reviewed. Another scope of the setup group, holding none of the Team's
+ * Projects, is shared with that device, an independent device and a service device.
+ */
+async function quarantinedTeam(db: InstanceType<typeof Database>) {
+	const team = await completeTeamThenRemoveLaptop(db, { removedLocally: [] });
+	bindDevice(db, "device-a2", "identity-a");
+	await cacheScopeMembers(db, [
+		["scope-engineering", "device-local"],
+		["scope-engineering", "device-a"],
+		["scope-engineering", "device-b"],
+		["scope-engineering", "device-a2"],
+		["scope-group-default", "device-local"],
+		["scope-group-default", "device-a2"],
+		["scope-group-default", "device-c"],
+		["scope-group-default", "device-service"],
+	]);
+	expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
+	await containLegacyTeamSetupCompletionConflict(db, {
+		coordinatorId: COORDINATOR_ID,
+		groupId: GROUP_ID,
+	});
+	expect(quarantined(db)).toEqual({ team: "inactive", recipients: "revoked" });
+	return team;
+}
+
+describe("legacy Team setup quarantine at scope admission", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = createCompletionFixtureDb();
+	});
+
+	afterEach(() => db.close());
+
+	it("refuses the Team's Project scope to Team devices and keeps unrelated shares in the setup group", async () => {
+		await quarantinedTeam(db);
+
+		for (const device of ["device-a", "device-b", "device-a2"])
+			expect(servesScope(db, device, "scope-engineering"), device).toBe(false);
+		for (const device of ["device-a2", "device-c", "device-service"])
+			expect(servesScope(db, device, "scope-group-default"), device).toBe(true);
+	});
+
+	it("refuses a Team device whose membership a refresh cached after quarantine", async () => {
+		// Arrange: Person B's new device, and an independent device, join after quarantine.
+		await quarantinedTeam(db);
+		bindDevice(db, "device-b2", "identity-b");
+		await cacheScopeMembers(db, [
+			["scope-engineering", "device-b2"],
+			["scope-engineering", "device-c"],
+		]);
+
+		// Assert
+		expect(servesScope(db, "device-b2", "scope-engineering")).toBe(false);
+		expect(servesScope(db, "device-c", "scope-engineering")).toBe(true);
+	});
+
+	it("serves included devices once the Team is active again and refuses a left-out device only its Projects", async () => {
+		// Arrange: the Team leaves quarantine with the devices its setup included.
+		await quarantinedTeam(db);
+		db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+
+		// Assert: Person A's second device was never included.
+		expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
+		expect(servesScope(db, "device-b", "scope-engineering")).toBe(true);
+		expect(servesScope(db, "device-a2", "scope-engineering")).toBe(false);
+		expect(servesScope(db, "device-a2", "scope-group-default")).toBe(true);
+	});
+});
 
 describe("legacy Team setup completion manifests end a device's access once it is removed everywhere", () => {
 	let db: InstanceType<typeof Database>;
@@ -3200,10 +3266,6 @@ describe("legacy Team setup completion manifests end a device's access once it i
 			desktopServed: false,
 			servesOtherGroupScope: true,
 		});
-		expect(quarantineDenials(db)).toEqual([
-			{ scope_id: "scope-engineering", device_id: "device-a" },
-			{ scope_id: "scope-engineering", device_id: "device-b" },
-		]);
 	});
 });
 

@@ -46,7 +46,6 @@ import {
 import { localRemovedDeviceIds } from "./removed-device-local-ids.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
 import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
-import { denyQuarantinedTeamDelivery } from "./team-setup-quarantine-delivery.js";
 
 export type LegacyTeamSetupCompletionManifestErrorCode =
 	| "team_setup_completion_invalid"
@@ -1374,8 +1373,6 @@ function quarantineDivergentCompletedPolicy(
 			.get(binding.teamId) as { revision: string; status: string } | undefined;
 		if (!team) return;
 		const now = new Date().toISOString();
-		// Refuse the affected scopes now; the reconciler and daemon end memberships later.
-		denyQuarantinedTeamDelivery(db, { ...binding, now });
 		let affectedProjects: string[] = [];
 		if (team.status === "active") {
 			affectedProjects = db

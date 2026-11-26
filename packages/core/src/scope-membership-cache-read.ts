@@ -10,6 +10,7 @@ import {
 	type ScopeMembershipRevocationNotice,
 	scopeMembershipEpochStatus,
 } from "./scope-membership-semantics.js";
+import { teamSetupRefusesScope } from "./team-setup-scope-admission.js";
 
 export const DEFAULT_SCOPE_MEMBERSHIP_CACHE_MAX_AGE_MS = 60_000;
 
@@ -255,7 +256,7 @@ export function listCachedScopesForDevice(
 			getAnyRecipientPolicyDenyOverlayForScopeDevice(db, {
 				scopeId: row.scope_id,
 				deviceId: cleanDeviceId,
-			}) == null,
+			}) == null && !teamSetupRefusesScope(db, { scopeId: row.scope_id, deviceId: cleanDeviceId }),
 	);
 	return {
 		deviceId: cleanDeviceId,
@@ -371,7 +372,9 @@ function readCachedScopeAuthorization(
 		membership,
 		scope,
 		epoch,
-		policyDenied: !!getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { deviceId, scopeId }),
+		policyDenied:
+			!!getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { deviceId, scopeId }) ||
+			teamSetupRefusesScope(db, { deviceId, scopeId }),
 	});
 	let revocation: ScopeMembershipRevocationNotice | null = null;
 	if (state === "revoked" && membership)
