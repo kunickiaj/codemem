@@ -35,6 +35,7 @@ import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.j
 import {
 	type CoordinatorPeerRemovalLookupInput,
 	type CoordinatorPeerRemovalLookupResult,
+	capturePeerRemovalCaller,
 	capturePeerRemovalLookup,
 	peerRemovalSnapshotResult,
 	peerRemovalSnapshotStatements,
@@ -869,8 +870,9 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		raw: CoordinatorPeerRemovalLookupInput,
 	): Promise<CoordinatorPeerRemovalLookupResult> {
 		const entries = await capturePeerRemovalLookup(raw);
+		const caller = capturePeerRemovalCaller(raw);
 		const results = await this.backend
-			.batch(peerRemovalSnapshotStatements(entries, REMOVAL_AVAILABLE_SQL))
+			.batch(peerRemovalSnapshotStatements(entries, REMOVAL_AVAILABLE_SQL, caller))
 			.catch(removalBackendFailure);
 		if (results.length !== 2) return incompleteResult();
 		const states = resultRows<{ available: number; removal_seq: number }>(results[0]);

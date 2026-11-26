@@ -33,7 +33,9 @@ export function registerPeerRemovalQueryContract(test: RemovalTest) {
 	registerQueryInputs(test);
 	registerQueryReadiness(test);
 	registerQueryBoundary(test);
+	registerKeyEvidence(test);
 }
+const NO_KEYS = { removed: [], enrolled: [] };
 const lookup = (f: RemovalFixture, ...peers: { deviceId: string; publicKey?: string }[]) =>
 	f.store.lookupPeerRemovals({ peers });
 const keyed = (device: Enrollment, deviceId = device.deviceId) => ({
@@ -58,7 +60,13 @@ function registerQueryMatching(test: RemovalTest) {
 	test("E1 E9 an empty lookup returns complete empty arrays and the maximum sequence including lifted history", async ({
 		fixture: f,
 	}) => {
-		expect(await lookup(f)).toEqual({ revoked: [], removed: [], enrolled: [], removal_seq: 0 });
+		expect(await lookup(f)).toEqual({
+			revoked: [],
+			removed: [],
+			enrolled: [],
+			removal_seq: 0,
+			key_evidence: NO_KEYS,
+		});
 		const device = await target(f);
 		await remove(f, device);
 		await liftTombstones(f, device.deviceId);
@@ -67,6 +75,7 @@ function registerQueryMatching(test: RemovalTest) {
 			removed: [],
 			enrolled: [],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 	});
 	test("E2 full removal matches the ID with another key and a canonical-key alias, but a keyless unknown ID matches nothing", async ({
@@ -87,6 +96,8 @@ function registerQueryMatching(test: RemovalTest) {
 			removed: [alias, device.deviceId].sort(),
 			enrolled: [],
 			removal_seq: await highest(f),
+			// A lookup without a signed caller relates no device to it.
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -116,6 +127,8 @@ function registerOpaqueQuery(test: RemovalTest) {
 			removed: [],
 			enrolled: [alias],
 			removal_seq: await highest(f),
+			// The surviving enrollment of that key is under another ID.
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -138,6 +151,7 @@ function registerQueryBoundary(test: RemovalTest) {
 			removed: [device.deviceId],
 			enrolled: [],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -158,6 +172,7 @@ function registerSurvivingKey(test: RemovalTest) {
 			removed: [],
 			enrolled: [],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 		const alias = `${f.prefix}-alias`;
 		expect(await lookup(f, keyed(device, alias), { deviceId: survivor.deviceId })).toEqual({
@@ -165,6 +180,7 @@ function registerSurvivingKey(test: RemovalTest) {
 			removed: [],
 			enrolled: [alias, survivor.deviceId].sort(),
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -182,6 +198,7 @@ function registerQueryHistory(test: RemovalTest) {
 			removed: [old.deviceId],
 			enrolled: [old.deviceId],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 	});
 	test("E4 any individually effective tombstone matches; surviving K1 cannot hide removed K2 for a keyless ID", async ({
@@ -204,6 +221,7 @@ function registerQueryHistory(test: RemovalTest) {
 			removed: [],
 			enrolled: [],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -240,6 +258,7 @@ function registerIdRevocation(test: RemovalTest) {
 			removed: [],
 			enrolled: [],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -262,6 +281,7 @@ function registerQueryRevocation(test: RemovalTest) {
 			removed: [removed.deviceId],
 			enrolled: [removed.deviceId],
 			removal_seq: await highest(f),
+			key_evidence: NO_KEYS,
 		});
 		expect(await lookup(f, { deviceId: removed.deviceId }, keyed(current), keyed(removed))).toEqual(
 			{
@@ -269,6 +289,7 @@ function registerQueryRevocation(test: RemovalTest) {
 				removed: [],
 				enrolled: [removed.deviceId],
 				removal_seq: await highest(f),
+				key_evidence: NO_KEYS,
 			},
 		);
 	});
@@ -326,6 +347,7 @@ function registerQueryInputs(test: RemovalTest) {
 			removed: [],
 			enrolled: [],
 			removal_seq: 0,
+			key_evidence: NO_KEYS,
 		});
 	});
 }
@@ -343,5 +365,152 @@ function registerQueryReadiness(test: RemovalTest) {
 		}
 		await legacyInsert(f, await target(f));
 		await expect(lookup(f)).rejects.toThrow("device_removal_unavailable");
+	});
+}
+
+/** The caller enrolled, under one key, in each named group of this test. */
+async function callerIn(f: RemovalFixture, ...groups: string[]) {
+	const [first, ...others] = groups;
+	if (!first) throw new Error("Missing fixture group");
+	const caller = await target(f, "caller", first);
+	await enroll(f, caller);
+	for (const group of others) await enroll(f, { ...caller, groupId: `${f.prefix}-${group}` });
+	return { groupId: caller.groupId, deviceId: caller.deviceId };
+}
+const lookupAs = (
+	f: RemovalFixture,
+	caller: { groupId: string; deviceId: string },
+	...peers: { deviceId: string; publicKey?: string }[]
+) => f.store.lookupPeerRemovals({ peers, caller });
+
+/** An old key removed in g1, and the same ID enrolled with a current key in g2. */
+async function rotatedDevice(f: RemovalFixture) {
+	const old = await target(f);
+	const current = { ...(await target(f, "new-key", "g2")), deviceId: old.deviceId };
+	await seed(f, current);
+	await insertTombstone(f, old);
+	return { old, current };
+}
+
+function registerKeyEvidence(test: RemovalTest) {
+	registerSharedGroupEvidence(test);
+	registerWithheldEvidence(test);
+}
+
+function registerSharedGroupEvidence(test: RemovalTest) {
+	test("K1 a caller in both groups tells an old removed key from a current enrolled key under one ID", async ({
+		fixture: f,
+	}) => {
+		const { old, current } = await rotatedDevice(f);
+		const caller = await callerIn(f, "g1", "g2");
+		const legacy = { revoked: [], removed: [old.deviceId], enrolled: [old.deviceId] };
+
+		expect(await lookupAs(f, caller, keyed(current))).toEqual({
+			...legacy,
+			removal_seq: await highest(f),
+			key_evidence: { removed: [], enrolled: [old.deviceId] },
+		});
+		expect(await lookupAs(f, caller, keyed(old))).toEqual({
+			...legacy,
+			removal_seq: await highest(f),
+			key_evidence: { removed: [old.deviceId], enrolled: [] },
+		});
+	});
+	test("K2 a key enrolled only under another ID is not evidence for the ID that was sent", async ({
+		fixture: f,
+	}) => {
+		const old = await target(f);
+		const elsewhere = await target(f, "elsewhere", "g2");
+		await seed(f, elsewhere);
+		await insertTombstone(f, old);
+		const caller = await callerIn(f, "g1", "g2");
+
+		const result = await lookupAs(f, caller, {
+			deviceId: old.deviceId,
+			publicKey: elsewhere.key.publicKey,
+		});
+
+		expect(result.removed).toEqual([old.deviceId]);
+		expect(result.key_evidence).toEqual(NO_KEYS);
+	});
+	test("K3 a key removed in a shared group is reported for its ID and no enrollment is claimed", async ({
+		fixture: f,
+	}) => {
+		const device = await target(f);
+		await remove(f, device);
+		const caller = await callerIn(f, "g1");
+
+		expect(
+			(await lookupAs(f, caller, keyed(device), { deviceId: `${f.prefix}-keyless` })).key_evidence,
+		).toEqual({ removed: [device.deviceId], enrolled: [] });
+	});
+}
+
+function registerWithheldEvidence(test: RemovalTest) {
+	test("K4 a caller in an unrelated group learns nothing beyond the legacy fields", async ({
+		fixture: f,
+	}) => {
+		const { old, current } = await rotatedDevice(f);
+		const caller = await callerIn(f, "unrelated");
+
+		for (const entry of [keyed(current), keyed(old)])
+			expect(await lookupAs(f, caller, entry)).toEqual({
+				revoked: [],
+				removed: [old.deviceId],
+				enrolled: [old.deviceId],
+				removal_seq: await highest(f),
+				key_evidence: NO_KEYS,
+			});
+	});
+	test("K5 a blocked device gets no key evidence even in a shared group", async ({
+		fixture: f,
+	}) => {
+		const device = await target(f);
+		await enroll(f, device);
+		await f.store.createDeviceRevocation({
+			groupId: device.groupId,
+			deviceId: device.deviceId,
+			publicKey: device.key.publicKey,
+			fingerprint: device.key.fingerprint,
+		});
+		await insertTombstone(f, { ...device, groupId: `${f.prefix}-g2` });
+		const caller = await callerIn(f, "g1", "g2");
+
+		const result = await lookupAs(f, caller, keyed(device));
+
+		expect(result.revoked).toEqual([device.deviceId]);
+		expect(result.key_evidence).toEqual(NO_KEYS);
+	});
+	test("K6 a group where the caller is enrolled under another key is not shared", async ({
+		fixture: f,
+	}) => {
+		const { old } = await rotatedDevice(f);
+		const caller = await callerIn(f, "home");
+		await enroll(f, { ...(await target(f, "caller-other-key", "g1")), deviceId: caller.deviceId });
+
+		expect((await lookupAs(f, caller, keyed(old))).key_evidence).toEqual(NO_KEYS);
+	});
+	test("K6 a shared group stops counting when the caller is disabled there or it is archived", async ({
+		fixture: f,
+	}) => {
+		const { current } = await rotatedDevice(f);
+		const caller = await callerIn(f, "home", "g2");
+		const evidence = async () => (await lookupAs(f, caller, keyed(current))).key_evidence;
+		expect(await evidence()).toEqual({ removed: [], enrolled: [current.deviceId] });
+
+		await f.store.setDeviceEnabled(current.groupId, caller.deviceId, false);
+		expect(await evidence()).toEqual(NO_KEYS);
+		await f.store.setDeviceEnabled(current.groupId, caller.deviceId, true);
+		await f.store.archiveGroup(current.groupId);
+		expect(await evidence()).toEqual(NO_KEYS);
+	});
+	test("K7 a disabled enrollment in a shared group is not evidence that the key is enrolled", async ({
+		fixture: f,
+	}) => {
+		const { current } = await rotatedDevice(f);
+		const caller = await callerIn(f, "g2");
+		await f.store.setDeviceEnabled(current.groupId, current.deviceId, false);
+
+		expect((await lookupAs(f, caller, keyed(current))).key_evidence).toEqual(NO_KEYS);
 	});
 }

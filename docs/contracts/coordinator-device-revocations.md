@@ -829,6 +829,30 @@ to learn `removal_seq`. The reply becomes
   of statements that take the entries as one JSON parameter, so 25 entries stay
   within D1's per-request query budget.
 
+- The reply also carries `key_evidence: { "removed": [...], "enrolled": [...] }`.
+  It looks at the key each entry was sent with, and only at devices related to
+  the caller: the device ID and that key are, or were, enrolled together in a
+  group where the caller has an enabled enrollment under the key it signed with,
+  and that group is not archived. These are the groups whose enabled devices
+  peer discovery would show the caller. An ID is in `key_evidence.removed` when
+  an active tombstone of such a group holds the ID and the sent key, and no
+  enrollment in any group still has that key. An ID is in
+  `key_evidence.enrolled` when an enabled enrollment of such a group holds the
+  ID and the sent key, and every entry the request sent for that ID matched.
+  Both lists state only positive facts. An ID in neither list has no evidence,
+  which never means "not removed" or "not enrolled": entries sent without a key,
+  devices unrelated to the caller and revoked IDs are always left out. Both
+  lists are sorted and hold only requested IDs, and every ID in
+  `key_evidence.enrolled` is also in `enrolled`. Coordinators from before this
+  field omit it, and clients from before it ignore it.
+
+`key_evidence` tells apart a device that has an older key removed everywhere and
+a current key still enrolled in a group the caller shares with it. The ID-based
+arrays list such a device as both removed and enrolled, because the tombstone
+matches by device ID. The caller learns nothing about groups it is not in: the
+evidence never pairs an ID with a key outside the caller's groups, and the
+legacy arrays keep their meaning.
+
 A client that decides how to remove a device treats an entry as absent from the
 coordinator only when a 200 reply lists it in none of the three arrays. A failed
 or missing reply is no answer, and the client then changes nothing.

@@ -7,7 +7,7 @@ import {
 } from "./coordinator-device-removal.js";
 import { NODE_ONLY_ALIASES } from "./coordinator-ed25519-key-id-test-fixtures.js";
 
-const flags = { entry: 0, revoked: 0, removed: 1, enrolled: 1 };
+const flags = { entry: 0, revoked: 0, removed: 1, enrolled: 1, key_removed: 0, key_enrolled: 0 };
 const reads = (states: unknown[], rows: unknown[]) => async () => [
 	{ results: states },
 	{ results: rows },
@@ -34,6 +34,8 @@ it("partial and malformed snapshots fail closed, including on an empty request",
 		reads([state], [{ ...flags, entry: 1 }]),
 		reads([state], [{ ...flags, removed: true }]),
 		reads([state], [{ entry: 0, revoked: 0, removed: 0 }]),
+		reads([state], [{ entry: 0, revoked: 0, removed: 0, enrolled: 0 }]),
+		reads([state], [{ ...flags, key_enrolled: 2 }]),
 		async () => [{ results: [state] }],
 		async () => [{ success: false, results: [state] }, { results: [flags] }],
 		async () => {
@@ -52,14 +54,14 @@ it("partial and malformed snapshots fail closed, including on an empty request",
 	).rejects.toThrow("device_removal_unavailable");
 });
 
-it("only captured requested IDs and the four result fields are returned, with global duplicate-ID revocation precedence", async () => {
+it("only captured requested IDs and the five result fields are returned, with global duplicate-ID revocation precedence", async () => {
 	const store = operations(
 		reads(
 			[{ available: 1, removal_seq: 7 }],
 			[
 				{ ...flags, device_id: "unrequested", public_key: "evidence", group_id: "group" },
-				{ entry: 1, revoked: 1, removed: 1, enrolled: 0 },
-				{ entry: 2, revoked: 0, removed: 1, enrolled: 0 },
+				{ entry: 1, revoked: 1, removed: 1, enrolled: 0, key_removed: 1, key_enrolled: 0 },
+				{ entry: 2, revoked: 0, removed: 1, enrolled: 0, key_removed: 0, key_enrolled: 0 },
 			],
 		),
 	);
@@ -71,7 +73,51 @@ it("only captured requested IDs and the four result fields are returned, with gl
 				{ deviceId: "a" },
 			],
 		}),
-	).toEqual({ revoked: ["asked"], removed: ["a"], enrolled: ["asked"], removal_seq: 7 });
+	).toEqual({
+		revoked: ["asked"],
+		removed: ["a"],
+		enrolled: ["asked"],
+		removal_seq: 7,
+		// "asked" is blocked, so the backend's key flag for it is not reported.
+		key_evidence: { removed: [], enrolled: [] },
+	});
+});
+
+it("counts an ID as enrolled by key only when it was sent with a key and every entry for it says so", async () => {
+	const row = (entry: number, keyEnrolled: 0 | 1) => ({
+		entry,
+		revoked: 0,
+		removed: 1,
+		enrolled: 1,
+		key_removed: 0,
+		key_enrolled: keyEnrolled,
+	});
+	const lookup = (rows: unknown[], peers: { deviceId: string; publicKey?: string }[]) =>
+		operations(reads([{ available: 1, removal_seq: 2 }], rows)).lookupPeerRemovals({ peers });
+
+	expect(
+		(await lookup([row(0, 1)], [{ deviceId: "kept", publicKey: "current" }])).key_evidence,
+	).toEqual({ removed: [], enrolled: ["kept"] });
+	expect(
+		(
+			await lookup(
+				[row(0, 1), row(1, 0)],
+				[
+					{ deviceId: "mixed", publicKey: "current" },
+					{ deviceId: "mixed", publicKey: "old" },
+				],
+			)
+		).key_evidence,
+	).toEqual({ removed: [], enrolled: [] });
+	// A backend that claims a key match for a keyless entry is not believed.
+	expect(
+		(
+			await lookup(
+				[row(0, 1), row(1, 1)],
+				[{ deviceId: "keyless", publicKey: "current" }, { deviceId: "keyless" }],
+			)
+		).key_evidence,
+	).toEqual({ removed: [], enrolled: [] });
 });
 
 it("captures caller-owned entries before asynchronous key derivation and uses one two-read batch", async () => {
@@ -81,10 +127,10 @@ it("captures caller-owned entries before asynchronous key derivation and uses on
 		batches++;
 		expect(statements.map((statement) => statement.read)).toEqual([true, true]);
 		expect(statements.map((statement) => statement.values.length)).toEqual([0, 1]);
-		expect(JSON.parse(String(statements[1]?.values[0]))[0].deviceId).toBe("asked");
+		expect(JSON.parse(String(statements[1]?.values[0])).entries[0].deviceId).toBe("asked");
 		return reads(
 			[{ available: 1, removal_seq: 0 }],
-			[{ entry: 0, revoked: 0, removed: 0, enrolled: 0 }],
+			[{ entry: 0, revoked: 0, removed: 0, enrolled: 0, key_removed: 0, key_enrolled: 0 }],
 		)();
 	});
 	const pending = store.lookupPeerRemovals({ peers });
@@ -94,6 +140,7 @@ it("captures caller-owned entries before asynchronous key derivation and uses on
 		removed: [],
 		enrolled: [],
 		removal_seq: 0,
+		key_evidence: { removed: [], enrolled: [] },
 	});
 	expect(batches).toBe(1);
 });

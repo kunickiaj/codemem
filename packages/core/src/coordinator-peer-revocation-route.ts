@@ -91,8 +91,19 @@ function completeSnapshot(
 		!["revoked", "removed", "enrolled"].every((field) => validIds(value[field], requested))
 	)
 		throw new Error("peer_revocation_unavailable");
+	const evidence = value.key_evidence as Record<string, unknown> | null | undefined;
+	if (
+		!evidence ||
+		typeof evidence !== "object" ||
+		!["removed", "enrolled"].every((field) => validIds(evidence[field], requested))
+	)
+		throw new Error("peer_revocation_unavailable");
 	const result = raw as CoordinatorPeerRemovalLookupResult;
-	if (result.removed.some((id) => result.revoked.includes(id)))
+	if (
+		result.removed.some((id) => result.revoked.includes(id)) ||
+		// A key enrolled under an ID is an enrollment of that ID.
+		result.key_evidence.enrolled.some((id) => !result.enrolled.includes(id))
+	)
 		throw new Error("peer_revocation_unavailable");
 	return result;
 }
@@ -112,9 +123,10 @@ export function registerCoordinatorPeerRevocationCheckRoute(
 		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 		const store = deps.storeFactory();
 		try {
-			const denied = await authorizeCheck(c, deps, store, { groupId, raw });
-			if (denied) return denied;
-			return await checkResponse(c, store, deps.parseJsonObject(raw)?.peers);
+			const check = await authorizeCheck(c, deps, store, { groupId, raw });
+			if ("denied" in check) return check.denied;
+			const caller = { groupId, deviceId: check.deviceId };
+			return await checkResponse(c, store, deps.parseJsonObject(raw)?.peers, caller);
 		} catch {
 			return c.json({ error: "peer_revocation_unavailable" }, 503);
 		} finally {
@@ -123,13 +135,13 @@ export function registerCoordinatorPeerRevocationCheckRoute(
 	});
 }
 
-/** A denial or rate-limit response, or null once the signed caller may run the check. */
+/** A denial or rate-limit response, or the signed caller's device ID once it may run the check. */
 async function authorizeCheck(
 	c: Context,
 	deps: PeerRevocationCheckDeps,
 	store: CoordinatorStore,
 	request: { groupId: string; raw: Uint8Array },
-): Promise<Response | null> {
+): Promise<{ denied: Response } | { deviceId: string }> {
 	const auth = await deps.authorizeRequest(store, {
 		method: c.req.method,
 		url: c.req.url,
@@ -141,17 +153,21 @@ async function authorizeCheck(
 		nonce: c.req.header("X-Opencode-Nonce") ?? null,
 	});
 	if (!auth.ok || !auth.enrollment)
-		return (
-			deps.rateLimitedResponse(c, c.req.path, { authenticated: false }) ??
-			c.json({ error: auth.error }, deps.authErrorStatus(auth.error))
-		);
-	return deps.rateLimitedResponse(c, String(auth.enrollment.device_id), { authenticated: true });
+		return {
+			denied:
+				deps.rateLimitedResponse(c, c.req.path, { authenticated: false }) ??
+				c.json({ error: auth.error }, deps.authErrorStatus(auth.error)),
+		};
+	const deviceId = String(auth.enrollment.device_id);
+	const limited = deps.rateLimitedResponse(c, deviceId, { authenticated: true });
+	return limited ? { denied: limited } : { deviceId };
 }
 
 async function checkResponse(
 	c: Context,
 	store: CoordinatorStore,
 	rawPeers: unknown,
+	caller: { groupId: string; deviceId: string },
 ): Promise<Response> {
 	const peers = parsePeerRevocationCheckPeers(rawPeers);
 	if (!peers) return c.json({ error: "peers_invalid" }, 400);
@@ -162,11 +178,20 @@ async function checkResponse(
 		const snapshot = completeSnapshot(
 			await store.lookupPeerRemovals({
 				peers: peers.map((peer) => ({ deviceId: peer.device_id, publicKey: peer.public_key })),
+				caller,
 			}),
 			peers,
 		);
-		const { revoked, removed, enrolled, removal_seq } = snapshot;
-		return c.json({ version: 1, revoked, removed, enrolled, removal_seq });
+		const { revoked, removed, enrolled, removal_seq, key_evidence } = snapshot;
+		// `key_evidence` is additive: clients from before it read only the other fields.
+		return c.json({
+			version: 1,
+			revoked,
+			removed,
+			enrolled,
+			removal_seq,
+			key_evidence: { removed: key_evidence.removed, enrolled: key_evidence.enrolled },
+		});
 	} catch {
 		return c.json({ error: "peer_revocation_unavailable" }, 503);
 	}

@@ -236,6 +236,9 @@ function registerCompleteReply(test: Test) {
 			removed: [`${f.prefix}-opaque-alias`, `${f.prefix}-removed`].sort(),
 			enrolled: [c.deviceId],
 			removal_seq: maximum?.seq,
+			// The caller asked about itself, enrolled in the group it signed for. The alias has
+			// the removed key under another ID, so it is no key evidence for the alias.
+			key_evidence: { removed: [], enrolled: [c.deviceId] },
 		});
 		expect(new TextDecoder().decode(c.verify.mock.calls[0]?.[0].bodyBytes)).toBe(raw);
 		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }]]);
@@ -247,6 +250,7 @@ function registerCompleteReply(test: Test) {
 			removed: [],
 			enrolled: [],
 			removal_seq: maximum?.seq,
+			key_evidence: { removed: [], enrolled: [] },
 		});
 	});
 }
@@ -268,6 +272,7 @@ function registerMixedReply(test: Test) {
 			removed: [c.deviceId],
 			enrolled: [c.deviceId],
 			removal_seq: 1,
+			key_evidence: { removed: [], enrolled: [] },
 		});
 		await f.store.createDeviceRevocation({
 			groupId: c.groupId,
@@ -286,6 +291,7 @@ function registerMixedReply(test: Test) {
 			removed: [],
 			enrolled: [c.deviceId],
 			removal_seq: 1,
+			key_evidence: { removed: [], enrolled: [] },
 		});
 	});
 }
@@ -333,6 +339,7 @@ function registerFillProgress(test: Test) {
 			removed: [],
 			enrolled: [],
 			removal_seq: 0,
+			key_evidence: { removed: [], enrolled: [] },
 		});
 		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }], [{ limit: 200 }]]);
 		expect(c.close).toHaveBeenCalledTimes(2);
@@ -370,6 +377,7 @@ function registerLargeFill(test: Test) {
 					removed: [],
 					enrolled: [],
 					removal_seq: 0,
+					key_evidence: { removed: [], enrolled: [] },
 				});
 		}
 		expect(samples).toEqual([988011, 988085, 433801]);
@@ -464,6 +472,58 @@ function registerRateAndReplay(test: Test) {
 		});
 	}
 }
+/** Each store result breaks the contract in one way, and each reply is the fixed unavailable one. */
+async function rejectMalformedSnapshots(c: Awaited<ReturnType<typeof api>>) {
+	const noKeys = { removed: [], enrolled: [] };
+	c.lookup.mockResolvedValueOnce({
+		revoked: ["unrequested"],
+		removed: [],
+		enrolled: [],
+		removal_seq: 0,
+		key_evidence: noKeys,
+	});
+	await failed(await c.post(EMPTY));
+	c.lookup.mockResolvedValueOnce({
+		revoked: [],
+		removed: [],
+		enrolled: [],
+		removal_seq: -1,
+		key_evidence: noKeys,
+	});
+	await failed(await c.post(EMPTY));
+	c.lookup.mockResolvedValueOnce({
+		revoked: [c.deviceId, c.deviceId],
+		removed: [],
+		enrolled: [],
+		removal_seq: 0,
+		key_evidence: noKeys,
+	});
+	await failed(await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] })));
+	c.lookup.mockResolvedValueOnce({
+		revoked: [],
+		removed: [],
+		enrolled: [],
+		removal_seq: 0,
+	} as never);
+	await failed(await c.post(EMPTY));
+	c.lookup.mockResolvedValueOnce({
+		revoked: [],
+		removed: [],
+		enrolled: [],
+		removal_seq: 0,
+		key_evidence: { removed: ["unrequested"], enrolled: [] },
+	});
+	await failed(await c.post(EMPTY));
+	c.lookup.mockResolvedValueOnce({
+		revoked: [],
+		removed: [],
+		enrolled: [],
+		removal_seq: 0,
+		key_evidence: { removed: [], enrolled: [c.deviceId] },
+	});
+	await failed(await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] })));
+}
+
 function registerReadFailures(test: Test) {
 	test("fill and snapshot failures or malformed results expose only the fixed unavailable reply", async ({
 		fixture: f,
@@ -476,23 +536,8 @@ function registerReadFailures(test: Test) {
 		await failed(await c.post(EMPTY));
 		c.lookup.mockResolvedValueOnce({ revoked: [] } as never);
 		await failed(await c.post(EMPTY));
-		c.lookup.mockResolvedValueOnce({
-			revoked: ["unrequested"],
-			removed: [],
-			enrolled: [],
-			removal_seq: 0,
-		});
-		await failed(await c.post(EMPTY));
-		c.lookup.mockResolvedValueOnce({ revoked: [], removed: [], enrolled: [], removal_seq: -1 });
-		await failed(await c.post(EMPTY));
-		c.lookup.mockResolvedValueOnce({
-			revoked: [c.deviceId, c.deviceId],
-			removed: [],
-			enrolled: [],
-			removal_seq: 0,
-		});
-		await failed(await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] })));
-		expect(c.close).toHaveBeenCalledTimes(6);
+		await rejectMalformedSnapshots(c);
+		expect(c.close).toHaveBeenCalledTimes(9);
 	});
 	test("a blocked legacy row cannot become an empty complete answer", async ({ fixture: f }) => {
 		const c = await api(f);
@@ -632,6 +677,7 @@ function registerLookupRace(test: Test) {
 			removed: [deviceId],
 			enrolled: [],
 			removal_seq: 1,
+			key_evidence: { removed: [], enrolled: [] },
 		});
 		c.lookup.mockImplementationOnce(async (input) => {
 			await f.exec(
@@ -647,6 +693,7 @@ function registerLookupRace(test: Test) {
 			removed: [],
 			enrolled: [],
 			removal_seq: 1,
+			key_evidence: { removed: [], enrolled: [] },
 		});
 	});
 }

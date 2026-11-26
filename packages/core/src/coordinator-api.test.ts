@@ -3758,6 +3758,12 @@ describe("POST /v1/peers/revocations", () => {
 					.filter((peer) => peer.deviceId === "active")
 					.map((peer) => peer.deviceId),
 				removal_seq: 7,
+				key_evidence: {
+					removed: [],
+					enrolled: input.peers
+						.filter((peer) => peer.deviceId === "active")
+						.map((peer) => peer.deviceId),
+				},
 			})),
 			...overrides,
 		});
@@ -3789,12 +3795,15 @@ describe("POST /v1/peers/revocations", () => {
 			removed: [],
 			enrolled: ["active"],
 			removal_seq: 7,
+			key_evidence: { removed: [], enrolled: ["active"] },
 		});
 		expect(store.lookupPeerRemovals).toHaveBeenCalledWith({
 			peers: [
 				{ deviceId: "retired", publicKey: "pk-retired" },
 				{ deviceId: "active", publicKey: "pk-active" },
 			],
+			// Key evidence is limited to devices related to this signed caller.
+			caller: { groupId: "g1", deviceId: caller.device_id },
 		});
 		expect(store.fillEnrollmentKeyIds).toHaveBeenCalledWith({ limit: 200 });
 	});

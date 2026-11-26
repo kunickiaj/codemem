@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- The pinned-peer check reply also reports, for the key each device was sent with, whether that key is removed or still enabled under the same device ID. It covers only devices that share a group with the asking device, now or through a removal there, and says nothing about blocked devices. Older clients ignore it.
+
 ### Changed
 
 - Retrieval history keeps the candidates an attempt did not select (trimmed, dropped or deduplicated) for 14 days instead of 90. The attempt and the candidates it selected are still kept for 90 days by default, and pinned evaluation attempts keep every candidate. Every candidate is still recorded. While the Viewer runs, the maintenance worker removes the older unselected candidates in the same short batches as the rest of retrieval history; `codemem maintenance database prune-retrieval-ledger` removes them at once, and its dry run and `codemem memory stats` show how many are past the 14 days. A cached memory context reused after its unselected candidates are gone is no longer recorded as a copy of the original attempt.
