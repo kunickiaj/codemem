@@ -96,3 +96,42 @@ it("reports effective simple and rich models without returning credentials", () 
 	expect(status.active.rich.model).toBe("gpt-5.6-terra");
 	expect(JSON.stringify(status)).not.toContain("apiKey");
 });
+
+it("reports each tier's requested and applied reasoning effort from live status", () => {
+	const active = observer("base");
+	active.toConfig = () =>
+		({
+			observerProvider: "openai",
+			observerModel: "base",
+			observerRuntime: "opencode_v2",
+			observerTierRoutingEnabled: true,
+			observerReasoningEffort: "high",
+			observerRichReasoningEffort: "max",
+			observerMaxTokens: 4000,
+		}) as ReturnType<ObserverClient["toConfig"]>;
+	active.getStatus = () => ({
+		provider: "openai",
+		model: "base",
+		runtime: "opencode_v2",
+		auth: { type: "opencode_v2", source: "opencode_service", hasToken: false },
+		tierReasoningEfforts: {
+			rich: {
+				requestedReasoningEffort: "max",
+				actualReasoningEffort: null,
+				reasoningEffortOutcome: "not_sent",
+				reasoningEffortFallbackApplied: true,
+				reasoningEffortFallbackReason: "variant_not_listed",
+			},
+		},
+	});
+	const controller = new ObserverRuntimeController(active, {} as RawEventSweeper, () => active);
+
+	const { simple, rich } = controller.getStatus().active;
+
+	expect(simple).toMatchObject({ reasoningEffort: "high" });
+	expect(simple).not.toHaveProperty("appliedReasoning");
+	expect(rich).toMatchObject({
+		reasoningEffort: "max",
+		appliedReasoning: { effort: null, outcome: "not_sent", fallbackReason: "variant_not_listed" },
+	});
+});

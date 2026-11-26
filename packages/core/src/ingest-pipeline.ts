@@ -874,6 +874,15 @@ function selectObserverForIngest(
 	};
 }
 
+/** Live status reads the configured client, so keep a tier client's outcome there too. */
+function recordTierOutcome(
+	options: IngestOptions,
+	selection: ReturnType<typeof selectObserverForIngest>,
+): void {
+	if (!selection.tier || selection.observer === options.observer) return;
+	options.observer.recordTierStatus?.(selection.tier, selection.observer.getStatus());
+}
+
 async function runObserverInference(
 	store: MemoryStore,
 	stage: IngestSessionStage,
@@ -891,7 +900,7 @@ async function runObserverInference(
 		sessionId: stage.sessionId,
 		project: stage.project,
 		rawFlushPersistence: stage.rawFlushPersistence,
-	});
+	}).finally(() => recordTierOutcome(options, selection));
 	options.historicalRecovery?.onObserverInferenceComplete?.();
 	return {
 		observerStatus: selection.observer.getStatus(),

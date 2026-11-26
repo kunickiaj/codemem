@@ -46,7 +46,7 @@ import {
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
 import { parseObserverSSE } from "./observer-sse.js";
-import { generateWithOpenCodeV2, listOpenCodeV2ModelVariants } from "./opencode-v2-generation.js";
+import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
 
 // ---------------------------------------------------------------------------
@@ -204,11 +204,35 @@ export interface ObserverStatus {
 	modelFallbackReason?: string | null;
 	/** OpenCode service only: the configured reasoning effort. */
 	requestedReasoningEffort?: string | null;
-	/** OpenCode service only: the variant the last request sent, or null for the service default. */
+	/** OpenCode service only: the variant the last request sent and the service accepted. */
 	actualReasoningEffort?: string | null;
+	/** OpenCode service only: what the last request did with the effort; null before one reached the service. */
+	reasoningEffortOutcome?: V2EffortReport["outcome"] | null;
 	reasoningEffortFallbackApplied?: boolean;
-	reasoningEffortFallbackReason?: string | null;
+	reasoningEffortFallbackReason?: V2EffortReport["reason"];
+	/** The last routed request's effort per tier, when tier routing uses separate clients. */
+	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
 	lastError?: { code: string; message: string } | null;
+}
+
+/** Lengths-free summary of what one request did with the configured reasoning effort. */
+export type ObserverEffortStatus = Pick<
+	ObserverStatus,
+	| "requestedReasoningEffort"
+	| "actualReasoningEffort"
+	| "reasoningEffortOutcome"
+	| "reasoningEffortFallbackApplied"
+	| "reasoningEffortFallbackReason"
+>;
+
+function effortStatus(status: ObserverStatus): ObserverEffortStatus {
+	return {
+		requestedReasoningEffort: status.requestedReasoningEffort ?? null,
+		actualReasoningEffort: status.actualReasoningEffort ?? null,
+		reasoningEffortOutcome: status.reasoningEffortOutcome ?? null,
+		reasoningEffortFallbackApplied: status.reasoningEffortFallbackApplied === true,
+		reasoningEffortFallbackReason: status.reasoningEffortFallbackReason ?? null,
+	};
 }
 
 interface ObserverConfigKeyMapping {
@@ -1612,8 +1636,8 @@ export class ObserverClient {
 	private _sidecarModelFallbackReason: string | null = null;
 	private _codexSidecarModelFallbackApplied = false;
 	private _codexSidecarModelFallbackReason: string | null = null;
-	private _openCodeV2Variant: string | null = null;
-	private _openCodeV2VariantFallbackReason: string | null = null;
+	private _openCodeV2Effort: V2EffortReport | null = null;
+	private readonly _tierEfforts: Partial<Record<"simple" | "rich", ObserverEffortStatus>> = {};
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1913,13 +1937,25 @@ export class ObserverClient {
 				modelFallbackReason: this._codexSidecarModelFallbackReason,
 			};
 		}
-		if (this.runtime !== "opencode_v2") return {};
+		const tiers =
+			Object.keys(this._tierEfforts).length > 0
+				? { tierReasoningEfforts: { ...this._tierEfforts } }
+				: {};
+		if (this.runtime !== "opencode_v2") return tiers;
+		const effort = this._openCodeV2Effort;
 		return {
 			requestedReasoningEffort: this.reasoningEffort,
-			actualReasoningEffort: this._openCodeV2Variant,
-			reasoningEffortFallbackApplied: this._openCodeV2VariantFallbackReason != null,
-			reasoningEffortFallbackReason: this._openCodeV2VariantFallbackReason,
+			actualReasoningEffort: effort?.outcome === "accepted" ? effort.sent : null,
+			reasoningEffortOutcome: effort?.outcome ?? null,
+			reasoningEffortFallbackApplied: effort != null && effort.outcome !== "accepted",
+			reasoningEffortFallbackReason: effort?.reason ?? null,
+			...tiers,
 		};
+	}
+
+	/** Keep a tier client's last effort outcome where this client's status can report it. */
+	recordTierStatus(tier: "simple" | "rich", status: ObserverStatus): void {
+		this._tierEfforts[tier] = effortStatus(status);
 	}
 
 	/** Force-refresh auth credentials. */
@@ -2408,13 +2444,15 @@ export class ObserverClient {
 		const model = this.model.toLowerCase().startsWith(prefix)
 			? this.model.slice(prefix.length)
 			: this.model;
-		const variant = await this._selectOpenCodeV2Variant(model);
+		this._openCodeV2Effort = null;
 		const result = await generateWithOpenCodeV2({
 			provider: this.provider,
 			model,
 			prompt: `${systemPrompt}\n\n${userPrompt}`,
-			...(variant ? { variant } : {}),
+			...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
 		});
+		// Record only what the transport reports it sent.
+		this._openCodeV2Effort = result.effort;
 		if (result.error) {
 			const message = `OpenCode account request failed: ${result.error}. Check the OpenCode connection and selected model in Settings.`;
 			this._setLastError(message, result.error);
@@ -2424,27 +2462,6 @@ export class ObserverClient {
 		}
 		// The service returns the text only, so these requests report no token usage.
 		return emptyCallResult(result.text);
-	}
-
-	/**
-	 * The service selects reasoning effort through a model variant. Send the configured
-	 * effort only when the model lists it, and otherwise use the service default and
-	 * record why, instead of sending a value the service would reject.
-	 */
-	private async _selectOpenCodeV2Variant(model: string): Promise<string | null> {
-		this._openCodeV2Variant = null;
-		this._openCodeV2VariantFallbackReason = null;
-		const requested = this.reasoningEffort?.toLowerCase();
-		if (!requested) return null;
-		const variants = await listOpenCodeV2ModelVariants(this.provider, model);
-		const listed = variants?.find((variant) => variant.toLowerCase() === requested) ?? null;
-		if (listed) {
-			this._openCodeV2Variant = listed;
-			return listed;
-		}
-		this._openCodeV2VariantFallbackReason =
-			variants == null ? "model variants unavailable" : "variant not listed for model";
-		return null;
 	}
 
 	// -----------------------------------------------------------------------

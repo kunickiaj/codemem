@@ -3,8 +3,10 @@ import { Service } from "@opencode/client/service";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
 const MODEL_READINESS_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
-/** How long a fetched model catalog answers variant lookups before it is fetched again. */
+/** How long a service's model catalog answers variant lookups before it is fetched again. */
 const VARIANT_CACHE_TTL_MS = 10 * 60_000;
+/** A catalog that lacked the model or the requested variant is fetched again sooner. */
+const VARIANT_MISS_TTL_MS = 60_000;
 
 class ResponseTooLargeError extends Error {}
 
@@ -53,8 +55,15 @@ interface CatalogModel {
 	variants?: unknown;
 }
 
-/** The service's model catalog, or null when the service or catalog is unavailable. */
-async function fetchModelCatalog(): Promise<CatalogModel[] | null> {
+type ServiceEndpoint = NonNullable<Awaited<ReturnType<typeof Service.discover>>>;
+
+interface ServiceTarget {
+	endpoint: ServiceEndpoint;
+	url: URL;
+}
+
+/** The discovered local service, or null when none is running at a local address. */
+async function discoverService(): Promise<ServiceTarget | null> {
 	let endpoint: Awaited<ReturnType<typeof Service.discover>>;
 	try {
 		endpoint = await Service.discover();
@@ -63,11 +72,15 @@ async function fetchModelCatalog(): Promise<CatalogModel[] | null> {
 	}
 	if (!endpoint) return null;
 	const url = localServiceUrl(endpoint.url);
-	if (!url) return null;
+	return url ? { endpoint, url } : null;
+}
+
+/** The service's model catalog, or null when the catalog is unavailable. */
+async function fetchModelCatalog(target: ServiceTarget): Promise<CatalogModel[] | null> {
 	try {
 		const controller = new AbortController();
-		const response = await fetch(new URL("/api/model", url), {
-			headers: Service.headers(endpoint),
+		const response = await fetch(new URL("/api/model", target.url), {
+			headers: Service.headers(target.endpoint),
 			signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
 		});
 		if (!response.ok) return null;
@@ -90,7 +103,8 @@ async function fetchModelCatalog(): Promise<CatalogModel[] | null> {
 }
 
 export async function listOpenCodeV2Models(): Promise<OpenCodeV2ModelOption[]> {
-	const catalog = (await fetchModelCatalog()) ?? [];
+	const target = await discoverService();
+	const catalog = (target && (await fetchModelCatalog(target))) ?? [];
 	return catalog
 		.filter(
 			(item) =>
@@ -108,33 +122,69 @@ function variantIds(value: unknown): string[] {
 		.filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
-let variantCache: { fetchedAt: number; byModel: Map<string, string[]> } | null = null;
-
-/**
- * The variant IDs the service lists for a model, which is how it selects reasoning effort.
- * One catalog fetch answers every model for a while; a failed fetch is not cached.
- * Returns null when the catalog is unavailable and an empty list for an unlisted model.
- */
-export async function listOpenCodeV2ModelVariants(
-	provider: string,
-	model: string,
-): Promise<string[] | null> {
-	if (!variantCache || Date.now() - variantCache.fetchedAt > VARIANT_CACHE_TTL_MS) {
-		const catalog = await fetchModelCatalog();
-		if (!catalog) return null;
-		variantCache = {
-			fetchedAt: Date.now(),
-			byModel: new Map(
-				catalog.map((item) => [`${item.providerID}/${item.id}`, variantIds(item.variants)]),
-			),
-		};
-	}
-	return variantCache.byModel.get(`${provider}/${model}`) ?? [];
+interface VariantCatalog {
+	fetchedAt: number;
+	byModel: Map<string, string[]>;
 }
 
-/** Forget the cached model variants, so the next lookup fetches the catalog again. */
+/** Catalogs by service address, so a different service never answers from another's list. */
+const variantCatalogs = new Map<string, VariantCatalog>();
+/** Catalog fetches in flight by service address, shared by concurrent callers. */
+const pendingCatalogs = new Map<string, Promise<VariantCatalog | null>>();
+
+function loadVariantCatalog(target: ServiceTarget): Promise<VariantCatalog | null> {
+	const key = target.url.origin;
+	const pending = pendingCatalogs.get(key);
+	if (pending) return pending;
+	const load = fetchModelCatalog(target)
+		.then((models) => {
+			if (!models) return null;
+			const catalog = {
+				fetchedAt: Date.now(),
+				byModel: new Map(
+					models.map((item) => [`${item.providerID}/${item.id}`, variantIds(item.variants)]),
+				),
+			};
+			variantCatalogs.set(key, catalog);
+			return catalog;
+		})
+		.finally(() => pendingCatalogs.delete(key));
+	pendingCatalogs.set(key, load);
+	return load;
+}
+
+type VariantSelection =
+	| { variant: string; reason: null }
+	| { variant: null; reason: "variant_not_listed" | "variants_unavailable" };
+
+/**
+ * The variant this service lists for the requested effort. A model without the
+ * variant, or a service whose catalog reports no variants, gets nothing sent.
+ */
+async function selectVariant(
+	target: ServiceTarget,
+	provider: string,
+	model: string,
+	requested: string,
+): Promise<VariantSelection> {
+	const key = `${provider}/${model}`;
+	const find = (catalog: VariantCatalog) =>
+		catalog.byModel.get(key)?.find((variant) => variant.toLowerCase() === requested) ?? null;
+	let catalog = variantCatalogs.get(target.url.origin) ?? null;
+	const age = catalog ? Date.now() - catalog.fetchedAt : Number.POSITIVE_INFINITY;
+	const listed = catalog ? find(catalog) : null;
+	if (age > (listed ? VARIANT_CACHE_TTL_MS : VARIANT_MISS_TTL_MS)) {
+		catalog = await loadVariantCatalog(target);
+	}
+	if (!catalog) return { variant: null, reason: "variants_unavailable" };
+	const variant = find(catalog);
+	return variant ? { variant, reason: null } : { variant: null, reason: "variant_not_listed" };
+}
+
+/** Forget every cached model catalog, so the next lookup fetches again. */
 export function clearOpenCodeV2ModelVariantCache(): void {
-	variantCache = null;
+	variantCatalogs.clear();
+	pendingCatalogs.clear();
 }
 
 export type V2GenerationResult =
@@ -169,36 +219,44 @@ async function readBoundedResponse(
 	return typeof text === "string" ? { text, error: null } : { text: null, error: "request_failed" };
 }
 
-async function isPreGenerationModelUnavailable(
+/**
+ * Why the service refused a request before generating anything: the model, or the
+ * variant, is unavailable. The service answers 400 with an InvalidRequestError that
+ * names `model.variant` for a variant it cannot resolve.
+ */
+async function preGenerationRejection(
 	response: Response,
 	controller: AbortController,
-	provider: string,
-	model: string,
-): Promise<boolean> {
+	input: { provider: string; model: string; variant: string | null },
+): Promise<"model_unavailable" | "variant_unavailable" | null> {
+	let body: unknown;
 	try {
-		const body = await readLimitedJson(response, controller);
-		return (
-			body != null &&
-			typeof body === "object" &&
-			"_tag" in body &&
-			body._tag === "InvalidRequestError" &&
-			"message" in body &&
-			body.message === `Model unavailable: ${provider}/${model}`
-		);
+		body = await readLimitedJson(response, controller);
 	} catch {
-		return false;
+		return null;
 	}
+	if (!body || typeof body !== "object") return null;
+	const { _tag, message, field } = body as { _tag?: unknown; message?: unknown; field?: unknown };
+	if (_tag !== "InvalidRequestError") return null;
+	if (message === `Model unavailable: ${input.provider}/${input.model}`) return "model_unavailable";
+	const variantMessage =
+		typeof message === "string" &&
+		message.startsWith(`Variant unavailable for ${input.provider}/${input.model}:`);
+	return input.variant && (field === "model.variant" || variantMessage)
+		? "variant_unavailable"
+		: null;
 }
 
+type AttemptResult = V2GenerationResult | { text: null; error: "variant_unavailable" };
+
 async function requestGeneration(
-	endpoint: NonNullable<Awaited<ReturnType<typeof Service.discover>>>,
-	url: URL,
-	input: V2GenerationInput,
+	target: ServiceTarget,
+	input: { provider: string; model: string; prompt: string; variant: string | null },
 	controller: AbortController,
-): Promise<V2GenerationResult> {
-	const response = await fetch(new URL("/api/experimental/generate", url), {
+): Promise<AttemptResult> {
+	const response = await fetch(new URL("/api/experimental/generate", target.url), {
 		method: "POST",
-		headers: { ...Service.headers(endpoint), "content-type": "application/json" },
+		headers: { ...Service.headers(target.endpoint), "content-type": "application/json" },
 		body: JSON.stringify({
 			model: {
 				providerID: input.provider,
@@ -213,56 +271,84 @@ async function requestGeneration(
 		return { text: null, error: "auth_failed" };
 	}
 	if (response.status === 400) {
-		return (await isPreGenerationModelUnavailable(
-			response,
-			controller,
-			input.provider,
-			input.model,
-		))
-			? { text: null, error: "model_unavailable" }
-			: { text: null, error: "request_failed" };
+		const rejection = await preGenerationRejection(response, controller, input);
+		return { text: null, error: rejection ?? "request_failed" };
 	}
 	if (!response.ok) return { text: null, error: "request_failed" };
 	return readBoundedResponse(response, controller);
+}
+
+/** Retry only the exact pre-generation model rejection while the service's catalog warms up. */
+async function generateUntilModelReady(
+	target: ServiceTarget,
+	input: { provider: string; model: string; prompt: string; variant: string | null },
+	controller: AbortController,
+): Promise<AttemptResult> {
+	for (const delay of [...MODEL_READINESS_DELAYS_MS, 0]) {
+		const result = await requestGeneration(target, input, controller);
+		if (result.error !== "model_unavailable" || !delay) return result;
+		await new Promise<void>((resolve) => setTimeout(resolve, delay));
+	}
+	return { text: null, error: "request_failed" };
 }
 
 export interface V2GenerationInput {
 	provider: string;
 	model: string;
 	prompt: string;
-	/** A variant the model lists; it selects reasoning effort. Omitted uses the service default. */
-	variant?: string;
+	/** The configured effort; sent as a model variant only when the service lists it. */
+	reasoningEffort?: string | null;
 }
+
+/** What a request did with the requested effort; null when no effort or no request. */
+export interface V2EffortReport {
+	/** The variant sent first, or null when none was. */
+	sent: string | null;
+	outcome: "not_sent" | "accepted" | "rejected_retried";
+	reason: "variant_not_listed" | "variants_unavailable" | "variant_rejected" | null;
+}
+
+export type V2GenerationOutcome = V2GenerationResult & { effort: V2EffortReport | null };
 
 /**
  * Use the service-owned provider connection; never read or export its credential.
- * The service replies with the text only, without token usage.
+ * The service replies with the text only, without token usage. A variant the service
+ * rejects before generating is retried once without it, and the cached catalog for
+ * that service is dropped; no other failure is retried.
  */
 export async function generateWithOpenCodeV2(
 	input: V2GenerationInput,
-): Promise<V2GenerationResult> {
-	let endpoint: Awaited<ReturnType<typeof Service.discover>>;
-	try {
-		endpoint = await Service.discover();
-	} catch {
-		return { text: null, error: "service_unavailable" };
-	}
-	if (!endpoint) return { text: null, error: "service_unavailable" };
-	const url = localServiceUrl(endpoint.url);
-	if (!url) {
-		return { text: null, error: "service_unavailable" };
-	}
+): Promise<V2GenerationOutcome> {
+	const target = await discoverService();
+	if (!target) return { text: null, error: "service_unavailable", effort: null };
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	const requested = input.reasoningEffort?.trim().toLowerCase() || null;
 	try {
-		for (const delay of [...MODEL_READINESS_DELAYS_MS, 0]) {
-			const result = await requestGeneration(endpoint, url, input, controller);
-			if (result.error !== "model_unavailable" || !delay) return result;
-			await new Promise<void>((resolve) => setTimeout(resolve, delay));
+		const selection = requested
+			? await selectVariant(target, input.provider, input.model, requested)
+			: null;
+		const variant = selection?.variant ?? null;
+		const first = await generateUntilModelReady(target, { ...input, variant }, controller);
+		if (first.error === "variant_unavailable") {
+			variantCatalogs.delete(target.url.origin);
+			const retry = await generateUntilModelReady(target, { ...input, variant: null }, controller);
+			const effort = {
+				sent: variant,
+				outcome: "rejected_retried",
+				reason: "variant_rejected",
+			} as const;
+			return retry.error === "variant_unavailable"
+				? { text: null, error: "request_failed", effort }
+				: { ...retry, effort };
 		}
-		return { text: null, error: "request_failed" };
+		if (!selection) return { ...first, effort: null };
+		const effort: V2EffortReport = variant
+			? { sent: variant, outcome: "accepted", reason: null }
+			: { sent: null, outcome: "not_sent", reason: selection.reason };
+		return { ...first, effort };
 	} catch {
-		return { text: null, error: "request_failed" };
+		return { text: null, error: "request_failed", effort: null };
 	} finally {
 		clearTimeout(timeout);
 	}

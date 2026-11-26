@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ObserverClient } from "@codemem/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { observerStatusRoutes } from "./observer-status";
 
 const previousRawEvents = process.env.CODEMEM_RAW_EVENTS;
@@ -49,5 +53,53 @@ describe("observer status capture evidence", () => {
 		const body = (await response.json()) as Record<string, unknown>;
 
 		expect(body.capture_enabled).toBeNull();
+	});
+});
+
+describe("observer status reasoning effort", () => {
+	it("reports what each tier's last request did with the effort", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-observer-status-"));
+		vi.stubEnv("HOME", home);
+		const simple = {
+			requestedReasoningEffort: "high",
+			actualReasoningEffort: null,
+			reasoningEffortOutcome: "rejected_retried",
+			reasoningEffortFallbackApplied: true,
+			reasoningEffortFallbackReason: "variant_rejected",
+		};
+		const observer = {
+			getStatus: () => ({
+				provider: "openai",
+				model: "gpt-5.6",
+				runtime: "opencode_v2",
+				auth: { source: "opencode_service", type: "opencode_v2", hasToken: false },
+				requestedReasoningEffort: "high",
+				actualReasoningEffort: null,
+				reasoningEffortOutcome: null,
+				reasoningEffortFallbackApplied: false,
+				reasoningEffortFallbackReason: null,
+				tierReasoningEfforts: { simple },
+			}),
+		} as unknown as ObserverClient;
+		const store = {
+			rawEventBacklogTotals: () => ({ pending: 0, sessions: 0 }),
+			latestRawEventFlushFailure: () => null,
+		};
+		try {
+			const app = observerStatusRoutes({
+				getObserver: () => observer,
+				getStore: () => store as never,
+				getSweeper: () => null,
+			});
+
+			const response = await app.request("/api/observer-status");
+			const body = (await response.json()) as { active: Record<string, unknown> };
+
+			expect(body.active.tierReasoningEfforts).toEqual({ simple });
+			expect(body.active.reasoningEffortOutcome).toBeNull();
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });
