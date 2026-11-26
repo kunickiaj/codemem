@@ -10,7 +10,7 @@ import {
 	DELEGATED_BRIEF_LABEL,
 	MAX_DELEGATED_CONTEXT_CHARS,
 } from "./capture-context.js";
-import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
+import { newPrivateScan, scanPrivate, stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
@@ -261,18 +261,26 @@ function formatJson(value: unknown): string {
 	}
 }
 
+/**
+ * Every rendered value of a tool event, keys included, loses its private regions
+ * before escaping, with one scan carried across the event's fields in order.
+ */
 function formatToolEvent(event: ToolEvent): string {
+	const scan = newPrivateScan();
+	const toolName = scanPrivate(event.toolName, scan);
+	const timestamp = scanPrivate(event.timestamp ?? "", scan);
+	const cwd = scanPrivate(event.cwd ?? "", scan);
+	const params = escapeXml(formatJson(stripPrivateObj(event.toolInput, scan)));
+	const outcome = escapeXml(formatJson(stripPrivateObj(event.toolOutput, scan)));
+	const error = escapeXml(formatJson(stripPrivateObj(event.toolError, scan)));
 	const parts = ["<observed_from_primary_session>"];
-	parts.push(`  <what_happened>${escapeXml(event.toolName)}</what_happened>`);
-	if (event.timestamp) {
-		parts.push(`  <occurred_at>${escapeXml(event.timestamp)}</occurred_at>`);
+	parts.push(`  <what_happened>${escapeXml(toolName)}</what_happened>`);
+	if (timestamp) {
+		parts.push(`  <occurred_at>${escapeXml(timestamp)}</occurred_at>`);
 	}
-	if (event.cwd) {
-		parts.push(`  <working_directory>${escapeXml(event.cwd)}</working_directory>`);
+	if (cwd) {
+		parts.push(`  <working_directory>${escapeXml(cwd)}</working_directory>`);
 	}
-	const params = escapeXml(formatJson(stripPrivateObj(event.toolInput)));
-	const outcome = escapeXml(formatJson(stripPrivateObj(event.toolOutput)));
-	const error = escapeXml(formatJson(stripPrivateObj(event.toolError)));
 	if (params) parts.push(`  <parameters>${params}</parameters>`);
 	if (outcome) parts.push(`  <outcome>${outcome}</outcome>`);
 	if (error) parts.push(`  <error>${error}</error>`);
@@ -496,7 +504,8 @@ export function buildObserverRepairPrompt(
 	const contentBudget = Math.max(0, userBudget - previousPrefix.length - contextPrefix.length);
 	const previousBudget = Math.floor(contentBudget * 0.7);
 	const contextBudget = contentBudget - previousBudget;
-	const previousResponse = truncateMiddle(previousRaw.trim(), previousBudget);
+	// The previous response can quote private text from the prompt; remove it before cutting.
+	const previousResponse = truncateMiddle(stripPrivate(previousRaw).trim(), previousBudget);
 	const originalContext = truncateMiddle(user.trim(), contextBudget);
 	return {
 		system: repairSystem,

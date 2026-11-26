@@ -6,7 +6,12 @@
  * tools, deduplicates, and budgets the list to fit observer token limits.
  */
 
-import { sanitizePayload, sanitizeToolOutput } from "./ingest-sanitize.js";
+import {
+	newPrivateScan,
+	sanitizePayload,
+	sanitizeToolOutput,
+	scanPrivate,
+} from "./ingest-sanitize.js";
 import type { ToolEvent } from "./ingest-types.js";
 import { isV2Event } from "./raw-event-host-generation.js";
 
@@ -103,18 +108,22 @@ export function eventToToolEvent(
 			? (rawArgs as Record<string, unknown>)
 			: {};
 
-	const result = compactToolOutput(tool, sanitizeToolOutput(tool, event.result, maxChars));
-	const error = sanitizePayload(event.error, maxChars);
+	// One scan per event, so a private block opened in one field closes in a later one.
+	const scan = newPrivateScan();
+	const toolInput = sanitizePayload(args, maxChars, scan);
+	const result = compactToolOutput(tool, sanitizeToolOutput(tool, event.result, maxChars, scan));
+	const error = sanitizePayload(event.error, maxChars, scan);
+	const cwd =
+		(typeof event.cwd === "string" ? event.cwd : null) ??
+		(typeof args.cwd === "string" ? args.cwd : null);
 
 	return {
-		toolName: tool,
-		toolInput: sanitizePayload(args, maxChars),
+		toolName: scanPrivate(tool, scan),
+		toolInput,
 		toolOutput: result,
 		toolError: error,
-		timestamp: typeof event.timestamp === "string" ? event.timestamp : null,
-		cwd:
-			(typeof event.cwd === "string" ? event.cwd : null) ??
-			(typeof args.cwd === "string" ? args.cwd : null),
+		timestamp: typeof event.timestamp === "string" ? scanPrivate(event.timestamp, scan) : null,
+		cwd: cwd == null ? null : scanPrivate(cwd, scan),
 	};
 }
 

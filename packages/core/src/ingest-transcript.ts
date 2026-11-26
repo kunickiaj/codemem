@@ -7,7 +7,7 @@
 
 import { captureContextFields, promptOriginLabel } from "./capture-context.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
-import { stripPrivate } from "./ingest-sanitize.js";
+import { newPrivateScan, scanPrivate } from "./ingest-sanitize.js";
 import type { ParsedSummary } from "./ingest-types.js";
 
 // ---------------------------------------------------------------------------
@@ -129,20 +129,38 @@ export function deriveRequest(summary: ParsedSummary): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * The visible text of each user prompt and assistant message, scanned in order as
+ * one stream: a private block left open in one message stays open through the next
+ * messages of these events until it closes, and an open block ends with the events.
+ */
+export function visibleMessageTexts(
+	events: Record<string, unknown>[],
+): Map<Record<string, unknown>, string> {
+	const scan = newPrivateScan();
+	const texts = new Map<Record<string, unknown>, string>();
+	for (const event of events) {
+		if (event.type === "user_prompt") {
+			texts.set(event, scanPrivate(String(event.prompt_text ?? ""), scan).trim());
+		} else if (event.type === "assistant_message") {
+			texts.set(event, scanPrivate(String(event.assistant_text ?? ""), scan).trim());
+		}
+	}
+	return texts;
+}
+
+/**
  * Build a chronological transcript from user prompts and assistant messages.
  * Strips private content before including text.
  */
 export function buildTranscript(events: Record<string, unknown>[]): string {
+	const visible = visibleMessageTexts(events);
 	const parts: string[] = [];
 	for (const event of events) {
-		const eventType = event.type;
-		if (eventType === "user_prompt") {
-			const promptText = stripPrivate(String(event.prompt_text ?? "")).trim();
-			if (promptText) parts.push(`${promptOriginLabel(event)}: ${promptText}`);
-		} else if (eventType === "assistant_message") {
-			const assistantText = stripPrivate(String(event.assistant_text ?? "")).trim();
-			if (assistantText) parts.push(`Assistant: ${assistantText}`);
-		}
+		const text = visible.get(event);
+		if (!text) continue;
+		parts.push(
+			event.type === "user_prompt" ? `${promptOriginLabel(event)}: ${text}` : `Assistant: ${text}`,
+		);
 	}
 	return parts.join("\n\n");
 }
@@ -153,10 +171,11 @@ export function buildTranscript(events: Record<string, unknown>[]): string {
 
 /** Extract assistant text messages from raw events, without private blocks. */
 export function extractAssistantMessages(events: Record<string, unknown>[]): string[] {
+	const visible = visibleMessageTexts(events);
 	const messages: string[] = [];
 	for (const event of events) {
 		if (event.type !== "assistant_message") continue;
-		const text = stripPrivate(String(event.assistant_text ?? "")).trim();
+		const text = visible.get(event);
 		if (text) messages.push(text);
 	}
 	return messages;
@@ -193,9 +212,10 @@ export function extractPrompts(
 ): { promptText: string; promptNumber: number | null; timestamp: string | null }[] {
 	const prompts: { promptText: string; promptNumber: number | null; timestamp: string | null }[] =
 		[];
+	const visible = visibleMessageTexts(events);
 	for (const event of events) {
 		if (event.type !== "user_prompt") continue;
-		const promptText = stripPrivate(String(event.prompt_text ?? "")).trim();
+		const promptText = visible.get(event);
 		if (!promptText) continue;
 		prompts.push({
 			promptText,

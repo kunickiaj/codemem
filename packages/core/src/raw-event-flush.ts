@@ -26,6 +26,7 @@ import {
 	isTrivialRequest,
 	normalizeAdapterEvents,
 	normalizeEventsForSessionContext,
+	visibleMessageTexts,
 } from "./ingest-transcript.js";
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError, ObserverClient } from "./observer-client.js";
@@ -412,15 +413,7 @@ export function buildSessionContext(
 		if (tool === "read") filesRead.add(filePath);
 	}
 
-	let firstPrompt: string | undefined;
-	for (const e of contentEvents) {
-		if (e.type !== "user_prompt") continue;
-		const text = e.prompt_text;
-		if (typeof text === "string" && text.trim()) {
-			firstPrompt = promptContextText(e, text.trim());
-			break;
-		}
-	}
+	const firstPrompt = firstVisiblePrompt(contentEvents);
 
 	return {
 		firstPrompt,
@@ -430,6 +423,16 @@ export function buildSessionContext(
 		filesModified: [...filesModified].sort(),
 		filesRead: [...filesRead].sort(),
 	};
+}
+
+/** The first user prompt with visible text, scanned with the batch's other messages. */
+function firstVisiblePrompt(events: Record<string, unknown>[]): string | undefined {
+	const visible = visibleMessageTexts(events);
+	for (const event of events) {
+		const text = event.type === "user_prompt" ? visible.get(event) : undefined;
+		if (text) return promptContextText(event, text);
+	}
+	return undefined;
 }
 
 function isTerminalLowSignalSession(

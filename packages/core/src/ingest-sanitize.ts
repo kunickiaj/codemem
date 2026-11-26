@@ -9,43 +9,58 @@
 // Private content stripping
 // ---------------------------------------------------------------------------
 
-const PRIVATE_OPEN = "<private>";
-const PRIVATE_CLOSE = "</private>";
+/**
+ * A `<private>` opener or closer, case-insensitive, with optional whitespace and
+ * attributes. A tag without its `>` runs to the end of the text, so it still counts.
+ */
+const PRIVATE_TAG = /<\s*(\/)?\s*private\b([^>]*)(>|$)/gi;
+
+/** Scan state carried across consecutive pieces of one message or stream. */
+export interface PrivateScan {
+	/** How many private blocks are open. */
+	depth: number;
+}
+
+export function newPrivateScan(): PrivateScan {
+	return { depth: 0 };
+}
 
 /**
- * Remove `<private>…</private>` blocks from text.
- *
- * Handles matched pairs, orphaned opening tags (truncates at the tag),
- * and stray closing tags (removed).
+ * Remove private regions from one piece of text, continuing `scan` from the
+ * previous piece. Blocks nest by depth. An opener left open removes the rest of the
+ * piece and stays open for the next piece. A closer with no open block removes it and
+ * everything before it in this piece, since that text may continue a block opened
+ * in an earlier piece. `<private/>` and escaped forms such as `&lt;private&gt;` are
+ * text, not markers.
  */
-export function stripPrivate(text: string): string {
+export function scanPrivate(text: string, scan: PrivateScan): string {
 	if (!text) return "";
-	let remaining = text;
-	let lowered = remaining.toLowerCase();
 	let output = "";
-	while (remaining) {
-		const openIndex = lowered.indexOf(PRIVATE_OPEN);
-		const closeIndex = lowered.indexOf(PRIVATE_CLOSE);
-		if (openIndex < 0) {
-			if (closeIndex < 0) return output + remaining;
-			output += remaining.slice(0, closeIndex);
-			remaining = remaining.slice(closeIndex + PRIVATE_CLOSE.length);
-			lowered = remaining.toLowerCase();
-			continue;
-		}
-		if (closeIndex >= 0 && closeIndex < openIndex) {
-			output += remaining.slice(0, closeIndex);
-			remaining = remaining.slice(closeIndex + PRIVATE_CLOSE.length);
-			lowered = remaining.toLowerCase();
-			continue;
-		}
-		output += remaining.slice(0, openIndex);
-		const blockCloseIndex = lowered.indexOf(PRIVATE_CLOSE, openIndex + PRIVATE_OPEN.length);
-		if (blockCloseIndex < 0) return output;
-		remaining = remaining.slice(blockCloseIndex + PRIVATE_CLOSE.length);
-		lowered = remaining.toLowerCase();
+	let last = 0;
+	for (const match of text.matchAll(PRIVATE_TAG)) {
+		const closer = match[1] === "/";
+		const selfClosing = !closer && match[3] === ">" && (match[2] ?? "").trimEnd().endsWith("/");
+		if (selfClosing) continue;
+		const index = match.index ?? 0;
+		if (scan.depth === 0) output += text.slice(last, index);
+		if (!closer) scan.depth += 1;
+		else if (scan.depth > 0) scan.depth -= 1;
+		else output = "";
+		last = index + match[0].length;
 	}
+	if (scan.depth === 0) output += text.slice(last);
 	return output;
+}
+
+/** Remove private regions from text scanned on its own; an open block runs to its end. */
+export function stripPrivate(text: string): string {
+	return scanPrivate(text, newPrivateScan());
+}
+
+/** Remove private regions from consecutive pieces, carrying an open block from one to the next. */
+export function stripPrivateSequence(pieces: readonly string[]): string[] {
+	const scan = newPrivateScan();
+	return pieces.map((piece) => scanPrivate(piece, scan));
 }
 
 // ---------------------------------------------------------------------------
@@ -94,17 +109,21 @@ export function isSensitiveFieldName(fieldName: string): boolean {
 // Deep sanitization
 // ---------------------------------------------------------------------------
 
-export function stripPrivateObj(value: unknown): unknown {
-	if (typeof value === "string") return stripPrivate(value);
-	if (Array.isArray(value)) return value.map(stripPrivateObj);
+/**
+ * Remove private regions from every key and string value, in traversal order, with
+ * one scan carried across them. An entry whose key carried a private marker is
+ * dropped with its value.
+ */
+export function stripPrivateObj(value: unknown, scan: PrivateScan = newPrivateScan()): unknown {
+	if (typeof value === "string") return scanPrivate(value, scan);
+	if (Array.isArray(value)) return value.map((item) => stripPrivateObj(item, scan));
 	if (value != null && typeof value === "object") {
 		const result: Record<string, unknown> = {};
 		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-			if (isSensitiveFieldName(key)) {
-				result[key] = REDACTED_VALUE;
-			} else {
-				result[key] = stripPrivateObj(item);
-			}
+			const visibleKey = scanPrivate(key, scan);
+			const cleaned = stripPrivateObj(item, scan);
+			if (visibleKey !== key) continue;
+			result[key] = isSensitiveFieldName(key) ? REDACTED_VALUE : cleaned;
 		}
 		return result;
 	}
@@ -121,12 +140,17 @@ function truncateText(text: string, maxChars: number): string {
 	return `${text.slice(0, maxChars)}... (truncated)`;
 }
 
-export function sanitizePayload(value: unknown, maxChars: number): unknown {
+/** `scan` carries an open private block across the values of one event. */
+export function sanitizePayload(
+	value: unknown,
+	maxChars: number,
+	scan: PrivateScan = newPrivateScan(),
+): unknown {
 	if (value == null) return null;
 	if (typeof value === "string") {
-		return truncateText(stripPrivate(value), maxChars);
+		return truncateText(scanPrivate(value, scan), maxChars);
 	}
-	const cleaned = stripPrivateObj(value);
+	const cleaned = stripPrivateObj(value, scan);
 	try {
 		const serialized = JSON.stringify(cleaned);
 		if (maxChars > 0 && serialized.length > maxChars) {
@@ -165,9 +189,14 @@ function isLowSignalOutput(output: string): boolean {
 	return lines.every((line) => LOW_SIGNAL_OUTPUTS.has(line.toLowerCase()));
 }
 
-export function sanitizeToolOutput(_tool: string, output: unknown, maxChars: number): unknown {
+export function sanitizeToolOutput(
+	_tool: string,
+	output: unknown,
+	maxChars: number,
+	scan: PrivateScan = newPrivateScan(),
+): unknown {
 	if (output == null) return null;
-	const sanitized = sanitizePayload(output, maxChars);
+	const sanitized = sanitizePayload(output, maxChars, scan);
 	const text = String(sanitized ?? "");
 	if (isLowSignalOutput(text)) return "";
 	return sanitized;
