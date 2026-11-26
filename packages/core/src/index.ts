@@ -1258,6 +1258,8 @@ export type {
 } from "./recipient-policy-reconciler.js";
 export {
 	assertLegacyShareGrantAllowed,
+	createRecipientPolicyBoundaryInspector,
+	RECIPIENT_POLICY_SHARED_SCOPE_CODE,
 	reconcileRecipientPolicyProject,
 } from "./recipient-policy-reconciler.js";
 export type {

@@ -206,6 +206,38 @@ describe("observed peer direction", () => {
 	});
 });
 
+describe("deriveTeamSyncPrimaryStatus with Projects in a shared scope", () => {
+	it("does not count Projects left in their shared scope as needing attention", () => {
+		const view = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			reconciliation: {
+				items: [
+					{ canonicalProjectIdentity: "git:roadmap", state: "legacy_scope" },
+					{ canonicalProjectIdentity: "git:billing", state: "legacy_scope" },
+					{ canonicalProjectIdentity: "git:search", state: "needs_attention" },
+				],
+			},
+		});
+		const steady = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: postedCoordinator,
+			peers: [healthyPeer],
+			reconciliation: {
+				items: [{ canonicalProjectIdentity: "git:roadmap", state: "legacy_scope" }],
+			},
+		});
+
+		expect(view.nextAction).toBe(
+			"Open Sharing, review this Project's access decision, then sync again.",
+		);
+		expect(steady.state).not.toBe("needs-attention");
+		expect(steady.state).not.toBe("pending-setup");
+		expect(steady.badgeLabel).not.toBe("Needs attention");
+	});
+});
+
 describe("deriveTeamSyncPrimaryStatus policy precedence", () => {
 	it("keeps sync disabled above posted presence and every lower-priority signal", () => {
 		const view = deriveTeamSyncPrimaryStatus({

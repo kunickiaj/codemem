@@ -1,6 +1,8 @@
 import {
 	canonicalRepositoryProjectIdentity,
+	createRecipientPolicyBoundaryInspector,
 	type MemoryStore,
+	RECIPIENT_POLICY_SHARED_SCOPE_CODE,
 	type RecipientPolicyReconcileResult,
 	type RecipientPolicyReconcilerEffects,
 	reconcileRecipientPolicyProject,
@@ -317,6 +319,24 @@ interface MaintenanceAuthorityRow {
 	safe_error_code: string | null;
 }
 
+/**
+ * A legacy Project in a shared multi-Project scope gets the same answer on every attempt until
+ * its scope mapping or the scope's Projects change, so it is not retried on a timer. A wake
+ * (which clears last_attempt_at) still runs it. The check reads only local mappings and scopes:
+ * a coordinator refresh that changes the scope updates those rows, and the next check sees it.
+ */
+function waitsForSharedScopeChange(
+	authority: MaintenanceAuthorityRow,
+	projectId: string,
+	boundaryBlocker: (projectId: string) => string | null,
+): boolean {
+	return (
+		authority.authority_state === "legacy" &&
+		authority.safe_error_code === RECIPIENT_POLICY_SHARED_SCOPE_CODE &&
+		boundaryBlocker(projectId) === RECIPIENT_POLICY_SHARED_SCOPE_CODE
+	);
+}
+
 function recipientPolicyMaintenanceCandidates(
 	store: MemoryStore,
 	retryBefore: string,
@@ -354,12 +374,13 @@ function recipientPolicyMaintenanceCandidates(
 			authorityByProject.set(projectId, row);
 		}
 	}
+	const boundaryBlocker = createRecipientPolicyBoundaryInspector(store.db);
 	return [...new Set(projectIds.map((row) => canonicalize(row.canonical_project_identity)))]
 		.filter((projectId) => {
 			const authority = authorityByProject.get(projectId);
+			if (authority == null || authority.last_attempt_at == null) return true;
+			if (waitsForSharedScopeChange(authority, projectId, boundaryBlocker)) return false;
 			return (
-				authority == null ||
-				authority.last_attempt_at == null ||
 				(authority.safe_error_code == null && authority.authority_state !== "active") ||
 				authority.last_attempt_at <= retryBefore
 			);

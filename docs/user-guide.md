@@ -1105,6 +1105,8 @@ For a mixed personal/work laptop using advanced manual mappings, start conservat
 
 Do not treat coordinator-group membership as data access. A coordinator group can help discover and administer devices, but a device still needs Project access through a direct recipient or Team policy before it can receive those memories.
 
+A Project that is shared through an older scope holding several Projects stays under that scope's access rules. Recipient policy can take over only once the Project has a managed scope of its own, and nothing in codemem creates one for it yet. **Sharing** and **Devices** show such a Project as **Shared scope controls access**. It does not count toward **Needs attention**, and nothing is required. Codemem checks it again only when its scope mapping or the scope's Projects change, or when a device ownership change wakes it.
+
 ### Upgrade maintenance / Sharing-domain backfill
 
 Schema version 21 adds a recipient-policy wake counter on startup. Policy edits made

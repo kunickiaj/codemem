@@ -163,6 +163,7 @@ import {
 	projectScopeMappingSavesOnlyNarrow,
 	projectShareLifecycle,
 	projectWithdrawalStates,
+	RECIPIENT_POLICY_SHARED_SCOPE_CODE,
 	RecipientPolicyEdgeRequestError,
 	RecipientPolicyTeamRenameError,
 	RemoteCoordinatorRequestError,
@@ -2704,6 +2705,7 @@ export async function reconcileRecipientPolicyProjects(
 
 export type RecipientPolicyReconciliationReadState =
 	| "active"
+	| "legacy_scope"
 	| "needs_attention"
 	| "pending"
 	| "verifying"
@@ -2727,6 +2729,14 @@ function recipientPolicyReadState(
 	if (!authority) return "pending";
 	if (authority.safeErrorCode && RECIPIENT_POLICY_WAITING_ERRORS.has(authority.safeErrorCode)) {
 		return "waiting";
+	}
+	// A Project in a shared multi-Project scope stays under that scope's enforcement; no one has
+	// anything to do until it gets a managed scope of its own.
+	if (
+		authority.authorityState === "legacy" &&
+		authority.safeErrorCode === RECIPIENT_POLICY_SHARED_SCOPE_CODE
+	) {
+		return "legacy_scope";
 	}
 	if (authority.safeErrorCode || authority.authorityState === "rolled_back") {
 		return "needs_attention";
@@ -2757,6 +2767,13 @@ function recipientPolicyReadCopy(state: RecipientPolicyReconciliationReadState):
 			label: "Waiting to reconcile",
 			explanation:
 				"Waiting for devices or a fresh coordinator snapshot. No partial grant is applied.",
+		};
+	}
+	if (state === "legacy_scope") {
+		return {
+			label: "Shared scope controls access",
+			explanation:
+				"Access for this Project is still controlled by the shared scope it belongs to. Nothing is required.",
 		};
 	}
 	if (state === "needs_attention") {

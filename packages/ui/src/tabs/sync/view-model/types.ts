@@ -155,6 +155,7 @@ export type TeamSyncProjectOperationActionKind =
 
 export type TeamSyncReconciliationState =
 	| "active"
+	| "legacy_scope"
 	| "needs_attention"
 	| "pending"
 	| "verifying"
