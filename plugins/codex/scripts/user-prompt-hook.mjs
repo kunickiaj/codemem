@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { sanitizeHookPayload, stripPrivate } from "./codemem-private-text.mjs";
 
 const DEFAULT_MAX_CHARS = 16_000;
 const DEFAULT_PACK_LIMIT = 8;
@@ -590,26 +591,34 @@ export function runCompatibilityFallback(raw, env, deadline, overrides = {}) {
 	);
 }
 
+/**
+ * The spooled form of a hook payload: private blocks removed and a timestamp added
+ * when the host sent none. A payload with neither change is spooled byte for byte.
+ * Text that is not a JSON object cannot be ingested, so only its private blocks go.
+ */
 function normalizePayloadText(raw, now, uuid) {
+	let parsed;
 	try {
-		const parsed = JSON.parse(raw);
-		if (!isRecord(parsed)) return raw;
-		const hasTimestamp =
-			(typeof parsed.timestamp === "string" && parsed.timestamp.trim()) ||
-			(typeof parsed.ts === "string" && parsed.ts.trim());
-		return hasTimestamp
-			? raw
-			: JSON.stringify({
-					...parsed,
-					timestamp: now().toISOString(),
-					codemem_generated_event_nonce: uuid(),
-				});
+		parsed = JSON.parse(raw);
 	} catch {
-		return raw;
+		return stripPrivate(raw);
 	}
+	if (!isRecord(parsed)) return stripPrivate(raw);
+	const sanitized = sanitizeHookPayload(parsed);
+	const hasTimestamp =
+		(typeof sanitized.timestamp === "string" && sanitized.timestamp.trim()) ||
+		(typeof sanitized.ts === "string" && sanitized.ts.trim());
+	if (hasTimestamp) {
+		return JSON.stringify(sanitized) === JSON.stringify(parsed) ? raw : JSON.stringify(sanitized);
+	}
+	return JSON.stringify({
+		...sanitized,
+		timestamp: now().toISOString(),
+		codemem_generated_event_nonce: uuid(),
+	});
 }
 
-function spoolPayload(raw, env, now = () => new Date(), uuid = randomUUID) {
+export function spoolPayload(raw, env, now = () => new Date(), uuid = randomUUID) {
 	try {
 		const directory = expandHome(
 			env.CODEMEM_CODEX_HOOK_SPOOL_DIR?.trim() || "~/.codemem/codex-hook-spool",

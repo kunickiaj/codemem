@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stripPrivate } from "./private-text.mjs";
 
 const MAX_BINDINGS = 128;
 const MAX_BRIEF_CHARS = 64_000;
@@ -114,7 +115,9 @@ export const createDelegationContext = ({
       parent_session_id: binding.parent, child_session_id: sessionID,
       task_call_id: binding.call, message_id: messageID,
       requested_agent: binding.agent, current_agent: info.agent,
-      brief_sha256: digest(text),
+      // Ingestion checks this digest against the brief it stores, which has lost its
+      // private blocks, so both sides hash the same cleaned text.
+      brief_sha256: digest(stripPrivate(text)),
     });
   };
   // V1 invokes this with all resolved parts before saving them individually.

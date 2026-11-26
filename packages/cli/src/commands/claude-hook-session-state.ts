@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "@codemem/core";
+import { extractApplyPatchPaths, MUTATING_TOOL_NAMES, sanitizeHookPayload } from "@codemem/core";
 
 export type SessionState = {
 	first_prompt: string;
@@ -188,7 +188,9 @@ export function extractModifiedPathsFromHook(payload: Record<string, unknown>): 
  * or when SessionEnd just cleared the state. Failures are swallowed —
  * hook commands must never crash on state I/O errors.
  */
-export function trackHookSessionState(payload: Record<string, unknown>): SessionState | null {
+export function trackHookSessionState(nativePayload: Record<string, unknown>): SessionState | null {
+	// The saved prompts and file paths are captured content; drop private blocks first.
+	const payload = sanitizeHookPayload(nativePayload);
 	const sessionRaw = payload.session_id;
 	if (typeof sessionRaw !== "string") return null;
 	const sessionId = sessionRaw.trim();

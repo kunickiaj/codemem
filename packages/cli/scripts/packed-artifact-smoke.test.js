@@ -53,16 +53,12 @@ function isolatedAdapters() {
 	for (const adapter of ["claude", "codex"]) {
 		const directory = join(isolatedRoot, "plugins", adapter, "scripts");
 		mkdirSync(directory, { recursive: true });
-		cpSync(
-			resolve(
-				import.meta.dirname,
-				"../../..",
-				"plugins",
-				adapter,
-				"scripts/codemem-normalizer.mjs",
-			),
-			join(directory, "codemem-normalizer.mjs"),
-		);
+		for (const generated of ["codemem-normalizer.mjs", "codemem-private-text.mjs"]) {
+			cpSync(
+				resolve(import.meta.dirname, "../../..", "plugins", adapter, "scripts", generated),
+				join(directory, generated),
+			);
+		}
 	}
 	return { root, isolatedRoot };
 }

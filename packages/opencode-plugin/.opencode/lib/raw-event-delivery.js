@@ -1,6 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { sanitizeRawEventEnvelope } from "./private-text.mjs";
 import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
@@ -475,7 +476,8 @@ const cachedEnvelope = (state, sessionID, type, payload, now) => {
   const cached = payload && typeof payload === "object" ? state.envelopes.get(payload) : null;
   if (cached) return cached;
   const options = state.options;
-  const envelope = options.buildEnvelope({
+  // Remove private blocks before the envelope is sent or written to the retry spool.
+  const envelope = sanitizeRawEventEnvelope(options.buildEnvelope({
     sessionID,
     type,
     payload,
@@ -486,7 +488,7 @@ const cachedEnvelope = (state, sessionID, type, payload, now) => {
     nowMono: typeof performance !== "undefined" && performance.now ? performance.now() : null,
     nextEventId: options.nextEventId,
     captureContext: state.captureContexts.get(payload),
-  });
+  }));
   const serialized = JSON.stringify(envelope);
   const value = { body: JSON.parse(serialized), serialized };
   if (payload && typeof payload === "object") state.envelopes.set(payload, value);

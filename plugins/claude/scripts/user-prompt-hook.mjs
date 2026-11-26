@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { sanitizeHookPayload } from "./codemem-private-text.mjs";
 
 const DEFAULT_MAX_CHARS = 16_000;
 const DEFAULT_PACK_LIMIT = 8;
@@ -370,7 +371,9 @@ function modifiedPaths(payload) {
 	return [...new Set(paths)];
 }
 
-export function trackClaudeSessionState(payload, env = process.env, now = () => new Date()) {
+export function trackClaudeSessionState(nativePayload, env = process.env, now = () => new Date()) {
+	// The saved prompts and file paths are captured content; drop private blocks first.
+	const payload = sanitizeHookPayload(nativePayload);
 	const sessionId = typeof payload.session_id === "string" ? payload.session_id.trim() : "";
 	if (!sessionId) return null;
 	if (payload.hook_event_name === "SessionEnd") {

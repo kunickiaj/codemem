@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { type DelegatedBriefContext, normalizeCaptureContext } from "./capture-context.js";
 import { type Database, toJsonNullable } from "./db.js";
-import { stripPrivateObj } from "./ingest-sanitize.js";
+import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
+import { sanitizeRawEventEnvelope } from "./private-text.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { ensureRawEventCaptureContextSchema } from "./schema-bootstrap.js";
 
@@ -134,12 +135,18 @@ function optionalString(value: Record<string, unknown>, key: string): string | n
 	return raw || null;
 }
 
+/** Session metadata is captured content, so it loses private blocks before storage. */
 function optionalProjectIdentity(
 	value: Record<string, unknown>,
 	key: "cwd" | "project",
 ): string | null {
 	const identity = optionalString(value, key);
-	return cleanProjectIdentity(identity);
+	return cleanProjectIdentity(identity == null ? null : stripPrivate(identity) || null);
+}
+
+function optionalContentString(value: Record<string, unknown>, key: string): string | null {
+	const text = optionalString(value, key);
+	return text == null ? null : stripPrivate(text) || null;
 }
 
 function optionalNumber(value: Record<string, unknown>, key: string): number | null {
@@ -282,7 +289,7 @@ function normalizeEvent(
 		tsMonoMs,
 		cwd: optionalProjectIdentity(item, "cwd"),
 		project: optionalProjectIdentity(item, "project"),
-		startedAt: optionalString(item, "started_at"),
+		startedAt: optionalContentString(item, "started_at"),
 	};
 }
 
@@ -306,7 +313,7 @@ function normalizeRequest(request: Record<string, unknown>): NormalizedRequest {
 		requestMeta: {
 			cwd: optionalProjectIdentity(request, "cwd"),
 			project: optionalProjectIdentity(request, "project"),
-			startedAt: optionalString(request, "started_at"),
+			startedAt: optionalContentString(request, "started_at"),
 		},
 	};
 }
@@ -571,7 +578,9 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 }
 
 export function validateRawEvents(request: object): RawEventValidationResult {
-	const sanitized = stripPrivateObj(request) as Record<string, unknown>;
+	// Each event of a request is cleaned on its own, so one event cannot hide another's
+	// fields. Payloads also lose sensitive fields; routing fields are left as sent.
+	const sanitized = sanitizeRawEventEnvelope(request as Record<string, unknown>, stripPrivateObj);
 	const normalized = normalizeRequest(sanitized);
 	return { received: normalized.received, request: sanitized };
 }

@@ -18,6 +18,7 @@ import {
 	buildRawEventEnvelopeFromCodexHook,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./codemem-normalizer.mjs";
+import { sanitizeHookPayload, sanitizeRawEventEnvelope } from "./codemem-private-text.mjs";
 import { identityTarget, resolveDbPath, viewerBaseUrl } from "./user-prompt-hook.mjs";
 
 export { viewerBaseUrl };
@@ -203,10 +204,13 @@ export async function runCodexIngestHook(overrides = {}) {
 				throw new Error("payload must be a JSON object");
 			}
 
-			const nativePayload = normalizeTimestampAndNonce(parsed);
-			const envelope = buildRawEventEnvelopeFromCodexHook(
-				nativePayload,
-				TRUSTED_HOOK_MAPPER_OPTIONS,
+			// Clean the native payload before its event ID is computed, as the CLI does, so
+			// both routes give one event the same ID. The envelope is cleaned again for text
+			// read from the transcript, and the request, the spool and both command
+			// fallbacks carry the same body.
+			const nativePayload = normalizeTimestampAndNonce(sanitizeHookPayload(parsed));
+			const envelope = sanitizeRawEventEnvelope(
+				buildRawEventEnvelopeFromCodexHook(nativePayload, TRUSTED_HOOK_MAPPER_OPTIONS),
 			);
 			if (envelope !== null) {
 				const envelopeBody = JSON.stringify(envelope);

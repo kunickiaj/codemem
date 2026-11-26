@@ -5,48 +5,10 @@
  * sensitive field names from payloads before they reach the observer LLM.
  */
 
-// ---------------------------------------------------------------------------
-// Private content stripping
-// ---------------------------------------------------------------------------
+// Private blocks are removed by the shared lexer in private-text.ts.
+import { hasPrivateMarker, stripPrivate } from "./private-text.js";
 
-const PRIVATE_OPEN = "<private>";
-const PRIVATE_CLOSE = "</private>";
-
-/**
- * Remove `<private>…</private>` blocks from text.
- *
- * Handles matched pairs, orphaned opening tags (truncates at the tag),
- * and stray closing tags (removed).
- */
-export function stripPrivate(text: string): string {
-	if (!text) return "";
-	let remaining = text;
-	let lowered = remaining.toLowerCase();
-	let output = "";
-	while (remaining) {
-		const openIndex = lowered.indexOf(PRIVATE_OPEN);
-		const closeIndex = lowered.indexOf(PRIVATE_CLOSE);
-		if (openIndex < 0) {
-			if (closeIndex < 0) return output + remaining;
-			output += remaining.slice(0, closeIndex);
-			remaining = remaining.slice(closeIndex + PRIVATE_CLOSE.length);
-			lowered = remaining.toLowerCase();
-			continue;
-		}
-		if (closeIndex >= 0 && closeIndex < openIndex) {
-			output += remaining.slice(0, closeIndex);
-			remaining = remaining.slice(closeIndex + PRIVATE_CLOSE.length);
-			lowered = remaining.toLowerCase();
-			continue;
-		}
-		output += remaining.slice(0, openIndex);
-		const blockCloseIndex = lowered.indexOf(PRIVATE_CLOSE, openIndex + PRIVATE_OPEN.length);
-		if (blockCloseIndex < 0) return output;
-		remaining = remaining.slice(blockCloseIndex + PRIVATE_CLOSE.length);
-		lowered = remaining.toLowerCase();
-	}
-	return output;
-}
+export { hasPrivateMarker, stripPrivate };
 
 // ---------------------------------------------------------------------------
 // Sensitive field detection
@@ -94,17 +56,19 @@ export function isSensitiveFieldName(fieldName: string): boolean {
 // Deep sanitization
 // ---------------------------------------------------------------------------
 
+/**
+ * Remove private blocks from every string value, each scanned on its own. An entry
+ * whose key carries a private marker is dropped with its value. Numbers, booleans
+ * and null are not text, so a block in a neighbouring string does not hide them.
+ */
 export function stripPrivateObj(value: unknown): unknown {
 	if (typeof value === "string") return stripPrivate(value);
 	if (Array.isArray(value)) return value.map(stripPrivateObj);
 	if (value != null && typeof value === "object") {
 		const result: Record<string, unknown> = {};
 		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-			if (isSensitiveFieldName(key)) {
-				result[key] = REDACTED_VALUE;
-			} else {
-				result[key] = stripPrivateObj(item);
-			}
+			if (hasPrivateMarker(key)) continue;
+			result[key] = isSensitiveFieldName(key) ? REDACTED_VALUE : stripPrivateObj(item);
 		}
 		return result;
 	}

@@ -6,7 +6,7 @@
  * tools, deduplicates, and budgets the list to fit observer token limits.
  */
 
-import { sanitizePayload, sanitizeToolOutput } from "./ingest-sanitize.js";
+import { sanitizePayload, sanitizeToolOutput, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ToolEvent } from "./ingest-types.js";
 import { isV2Event } from "./raw-event-host-generation.js";
 
@@ -93,27 +93,37 @@ export function eventToToolEvent(
 	lowSignalTools: Set<string> = LOW_SIGNAL_TOOLS,
 ): ToolEvent | null {
 	if (event.type !== "tool.execute.after" || event.contains_memory_calls === true) return null;
-	const tool = normalizeToolName(event);
+	// Scan each original value on its own before it is normalized, compacted or used as
+	// a fallback, so normalization cannot turn a marker into ordinary text.
+	const original = stripPrivateObj({
+		tool: event.tool,
+		args: event.args,
+		result: event.result,
+		error: event.error,
+		timestamp: event.timestamp,
+		cwd: event.cwd,
+	}) as Record<string, unknown>;
+	const tool = normalizeToolName({ ...original, type: event.type });
 	if (isInternalMemoryTool(tool)) return null;
 	if (lowSignalTools.has(tool)) return null;
 
-	const rawArgs = event.args;
+	const rawArgs = original.args;
 	const args =
 		rawArgs != null && typeof rawArgs === "object" && !Array.isArray(rawArgs)
 			? (rawArgs as Record<string, unknown>)
 			: {};
 
-	const result = compactToolOutput(tool, sanitizeToolOutput(tool, event.result, maxChars));
-	const error = sanitizePayload(event.error, maxChars);
+	const result = compactToolOutput(tool, sanitizeToolOutput(tool, original.result, maxChars));
+	const error = sanitizePayload(original.error, maxChars);
 
 	return {
 		toolName: tool,
 		toolInput: sanitizePayload(args, maxChars),
 		toolOutput: result,
 		toolError: error,
-		timestamp: typeof event.timestamp === "string" ? event.timestamp : null,
+		timestamp: typeof original.timestamp === "string" ? original.timestamp : null,
 		cwd:
-			(typeof event.cwd === "string" ? event.cwd : null) ??
+			(typeof original.cwd === "string" ? original.cwd : null) ??
 			(typeof args.cwd === "string" ? args.cwd : null),
 	};
 }

@@ -1066,6 +1066,12 @@ export {
 	POLICY_TEAM_DEVICE_ELIGIBILITY_MODES,
 } from "./policy-team-device-eligibility.js";
 export {
+	hasPrivateMarker,
+	sanitizeHookPayload,
+	sanitizeRawEventEnvelope,
+	stripPrivateValues,
+} from "./private-text.js";
+export {
 	projectBasename,
 	projectClause,
 	projectColumnClause,
