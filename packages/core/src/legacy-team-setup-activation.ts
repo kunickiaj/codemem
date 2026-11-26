@@ -51,6 +51,7 @@ import {
 	planSetupDeviceDecisionTransition,
 	planSetupMembershipTransition,
 } from "./team-ownership-transitions.js";
+import { liftTeamSetupQuarantineDenials } from "./team-setup-quarantine-delivery.js";
 
 export type { LegacyTeamSetupActivationErrorCode } from "./legacy-team-setup-errors.js";
 
@@ -1526,6 +1527,21 @@ function wakeLegacyTeamPolicies(db: Database, model: ActivationModel, now: strin
 	);
 }
 
+/**
+ * Wakes the Team's Project policies and lifts an earlier quarantine's delivery
+ * denials for the devices this reviewed activation includes. Devices it leaves
+ * out stay denied until Team recovery or a later activation includes them.
+ */
+function resumeActivatedTeamPolicies(db: Database, model: ActivationModel, now: string): void {
+	wakeLegacyTeamPolicies(db, model, now);
+	liftTeamSetupQuarantineDenials(db, {
+		teamId: model.teamId,
+		deviceIds: model.devices
+			.filter((device) => device.decision === "included")
+			.map((device) => device.device_id),
+	});
+}
+
 function assignSetupDevice(
 	db: Database,
 	device: DraftDeviceRow,
@@ -1889,7 +1905,7 @@ function applyActivation(
 			targetScopeId: targetScopeId(model, project) as string,
 		})),
 	);
-	wakeLegacyTeamPolicies(db, model, now);
+	resumeActivatedTeamPolicies(db, model, now);
 	wakeRecipientPoliciesForIdentities(db, reassignedIdentityIds, now);
 
 	const result: LegacyTeamSetupActivationResultV1 = {
