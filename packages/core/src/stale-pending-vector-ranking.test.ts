@@ -72,7 +72,7 @@ async function workerRank(path: string, input: RankInput): Promise<Neighbor[]> {
 			// Cached V8 functions can yield less precise coverage.
 			...(process.env.NODE_V8_COVERAGE !== undefined ? { NODE_DISABLE_COMPILE_CACHE: "1" } : {}),
 		},
-		execArgv: ["--experimental-transform-types"],
+		execArgv: [],
 	});
 	try {
 		return await new Promise<Neighbor[]>((resolve, reject) => {

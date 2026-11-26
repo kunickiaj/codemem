@@ -156,6 +156,11 @@ export default defineConfig(({ command, mode }) => {
 				include: [/\/static\/(?:controls|themes|tokens)\.css(?:\?inline)?$/],
 			},
 			environment: "jsdom",
+			// Node 25 and later define a global localStorage, which is undefined without
+			// --localstorage-file. Vitest 4's jsdom environment does not replace a global that
+			// already exists, so tests would get Node's undefined instead of jsdom's storage.
+			// Turning Node's Web Storage off restores jsdom's; Node 24 has it off already.
+			execArgv: ["--no-experimental-webstorage"],
 			name: "ui",
 			setupFiles: ["../core/src/test-environment-isolation.ts", "./src/preact-frame-test-setup.ts"],
 			alias: unitTestAliases,

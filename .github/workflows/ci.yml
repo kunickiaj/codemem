@@ -339,6 +339,48 @@ jobs:
           pnpm --filter @codemem/opencode-plugin test:opencode-v2-contract
           pnpm --filter codemem test:packed-artifact
 
+  # Not a required check. Installs on Node 26 are supported (engines: node >=24.15.0), while
+  # development (mise.toml) and the required jobs use Node 24. This job reports Node 26
+  # regressions in a pull request's affected tests without running the full suite.
+  node-26-compat:
+    name: Node 26 Compatibility (not required)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Affected-test selection diffs against the pull request's base commit.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Copy viewer static assets
+        run: |
+          mkdir -p packages/viewer-server/static
+          cp packages/ui/static/index.html packages/ui/static/favicon.svg packages/viewer-server/static/
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Packaged CLI smoke test
+        run: pnpm --filter codemem test:packed-artifact
+
+      - name: Affected tests
+        env:
+          CI_TEST_BASE: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/ci-changed-tests.mjs test:ci:parallel
+
   windows-embedding-runtime-smoke:
     name: Windows Embedding Runtime Smoke Test
     if: github.event_name != 'pull_request'

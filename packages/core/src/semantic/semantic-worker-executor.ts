@@ -168,8 +168,11 @@ function transport(dbPath: string, identity: string, events: WorkerEvents) {
 		workerData: { dbPath, fileIdentity: identity },
 		// The named protocol supplies model/public proof; do not inherit profile settings or credentials.
 		env: {},
-		// The existing DB loader's source graph contains parameter properties; emitted JS needs no loader.
-		execArgv: extension === "ts" ? ["--experimental-transform-types"] : [],
+		// A worker inherits its parent's execArgv unless given its own, which would carry preload
+		// hooks and flags such as --input-type into it. Source workers need no flag: they run
+		// under Node's own type stripping (Node 24 and 26), so the worker's import graph must use
+		// only erasable TypeScript syntax.
+		execArgv: [],
 	});
 	worker.on("message", (message: WorkerReply) => {
 		if (!message || !["ready", "result", "error"].includes(message.type)) {
