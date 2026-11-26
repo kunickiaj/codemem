@@ -155,6 +155,10 @@ import {
 	IDENTITY_GROUP_GRANT_SOURCE_SQL,
 } from "./coordinator-identity-group-grant.js";
 import {
+	type CoordinatorRevokeInviteInput,
+	InviteRevocationOperations,
+} from "./coordinator-invite-revocation.js";
+import {
 	assertJoinReviewConfirmation,
 	JOIN_REVIEW_COLUMNS,
 	joinReviewGuardEvidence,
@@ -1784,6 +1788,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private removalSchemaSeen = false;
 	private readonly boundaryReadiness: BoundaryReadinessOperations;
 	private readonly teamMemberRemovals: TeamMemberRemovalOperations;
+	private readonly inviteRevocations: InviteRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1811,6 +1816,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		this.teamMemberRemovals = new TeamMemberRemovalOperations(ledgerBackend, options.authClock);
+		this.inviteRevocations = new InviteRevocationOperations(ledgerBackend, options.authClock);
 		const authBackend = createD1AuthLinkBackend(db);
 		this.controllerBackend = authBackend;
 		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
@@ -2696,6 +2702,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async listTeamMemberRemovals(input: CoordinatorListTeamMemberRemovalsInput) {
 		return this.teamMemberRemovals.listTeamMemberRemovals(input);
+	}
+
+	async revokeInvite(input: CoordinatorRevokeInviteInput) {
+		return this.inviteRevocations.revokeInvite(input);
 	}
 
 	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {
