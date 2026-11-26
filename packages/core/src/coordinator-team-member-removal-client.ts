@@ -5,7 +5,7 @@ import {
 	TEAM_MEMBER_REMOVAL_PAGE_SIZE,
 } from "./coordinator-team-member-removals.js";
 import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
-import { requestJson } from "./sync-http-client.js";
+import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 
 /*
  * Admin client for the coordinator's per-Team member removals. Admin devices
@@ -91,7 +91,7 @@ async function readPage(
 	opts: CoordinatorListTeamMemberRemovalsActionOptions,
 	afterSeq: number,
 ): Promise<Record<string, unknown> | null> {
-	const endpoint = new URL(`${opts.remoteUrl.replace(/\/+$/u, "")}${TEAM_MEMBER_REMOVALS_PATH}`);
+	const endpoint = new URL(`${buildBaseUrl(opts.remoteUrl)}${TEAM_MEMBER_REMOVALS_PATH}`);
 	endpoint.searchParams.set("group_id", opts.groupId);
 	if (afterSeq > 0) endpoint.searchParams.set("after_seq", String(afterSeq));
 	const [status, payload] = await requestJson("GET", endpoint.toString(), {
