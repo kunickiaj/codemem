@@ -55,6 +55,20 @@ export interface ExtractionBenchmarkProfile {
 	batches: ExtractionBenchmarkBatch[];
 }
 
+/**
+ * Reasoning efforts a candidate can name. The benchmark `--reasoning-effort` option
+ * forwards its value to the provider unchanged; these are the values the supported
+ * OpenAI models list.
+ */
+export type ExtractionBenchmarkReasoningEffort =
+	| "none"
+	| "minimal"
+	| "low"
+	| "medium"
+	| "high"
+	| "xhigh"
+	| "max";
+
 export interface ExtractionBenchmarkModelCandidate {
 	provider: string;
 	model: string;
@@ -65,7 +79,7 @@ export interface ExtractionBenchmarkModelCandidate {
 		| "legacy_rich_baseline"
 		| "quality_ceiling"
 		| "cost_matched_challenger";
-	reasoningEffort: "none" | "medium";
+	reasoningEffort: ExtractionBenchmarkReasoningEffort;
 	notes: string;
 }
 
@@ -534,44 +548,59 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 			provider: "openai",
 			model: "gpt-5.4",
 			notes:
-				"Independent legacy quality reference retained while Luna and Terra serve as the current tier baselines.",
+				"Independent legacy quality reference. The required-fact labels in this profile are human-reviewed; no model output is used as ground truth.",
 		},
 		cheapCandidate: {
 			provider: "openai",
-			model: "gpt-5.6-luna",
+			model: "gpt-6-luna",
 			temperature: 0.2,
-			notes: "Current simple-tier production baseline at medium reasoning effort.",
+			notes: "Current simple-tier default at medium reasoning effort.",
 		},
 		modelCandidates: [
 			{
 				provider: "openai",
-				model: "gpt-5.6-luna",
+				model: "gpt-6-luna",
 				role: "simple_baseline",
 				reasoningEffort: "medium",
+				notes: "Current simple-tier default.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-6.1-terra",
+				role: "rich_baseline",
+				reasoningEffort: "medium",
 				notes:
-					"Current simple-tier baseline: medium led the corrected simple+working screen with 0.702 quality and 0.667 recall.",
+					"Current rich-tier default. In a small comparison (11 labelled batches, three repetitions, service-default effort) it recalled more required facts on rich batches than GPT-5.6 Terra at the same 12,000-character budget, at half the list input price.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-5.6-luna",
+				role: "legacy_simple_baseline",
+				reasoningEffort: "medium",
+				notes:
+					"Earlier simple-tier baseline: medium led the corrected simple+working screen with 0.702 quality and 0.667 recall.",
 			},
 			{
 				provider: "openai",
 				model: "gpt-5.6-terra",
-				role: "rich_baseline",
+				role: "legacy_rich_baseline",
 				reasoningEffort: "medium",
 				notes:
-					"Current rich-tier baseline: medium passed 6/6 corrected rich runs with 0.600 recall and 1.000 worthiness.",
+					"Rich-tier default before GPT-6.1 Terra: medium passed 6/6 corrected rich runs with 0.600 recall and 1.000 worthiness.",
 			},
 			{
 				provider: "openai",
 				model: "gpt-5.4-mini",
 				role: "legacy_simple_baseline",
 				reasoningEffort: "none",
-				notes: "Legacy simple-tier baseline retained for release comparisons.",
+				notes: "Older simple-tier baseline retained for release comparisons.",
 			},
 			{
 				provider: "openai",
 				model: "gpt-5.4",
 				role: "legacy_rich_baseline",
 				reasoningEffort: "none",
-				notes: "Legacy rich-tier baseline retained for release comparisons.",
+				notes: "Older rich-tier baseline retained for release comparisons.",
 			},
 			{
 				provider: "openai",
@@ -769,17 +798,32 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 		modelCandidates: [
 			{
 				provider: "openai",
-				model: "gpt-5.4-mini",
+				model: "gpt-6-luna",
 				role: "simple_baseline",
+				reasoningEffort: "medium",
+				notes: "Current simple-tier default.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-6.1-terra",
+				role: "rich_baseline",
+				reasoningEffort: "medium",
+				notes: "Current rich-tier default.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-5.4-mini",
+				role: "legacy_simple_baseline",
 				reasoningEffort: "none",
-				notes: "Retain as the frequent/simple-tier cost baseline.",
+				notes: "Historical frequent/simple-tier cost baseline.",
 			},
 			{
 				provider: "openai",
 				model: "gpt-5.4",
-				role: "rich_baseline",
+				role: "legacy_rich_baseline",
 				reasoningEffort: "none",
-				notes: "Legacy rich-tier production baseline and primary historical comparison for Terra.",
+				notes:
+					"Older rich-tier production baseline and primary historical comparison in this profile.",
 			},
 			{
 				provider: "openai",
@@ -791,10 +835,10 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 			{
 				provider: "openai",
 				model: "gpt-5.6-terra",
-				role: "cost_matched_challenger",
+				role: "legacy_rich_baseline",
 				reasoningEffort: "none",
 				notes:
-					"Historical challenger in this profile; now the release rich-tier baseline at GPT-5.4-matched rates.",
+					"Historical challenger in this profile and the rich-tier default before GPT-6.1 Terra.",
 			},
 		],
 		batches: [
@@ -889,11 +933,11 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 			provider: "openai",
 			model: "gpt-5.4",
 			notes:
-				"Use the stronger model as the truth baseline when validating that richer batches genuinely benefit from escalation.",
+				"Historical truth baseline for checking that richer batches benefit from escalation. It predates the current tier defaults.",
 		},
 		cheapCandidate: {
 			provider: "openai",
-			model: "gpt-5.4-mini",
+			model: "gpt-6-luna",
 			temperature: 0.2,
 			notes:
 				"Cheaper path that should remain selected for simpler batches unless routing thresholds are too aggressive.",
@@ -901,17 +945,31 @@ const EXTRACTION_BENCHMARK_PROFILES: ExtractionBenchmarkProfile[] = [
 		modelCandidates: [
 			{
 				provider: "openai",
-				model: "gpt-5.4-mini",
+				model: "gpt-6-luna",
 				role: "simple_baseline",
+				reasoningEffort: "medium",
+				notes: "Simple-tier routing default.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-6.1-terra",
+				role: "rich_baseline",
+				reasoningEffort: "medium",
+				notes: "Rich-tier routing default.",
+			},
+			{
+				provider: "openai",
+				model: "gpt-5.4-mini",
+				role: "legacy_simple_baseline",
 				reasoningEffort: "none",
-				notes: "Simple-tier routing baseline.",
+				notes: "Earlier simple-tier routing baseline.",
 			},
 			{
 				provider: "openai",
 				model: "gpt-5.4",
-				role: "rich_baseline",
+				role: "legacy_rich_baseline",
 				reasoningEffort: "none",
-				notes: "Rich-tier routing baseline.",
+				notes: "Earlier rich-tier routing baseline.",
 			},
 		],
 		batches: [

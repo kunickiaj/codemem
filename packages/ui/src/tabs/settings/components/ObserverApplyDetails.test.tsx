@@ -28,7 +28,7 @@ it("shows active simple and rich models separately without claiming account avai
 						},
 						rich: {
 							provider: "openai",
-							model: "gpt-5.6-terra",
+							model: "gpt-6.1-terra",
 							runtime: "codex_sidecar",
 							reasoningEffort: null,
 						},
@@ -43,7 +43,7 @@ it("shows active simple and rich models separately without claiming account avai
 	expect(document.body.textContent).toContain("Simple requests");
 	expect(document.body.textContent).toContain("openai · gpt-6-luna");
 	expect(document.body.textContent).toContain("Rich requests");
-	expect(document.body.textContent).toContain("openai · gpt-5.6-terra");
+	expect(document.body.textContent).toContain("openai · gpt-6.1-terra");
 	expect(document.body.textContent).not.toContain("codex_sidecar");
 	const routing = document.querySelector<HTMLDetailsElement>(".observer-routing-details");
 	expect(routing?.open).toBe(false);

@@ -151,7 +151,7 @@ describe("extraction replay", () => {
 
 	it.each([
 		{ tier: "simple", eventSpan: 12, toolCount: 1, expectedModel: "gpt-6-luna" },
-		{ tier: "rich", eventSpan: 153, toolCount: 12, expectedModel: "gpt-5.6-terra" },
+		{ tier: "rich", eventSpan: 153, toolCount: 12, expectedModel: "gpt-6.1-terra" },
 	] as const)("preserves the CLI reasoning override for $tier tier routing", (scenario) => {
 		const routed = buildTierRoutedReplayObserverConfig(
 			new ObserverClientImpl(

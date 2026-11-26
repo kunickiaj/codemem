@@ -102,7 +102,7 @@ beforeEach(() => {
 				"openai/gpt-5.6": ["none", "low", "medium", "high", "xhigh"],
 				// The built-in tier models.
 				"openai/gpt-6-luna": ["none", "low", "medium", "high", "xhigh"],
-				"openai/gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh"],
+				"openai/gpt-6.1-terra": ["none", "low", "medium", "high", "xhigh", "max"],
 				"anthropic/claude-sonnet-4-6": ["high", "max"],
 			},
 		},
