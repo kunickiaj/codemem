@@ -4499,7 +4499,16 @@ function localOnlyRowRejections(
  * still be moved to where the source now writes it. A cleanup notice follows
  * its own origin rule instead.
  */
-function scopesWrittenByInboundOp(db: Database, op: ReplicationOp, senderId: string): string[] {
+/**
+ * The scopes whose rows an inbound op from `senderId` would change, which the sender must be
+ * proven in: the op's own scope and every scope holding a stored copy of its memory that the
+ * sender has not already retired. The pull path and the push route both use this.
+ */
+export function scopesWrittenByInboundOp(
+	db: Database,
+	op: ReplicationOp,
+	senderId: string,
+): string[] {
 	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) return [];
 	// A move's op scope is its new scope on the new side and its old scope on the old side.
 	// The other scope counts only through a copy stored there, below: a device in the
