@@ -33,6 +33,7 @@
 - Plugin smoke tests rely on nested `.opencode` runtime deps. CI installs `@opencode-ai/plugin` inside `packages/cli/.opencode` and `packages/opencode-plugin/.opencode` before running smoke tests.
 - CLI work should follow `docs/cli-design-conventions.md`: noun-based groups, normally 2 action levels with a third for specialist resources, shared `--db-path` / `--config` / `--json` helpers, and no uncaught throws from command handlers.
 - The repo is TS-first; trust `package.json`, package scripts, and CI over older migration-era docs/checklists.
+- Never print or paste the output of a command that prints a secret or a signed URL, such as `wrangler d1 export` (a presigned download URL for the whole database). Write its output to a mode-600 file and report only the exit status; see `docs/cloudflare-coordinator-deployment.md#back-up-the-database`.
 - `.github/PULL_REQUEST_TEMPLATE.md` is TS-first now; use `pnpm run tsc`, `pnpm run lint`, and `pnpm run test` for normal changes.
 
 ## Workflow rules specific to this repo
