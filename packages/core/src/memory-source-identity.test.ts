@@ -66,9 +66,12 @@ function overwriteOrigin(entityId: string): void {
 		payload_json: JSON.stringify(payload),
 	};
 	expect(applyReplicationOps(db, [forged], "receiver").applied).toBe(1);
-	expect(
-		db.prepare("SELECT origin_device_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
-	).toBe("attacker");
+	const origin = db.prepare("SELECT origin_device_id FROM memory_items WHERE id = ?").pluck();
+	// Replication no longer relabels a stored creator...
+	expect(origin.get(memoryId)).toBe("source");
+	// ...but a store can still hold an origin overwritten before it stopped.
+	db.prepare("UPDATE memory_items SET origin_device_id = 'attacker' WHERE id = ?").run(memoryId);
+	expect(origin.get(memoryId)).toBe("attacker");
 }
 
 it("allocates a fresh source-qualified identity from the actual local device inside a transaction", () => {
