@@ -39,6 +39,10 @@ export interface DeviceIdentityPeerEvidence {
 	suggestedIdentityId: string | null;
 	trustProvenance: string | null;
 	claimedLocalActor: boolean;
+	/** The pairing came from a bootstrap grant that has not finished its first sync. */
+	pendingBootstrapGrant?: boolean;
+	/** A person saved this pin with addresses through Pair. */
+	explicitlyPaired?: boolean;
 	/** This device recorded the ID as retired and the pairing still pins the retired key. */
 	retired?: boolean;
 }
@@ -164,6 +168,18 @@ function localEvidence(value: DeviceIdentityLocalDeviceEvidence): Evidence {
 	};
 }
 
+/**
+ * Whether a pairing shows that a person paired the device. Coordinator discovery
+ * does not, and neither does a bootstrap grant before its first sync: the
+ * invitation set that pin, not a Pair. A Pair of the same key, or claiming the
+ * device as this person's own, still counts.
+ */
+function peerPairingProof(value: DeviceIdentityPeerEvidence): boolean {
+	if (value.claimedLocalActor || value.explicitlyPaired) return true;
+	if (value.pendingBootstrapGrant) return false;
+	return clean(value.trustProvenance) !== "coordinator_policy";
+}
+
 function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 	const validated = fingerprint(clean(value.publicKey), clean(value.pinnedFingerprint));
 	return {
@@ -179,7 +195,7 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		bindingIdentityStatus: null,
 		bindingAuthoritative: false,
 		enrollmentEnabled: null,
-		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
+		pairingProof: peerPairingProof(value),
 		serviceDevice: false,
 		revoked: value.retired === true,
 		rejoinedAtMs: null,
@@ -521,6 +537,41 @@ function retiredDeviceCheck(
 	return (deviceId) => retiredAliasApplies(aliases.get(deviceId), pins.get(deviceId) ?? null);
 }
 
+function syncPeerColumnExists(db: Database, column: string): boolean {
+	const rows = db.prepare("PRAGMA table_info(sync_peers)").all() as Array<{ name?: string }>;
+	return rows.some((row) => row.name === column);
+}
+
+function loadPeerRows(db: Database): Array<Record<string, unknown>> {
+	// Older stores may lack the explicit Pair column; their pins then count as before.
+	const explicitPin = syncPeerColumnExists(db, "explicit_pairing_fingerprint")
+		? "explicit_pairing_fingerprint"
+		: "NULL AS explicit_pairing_fingerprint";
+	return db
+		.prepare(
+			`SELECT peer_device_id, name, public_key, pinned_fingerprint, actor_id,
+			 trust_provenance, claimed_local_actor, pending_bootstrap_grant_id, ${explicitPin}
+			 FROM sync_peers ORDER BY peer_device_id LIMIT ?`,
+		)
+		.all(DEVICE_IDENTITY_EVIDENCE_LIMIT + 1) as Array<Record<string, unknown>>;
+}
+
+function peerRowEvidence(value: Record<string, unknown>): DeviceIdentityPeerEvidence {
+	return {
+		deviceId: String(value.peer_device_id ?? ""),
+		displayName: clean(value.name) ?? "",
+		publicKey: clean(value.public_key),
+		pinnedFingerprint: clean(value.pinned_fingerprint),
+		suggestedIdentityId: clean(value.actor_id),
+		trustProvenance: clean(value.trust_provenance),
+		claimedLocalActor: value.claimed_local_actor === 1,
+		pendingBootstrapGrant: clean(value.pending_bootstrap_grant_id) !== null,
+		explicitlyPaired:
+			clean(value.explicit_pairing_fingerprint) !== null &&
+			clean(value.explicit_pairing_fingerprint) === clean(value.pinned_fingerprint),
+	};
+}
+
 export function loadDeviceIdentityInventorySnapshot(
 	db: Database,
 	input: DeviceIdentityInventoryInput,
@@ -533,27 +584,8 @@ export function loadDeviceIdentityInventorySnapshot(
 		.get(input.localDeviceId) as
 		| { device_id: string; public_key: string; fingerprint: string }
 		| undefined;
-	const peerRows = db
-		.prepare(
-			`SELECT peer_device_id, name, public_key, pinned_fingerprint, actor_id,
-			 trust_provenance, claimed_local_actor
-			 FROM sync_peers ORDER BY peer_device_id LIMIT ?`,
-		)
-		.all(DEVICE_IDENTITY_EVIDENCE_LIMIT + 1);
-	const peers = peerRows
-		.slice(0, DEVICE_IDENTITY_EVIDENCE_LIMIT)
-		.map((row): DeviceIdentityPeerEvidence => {
-			const value = row as Record<string, unknown>;
-			return {
-				deviceId: String(value.peer_device_id ?? ""),
-				displayName: clean(value.name) ?? "",
-				publicKey: clean(value.public_key),
-				pinnedFingerprint: clean(value.pinned_fingerprint),
-				suggestedIdentityId: clean(value.actor_id),
-				trustProvenance: clean(value.trust_provenance),
-				claimedLocalActor: value.claimed_local_actor === 1,
-			};
-		});
+	const peerRows = loadPeerRows(db);
+	const peers = peerRows.slice(0, DEVICE_IDENTITY_EVIDENCE_LIMIT).map(peerRowEvidence);
 	const bindingRows = db
 		.prepare(
 			`SELECT device.device_id, device.display_name, device.identity_id, device.status, device.provenance,
