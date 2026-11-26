@@ -32,6 +32,7 @@ function canShare(project: ProjectScopeInventoryProject): boolean {
 		!project.read_only &&
 		project.identity_source !== "unmapped" &&
 		project.memory_count != null &&
+		!project.ambiguous_name &&
 		!project.guardrail_warnings.some((warning) => warning.requires_confirmation)
 	);
 }

@@ -14,6 +14,7 @@ import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing"
 import { renderProjectInventory as renderProjectInventoryView } from "./projects/ProjectInventory";
 import { projectClusterKey } from "./projects/project-view";
 import type {
+	ClusterMappingCheckState,
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
 	ProjectInventoryProjectViewModel,
@@ -50,6 +51,7 @@ const STATUS_OPTIONS = [
 	["legacy_review", "Older shared data"],
 	["unmapped", "Missing project identity"],
 	["empty", "No memories"],
+	["unnamed", "No usable name"],
 ] as const;
 
 let refreshProjects: RefreshFn | null = null;
@@ -62,6 +64,18 @@ const openProjectClusters = new Set<string>();
 const openProjectWorktrees = new Set<string>();
 const draftDomainSelections = new Map<string, string>();
 const draftClusterDomainSelections = new Map<string, string>();
+interface ClusterMappingCheck {
+	generation: number;
+	scopeId: string;
+	state: ClusterMappingCheckState;
+	warnings: ProjectScopeGuardrailWarning[];
+}
+/**
+ * The server's answer to whether a group's chosen Space can be saved in one step. The group
+ * offers Save only when the answer for the chosen Space is "accepted".
+ */
+const clusterMappingChecks = new Map<string, ClusterMappingCheck>();
+let clusterMappingCheckGeneration = 0;
 const pendingConfirmations = new Map<
 	string,
 	{ requiredGuardrailTokens: string[]; scopeId: string; warnings: ProjectScopeGuardrailWarning[] }
@@ -153,6 +167,7 @@ function isProjectShareEligible(project: ProjectScopeInventoryProject): boolean 
 	return (
 		isLocallyAssignableProject(project) &&
 		project.memory_count != null &&
+		!project.ambiguous_name &&
 		project.guardrail_warnings.every((warning) => !warning.requires_confirmation)
 	);
 }
@@ -468,11 +483,54 @@ async function saveProjectClusterMapping(
 			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access unchanged.`,
 		);
 		draftClusterDomainSelections.delete(projectClusterKey(assignable[0]));
+		clusterMappingChecks.delete(projectClusterKey(assignable[0]));
 		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	} catch (error) {
 		showGlobalNotice(projectClusterMappingError(error), "warning");
 	}
+}
+
+function clusterAssignableProjects(clusterKey: string): ProjectScopeInventoryProject[] {
+	return latestInventoryResult.projects
+		.filter((project) => projectClusterKey(project) === clusterKey)
+		.filter(isLocallyAssignableProject);
+}
+
+/** Asks the server whether the group's bulk save would accept this Space. */
+function checkClusterMapping(clusterKey: string, scopeId: string): void {
+	const assignable = clusterAssignableProjects(clusterKey);
+	if (!scopeId || assignable.length === 0) {
+		clusterMappingChecks.delete(clusterKey);
+		return;
+	}
+	const generation = ++clusterMappingCheckGeneration;
+	clusterMappingChecks.set(clusterKey, { generation, scopeId, state: "checking", warnings: [] });
+	const settle = (check: Omit<ClusterMappingCheck, "generation" | "scopeId">) => {
+		if (clusterMappingChecks.get(clusterKey)?.generation !== generation) return;
+		clusterMappingChecks.set(clusterKey, { generation, scopeId, ...check });
+		renderCurrentProjectInventory();
+		notifyProjectInventoryChanged();
+	};
+	api
+		.checkSharingDomainProjectMappings({
+			mappings: assignable.map((project) => ({ ...mappingTarget(project), scope_id: scopeId })),
+		})
+		.then(
+			(result) =>
+				settle({
+					state: result.accepted ? "accepted" : "review",
+					warnings: result.reviewWarnings,
+				}),
+			() => settle({ state: "failed", warnings: [] }),
+		);
+}
+
+/** Checks again every group with a chosen Space, because the listed entries changed. */
+function recheckClusterMappings(): void {
+	clusterMappingChecks.clear();
+	for (const [clusterKey, scopeId] of draftClusterDomainSelections)
+		checkClusterMapping(clusterKey, scopeId);
 }
 
 function projectClusterMappingError(error: unknown): string {
@@ -600,7 +658,7 @@ async function reassignInventoryProject(project: ProjectScopeInventoryProject) {
 interface ProjectRepairTarget {
 	offset: number;
 	project: ProjectScopeInventoryProject;
-	status: "" | "empty";
+	status: "" | "empty" | "unnamed";
 }
 
 async function projectForRepair(
@@ -609,17 +667,20 @@ async function projectForRepair(
 ): Promise<ProjectRepairTarget | null> {
 	const cached = projectInventoryByIdentity.get(projectIdentity);
 	if (cached && !isPeerReceivedProject(cached)) {
-		const status = readProjectInventoryFilters().status === "empty" ? "empty" : "";
+		const filter = readProjectInventoryFilters().status;
+		const status = filter === "empty" || filter === "unnamed" ? filter : "";
 		return { offset: currentOffset, project: cached, status };
 	}
 	// Search the same lists the display loads so the returned offset is valid there.
-	const listed = await findRepairTarget(projectIdentity, "");
-	if (listed || projectNavigationChanged(navigation)) return listed;
-	return findRepairTarget(projectIdentity, "empty");
+	for (const status of ["", "empty", "unnamed"] as const) {
+		const found = await findRepairTarget(projectIdentity, status);
+		if (found || projectNavigationChanged(navigation)) return found;
+	}
+	return null;
 }
 
 function repairLookupFilter(status: ProjectRepairTarget["status"]) {
-	return status === "empty" ? { status } : { include_empty: false };
+	return status ? { status } : { include_empty: false };
 }
 
 async function findRepairTarget(
@@ -856,6 +917,12 @@ function projectViewModel(project: ProjectScopeInventoryProject): ProjectInvento
 	};
 }
 
+function clusterScopeCheck(key: string): ProjectInventoryClusterViewModel["scopeCheck"] {
+	const check = clusterMappingChecks.get(key);
+	if (!check) return null;
+	return { scopeId: check.scopeId, state: check.state, warnings: [...check.warnings] };
+}
+
 function inventoryRowViewModel(
 	projects: ProjectScopeInventoryProject[],
 ): ProjectInventoryProjectViewModel | ProjectInventoryClusterViewModel {
@@ -872,6 +939,7 @@ function inventoryRowViewModel(
 		worktreesOpen: openProjectWorktrees.has(key),
 		detailsOpen: openProjectClusters.has(key),
 		draftScopeId: draftClusterDomainSelections.get(key) ?? null,
+		scopeCheck: clusterScopeCheck(key),
 		recipients: recipientChips(uniqueProjectIds(projects)),
 	};
 }
@@ -947,11 +1015,14 @@ function projectInventoryMetaText(result: {
 	total: number;
 	offset: number;
 	hidden_empty_count?: number;
+	hidden_unnamed_count?: number;
 }): string {
 	const hidden = result.hidden_empty_count ?? 0;
-	const count = projectCountText(result);
-	if (hidden <= 0) return count;
-	return `${count} · ${hidden.toLocaleString()} empty not shown`;
+	const unnamed = result.hidden_unnamed_count ?? 0;
+	const parts = [projectCountText(result)];
+	if (hidden > 0) parts.push(`${hidden.toLocaleString()} empty not shown`);
+	if (unnamed > 0) parts.push(`${unnamed.toLocaleString()} without a usable name not shown`);
+	return parts.join(" · ");
 }
 
 function renderCurrentProjectInventory(error?: string): void {
@@ -967,6 +1038,7 @@ function renderProjectInventory(result: {
 	offset: number;
 	has_more: boolean;
 	hidden_empty_count?: number;
+	hidden_unnamed_count?: number;
 }) {
 	hasProjectInventoryResult = true;
 	latestInventoryResult = {
@@ -981,6 +1053,7 @@ function renderProjectInventory(result: {
 	hideProjectInventorySkeleton();
 	projectInventoryByIdentity.clear();
 	for (const project of result.projects) cacheProjectInventoryProject(project);
+	recheckClusterMappings();
 	renderCurrentProjectInventory();
 	meta.textContent = projectInventoryMetaText(result);
 	const prev = el<HTMLButtonElement>("projectsPrevPage");
@@ -1040,7 +1113,7 @@ async function loadShareChoicesPage(
 ) {
 	if (sharedPage?.offset === offset) {
 		const page = await sharedPage.promise;
-		if (!page.hidden_empty_count) return page;
+		if (!page.hidden_empty_count && !page.hidden_unnamed_count) return page;
 	}
 	return api.loadProjectScopeInventory({ limit: lastLimit, offset, signal: options.signal });
 }
@@ -1476,6 +1549,8 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 	setClusterScopeDraft(clusterKey, scopeId) {
 		if (scopeId) draftClusterDomainSelections.set(clusterKey, scopeId);
 		else draftClusterDomainSelections.delete(clusterKey);
+		checkClusterMapping(clusterKey, scopeId);
+		renderCurrentProjectInventory();
 		notifyProjectInventoryChanged();
 	},
 	async saveProjectScope(projectIdentity, scopeId) {
@@ -1483,9 +1558,7 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		if (project) await saveProjectMapping(project, scopeId);
 	},
 	async saveClusterScope(clusterKey, scopeId) {
-		const projects = latestInventoryResult.projects
-			.filter((project) => projectClusterKey(project) === clusterKey)
-			.filter(isLocallyAssignableProject);
+		const projects = clusterAssignableProjects(clusterKey);
 		if (projects.length > 0) await saveProjectClusterMapping(projects, scopeId);
 	},
 	async removeProjectScope(projectIdentity) {
@@ -1550,6 +1623,7 @@ export function initProjectsTab(
 	openProjectWorktrees.clear();
 	draftDomainSelections.clear();
 	draftClusterDomainSelections.clear();
+	clusterMappingChecks.clear();
 	pendingConfirmations.clear();
 	pendingRemovalConfirmations.clear();
 	pendingForgetConfirmations.clear();

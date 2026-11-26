@@ -30,13 +30,31 @@ function latestSessionAcross(model: ProjectInventoryClusterViewModel): string | 
 	return latest;
 }
 
+/**
+ * Warnings the server's bulk-save check raised for the chosen Space. They need a confirmation
+ * the group's one-step save cannot carry, so each entry is saved on its own instead.
+ */
+function checkedReviewWarnings(model: ProjectInventoryClusterViewModel) {
+	if (model.scopeCheck?.state !== "review") return [];
+	return model.scopeCheck.warnings.flatMap((warning) => {
+		const project =
+			model.projects.find(
+				(item) => item.project.workspace_identity === warning.workspace_identity,
+			) ?? model.projects[0];
+		return project ? [{ project, warning }] : [];
+	});
+}
+
 function buildClusterSummary(model: ProjectInventoryClusterViewModel) {
 	const assignable = model.projects.filter((project) => isAssignable(project.project));
-	const blocking = assignable.flatMap((project) =>
-		(project.project.guardrail_warnings ?? [])
-			.filter((warning) => warning.requires_confirmation)
-			.map((warning) => ({ project, warning })),
-	);
+	const blocking = [
+		...assignable.flatMap((project) =>
+			(project.project.guardrail_warnings ?? [])
+				.filter((warning) => warning.requires_confirmation)
+				.map((warning) => ({ project, warning })),
+		),
+		...checkedReviewWarnings(model),
+	];
 	const suggestedScopes = new Set(
 		assignable
 			.map((project) => project.project.suggested_scope_id)
@@ -223,6 +241,8 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 		return <div className="settings-note">{message}</div>;
 	}
 	const scopeAvailable = scopeIsAvailable(scopeId, view);
+	// Offer the one-step save only once the server has said it would accept this Space.
+	const check = model.scopeCheck?.scopeId === scopeId ? model.scopeCheck : null;
 	return (
 		<>
 			<NativeSelect
@@ -249,15 +269,32 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 			</NativeSelect>
 			<button
 				className="settings-button"
-				disabled={!scopeAvailable || summary.blocking.length > 0}
+				disabled={!scopeAvailable || summary.blocking.length > 0 || check?.state !== "accepted"}
 				onClick={() => void callbacks.saveClusterScope(model.key, scopeId)}
 				type="button"
 			>
 				Save Space for {summary.assignable.length}{" "}
 				{summary.assignable.length === 1 ? "Project entry" : "Project entries"}
 			</button>
+			<ClusterCheckStatus check={check} />
 		</>
 	);
+}
+
+function ClusterCheckStatus({ check }: { check: ProjectInventoryClusterViewModel["scopeCheck"] }) {
+	if (check?.state === "checking")
+		return (
+			<div className="settings-note" role="status">
+				Checking whether these entries can be saved together…
+			</div>
+		);
+	if (check?.state === "failed")
+		return (
+			<div className="settings-note" role="status">
+				Couldn't check this Space for the group. Choose it again to retry.
+			</div>
+		);
+	return null;
 }
 
 function ClusterWarnings({

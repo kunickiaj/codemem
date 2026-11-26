@@ -601,9 +601,14 @@ export type ProjectScopeInventoryStatus =
 	| "needs_attention"
 	| "received"
 	| "suggested"
-	| "unmapped";
+	| "unmapped"
+	| "unnamed";
 
 export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
+	/** Another entry has the same name, so sharing this one stays unavailable. */
+	ambiguous_name?: boolean;
+	/** The row this entry belongs to, computed by the server over the whole inventory. */
+	group_key?: string;
 	memory_count: number | null;
 	origin_devices?: Array<{ device_id: string; display_name: string | null }>;
 	session_count: number;
@@ -674,6 +679,8 @@ export interface ProjectScopeInventoryResult {
 	has_more: boolean;
 	/** Empty Projects left out by `include_empty: false`. Older servers omit it. */
 	hidden_empty_count?: number;
+	/** Entries without a usable Project name left out by `include_empty: false`. */
+	hidden_unnamed_count?: number;
 }
 
 export interface ProjectInvitePreviewProject {
@@ -2238,6 +2245,37 @@ export async function saveSharingDomainProjectMappings(input: {
 	}
 	if (!Array.isArray(payload?.mappings)) throw new Error("response missing mappings");
 	return payload.mappings;
+}
+
+/** Whether the bulk save would accept these mappings, from the server's own analysis. */
+export interface ProjectMappingBulkCheck {
+	accepted: boolean;
+	/** Warnings that need a confirmation the bulk save cannot carry. */
+	reviewWarnings: ProjectScopeGuardrailWarning[];
+}
+
+export async function checkSharingDomainProjectMappings(input: {
+	mappings: ProjectMappingBulkInput[];
+}): Promise<ProjectMappingBulkCheck> {
+	const resp = await fetch("/api/sync/sharing-domains/project-mappings/bulk/check", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
+	const { text, payload } = await readJsonPayload<{
+		accepted?: boolean;
+		error?: string;
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
+	}>(resp);
+	if (!resp.ok || typeof payload?.accepted !== "boolean") {
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return {
+		accepted: payload.accepted,
+		reviewWarnings: (payload.guardrail_warnings ?? []).filter(
+			(warning) => warning.requires_confirmation,
+		),
+	};
 }
 
 export async function deleteSharingDomainProjectMapping(

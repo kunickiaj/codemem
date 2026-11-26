@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { type Database, fromJson, toJson } from "./db.js";
 import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY, repositoryIdentityFromMetadata } from "./project.js";
-import { cleanProjectIdentity } from "./project-identity.js";
+import { cleanProjectIdentity, isMalformedProjectIdentity } from "./project-identity.js";
+import { projectInventoryGroupKeys, projectInventoryNameKey } from "./project-inventory-groups.js";
 import {
 	canonicalRepositoryProjectIdentity,
 	hasConflictingRepositoryMappings,
@@ -111,9 +112,20 @@ export type ProjectScopeInventoryStatus =
 	| "needs_attention"
 	| "received"
 	| "suggested"
-	| "unmapped";
+	| "unmapped"
+	| "unnamed";
 
 export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
+	/**
+	 * Whether another entry on this device has the same name. Sharing stays unavailable for
+	 * such an entry, as before, even when its row needs no review.
+	 */
+	ambiguous_name?: boolean;
+	/**
+	 * The row this entry belongs to, computed against every entry in the inventory, so it does
+	 * not depend on paging or filters. The UI groups rows by this key alone.
+	 */
+	group_key?: string;
 	memory_count: number | null;
 	origin_devices: Array<{ device_id: string }>;
 	session_count: number;
@@ -151,6 +163,8 @@ export interface ProjectScopeInventoryResult {
 	has_more: boolean;
 	/** Empty Projects that matched the other filters but were left out by `includeEmpty: false`. */
 	hidden_empty_count: number;
+	/** Entries without a usable Project name left out by `includeEmpty: false`. */
+	hidden_unnamed_count: number;
 }
 
 interface ProjectScopeSuggestion {
@@ -659,6 +673,7 @@ function inventoryStatuses(
 	}
 	if (project.mapping_id != null) statuses.add("explicitly_mapped");
 	if (hasWarningGuardrail(project)) statuses.add("needs_attention");
+	if (isUnusableProjectName(project)) statuses.add("unnamed");
 	return [...statuses].sort();
 }
 
@@ -2264,22 +2279,29 @@ export function listProjectScopeInventory(
 	);
 	appendMappingOnlyProjects(mappings, byIdentity, inventory, repositoryIdentityByWorkspace);
 
-	const withGuardrails = withCandidateGuardrails(inventory).map((project, index) => {
+	const counted = withCandidateGuardrails(inventory).map((project, index) => {
 		const original = inventory[index];
-		const counted = {
+		return {
 			...project,
 			memory_count: original?.memory_count ?? null,
 			session_count: original?.session_count ?? 0,
 		};
-		return { ...counted, statuses: inventoryStatuses(counted) };
 	});
+	const withGuardrails = withInventoryGuardrails(counted).map((project) => ({
+		...project,
+		statuses: inventoryStatuses(project),
+	}));
 
 	const matched = withGuardrails
 		.filter((project) => matchesInventoryFilters(project, options))
 		.toSorted(compareInventoryProjects);
-	const filtered = shouldPruneEmptyProjects(options)
-		? pruneEmptyProjects(matched, projectsWithActiveRecipients(db, repositoryIdentityByWorkspace))
+	const withRecipients = projectsWithActiveRecipients(db, repositoryIdentityByWorkspace);
+	const named = shouldHideUnnamedProjects(options)
+		? matched.filter((project) => !isHiddenUnnamedProject(project, withRecipients))
 		: matched;
+	const filtered = shouldPruneEmptyProjects(options)
+		? pruneEmptyProjects(named, withRecipients)
+		: named;
 
 	return {
 		projects: filtered.slice(offset, offset + limit),
@@ -2287,8 +2309,100 @@ export function listProjectScopeInventory(
 		limit,
 		offset,
 		has_more: offset + limit < filtered.length,
-		hidden_empty_count: matched.length - filtered.length,
+		hidden_empty_count: named.length - filtered.length,
+		hidden_unnamed_count: matched.length - named.length,
 	};
+}
+
+/**
+ * Inventory warnings differ from mapping guardrails in two ways. A Project that stays on this
+ * device is a normal state, shown as status text. A shared name needs review only between
+ * entries that form different rows: a different scope or a different repository identity.
+ */
+function withInventoryGuardrails<T extends ProjectScopeInventoryProject>(projects: T[]): T[] {
+	const groupKeys = projectInventoryGroupKeys(projects);
+	const byName = new Map<string, T[]>();
+	for (const project of projects) {
+		const name = projectInventoryNameKey(project);
+		if (name) byName.set(name, [...(byName.get(name) ?? []), project]);
+	}
+	return projects.map((project) => {
+		const ambiguousName = project.guardrail_warnings.some(
+			(warning) => warning.code === "basename_collision_review",
+		);
+		const kept = project.guardrail_warnings.filter(
+			(warning) =>
+				warning.code !== "unknown_project_local_only" &&
+				warning.code !== "basename_collision_review",
+		);
+		const name = projectInventoryNameKey(project);
+		const related = (name ? (byName.get(name) ?? []) : []).filter(
+			(other) => groupKeys.get(other) !== groupKeys.get(project),
+		);
+		const collision =
+			!project.read_only && related.length > 0 ? [basenameCollisionWarning(project, related)] : [];
+		return {
+			...project,
+			ambiguous_name: ambiguousName,
+			group_key: groupKeys.get(project),
+			guardrail_warnings: [...kept, ...collision],
+		};
+	});
+}
+
+function basenameCollisionWarning(
+	project: ProjectScopeCandidate,
+	related: ProjectScopeCandidate[],
+): ProjectScopeGuardrailWarning {
+	return withGuardrailConfirmationToken({
+		code: "basename_collision_review",
+		severity: "info",
+		message: `Another workspace is also named ${project.display_project}. Review the git remote or path before assigning a non-local Sharing domain.`,
+		requires_confirmation: true,
+		workspace_identity: project.workspace_identity,
+		related_workspace_identities: related.map((candidate) => candidate.workspace_identity),
+		related_projects: related.map((candidate) => candidate.display_project),
+	});
+}
+
+// Names that tools left behind instead of a Project name: a path separator or dot with nothing
+// around it, or an exception name such as `GitError:` that the capture-time check does not catch.
+const UNUSABLE_PROJECT_NAME = /^(?:[\\/.\s]*|[a-z]*error:.*)$/isu;
+
+/** Whether an entry's recorded name cannot be a Project name a person would recognize. */
+export function isUnusableProjectName(
+	project: Pick<ProjectScopeCandidate, "display_project" | "project">,
+): boolean {
+	const name = (project.project ?? project.display_project ?? "").trim();
+	return (
+		UNUSABLE_PROJECT_NAME.test(name) ||
+		isMalformedProjectIdentity(name) ||
+		name.startsWith(SYNC_BOOTSTRAP_CWD_PREFIX)
+	);
+}
+
+/**
+ * The default list hides unnamed and empty entries. Each filter lists its own hidden entries
+ * again, and an entry that is both stays reachable through either, so every entry a hidden
+ * count includes can be revealed.
+ */
+const REVEALING_STATUSES = new Set(["empty", "unnamed"]);
+
+function shouldHideUnnamedProjects(options: ProjectScopeInventoryOptions): boolean {
+	return options.includeEmpty === false && !REVEALING_STATUSES.has(options.status ?? "");
+}
+
+/** An unnamed entry leaves the default list only when nothing about it needs a decision. */
+function isHiddenUnnamedProject(
+	project: ProjectScopeInventoryProject,
+	withRecipients: ReadonlySet<string>,
+): boolean {
+	return (
+		project.statuses.includes("unnamed") &&
+		!hasWarningGuardrail(project) &&
+		project.mapping_id == null &&
+		!withRecipients.has(project.workspace_identity)
+	);
 }
 
 function matchesInventoryFilters(
@@ -2322,7 +2436,7 @@ function compareInventoryProjects(
 }
 
 function shouldPruneEmptyProjects(options: ProjectScopeInventoryOptions): boolean {
-	return options.includeEmpty === false && options.status !== "empty";
+	return options.includeEmpty === false && !REVEALING_STATUSES.has(options.status ?? "");
 }
 
 /**
@@ -2345,19 +2459,6 @@ function projectsWithActiveRecipients(
 			canonicalRepositoryProjectIdentity(repositoryIdentities, identity),
 		]),
 	);
-}
-
-/**
- * The group a Project's row belongs to in the Projects table. Keep this rule identical to
- * projectClusterKey in packages/ui/src/tabs/projects/project-view.ts; both have tests
- * pinned to the same three cases.
- */
-export function projectInventoryGroupKey(
-	project: Pick<ProjectScopeInventoryProject, "git_remote" | "project" | "workspace_identity">,
-): string {
-	if (project.git_remote) return `git:${project.git_remote}`;
-	if (project.project) return `project:${project.project}`;
-	return `identity:${project.workspace_identity}`;
 }
 
 /**
@@ -2390,14 +2491,10 @@ function pruneEmptyProjects(
 	const prunable = new Set(
 		projects.filter((project) => isPrunableEmptyProject(project, withRecipients)),
 	);
-	const listedGroups = new Set(
-		projects
-			.filter((project) => !prunable.has(project))
-			.map((project) => projectInventoryGroupKey(project)),
-	);
-	return projects.filter(
-		(project) => !prunable.has(project) || listedGroups.has(projectInventoryGroupKey(project)),
-	);
+	const groupOf = (project: ProjectScopeInventoryProject) =>
+		project.group_key ?? `identity:${project.workspace_identity}`;
+	const listedGroups = new Set(projects.filter((project) => !prunable.has(project)).map(groupOf));
+	return projects.filter((project) => !prunable.has(project) || listedGroups.has(groupOf(project)));
 }
 
 function projectRowsForScopeReassignment(db: Database): ProjectScopeCandidateRow[] {

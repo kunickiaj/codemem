@@ -43,6 +43,7 @@ vi.mock("../lib/api", () => ({
 	resolveRecipientPolicyReview: vi.fn(),
 	resolveRecipientPolicyReviewBulk: vi.fn(),
 	saveSharingDomainProjectMappings: vi.fn(),
+	checkSharingDomainProjectMappings: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
 		guardrailWarnings: Array<{ code?: string; message: string }>;
@@ -72,6 +73,7 @@ vi.mock("./sync/sync-dialogs", () => ({ openSyncInputDialog: vi.fn() }));
 import * as api from "../lib/api";
 import type {
 	LegacyTeamSetupSummaryResponseV1,
+	ProjectMappingBulkCheck,
 	ProjectScopeInventoryProject,
 	ProjectScopeInventoryResult,
 	RecipientPolicyIntentGraphV1,
@@ -105,7 +107,24 @@ function inventoryPage(
 	};
 }
 
+/**
+ * A row key as the server would send it. Tests that care about grouping pass `group_key`;
+ * others get one key per remote, name or identity.
+ */
+function fixtureGroupKey(project: ProjectScopeInventoryProject): string {
+	if (project.git_remote) return `git:${project.git_remote}`;
+	if (project.project) return `project:${project.project}`;
+	return `identity:${project.workspace_identity}`;
+}
+
 function project(
+	overrides: Partial<ProjectScopeInventoryProject> = {},
+): ProjectScopeInventoryProject {
+	const fields = projectFields(overrides);
+	return { group_key: fixtureGroupKey(fields), ...fields };
+}
+
+function projectFields(
 	overrides: Partial<ProjectScopeInventoryProject> = {},
 ): ProjectScopeInventoryProject {
 	return {
@@ -302,6 +321,11 @@ function buttonNamed(name: string, root: ParentNode = document): HTMLButtonEleme
 
 function setupProjectsTest() {
 	mountProjectsDom();
+	// The server accepts a group's Space unless a test says otherwise.
+	vi.mocked(api.checkSharingDomainProjectMappings).mockResolvedValue({
+		accepted: true,
+		reviewWarnings: [],
+	});
 	state.lastProjectCoordinatorAdminGroups = [
 		{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
 	];
@@ -1688,13 +1712,13 @@ describe("Projects cached recipient presentation", () => {
 		).toEqual(["/workspace/first"]);
 
 		resolveFirstLookup(inventoryPage());
-		// Each lookup checks the default list, then the No memories list.
+		// Each lookup checks the default list, then the No memories and No usable name lists.
 		await vi.waitFor(() =>
 			expect(
 				vi
 					.mocked(api.loadProjectScopeInventory)
 					.mock.calls.flatMap(([input]) => (input?.q ? [input.q] : [])),
-			).toEqual(["/workspace/first", "/workspace/first", "/workspace/second", "/workspace/second"]),
+			).toEqual([...Array(3).fill("/workspace/first"), ...Array(3).fill("/workspace/second")]),
 		);
 		await flushAsyncWork();
 	});
@@ -2005,6 +2029,8 @@ describe("Projects cached recipient presentation", () => {
 			{ include_empty: false, limit: 250, offset: 250, q: projectIdentity },
 			{ status: "empty", limit: 250, offset: 0, q: projectIdentity },
 			{ status: "empty", limit: 250, offset: 250, q: projectIdentity },
+			{ status: "unnamed", limit: 250, offset: 0, q: projectIdentity },
+			{ status: "unnamed", limit: 250, offset: 250, q: projectIdentity },
 		]);
 	});
 
@@ -2608,9 +2634,11 @@ describe("Projects cached recipient presentation", () => {
 				},
 			],
 		});
+		// A second checkout of the same repository: one row with two entries.
 		const sibling = project({
-			display_project: "codemem-docs",
-			project: "codemem-docs",
+			cwd: "/workspace/work/exampleco/codemem-docs",
+			display_project: "codemem",
+			project: "codemem",
 			workspace_identity: "git:https://git.example.invalid/exampleco/codemem-docs.git",
 			sharing: [],
 		});
@@ -2624,10 +2652,10 @@ describe("Projects cached recipient presentation", () => {
 		);
 		const rows = [...document.querySelectorAll<HTMLElement>("[data-project-workspace-identity]")];
 		const selectedRow = rows.find(
-			(row) => row.querySelector(".project-inventory-title")?.textContent === "codemem",
+			(row) => row.dataset.projectWorkspaceIdentity === selected.workspace_identity,
 		);
 		const siblingRow = rows.find(
-			(row) => row.querySelector(".project-inventory-title")?.textContent === "codemem-docs",
+			(row) => row.dataset.projectWorkspaceIdentity === sibling.workspace_identity,
 		);
 		expect(selectedRow?.querySelector(".project-sharing-summary")?.textContent).toContain("Brian");
 		expect(selectedRow?.querySelector(".project-sharing-summary")?.textContent).toContain("Alex");
@@ -3300,11 +3328,11 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("requires explicit cluster domain choice for mixed suggestions", async () => {
+		// Entries in different Spaces form separate rows, so the mix is in the suggestions.
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
 			inventoryPage([
 				project({ suggested_scope_id: "exampleco-work" }),
 				project({
-					resolved_scope_id: "personal",
 					suggested_scope_id: "personal",
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
@@ -4377,6 +4405,7 @@ describe("Projects inventory controller collision subscriptions", () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
 			inventoryPage([
 				project(),
+				// Received in its own Space, so it has its own row beside the local entry.
 				project({
 					cwd: null,
 					git_branch: null,
@@ -4384,6 +4413,7 @@ describe("Projects inventory controller collision subscriptions", () => {
 					identity_source: "workspace_id",
 					read_only: true,
 					read_only_reason: "peer_received",
+					resolved_scope_id: "peer-shared",
 					statuses: ["received"],
 					workspace_identity: identity,
 				}),
@@ -5172,5 +5202,172 @@ describe("Projects with no memories", () => {
 		await loadProjectsData();
 
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(expected);
+	});
+});
+
+describe("Projects rows for folder history", () => {
+	const folder = (workspace: string, groupKey: string, scope = "local-default") =>
+		project({
+			git_remote: null,
+			group_key: groupKey,
+			identity_source: "cwd",
+			resolved_scope_id: scope,
+			workspace_identity: workspace,
+		});
+	const rowSizes = () =>
+		getProjectsInventoryController()
+			.getViewModel()
+			.rows.map((row) => (row.kind === "cluster" ? row.projects.length : 1));
+
+	it("groups rows by the server's keys alone", async () => {
+		// Arrange: same names everywhere, but the server keyed the Team folder apart.
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(
+				[
+					project({ group_key: "group-api" }),
+					folder("/old/api-1", "group-api"),
+					folder("/old/api-2", "group-api"),
+					folder("/team/api", "group-team-api", "exampleco-work"),
+				],
+				{ hidden_unnamed_count: 4 },
+			),
+		);
+		initProjectsTab(() => {});
+
+		// Act
+		await loadProjectsData();
+
+		// Assert
+		expect(rowSizes()).toEqual([3, 1]);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
+			"4 projects · 4 without a usable name not shown",
+		);
+	});
+
+	it("keeps a page that shows part of a group as the server keyed it", async () => {
+		// Arrange: the repository entry is on another page. The server kept this page's two old
+		// folders apart, so they must not merge here even though they share a name and Space.
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(
+				inventoryPage(
+					[folder("/old/api-1", "group-api-repo-a"), folder("/old/api-2", "group-api-no-repo")],
+					{ has_more: true, total: 40 },
+				),
+			)
+			.mockResolvedValue(inventoryPage([], { offset: 250, total: 40 }));
+		initProjectsTab(() => {});
+
+		await loadProjectsData();
+
+		expect(rowSizes()).toEqual([1, 1]);
+	});
+
+	it("keeps a filtered list's entries in their server rows", async () => {
+		// Arrange: a search returns one entry of a three-entry group and one ungrouped entry.
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([folder("/old/api-1", "group-api"), folder("/other/api", "group-other")]),
+		);
+		initProjectsTab(() => {});
+
+		await loadProjectsData();
+
+		const rows = getProjectsInventoryController().getViewModel().rows;
+		expect(rowSizes()).toEqual([1, 1]);
+		expect(rows.map((row) => (row.kind === "project" ? row.project.group_key : row.key))).toEqual([
+			"group-api",
+			"group-other",
+		]);
+	});
+
+	it("keeps sharing unavailable for an entry whose name another entry uses", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ ambiguous_name: true })]),
+		);
+		initProjectsTab(() => {});
+
+		await loadProjectsData();
+
+		const [row] = getProjectsInventoryController().getViewModel().rows;
+		expect(row?.kind === "project" ? row.shareEligible : null).toBe(false);
+	});
+});
+
+describe("Saving a Space for a folded Project group", () => {
+	const folder = (workspace: string, groupKey: string) =>
+		project({
+			git_remote: null,
+			group_key: groupKey,
+			identity_source: "cwd",
+			workspace_identity: workspace,
+		});
+
+	it("offers a folded group's Save only after the server accepts the chosen Space", async () => {
+		// Arrange: the server would refuse a Team Space for this group, because the mapping
+		// analysis wants the shared name confirmed and a group save cannot confirm it.
+		let answer: ((value: ProjectMappingBulkCheck) => void) | undefined;
+		vi.mocked(api.checkSharingDomainProjectMappings).mockImplementation(({ mappings }) =>
+			mappings[0]?.scope_id === "exampleco-work"
+				? new Promise((resolve) => {
+						answer = resolve;
+					})
+				: Promise.resolve({ accepted: true, reviewWarnings: [] }),
+		);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ group_key: "group-api" }), folder("/old/api-1", "group-api")]),
+		);
+		await loadProjectsData();
+		const select = document.querySelector<HTMLSelectElement>(".project-inventory-cluster select");
+		const save = () =>
+			[...document.querySelectorAll("button")].find(
+				(button) => button.textContent === "Save Space for 2 Project entries",
+			) as HTMLButtonElement | undefined;
+		if (!select) throw new Error("cluster select missing");
+
+		await vi.waitFor(() =>
+			expect([...select.options].map((option) => option.value)).toContain("exampleco-work"),
+		);
+
+		// Act: choose the Team Space; the check is still running.
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+
+		// Assert: no Save while checking, then a review path once the server says no.
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain(
+				"Checking whether these entries can be saved together",
+			),
+		);
+		expect(save()?.disabled).toBe(true);
+		expect(api.checkSharingDomainProjectMappings).toHaveBeenCalledWith({
+			mappings: [
+				expect.objectContaining({ scope_id: "exampleco-work" }),
+				expect.objectContaining({ scope_id: "exampleco-work", workspace_identity: "/old/api-1" }),
+			],
+		});
+		answer?.({
+			accepted: false,
+			reviewWarnings: [
+				{
+					code: "basename_collision_review",
+					message: "Another workspace is also named api.",
+					requires_confirmation: true,
+					severity: "info",
+					workspace_identity: "/old/api-1",
+				},
+			],
+		});
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("Project match needs review."),
+		);
+		expect(save()?.disabled).toBe(true);
+		expect(document.body.textContent).toContain("Another workspace is also named api.");
+		expect(api.saveSharingDomainProjectMappings).not.toHaveBeenCalled();
+
+		// Act: a Space the server accepts enables Save.
+		select.value = "local-default";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+
+		// Assert
+		await vi.waitFor(() => expect(save()?.disabled).toBe(false));
 	});
 });

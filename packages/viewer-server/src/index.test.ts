@@ -345,6 +345,14 @@ const syncRequestCases = {
 				mappings: [{ workspace_identity: "project", scope_id: "scope" }],
 			}),
 	),
+	checkSharingDomainProjectMappings: syncRequestCase(
+		"POST",
+		"/api/sync/sharing-domains/project-mappings/bulk/check",
+		() =>
+			syncApi.checkSharingDomainProjectMappings({
+				mappings: [{ workspace_identity: "project", scope_id: "scope" }],
+			}),
+	),
 	deleteSharingDomainProjectMapping: syncRequestCase(
 		"DELETE",
 		"/api/sync/sharing-domains/project-mappings/1",
@@ -2381,7 +2389,7 @@ describe("viewer-server", () => {
 			for (const [, request] of cases)
 				outcomes.push(...(await Promise.allSettled([request.invoke()])));
 			expect(exportedWrappers.sort()).toEqual(Object.keys(syncRequestCases).sort());
-			expect(cases).toHaveLength(60);
+			expect(cases).toHaveLength(61);
 			expect(fetchMock).toHaveBeenCalledTimes(cases.length);
 			expect(outcomes.map((outcome) => outcome.status)).toEqual(cases.map(() => "rejected"));
 			expect(requests).toEqual(cases.map(([, { method, path }]) => ({ method, path })));

@@ -846,6 +846,49 @@ function mappingGuardrailChallenge(
 	};
 }
 
+type BulkProjectMappingRefusal = {
+	status: 400 | 409;
+	body: Record<string, unknown>;
+};
+
+/**
+ * Whether the bulk mapping save accepts these mappings. It cannot carry confirmations, so any
+ * warning that requires one refuses it, and the person saves those entries one at a time.
+ */
+function bulkProjectMappingVerdict(
+	store: MemoryStore,
+	mappingInputs: ReturnType<typeof parseViewerProjectMappingInputs>,
+	deviceId: string,
+): { refusal: BulkProjectMappingRefusal | null; warnings: ProjectScopeGuardrailWarning[] } {
+	const analyses = analyzeProjectScopeMappingChangesGuardrails(
+		store.db,
+		mappingInputs.map((input) => ({ ...input, deviceId })),
+	);
+	const warnings = analyses.flatMap((analysis) => analysis.warnings);
+	const unmapped = analyses.find((analysis) =>
+		analysis.requested_workspace_identity?.startsWith("unmapped:"),
+	);
+	if (unmapped) {
+		return {
+			warnings,
+			refusal: {
+				status: 400,
+				body: {
+					error: "unmapped_project_local_only",
+					message:
+						"Unmapped projects need a stable path, git remote, or workspace id before assigning a Sharing domain.",
+					guardrail_warnings: unmapped.warnings,
+				},
+			},
+		};
+	}
+	const missing = analyses.flatMap((analysis) =>
+		missingGuardrailConfirmations(analysis.warnings, []),
+	);
+	if (missing.length === 0) return { refusal: null, warnings };
+	return { warnings, refusal: { status: 409, body: mappingGuardrailChallenge(warnings, missing) } };
+}
+
 function parseViewerProjectMappingInput(body: Record<string, unknown>) {
 	const id = optionalViewerInteger(body, "id");
 	const priority = optionalViewerInteger(body, "priority");
@@ -1337,9 +1380,13 @@ function resolveProjectInviteSelection(
 	return requestedIds.map((projectId) => {
 		const project = byIdentity.get(projectId);
 		if (!project) throw new Error("project_selection_unknown");
-		const ambiguous = project.guardrail_warnings.some(
-			(warning) => warning.code === "basename_collision_review" && warning.requires_confirmation,
-		);
+		// Any other entry with the same name makes the selection ambiguous, whether or not the
+		// inventory asks for review between the two rows.
+		const ambiguous =
+			project.ambiguous_name === true ||
+			project.guardrail_warnings.some(
+				(warning) => warning.code === "basename_collision_review" && warning.requires_confirmation,
+			);
 		if (ambiguous) throw new Error("project_selection_ambiguous");
 		if (
 			project.read_only ||
@@ -8107,45 +8154,38 @@ export function syncRoutes(
 			const mappingInputs = parseViewerProjectMappingInputs(body);
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-			const analyses = analyzeProjectScopeMappingChangesGuardrails(
-				store.db,
-				mappingInputs.map((input) => ({ ...input, deviceId })),
-			);
-			const unmapped = analyses.find((analysis) =>
-				analysis.requested_workspace_identity?.startsWith("unmapped:"),
-			);
-			if (unmapped) {
-				return c.json(
-					{
-						error: "unmapped_project_local_only",
-						message:
-							"Unmapped projects need a stable path, git remote, or workspace id before assigning a Sharing domain.",
-						guardrail_warnings: unmapped.warnings,
-					},
-					400,
-				);
-			}
-			const missingConfirmations = analyses.flatMap((analysis) =>
-				missingGuardrailConfirmations(analysis.warnings, []),
-			);
-			if (missingConfirmations.length > 0) {
-				return c.json(
-					mappingGuardrailChallenge(
-						analyses.flatMap((analysis) => analysis.warnings),
-						missingConfirmations,
-					),
-					409,
-				);
-			}
+			const verdict = bulkProjectMappingVerdict(store, mappingInputs, deviceId);
+			if (verdict.refusal) return c.json(verdict.refusal.body, verdict.refusal.status);
 			return c.json({
 				ok: true,
 				mappings: saveProjectMappingsAndWakePolicies(store, deviceId, mappingInputs),
-				guardrail_warnings: analyses.flatMap((analysis) => analysis.warnings),
+				guardrail_warnings: verdict.warnings,
 			});
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		} finally {
 			releasePublicationMutation?.();
+		}
+	});
+
+	// Answers whether the bulk save above would accept these mappings, using the same analysis,
+	// without writing anything. The Projects list asks before it offers a group assignment.
+	app.post("/api/sync/sharing-domains/project-mappings/bulk/check", async (c) => {
+		const store = getStore();
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json" }, 400);
+		try {
+			const mappingInputs = parseViewerProjectMappingInputs(body);
+			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+			const verdict = bulkProjectMappingVerdict(store, mappingInputs, deviceId);
+			return c.json({
+				ok: true,
+				accepted: verdict.refusal === null,
+				refusal: verdict.refusal?.body ?? null,
+				guardrail_warnings: verdict.warnings,
+			});
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}
 	});
 
