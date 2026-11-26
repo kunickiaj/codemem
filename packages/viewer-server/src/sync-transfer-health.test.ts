@@ -188,7 +188,8 @@ function importedContentSnapshot() {
 
 describe("signed scope rejection health", () => {
 	it.each([
-		{ rejection: "revoked sender membership", status: 403, reason: "stale_epoch" },
+		// A peer is not told whether its membership is stale, revoked or missing.
+		{ rejection: "revoked sender membership", status: 403, reason: "missing_scope" },
 		{ rejection: "explicit empty scope", status: 409, reason: "missing_scope" },
 	])(
 		"records $rejection without importing content and clears it on a valid retry",

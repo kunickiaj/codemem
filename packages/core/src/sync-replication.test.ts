@@ -4631,3 +4631,39 @@ describe("inbound scope rejection diagnostics", () => {
 		expect(listInboundScopeRejections(db, { limit: 10_000 })).toHaveLength(500);
 	});
 });
+
+describe("inbound op types this version does not know", () => {
+	it("are not recorded, so a later supported op with that id applies", () => {
+		// Arrange: a peer sends an op type this version cannot apply, under a chosen op id.
+		const db = new Database(":memory:");
+		try {
+			initTestSchemaWithPeers(db, ["dev-remote"]);
+			const op = (opType: string): ReplicationOp => ({
+				op_id: "future-op-id",
+				entity_type: "memory_item",
+				entity_id: "key:future-1",
+				op_type: opType,
+				payload_json: toJson({ kind: "discovery", title: "Remote memory", body_text: "Body" }),
+				clock_rev: 1,
+				clock_updated_at: "2026-01-01T00:00:00Z",
+				clock_device_id: "dev-remote",
+				device_id: "dev-remote",
+				created_at: "2026-01-01T00:00:00Z",
+				scope_id: null,
+			});
+
+			// Act
+			const skipped = applyReplicationOps(db, [op("future_op_type")], "dev-local");
+			const supported = applyReplicationOps(db, [op("upsert")], "dev-local");
+
+			// Assert: the unknown op wrote nothing and left no record marking the id applied.
+			expect(skipped).toMatchObject({ applied: 0, skipped: 1 });
+			expect(supported).toMatchObject({ applied: 1, skipped: 0 });
+			expect(
+				db.prepare("SELECT op_type FROM replication_ops WHERE op_id = 'future-op-id'").all(),
+			).toEqual([{ op_type: "upsert" }]);
+		} finally {
+			db.close();
+		}
+	});
+});
