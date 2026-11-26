@@ -17,6 +17,7 @@ import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
 import { managedProjectScopeId } from "./share-operation.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
+import { linkTeamToCoordinatorGroup } from "./team-member-removal-test-fixtures.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -2666,20 +2667,27 @@ describe("recipient-policy onboarding for a person removed from the Team", () =>
 	afterEach(() => db.close());
 
 	it("never restores a membership for a person removed from the Team", () => {
+		const team = linkTeamToCoordinatorGroup(db, {
+			candidateId: "candidate-linked",
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+		});
+		insertTeam(db, team, "Linked Team");
 		db.prepare(
 			`INSERT INTO policy_team_memberships(
 			 team_id, identity_id, role, status, provenance, revision, migration_state,
 			 idempotency_key, created_at, updated_at
-			 ) VALUES ('team-a', 'identity-b', 'member', 'revoked', 'reviewed_team_setup',
+			 ) VALUES (?, 'identity-b', 'member', 'revoked', 'reviewed_team_setup',
 			 'setup-r1', 'completed', 'setup-owned-membership', ?, ?)`,
-		).run(NOW, NOW);
+		).run(team, NOW, NOW);
 		applyTeamMemberRemovals(db, {
 			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
 			removals: [
 				{
 					group_id: "group-a",
-					team_id: "team-a",
+					team_id: team,
 					identity_id: "identity-b",
 					removal_seq: 1,
 					removed_at: NOW,
@@ -2692,7 +2700,7 @@ describe("recipient-policy onboarding for a person removed from the Team", () =>
 			journey: "team",
 			invitationId: "invite-removed-member",
 			identityId: "identity-b",
-			teamId: "team-a",
+			teamId: team,
 		});
 		const preview = previewRecipientPolicyOnboarding(db, request);
 
@@ -2707,9 +2715,9 @@ describe("recipient-policy onboarding for a person removed from the Team", () =>
 			db
 				.prepare(
 					`SELECT status, provenance FROM policy_team_memberships
-					 WHERE team_id = 'team-a' AND identity_id = 'identity-b'`,
+					 WHERE team_id = ? AND identity_id = 'identity-b'`,
 				)
-				.get(),
+				.get(team),
 		).toEqual({ status: "revoked", provenance: "reviewed_team_setup" });
 	});
 });

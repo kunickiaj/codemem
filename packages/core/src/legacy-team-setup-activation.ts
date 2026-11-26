@@ -550,6 +550,7 @@ function loadModel(
 	const removedIdentityIds = removedTeamMemberIdentityIds(
 		db,
 		deterministicPolicyTeamId(draft.candidate_id),
+		{ settingUpFrom: { coordinatorId: draft.coordinator_id, groupId: draft.group_id } },
 	);
 	const desiredIdentityIds = desiredSetupMembers(devices, removedIdentityIds);
 	if (desiredIdentityIds.some((identityId) => !activeIdentityIds.has(identityId))) {

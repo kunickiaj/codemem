@@ -971,7 +971,7 @@ export function ensurePolicyTeamMemberRemovalsTable(db: Database): void {
 		removed_at TEXT NOT NULL,
 		removed_by_device_id TEXT,
 		recorded_at TEXT NOT NULL,
-		PRIMARY KEY(team_id, identity_id)
+		PRIMARY KEY(coordinator_id, group_id, team_id, identity_id)
 	)`);
 }
 

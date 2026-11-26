@@ -173,7 +173,11 @@ describe("recording a Team member removal on this machine", () => {
 	it("revokes the removed membership and keeps every other member", () => {
 		const result = remove(source, removal("identity-c"));
 
-		expect(result).toEqual({ recorded: 1, revoked: [{ teamId: TEAM, identityId: "identity-c" }] });
+		expect(result).toEqual({
+			recorded: 1,
+			revoked: [{ teamId: TEAM, identityId: "identity-c" }],
+			ignored: [],
+		});
 		expect(memberships(source)).toEqual([
 			{ identity_id: "identity-a", status: "reviewed_active" },
 			{ identity_id: "identity-b", status: "reviewed_active" },
@@ -215,6 +219,7 @@ describe("recording a Team member removal on this machine", () => {
 		expect(remove(source, removal("identity-c", { removal_seq: 9 }))).toEqual({
 			recorded: 0,
 			revoked: [],
+			ignored: [],
 		});
 		expect(recoveryState(source)).toEqual(before);
 	});
@@ -237,6 +242,45 @@ describe("recording a Team member removal on this machine", () => {
 		remove(source, removal("identity-c"));
 
 		expect(discover(source)[0]?.status).toBe("ready");
+	});
+});
+
+describe("a removal from a group that did not set up the Team", () => {
+	const foreign = (identityId: string) =>
+		removal(identityId, { group_id: "group-other" }) as TeamMemberRemovalRecord;
+	const removeFromOtherGroup = (db: Db) =>
+		applyTeamMemberRemovals(db, {
+			coordinatorId: COORDINATOR,
+			groupId: "group-other",
+			removals: [foreign("identity-c")],
+			now: NOW,
+		});
+
+	it("leaves the member of an existing Team in place and reports the record as ignored", () => {
+		const result = removeFromOtherGroup(source);
+
+		expect(result).toEqual({
+			recorded: 1,
+			revoked: [],
+			ignored: [{ teamId: TEAM, identityId: "identity-c" }],
+		});
+		expect(memberships(source)).toContainEqual({
+			identity_id: "identity-c",
+			status: "reviewed_active",
+		});
+		expect(isTeamMemberRemoved(source, TEAM, "identity-c")).toBe(false);
+	});
+
+	it("does not keep the person out of a Team set up later from its own group", async () => {
+		removeFromOtherGroup(target);
+
+		await apply(target);
+
+		expect(memberships(target)).toContainEqual({
+			identity_id: "identity-c",
+			status: "reviewed_active",
+		});
+		expect(isTeamMemberRemoved(target, TEAM, "identity-c")).toBe(false);
 	});
 });
 
