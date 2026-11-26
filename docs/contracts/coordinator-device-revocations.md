@@ -829,6 +829,40 @@ to learn `removal_seq`. The reply becomes
   of statements that take the entries as one JSON parameter, so 25 entries stay
   within D1's per-request query budget.
 
+- The reply also carries `key_evidence: { "removed": [...], "enrolled": [...] }`.
+  It looks at the key each entry was sent with, and only at devices related to
+  the caller: the device ID and that key are, or were, enrolled together in a
+  group where the caller has an enabled enrollment under the key it signed with,
+  and that group is not archived. These are the groups whose enabled devices
+  peer discovery would show the caller. The lookup reads them in its own
+  snapshot, and only while the enrollment the request was authenticated with is
+  still enabled under the key the signature was verified with and its group is
+  not archived. Otherwise the reply has no key evidence. An ID is in `key_evidence.removed` when
+  an active tombstone of such a group holds the ID and the sent key, and no
+  enrollment in any group still has that key. An ID is in
+  `key_evidence.enrolled` when an enabled enrollment of such a group holds the
+  ID and the sent key, and every entry the request sent for that ID matched.
+  Both lists state only positive facts. An ID in neither list has no evidence,
+  which never means "not removed" or "not enrolled": entries sent without a key,
+  devices unrelated to the caller and revoked IDs are always left out. Both
+  lists are sorted and hold only requested IDs, and every ID in
+  `key_evidence.enrolled` is also in `enrolled`. Coordinators from before this
+  field omit it, and clients from before it ignore it. The evidence never turns
+  a reply into an error: a caller the evidence cannot use, such as a legacy
+  device ID longer than 256 characters, and an evidence read that breaks its
+  contract both get the legacy fields with empty `key_evidence`.
+
+`key_evidence` tells apart a device that has an older key removed everywhere and
+a current key still enrolled in a group the caller shares with it. The ID-based
+arrays list such a device as both removed and enrolled, because the tombstone
+matches by device ID. The evidence pairs an ID with a key only through a group
+the caller is in. It is not limited to those groups in every respect:
+`key_evidence.removed` also states that no enrollment of that key survives in
+any group, including groups the caller is not in. The legacy arrays already
+answer such questions about any key, coordinator-wide: `enrolled` says whether
+any enrollment has the key and `removed` whether a removal of it has no
+surviving enrollment. The legacy arrays keep their meaning.
+
 A client that decides how to remove a device treats an entry as absent from the
 coordinator only when a 200 reply lists it in none of the three arrays. A failed
 or missing reply is no answer, and the client then changes nothing.
