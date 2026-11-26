@@ -5,6 +5,7 @@ import {
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
+import { mappingsHoldProject, readScopeMappings } from "./scope-project-mappings.js";
 import { teamMemberRemovalsForDevice } from "./team-member-removal-lookup.js";
 
 /*
@@ -39,16 +40,14 @@ interface StoredProjectEvidence {
 	metadata_json: string | null;
 }
 
-/** Every Project the scope holds, canonical, from its mappings and its stored memories. */
-function projectsHeldByScope(db: Database, scopeId: string): Set<string> {
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+/** The Projects, canonical, whose memories the scope already stores. */
+function projectsStoredInScope(
+	db: Database,
+	scopeId: string,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): Set<string> {
 	const canonical = (value: string | null): string[] =>
 		value ? [canonicalRepositoryProjectIdentity(repositoryIdentities, value)] : [];
-	const mappings = db
-		.prepare(
-			"SELECT workspace_identity, project_pattern FROM project_scope_mappings WHERE scope_id = ?",
-		)
-		.all(scopeId) as Array<{ workspace_identity: string | null; project_pattern: string }>;
 	// Each session's own repository evidence counts, because the global alias map
 	// leaves out a checkout path that held more than one repository.
 	const stored = db
@@ -60,12 +59,8 @@ function projectsHeldByScope(db: Database, scopeId: string): Set<string> {
 			 WHERE memory.scope_id = ?`,
 		)
 		.all(scopeId) as StoredProjectEvidence[];
-	return new Set([
-		...mappings.flatMap((row) => [
-			...canonical(row.workspace_identity),
-			...canonical(row.project_pattern),
-		]),
-		...stored.flatMap((row) => [
+	return new Set(
+		stored.flatMap((row) => [
 			...canonical(row.project),
 			...canonical(row.cwd),
 			...canonical(row.session_project),
@@ -77,7 +72,7 @@ function projectsHeldByScope(db: Database, scopeId: string): Set<string> {
 				}),
 			),
 		]),
-	]);
+	);
 }
 
 function policyAuthorizes(db: Database, projectId: string, deviceId: string): boolean {
@@ -94,11 +89,16 @@ export function teamMemberRemovalRefusesScope(
 	const removals = teamMemberRemovalsForDevice(db, input.deviceId);
 	if (removals.length === 0) return false;
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	const held = projectsHeldByScope(db, input.scopeId);
+	const canonical = (value: string) =>
+		canonicalRepositoryProjectIdentity(repositoryIdentities, value);
+	const mappings = readScopeMappings(db, input.scopeId);
+	const stored = projectsStoredInScope(db, input.scopeId, repositoryIdentities);
+	const held = (projectId: string) =>
+		stored.has(canonical(projectId)) ||
+		mappingsHoldProject(mappings, new Set([projectId, canonical(projectId)]), canonical);
 	return removals.some(({ teamId }) =>
-		teamProjects(db, teamId).some((projectId) => {
-			const canonical = canonicalRepositoryProjectIdentity(repositoryIdentities, projectId);
-			return held.has(canonical) && !policyAuthorizes(db, projectId, input.deviceId);
-		}),
+		teamProjects(db, teamId).some(
+			(projectId) => held(projectId) && !policyAuthorizes(db, projectId, input.deviceId),
+		),
 	);
 }

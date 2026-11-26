@@ -286,6 +286,28 @@ describe("sync admission after a Team member removal", () => {
 		expect(admitted("reused-path-scope", REMOVED)).toBe(false);
 	});
 
+	it.each([
+		["refuses", "https://git.example.invalid/team/*", false],
+		["keeps", "https://git.example.invalid/other/*", true],
+	])("%s a scope mapped only by the pattern %s", async (_verb, pattern, served) => {
+		scope("pattern-scope");
+		row("project_scope_mappings", {
+			workspace_identity: null,
+			project_pattern: pattern,
+			scope_id: "pattern-scope",
+			priority: 0,
+			source: "user",
+			created_at: NOW,
+			updated_at: NOW,
+		});
+		await refreshTestScopeRows(db);
+
+		remove();
+
+		expect(admitted("pattern-scope", REMOVED)).toBe(served);
+		expect(admitted("pattern-scope", STAYING)).toBe(true);
+	});
+
 	it("does not refuse anything for a removal from another group", () => {
 		const result = remove("group-b");
 

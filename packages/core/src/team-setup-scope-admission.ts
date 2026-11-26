@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { mappingsHoldProject, readScopeMappings } from "./scope-project-mappings.js";
 
 /**
  * Scope admission for devices tied to a reviewed Team setup, decided from the
@@ -6,7 +7,8 @@ import type { Database } from "./db.js";
  *
  * A device is refused a scope when all of these hold now:
  * - the scope holds a Project of a reviewed setup Team: a setup target, a
- *   current mapping of any provenance, or stored memories from that Project;
+ *   current mapping of any provenance (an exact one, or a pattern-only one that
+ *   matches the Project), or stored memories from that Project;
  * - the device is tied to that Team: bound to a Team member in any binding
  *   state, or reviewed in the Team's setup. This device is never refused;
  * - the Team is quarantined (inactive, needing setup), or it is active and its
@@ -61,12 +63,6 @@ const SETUP_TARGET_SQL = `SELECT 1 FROM legacy_team_setup_draft_projects AS proj
 	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
 	WHERE draft.candidate_id = ? AND project.target_scope_id = ? LIMIT 1`;
 
-const MAPPED_SQL = `SELECT 1 FROM project_scope_mappings
-	WHERE scope_id = ? AND (
-	  workspace_identity IN (SELECT value FROM json_each(?))
-	  OR project_pattern IN (SELECT value FROM json_each(?))
-	) LIMIT 1`;
-
 // Memories stored in the scope from a session of one of the Projects.
 const STORED_SQL = `SELECT 1 FROM memory_items AS memory
 	JOIN sessions AS session ON session.id = memory.session_id
@@ -102,8 +98,9 @@ function scopeHoldsTeamProject(db: Database, team: SetupTeam, scopeId: string): 
 		.pluck()
 		.all(team.team_id, candidate, candidate) as string[];
 	if (identities.length === 0) return false;
+	if (mappingsHoldProject(readScopeMappings(db, scopeId), identities)) return true;
 	const json = JSON.stringify(identities);
-	return hasRow(db, MAPPED_SQL, scopeId, json, json) || hasRow(db, STORED_SQL, scopeId, json, json);
+	return hasRow(db, STORED_SQL, scopeId, json, json);
 }
 
 // Answers are reused until any connection commits or this one writes, so a sync
