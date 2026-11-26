@@ -1,6 +1,7 @@
 import { chmodSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import { testWorkerExecArgv } from "../core/test-worker-v8-flags.ts";
 
 function executableOutput() {
 	return {
@@ -55,6 +56,8 @@ export default defineConfig({
 	},
 	test: {
 		name: "cli",
+		// Core from source starts semantic worker threads; see test-worker-v8-flags.ts.
+		execArgv: testWorkerExecArgv(),
 		setupFiles: ["../core/src/test-environment-isolation.ts"],
 		exclude: [
 			"src/index.smoke.test.ts",

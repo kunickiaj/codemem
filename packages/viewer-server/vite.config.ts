@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import { testWorkerExecArgv } from "../core/test-worker-v8-flags.ts";
 
 // Library mode — SSR/Node target.
 // Externalizes @codemem/core, hono, and node: built-ins.
@@ -35,6 +36,8 @@ export default defineConfig({
 	},
 	test: {
 		name: "viewer-server",
+		// Core from source starts semantic worker threads; see test-worker-v8-flags.ts.
+		execArgv: testWorkerExecArgv(),
 		setupFiles: ["../core/src/test-environment-isolation.ts"],
 	},
 });

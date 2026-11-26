@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import preact from "@preact/preset-vite";
 import type { Rolldown } from "vite";
 import { configDefaults, defineConfig } from "vitest/config";
+import { testWorkerExecArgv } from "../core/test-worker-v8-flags.ts";
 import { ACCOUNT_DEV_PROXY_KEY, createAccountDevProxy } from "./src/lib/account-dev-proxy.ts";
 import { uiAliases } from "./ui-aliases.ts";
 
@@ -160,7 +161,8 @@ export default defineConfig(({ command, mode }) => {
 			// --localstorage-file. Vitest 4's jsdom environment does not replace a global that
 			// already exists, so tests would get Node's undefined instead of jsdom's storage.
 			// Turning Node's Web Storage off restores jsdom's; Node 24 has it off already.
-			execArgv: ["--no-experimental-webstorage"],
+			// testWorkerExecArgv: see ../core/test-worker-v8-flags.ts.
+			execArgv: ["--no-experimental-webstorage", ...testWorkerExecArgv()],
 			name: "ui",
 			setupFiles: ["../core/src/test-environment-isolation.ts", "./src/preact-frame-test-setup.ts"],
 			alias: unitTestAliases,
