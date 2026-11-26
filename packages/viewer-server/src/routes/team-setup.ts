@@ -15,8 +15,10 @@ import type {
 import {
 	applyLegacyTeamSetupCompletionManifest,
 	applyLegacyTeamSetupCompletionManifestAndReturnActivation,
+	applyTeamMemberRemovals,
 	areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible,
 	buildBaseUrl,
+	type CoordinatorTeamMemberRemoval,
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
 	claimRecipientPolicyActorMutations,
 	claimRecipientPolicyPublicationMutation,
@@ -28,6 +30,7 @@ import {
 	coordinatorListGroupsAction,
 	coordinatorListLegacyTeamCompletionsAction,
 	coordinatorListRemovedDevicesAction,
+	coordinatorListTeamMemberRemovalsAction,
 	deriveLegacyTeamSetupCompletionManifest,
 	deterministicPolicyTeamId,
 	discoverLegacyTeamCandidates,
@@ -239,10 +242,23 @@ function completionFailureHandlers(options: CompletionReconciliationOptions) {
 }
 
 // Neither failure proves divergence, so the active Team must not be contained.
+/**
+ * The group's Team member removals could not be read, so a completion is not
+ * applied in this pass: it might make a removed person a member again on a
+ * machine that has not recorded the removal. Nothing diverged.
+ */
+class TeamMemberRemovalsUnavailableError extends Error {
+	constructor(cause?: unknown) {
+		super("team_member_removals_unavailable", cause === undefined ? undefined : { cause });
+		this.name = "TeamMemberRemovalsUnavailableError";
+	}
+}
+
 function isNonDivergentApplyFailure(error: unknown): boolean {
 	return (
 		error instanceof LegacyTeamSetupAdditiveConvergenceError ||
-		error instanceof LegacyTeamSetupDeviceRemovalsUnavailableError
+		error instanceof LegacyTeamSetupDeviceRemovalsUnavailableError ||
+		error instanceof TeamMemberRemovalsUnavailableError
 	);
 }
 
@@ -334,6 +350,8 @@ export interface LegacyTeamCompletionDependencies {
 	get?: typeof coordinatorGetLegacyTeamCompletionAction;
 	list: typeof coordinatorListLegacyTeamCompletionsAction;
 	listRemovals?: typeof coordinatorListRemovedDevicesAction;
+	/** The group's Team member removals, read before any completion is applied. */
+	listTeamMemberRemovals?: typeof coordinatorListTeamMemberRemovalsAction;
 	/** The sync daemon's signed peer removal lookup, asked with this device's key. */
 	lookupPeerRemovals?: (
 		store: MemoryStore,
@@ -378,6 +396,7 @@ const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
 	get: coordinatorGetLegacyTeamCompletionAction,
 	list: coordinatorListLegacyTeamCompletionsAction,
 	listRemovals: coordinatorListRemovedDevicesAction,
+	listTeamMemberRemovals: coordinatorListTeamMemberRemovalsAction,
 	lookupPeerRemovals: lookupPeerRemovalsAsDaemon,
 };
 
@@ -390,6 +409,8 @@ type LookupCompletionPeerRemovals = () => Promise<LegacyTeamSetupPeerRemovalEvid
 interface CompletionRemovalReads {
 	listRemovals: ListCompletionRemovals;
 	lookupPeerRemovals: LookupCompletionPeerRemovals;
+	/** Undefined when no reader is configured. Throws when the read fails. */
+	listTeamMemberRemovals: (groupId: string) => Promise<CoordinatorTeamMemberRemoval[] | undefined>;
 }
 
 interface LegacyTeamSnapshotLoaderDependencies {
@@ -2204,8 +2225,50 @@ function completionReadActions(
 	const removalReads: CompletionRemovalReads = {
 		listRemovals,
 		lookupPeerRemovals: peerRemovalReader(dependencies, store, config),
+		listTeamMemberRemovals: async (groupId) => {
+			const read = dependencies.listTeamMemberRemovals;
+			if (!read) return undefined;
+			try {
+				return await read({ groupId, remoteUrl, adminSecret, timeoutS });
+			} catch (error) {
+				throw new TeamMemberRemovalsUnavailableError(error);
+			}
+		},
 	};
 	return { listCompletionRecords, removalReads };
+}
+
+/**
+ * What applying a completion needs from the coordinator: device removal
+ * evidence when an included device is missing, and always the group's Team
+ * member removals. A removal recorded on another admin device must be known
+ * before the completion runs, or applying it could make that person a member
+ * again. A failed removal read throws, so nothing is applied.
+ */
+async function readCompletionEvidence(
+	reads: CompletionRemovalReads,
+	groupId: string,
+	includedDeviceMissing: boolean,
+) {
+	const removalEvidence = includedDeviceMissing ? await readRemovalEvidence(reads) : {};
+	const teamMemberRemovals = await reads.listTeamMemberRemovals(groupId);
+	return { removalEvidence, teamMemberRemovals };
+}
+
+/** Records the group's Team member removals, then applies the completion. */
+async function applyCompletionAfterTeamMemberRemovals(
+	store: MemoryStore,
+	teamMemberRemovals: CoordinatorTeamMemberRemoval[] | undefined,
+	input: Parameters<typeof applyLegacyTeamSetupCompletionManifest>[1],
+) {
+	if (teamMemberRemovals)
+		applyTeamMemberRemovals(store.db, {
+			coordinatorId: input.coordinatorId,
+			groupId: input.groupId,
+			removals: teamMemberRemovals,
+			now: new Date().toISOString(),
+		});
+	await applyLegacyTeamSetupCompletionManifest(store.db, input);
 }
 
 async function readRemovalEvidence(reads: CompletionRemovalReads) {
@@ -2426,7 +2489,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		const missing = manifest.device_decisions.some(
 			(device) => device.decision === "included" && !freshIds.has(device.device_id),
 		);
-		const removalEvidence = missing ? await readRemovalEvidence(reads) : {};
+		const evidence = await readCompletionEvidence(reads, group.groupId, missing);
 		let outcome: "applied" | "unauthorized" = "unauthorized";
 		const ran = await runCandidateMutation(
 			store.db,
@@ -2434,12 +2497,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			() =>
 				serializeCanonicalManifestMutation(store, group.groupId, manifest, async (actorIds) => {
 					if (!stillAuthorizesGroup(authorization, group)) return;
-					await applyLegacyTeamSetupCompletionManifest(store.db, {
+					await applyCompletionAfterTeamMemberRemovals(store, evidence.teamMemberRemovals, {
 						coordinatorId: group.coordinatorId,
 						groupId: group.groupId,
 						manifest,
 						freshRoster,
-						...removalEvidence,
+						...evidence.removalEvidence,
 						recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(actorIds),
 					});
 					outcome = "applied";
