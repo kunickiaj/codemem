@@ -3510,6 +3510,68 @@ function insertLocalScopedOps(
 	}
 }
 
+/** Denies a device the scope, as a pending recipient policy revocation does. */
+function denyScopeToDevice(db: InstanceType<typeof Database>, scopeId: string, deviceId: string) {
+	putRecipientPolicyDenyOverlay(db, {
+		canonicalProjectIdentity: "git:acme/internal",
+		scopeId,
+		deviceId,
+		generation: 1,
+		reasonCode: "pending_revoke",
+		now: "2026-01-01T00:00:00Z",
+	});
+}
+
+/** Removes a device's retained coordinator proof for the scope. */
+function deleteScopeProof(db: InstanceType<typeof Database>, scopeId: string, deviceId: string) {
+	db.prepare(
+		"DELETE FROM scope_membership_authorization_evidence WHERE scope_id = ? AND device_id = ?",
+	).run(scopeId, deviceId);
+}
+
+/** A local move retraction: the old side tells the peer to drop its copy in `scopeId`. */
+function insertLocalRetraction(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+	deviceId: string,
+	index: number,
+): void {
+	const memoryId = `memory:moved-${index}`;
+	db.prepare(
+		`INSERT INTO replication_ops(
+			op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+			clock_updated_at, clock_device_id, device_id, created_at, scope_id
+		 ) VALUES (?, 'memory_item', ?, 'reassign_scope', ?, 1, ?, ?, ?, ?, ?)`,
+	).run(
+		`local-op-${index}`,
+		memoryId,
+		JSON.stringify({
+			operation_id: `move-${index}`,
+			memory_id: memoryId,
+			old_scope_id: scopeId,
+			new_scope_id: `${scopeId}-next`,
+			side: "old",
+			revision: 1,
+		}),
+		`2026-01-01T00:00:0${index}Z`,
+		deviceId,
+		deviceId,
+		`2026-01-01T00:00:0${index}Z`,
+		scopeId,
+	);
+}
+
+/** The op ids of each POST a mocked request function received, in order. */
+function postedOpIds(request: { mock: { calls: unknown[][] } }): string[][] {
+	return request.mock.calls
+		.filter(([method]) => method === "POST")
+		.map(([, , options]) =>
+			((options as { body?: { ops: Array<{ op_id: string }> } }).body?.ops ?? []).map(
+				(op) => op.op_id,
+			),
+		);
+}
+
 // Fixtures for a scoped peer that still advertises a Project this device withdrew from.
 const WITHDRAWN = (() => {
 	const SCOPE = "acme-work";
@@ -3758,27 +3820,11 @@ describe("syncOnce when the peer or this device loses access during a push", () 
 		],
 		[
 			"the peer is denied the Project",
-			(db: InstanceType<typeof Database>) =>
-				putRecipientPolicyDenyOverlay(db, {
-					canonicalProjectIdentity: "git:acme/internal",
-					scopeId: SCOPE,
-					deviceId: PEER,
-					generation: 1,
-					reasonCode: "pending_revoke",
-					now: "2026-01-01T00:00:00Z",
-				}),
+			(db: InstanceType<typeof Database>) => denyScopeToDevice(db, SCOPE, PEER),
 		],
 		[
 			"this device is denied the Project",
-			(db: InstanceType<typeof Database>) =>
-				putRecipientPolicyDenyOverlay(db, {
-					canonicalProjectIdentity: "git:acme/internal",
-					scopeId: SCOPE,
-					deviceId: LOCAL,
-					generation: 1,
-					reasonCode: "pending_revoke",
-					now: "2026-01-01T00:00:00Z",
-				}),
+			(db: InstanceType<typeof Database>) => denyScopeToDevice(db, SCOPE, LOCAL),
 		],
 		[
 			"this device's proof no longer matches its signing key",
@@ -3789,12 +3835,7 @@ describe("syncOnce when the peer or this device loses access during a push", () 
 		],
 		[
 			"this device loses its retained proof",
-			(db: InstanceType<typeof Database>) =>
-				db
-					.prepare(
-						"DELETE FROM scope_membership_authorization_evidence WHERE scope_id = ? AND device_id = ?",
-					)
-					.run(SCOPE, LOCAL),
+			(db: InstanceType<typeof Database>) => deleteScopeProof(db, SCOPE, LOCAL),
 		],
 	])("sends no later batch of a split push after %s", async (_case, endAccess) => {
 		// Arrange: three ops split into batches; access ends after the first batch lands.
@@ -3822,6 +3863,36 @@ describe("syncOnce when the peer or this device loses access during a push", () 
 			.filter(([method]) => method === "POST")
 			.map(([, , options]) => (options?.body as { ops: unknown[] } | undefined)?.ops.length);
 		expect(pushedOpCounts).toEqual([3, 1]);
+		expect(result.ok).toBe(false);
+	});
+
+	it("sends no later move retraction after this device loses access to the Project it moves from", async () => {
+		// Arrange: an upsert and a retraction from SCOPE, split into two requests.
+		syncReplication.setReplicationCursor(db, PEER, {
+			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
+		});
+		insertLocalScopedOps(db, SCOPE, LOCAL, [1]);
+		insertLocalRetraction(db, SCOPE, LOCAL, 2);
+		await grantProvenScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
+		const request = vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{ ...statusResponse, sync_capability: "enforcing", sync_features: ["reassign_scope"] },
+			])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockResolvedValueOnce([413, { error: "too_many_ops" }])
+			.mockImplementationOnce(async () => {
+				deleteScopeProof(db, SCOPE, LOCAL);
+				return [200, {}];
+			})
+			.mockResolvedValue([200, {}]);
+
+		// Act
+		const result = await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+		// Assert: the retraction went out only in the refused request.
+		expect(postedOpIds(request)).toEqual([["local-op-1", "local-op-2"], ["local-op-1"]]);
 		expect(result.ok).toBe(false);
 	});
 });
