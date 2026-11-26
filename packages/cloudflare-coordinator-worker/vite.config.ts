@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import { testWorkerExecArgv } from "../core/test-worker-v8-flags.ts";
 
 export default defineConfig({
 	resolve: {
@@ -31,6 +32,8 @@ export default defineConfig({
 	},
 	test: {
 		name: "cloudflare-coordinator-worker",
+		// Core from source starts semantic worker threads; see test-worker-v8-flags.ts.
+		execArgv: testWorkerExecArgv(),
 		setupFiles: ["../core/src/test-environment-isolation.ts"],
 		include: ["src/**/*.test.ts"],
 	},

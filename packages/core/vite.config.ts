@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import { testWorkerExecArgv } from "./test-worker-v8-flags.ts";
 
 export default defineConfig({
 	build: {
@@ -45,6 +46,8 @@ export default defineConfig({
 	},
 	test: {
 		name: "core",
+		// Core from source starts semantic worker threads; see test-worker-v8-flags.ts.
+		execArgv: testWorkerExecArgv(),
 		setupFiles: ["./src/test-environment-isolation.ts"],
 	},
 });
