@@ -2,6 +2,7 @@ import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import path from "node:path";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { configDefaults, defineConfig } from "vitest/config";
+import { TEST_CONFIG_TRIGGERS } from "../../scripts/test-rerun-triggers.mjs";
 
 export default defineConfig(async () => {
 	const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
@@ -65,7 +66,7 @@ export default defineConfig(async () => {
 			// selection (`--changed`) runs everything when they change.
 			forceRerunTriggers: [
 				...configDefaults.forceRerunTriggers,
-				"**/vitest.*.config.*",
+				...TEST_CONFIG_TRIGGERS,
 				"**/pnpm-lock.yaml",
 				"**/pnpm-workspace.yaml",
 				"**/tsconfig*.json",

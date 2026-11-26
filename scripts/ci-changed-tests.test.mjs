@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,6 +14,7 @@ import {
 	shardArgs,
 	supportImports,
 } from "./ci-changed-tests.mjs";
+import { TEST_CONFIG_TRIGGERS } from "./test-rerun-triggers.mjs";
 
 describe("expandScripts", () => {
 	it("expands nested same-package scripts into ordered commands", () => {
@@ -197,5 +199,75 @@ describe("main with a shard", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("test config changes", () => {
+	const root = fileURLToPath(new URL("..", import.meta.url));
+	// Vitest matches its forceRerunTriggers against absolute changed paths with picomatch.
+	const require = createRequire(createRequire(import.meta.url).resolve("vitest/package.json"));
+	const picomatch = require("picomatch");
+	const triggered = (patterns, path) => picomatch(patterns)(join(root, path));
+
+	it("run every test when a test config, setup file or the selection changes", () => {
+		for (const path of [
+			"vitest.config.ts",
+			"packages/core/vite.config.ts",
+			"packages/ui/vite.config.ts",
+			"packages/cloudflare-coordinator-worker/vitest.node.config.ts",
+			"packages/core/src/test-environment-isolation.ts",
+			"packages/ui/src/preact-frame-test-setup.ts",
+			"packages/ui/ui-aliases.ts",
+			"packages/core/test-worker-v8-flags.ts",
+			"scripts/ci-changed-tests.mjs",
+			"scripts/test-rerun-triggers.mjs",
+		])
+			assert.equal(triggered(TEST_CONFIG_TRIGGERS, path), true, path);
+	});
+
+	it("leave ordinary source and test files to import tracing", () => {
+		for (const path of [
+			"packages/core/src/store.ts",
+			"packages/core/src/store.test.ts",
+			"packages/ui/src/app.ts",
+			"scripts/release-version.mjs",
+		])
+			assert.equal(triggered(TEST_CONFIG_TRIGGERS, path), false, path);
+	});
+
+	it("cover every setup file and local module each test config loads", () => {
+		// Arrange: every Vitest config in the workspace and the files it names.
+		const configs = [
+			"vitest.config.ts",
+			...readdirSync(join(root, "packages")).flatMap((pkg) =>
+				readdirSync(join(root, "packages", pkg))
+					.filter((name) => /^(vite|vitest)(\..+)?\.config\.ts$/u.test(name))
+					.map((name) => `packages/${pkg}/${name}`),
+			),
+		];
+		const missing = [];
+		for (const config of configs) {
+			const source = readFileSync(join(root, config), "utf8");
+			// A config's own trigger list also counts, for files only that config loads.
+			const own = [...source.matchAll(/"(\*\*\/[^"]+)"/gu)].map((match) => match[1]);
+			const setup = [...source.matchAll(/setupFiles:\s*\[([^\]]*)\]/gu)].flatMap((match) =>
+				[...match[1].matchAll(/"([^"]+)"/gu)].map((file) => file[1]),
+			);
+			const imports = [...source.matchAll(/from\s+"(\.{1,2}\/[^"]+)"/gu)].map((match) => match[1]);
+			for (const file of [...setup, ...imports]) {
+				const path = join(dirname(config), file);
+				if (!triggered([...TEST_CONFIG_TRIGGERS, ...own], path)) missing.push(`${config}: ${file}`);
+			}
+		}
+
+		// Assert
+		assert.ok(configs.length > 10, "expected the workspace's test configs");
+		assert.deepEqual(missing, []);
+	});
+
+	it("are the root config's rerun triggers", () => {
+		const config = readFileSync(join(root, "vitest.config.ts"), "utf8");
+		assert.match(config, /\.\.\.TEST_CONFIG_TRIGGERS,/u);
+		assert.match(config, /from "\.\/scripts\/test-rerun-triggers\.mjs"/u);
 	});
 });

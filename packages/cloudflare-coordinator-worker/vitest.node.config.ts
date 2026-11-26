@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { configDefaults, defineConfig } from "vitest/config";
+import { TEST_CONFIG_TRIGGERS } from "../../scripts/test-rerun-triggers.mjs";
 
 export default defineConfig({
 	resolve: {
@@ -23,8 +24,7 @@ export default defineConfig({
 		// PR test selection (`--changed`) runs everything when one of these changes.
 		forceRerunTriggers: [
 			...configDefaults.forceRerunTriggers,
-			"**/vitest.*.config.*",
-			"**/test-environment-isolation.ts",
+			...TEST_CONFIG_TRIGGERS,
 			"**/pnpm-lock.yaml",
 			"**/pnpm-workspace.yaml",
 			"**/tsconfig*.json",
