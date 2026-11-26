@@ -9,12 +9,15 @@ import {
 	createMemoryDiagnosticsCommand,
 	estimateBenchmarkAttemptCost,
 	forgetMemoryCommand,
+	formatBenchmarkReasoningEffort,
+	formatTransmittedReasoningEffort,
 	memoryCommand,
 	reconcileExtractionBenchmarkStatus,
 	rememberMemoryCommand,
 	resolveOpenAIResponsesOverride,
 	showMemoryCommand,
 	summarizeBenchmarkReasoning,
+	summarizeBenchmarkReasoningReport,
 	summarizeExtractionBenchmarkAttempts,
 	summarizeExtractionBenchmarkReporting,
 } from "./memory.js";
@@ -224,6 +227,73 @@ describe("extraction diagnostics options", () => {
 		expect(longs).toContain("--all-projects");
 		expect(longs).toContain("--limit");
 		expect(longs).toContain("--json");
+	});
+});
+
+describe("replay reasoning effort labels", () => {
+	it.each([
+		[
+			{
+				reasoningEffort: "high",
+				requestedReasoningEffort: "high",
+				reasoningEffortFallbackReason: null,
+			},
+			"high",
+		],
+		[
+			{
+				reasoningEffort: null,
+				requestedReasoningEffort: null,
+				reasoningEffortFallbackReason: null,
+			},
+			"not transmitted",
+		],
+		[
+			{
+				reasoningEffort: null,
+				requestedReasoningEffort: "max",
+				reasoningEffortFallbackReason: "variant not listed for model",
+			},
+			"not transmitted (requested max; variant not listed for model)",
+		],
+	])("labels %j as %s", (observer, label) => {
+		expect(formatTransmittedReasoningEffort(observer)).toBe(label);
+	});
+});
+
+describe("benchmark reasoning effort fallbacks", () => {
+	const run = (applied: string | null, fellBack: boolean) => ({
+		reasoningEffort: applied,
+		reasoningSummary: null,
+		requestedReasoningEffort: "xhigh",
+		reasoningEffortFallbackApplied: fellBack,
+		reasoningEffortFallbackReason: fellBack ? "variant not listed for model" : null,
+	});
+
+	it("reports what was requested and how many runs used the service default", () => {
+		const summary = summarizeBenchmarkReasoningReport([run(null, true), run(null, true)], {
+			reasoningEffort: "xhigh",
+			reasoningSummary: null,
+		});
+
+		expect(summary).toEqual({
+			reasoningEffort: null,
+			reasoningSummary: null,
+			requestedReasoningEffort: "xhigh",
+			reasoningEffortFallbackRuns: 2,
+		});
+		expect(formatBenchmarkReasoningEffort(summary)).toBe(
+			"not transmitted (requested xhigh; 2 run(s) used the service default)",
+		);
+	});
+
+	it("labels an applied effort without a fallback note", () => {
+		const summary = summarizeBenchmarkReasoningReport([run("xhigh", false)], {
+			reasoningEffort: "xhigh",
+			reasoningSummary: null,
+		});
+
+		expect(formatBenchmarkReasoningEffort(summary)).toBe("xhigh");
 	});
 });
 

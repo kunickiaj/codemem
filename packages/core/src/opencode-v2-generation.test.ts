@@ -1,6 +1,10 @@
 import { Service } from "@opencode/client/service";
-import { afterEach, expect, it, vi } from "vitest";
-import { generateWithOpenCodeV2, listOpenCodeV2Models } from "./opencode-v2-generation.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	clearOpenCodeV2ModelVariantCache,
+	generateWithOpenCodeV2,
+	listOpenCodeV2Models,
+} from "./opencode-v2-generation.js";
 
 vi.mock("@opencode/client/service", () => ({
 	Service: {
@@ -61,7 +65,7 @@ it.each(localServiceUrls)(
 		});
 
 		// Assert: only the request URL changes; service-owned auth stays intact.
-		expect(result).toEqual({ text: "OK", error: null });
+		expect(result).toEqual({ text: "OK", error: null, effort: null });
 		expect(fetcher).toHaveBeenCalledTimes(1);
 		const [url, options] = fetcher.mock.calls[0] ?? [];
 		expect(String(url)).toBe(`${requested}/api/experimental/generate`);
@@ -111,7 +115,11 @@ it.each(rejectedServiceUrls)(
 		const result = generateWithOpenCodeV2({ provider: "openai", model: "test", prompt: "OK" });
 
 		// Assert
-		await expect(result).resolves.toEqual({ text: null, error: "service_unavailable" });
+		await expect(result).resolves.toEqual({
+			text: null,
+			error: "service_unavailable",
+			effort: null,
+		});
 		expect(fetcher).not.toHaveBeenCalled();
 	},
 );
@@ -138,7 +146,7 @@ it("requests the exact provider/model through the service without exporting cred
 		model: "gpt-6-luna",
 		prompt: "Reply OK",
 	});
-	expect(result).toEqual({ text: "OK", error: null });
+	expect(result).toEqual({ text: "OK", error: null, effort: null });
 	const [url, options] = fetcher.mock.calls[0] ?? [];
 	expect(String(url)).toBe("http://127.0.0.1:9999/api/experimental/generate");
 	expect(JSON.parse(String(options?.body))).toEqual({
@@ -146,6 +154,103 @@ it("requests the exact provider/model through the service without exporting cred
 		prompt: "Reply OK",
 	});
 	expect(options?.headers).toHaveProperty("authorization", "Bearer test");
+});
+
+describe("reasoning effort variants", () => {
+	const catalog = () =>
+		new Response(
+			JSON.stringify({
+				data: [
+					{ providerID: "openai", id: "gpt-6-luna", variants: [{ id: "low" }, { id: "high" }] },
+					{ providerID: "anthropic", id: "claude-sonnet-4-6", variants: [{ id: "max" }] },
+					{ providerID: "openai", id: "plain" },
+				],
+			}),
+		);
+	const route = () =>
+		vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input) =>
+				new URL(String(input)).pathname === "/api/model"
+					? catalog()
+					: new Response(JSON.stringify({ data: { text: "OK" } })),
+			);
+	const generate = (provider: string, model: string, reasoningEffort: string) =>
+		generateWithOpenCodeV2({ provider, model, prompt: "Hi", reasoningEffort });
+	const catalogCalls = (fetcher: ReturnType<typeof route>) =>
+		fetcher.mock.calls.filter(([url]) => String(url).endsWith("/api/model")).length;
+	const sentModels = (fetcher: ReturnType<typeof route>) =>
+		fetcher.mock.calls
+			.filter(([url]) => String(url).endsWith("/api/experimental/generate"))
+			.map(([, options]) => JSON.parse(String(options?.body)).model);
+
+	beforeEach(() => {
+		clearOpenCodeV2ModelVariantCache();
+	});
+
+	it("sends a listed effort inside the model reference and reports it", async () => {
+		const fetcher = route();
+
+		const result = await generate("openai", "gpt-6-luna", "high");
+
+		expect(sentModels(fetcher)).toEqual([
+			{ providerID: "openai", id: "gpt-6-luna", variant: "high" },
+		]);
+		expect(result).toEqual({
+			text: "OK",
+			error: null,
+			effort: { attempted: "high", applied: "high", succeeded: true, fallbackReason: null },
+		});
+	});
+
+	it("answers every model from one catalog fetch", async () => {
+		const fetcher = route();
+
+		const efforts = [
+			(await generate("openai", "gpt-6-luna", "high")).effort,
+			(await generate("anthropic", "claude-sonnet-4-6", "max")).effort,
+			(await generate("openai", "plain", "high")).effort,
+		];
+
+		expect(catalogCalls(fetcher)).toBe(1);
+		expect(sentModels(fetcher).map((model) => model.variant)).toEqual(["high", "max", undefined]);
+		expect(efforts[2]).toEqual({
+			attempted: null,
+			applied: null,
+			succeeded: true,
+			fallbackReason: "variant_not_listed",
+		});
+	});
+
+	it("fetches the catalog again after ten minutes", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const fetcher = route();
+
+		await generate("openai", "gpt-6-luna", "high");
+		vi.advanceTimersByTime(10 * 60_000);
+		await generate("openai", "gpt-6-luna", "high");
+		vi.advanceTimersByTime(1);
+		await generate("openai", "gpt-6-luna", "high");
+
+		expect(catalogCalls(fetcher)).toBe(2);
+	});
+
+	it("does not cache an unavailable catalog", async () => {
+		const fetcher = route();
+		fetcher.mockImplementationOnce(async () => new Response("{}", { status: 503 }));
+
+		const first = await generate("openai", "gpt-6-luna", "high");
+		const second = await generate("openai", "gpt-6-luna", "high");
+
+		expect(first.effort).toEqual({
+			attempted: null,
+			applied: null,
+			succeeded: true,
+			fallbackReason: "variants_unavailable",
+		});
+		expect(second.effort?.applied).toBe("high");
+		expect(catalogCalls(fetcher)).toBe(2);
+	});
 });
 
 const unavailable = () =>
@@ -165,7 +270,7 @@ it("retries only pre-generation model selection failures until the cold catalog 
 		.mockResolvedValueOnce(new Response(JSON.stringify({ data: { text: "OK" } }), { status: 200 }));
 	const result = generateWithOpenCodeV2({ provider: "openai", model: "gpt-6-luna", prompt: "OK" });
 	await vi.advanceTimersByTimeAsync(10_000);
-	expect(await result).toEqual({ text: "OK", error: null });
+	expect(await result).toEqual({ text: "OK", error: null, effort: null });
 	expect(fetcher).toHaveBeenCalledTimes(2);
 	expect(fetcher.mock.calls[1]?.[1]?.body).toBe(fetcher.mock.calls[0]?.[1]?.body);
 });
@@ -181,10 +286,10 @@ it("does not retry an unrelated bad request or a model-selection error for a dif
 		.mockResolvedValueOnce(unavailable());
 	expect(
 		await generateWithOpenCodeV2({ provider: "openai", model: "gpt-6-luna", prompt: "OK" }),
-	).toEqual({ text: null, error: "request_failed" });
+	).toEqual({ text: null, error: "request_failed", effort: null });
 	expect(
 		await generateWithOpenCodeV2({ provider: "openai", model: "other", prompt: "OK" }),
-	).toEqual({ text: null, error: "request_failed" });
+	).toEqual({ text: null, error: "request_failed", effort: null });
 	expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
@@ -193,7 +298,7 @@ it("stops retrying a permanently unavailable model within a short deadline", asy
 	const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => unavailable());
 	const result = generateWithOpenCodeV2({ provider: "openai", model: "gpt-6-luna", prompt: "OK" });
 	await vi.advanceTimersByTimeAsync(15_000);
-	expect(await result).toEqual({ text: null, error: "model_unavailable" });
+	expect(await result).toEqual({ text: null, error: "model_unavailable", effort: null });
 	expect(fetcher.mock.calls.length).toBeGreaterThan(1);
 	expect(fetcher.mock.calls.length).toBeLessThanOrEqual(6);
 });
@@ -215,7 +320,7 @@ it.each([
 			prompt: "OK",
 		});
 		await vi.advanceTimersByTimeAsync(10_000);
-		expect(await result).toEqual({ text: null, error });
+		expect(await result).toEqual({ text: null, error, effort: null });
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	},
 );
@@ -228,6 +333,7 @@ it("rejects responses larger than the local byte budget", async () => {
 		{
 			text: null,
 			error: "response_too_large",
+			effort: null,
 		},
 	);
 });

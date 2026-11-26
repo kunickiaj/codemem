@@ -45,6 +45,7 @@ import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
 	type ObserverConfig,
+	type ObserverStatus,
 	type ObserverTokenUsage,
 } from "./observer-client.js";
 import {
@@ -213,6 +214,9 @@ export interface ExtractionReplayResult {
 		tierReasons: string[];
 		openaiUseResponses: boolean;
 		reasoningEffort: string | null;
+		requestedReasoningEffort: string | null;
+		reasoningEffortFallbackApplied: boolean;
+		reasoningEffortFallbackReason: string | null;
 		reasoningSummary: string | null;
 		maxOutputTokens: number | null;
 		temperature: number | null;
@@ -275,9 +279,61 @@ export interface ExtractionReplayObserverIdentity {
 	modelFallbackReason: string | null;
 	openaiUseResponses: boolean;
 	reasoningEffort: string | null;
+	requestedReasoningEffort: string | null;
+	reasoningEffortFallbackApplied: boolean;
+	reasoningEffortFallbackReason: string | null;
 	reasoningSummary: string | null;
 	maxOutputTokens: number | null;
 	temperature: number | null;
+}
+
+type TransmittedRequestSettings = Pick<
+	ExtractionReplayObserverIdentity,
+	| "reasoningEffort"
+	| "requestedReasoningEffort"
+	| "reasoningEffortFallbackApplied"
+	| "reasoningEffortFallbackReason"
+	| "reasoningSummary"
+	| "maxOutputTokens"
+	| "temperature"
+>;
+
+function replayTransport(status: ObserverStatus): string {
+	return status.auth.type === "codex_consumer" || status.auth.type === "anthropic_consumer"
+		? status.auth.type
+		: status.runtime;
+}
+
+/** The request settings a call transmitted; null means the transport did not send it. */
+function transmittedRequestSettings(
+	observer: ObserverClient,
+	status: ObserverStatus,
+	transport: string,
+): TransmittedRequestSettings {
+	if (transport === "opencode_v2") {
+		// The OpenCode service receives only the model, the prompt and a listed variant.
+		return {
+			reasoningEffort: status.actualReasoningEffort ?? null,
+			requestedReasoningEffort: status.requestedReasoningEffort ?? null,
+			reasoningEffortFallbackApplied: status.reasoningEffortFallbackApplied === true,
+			reasoningEffortFallbackReason: status.reasoningEffortFallbackReason ?? null,
+			reasoningSummary: null,
+			maxOutputTokens: null,
+			temperature: null,
+		};
+	}
+	const reportsRequestLimits = transport !== "codex_consumer";
+	const reportsReasoning = observer.openaiUseResponses || transport === "codex_consumer";
+	const reasoningEffort = reportsReasoning ? observer.reasoningEffort : null;
+	return {
+		reasoningEffort,
+		requestedReasoningEffort: reasoningEffort,
+		reasoningEffortFallbackApplied: false,
+		reasoningEffortFallbackReason: null,
+		reasoningSummary: reportsReasoning ? observer.reasoningSummary : null,
+		maxOutputTokens: reportsRequestLimits ? observer.maxOutputTokens : null,
+		temperature: reportsRequestLimits ? observer.temperature : null,
+	};
 }
 
 export function extractionReplayObserverIdentity(
@@ -288,12 +344,7 @@ export function extractionReplayObserverIdentity(
 	const model = status.modelFallbackApplied
 		? (status.actualModel ?? null)
 		: (status.actualModel ?? observer.model);
-	const transport =
-		status.auth.type === "codex_consumer" || status.auth.type === "anthropic_consumer"
-			? status.auth.type
-			: status.runtime;
-	const reportsRequestLimits = transport !== "codex_consumer";
-	const reportsReasoning = observer.openaiUseResponses || transport === "codex_consumer";
+	const transport = replayTransport(status);
 	return {
 		tier,
 		provider: observer.provider,
@@ -304,10 +355,7 @@ export function extractionReplayObserverIdentity(
 		modelFallbackApplied: status.modelFallbackApplied === true,
 		modelFallbackReason: status.modelFallbackReason ?? null,
 		openaiUseResponses: observer.openaiUseResponses,
-		reasoningEffort: reportsReasoning ? observer.reasoningEffort : null,
-		reasoningSummary: reportsReasoning ? observer.reasoningSummary : null,
-		maxOutputTokens: reportsRequestLimits ? observer.maxOutputTokens : null,
-		temperature: reportsRequestLimits ? observer.temperature : null,
+		...transmittedRequestSettings(observer, status, transport),
 	};
 }
 
@@ -777,13 +825,7 @@ async function replayPreparedBatch(
 		response.repaired?.usage ?? null,
 		secondAttempted,
 	);
-	const transport =
-		observerStatus.auth.type === "codex_consumer" ||
-		observerStatus.auth.type === "anthropic_consumer"
-			? observerStatus.auth.type
-			: observerStatus.runtime;
-	const reportsRequestLimits = transport !== "codex_consumer";
-	const reportsReasoning = observer.openaiUseResponses || transport === "codex_consumer";
+	const transport = replayTransport(observerStatus);
 
 	return {
 		scenario: {
@@ -809,10 +851,7 @@ async function replayPreparedBatch(
 			tier,
 			tierReasons,
 			openaiUseResponses: observer.openaiUseResponses,
-			reasoningEffort: reportsReasoning ? observer.reasoningEffort : null,
-			reasoningSummary: reportsReasoning ? observer.reasoningSummary : null,
-			maxOutputTokens: reportsRequestLimits ? observer.maxOutputTokens : null,
-			temperature: reportsRequestLimits ? observer.temperature : null,
+			...transmittedRequestSettings(observer, observerStatus, transport),
 			repairApplied: response.repairApplied,
 			requestedOutputMode: response.diagnostics.requestedMode,
 			actualOutputMode: response.diagnostics.actualMode,

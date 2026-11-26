@@ -38,8 +38,23 @@ export interface ObserverApplyPayload {
 		runtime: string;
 		authType: string;
 		tierRoutingEnabled?: boolean;
-		simple?: { provider: string; model: string; runtime: string; reasoningEffort: string | null };
-		rich?: { provider: string; model: string; runtime: string; reasoningEffort: string | null };
+		simple?: ObserverTierPreview;
+		rich?: ObserverTierPreview;
+	};
+}
+
+export interface ObserverTierPreview {
+	provider: string;
+	model: string;
+	runtime: string;
+	/** The configured effort. */
+	reasoningEffort: string | null;
+	/** What the last request did with that effort, when the connection reports it. */
+	appliedReasoning?: {
+		/** The effort a successful request used; null at the OpenCode default or on failure. */
+		effort: string | null;
+		requestSucceeded: boolean;
+		fallbackReason: "variant_not_listed" | "variants_unavailable" | "variant_rejected" | null;
 	};
 }
 

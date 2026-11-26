@@ -1,11 +1,26 @@
-import type { ObserverApplyPayload } from "../data/form-state";
+import type { ObserverApplyPayload, ObserverTierPreview } from "../data/form-state";
 
-type Tier = NonNullable<NonNullable<ObserverApplyPayload["active"]>["simple"]>;
+const FALLBACK_REASONS: Record<string, string> = {
+	variant_not_listed: "model doesn't offer it",
+	variants_unavailable: "model list unavailable",
+	variant_rejected: "OpenCode rejected it",
+};
 
-function tierLabel(tier: Tier | undefined): string {
+/** The configured effort, then what the last request applied, or that it failed, when the connection reports it. */
+function reasoningLabel(tier: ObserverTierPreview | undefined): string {
+	if (!tier?.reasoningEffort) return "";
+	const requested = ` · Requested reasoning: ${tier.reasoningEffort}`;
+	const applied = tier.appliedReasoning;
+	if (!applied) return requested;
+	if (!applied.requestSucceeded) return `${requested} · Last request failed`;
+	if (applied.effort) return `${requested} · Applied: ${applied.effort}`;
+	const reason = applied.fallbackReason ? FALLBACK_REASONS[applied.fallbackReason] : undefined;
+	return `${requested} · Applied: OpenCode default${reason ? ` (${reason})` : ""}`;
+}
+
+function tierLabel(tier: ObserverTierPreview | undefined): string {
 	if (!tier) return "Not available";
-	const effort = tier.reasoningEffort ? ` · ${tier.reasoningEffort} reasoning` : "";
-	return `${tier.provider} · ${tier.model}${effort}`;
+	return `${tier.provider} · ${tier.model}${reasoningLabel(tier)}`;
 }
 
 function ActiveRouting({ active }: { active: NonNullable<ObserverApplyPayload["active"]> }) {
@@ -29,6 +44,7 @@ function ActiveRouting({ active }: { active: NonNullable<ObserverApplyPayload["a
 						<dt>All requests</dt>
 						<dd>
 							{active.provider} · {active.model}
+							{reasoningLabel(active.simple)}
 						</dd>
 					</div>
 				</dl>

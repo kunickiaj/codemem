@@ -46,7 +46,7 @@ import {
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
 import { parseObserverSSE } from "./observer-sse.js";
-import { generateWithOpenCodeV2 } from "./opencode-v2-generation.js";
+import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,42 @@ export interface ObserverStatus {
 	actualModel?: string | null;
 	modelFallbackApplied?: boolean;
 	modelFallbackReason?: string | null;
+	/** OpenCode service only: the configured reasoning effort. */
+	requestedReasoningEffort?: string | null;
+	/** OpenCode service only: the variant the last request sent first, or null. */
+	attemptedReasoningEffort?: string | null;
+	/** OpenCode service only: the variant a successful last request used; null at the default or on failure. */
+	actualReasoningEffort?: string | null;
+	/** OpenCode service only: whether the last request succeeded; null before one reached the service. */
+	reasoningEffortRequestSucceeded?: boolean | null;
+	/** A successful last request used the service default instead of the requested effort. */
+	reasoningEffortFallbackApplied?: boolean;
+	reasoningEffortFallbackReason?: V2EffortReport["fallbackReason"];
+	/** The last routed request's effort per tier, when tier routing uses separate clients. */
+	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
 	lastError?: { code: string; message: string } | null;
+}
+
+/** Lengths-free summary of what one request did with the configured reasoning effort. */
+export type ObserverEffortStatus = Pick<
+	ObserverStatus,
+	| "requestedReasoningEffort"
+	| "attemptedReasoningEffort"
+	| "actualReasoningEffort"
+	| "reasoningEffortRequestSucceeded"
+	| "reasoningEffortFallbackApplied"
+	| "reasoningEffortFallbackReason"
+>;
+
+function effortStatus(status: ObserverStatus): ObserverEffortStatus {
+	return {
+		requestedReasoningEffort: status.requestedReasoningEffort ?? null,
+		attemptedReasoningEffort: status.attemptedReasoningEffort ?? null,
+		actualReasoningEffort: status.actualReasoningEffort ?? null,
+		reasoningEffortRequestSucceeded: status.reasoningEffortRequestSucceeded ?? null,
+		reasoningEffortFallbackApplied: status.reasoningEffortFallbackApplied === true,
+		reasoningEffortFallbackReason: status.reasoningEffortFallbackReason ?? null,
+	};
 }
 
 interface ObserverConfigKeyMapping {
@@ -1606,6 +1641,8 @@ export class ObserverClient {
 	private _sidecarModelFallbackReason: string | null = null;
 	private _codexSidecarModelFallbackApplied = false;
 	private _codexSidecarModelFallbackReason: string | null = null;
+	private _openCodeV2Effort: V2EffortReport | null = null;
+	private readonly _tierEfforts: Partial<Record<"simple" | "rich", ObserverEffortStatus>> = {};
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1879,15 +1916,7 @@ export class ObserverClient {
 				hasToken: !!this.auth.token,
 			},
 		};
-		if (this.runtime === "claude_sidecar") {
-			status.actualModel = this._lastResolvedModel;
-			status.modelFallbackApplied = this._sidecarModelFallbackApplied;
-			status.modelFallbackReason = this._sidecarModelFallbackReason;
-		} else if (this.runtime === "codex_sidecar") {
-			status.actualModel = this._lastResolvedModel;
-			status.modelFallbackApplied = this._codexSidecarModelFallbackApplied;
-			status.modelFallbackReason = this._codexSidecarModelFallbackReason;
-		}
+		Object.assign(status, this._requestedVersusActualStatus());
 		if (this._lastErrorMessage) {
 			status.lastError = {
 				code: this._lastErrorCode ?? "observer_error",
@@ -1895,6 +1924,44 @@ export class ObserverClient {
 			};
 		}
 		return status;
+	}
+
+	/** What the last request applied, for runtimes that can fall back from the configured value. */
+	private _requestedVersusActualStatus(): Partial<ObserverStatus> {
+		if (this.runtime === "claude_sidecar") {
+			return {
+				actualModel: this._lastResolvedModel,
+				modelFallbackApplied: this._sidecarModelFallbackApplied,
+				modelFallbackReason: this._sidecarModelFallbackReason,
+			};
+		}
+		if (this.runtime === "codex_sidecar") {
+			return {
+				actualModel: this._lastResolvedModel,
+				modelFallbackApplied: this._codexSidecarModelFallbackApplied,
+				modelFallbackReason: this._codexSidecarModelFallbackReason,
+			};
+		}
+		const tiers =
+			Object.keys(this._tierEfforts).length > 0
+				? { tierReasoningEfforts: { ...this._tierEfforts } }
+				: {};
+		if (this.runtime !== "opencode_v2") return tiers;
+		const effort = this._openCodeV2Effort;
+		return {
+			requestedReasoningEffort: this.reasoningEffort,
+			attemptedReasoningEffort: effort?.attempted ?? null,
+			actualReasoningEffort: effort?.applied ?? null,
+			reasoningEffortRequestSucceeded: effort?.succeeded ?? null,
+			reasoningEffortFallbackApplied: effort?.succeeded === true && effort.fallbackReason !== null,
+			reasoningEffortFallbackReason: effort?.fallbackReason ?? null,
+			...tiers,
+		};
+	}
+
+	/** Keep a tier client's last effort outcome where this client's status can report it. */
+	recordTierStatus(tier: "simple" | "rich", status: ObserverStatus): void {
+		this._tierEfforts[tier] = effortStatus(status);
 	}
 
 	/** Force-refresh auth credentials. */
@@ -2383,11 +2450,15 @@ export class ObserverClient {
 		const model = this.model.toLowerCase().startsWith(prefix)
 			? this.model.slice(prefix.length)
 			: this.model;
+		this._openCodeV2Effort = null;
 		const result = await generateWithOpenCodeV2({
 			provider: this.provider,
 			model,
 			prompt: `${systemPrompt}\n\n${userPrompt}`,
+			...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
 		});
+		// Record only what the transport reports it sent.
+		this._openCodeV2Effort = result.effort;
 		if (result.error) {
 			const message = `OpenCode account request failed: ${result.error}. Check the OpenCode connection and selected model in Settings.`;
 			this._setLastError(message, result.error);
@@ -2395,6 +2466,7 @@ export class ObserverClient {
 			// service must not require replaying an already-advanced stream cursor.
 			throw new ObserverAuthError(message, { code: result.error, message });
 		}
+		// The service returns the text only, so these requests report no token usage.
 		return emptyCallResult(result.text);
 	}
 

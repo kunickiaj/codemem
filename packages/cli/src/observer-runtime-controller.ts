@@ -1,6 +1,7 @@
 import {
 	buildTieredObserverSelection,
 	type ObserverClient,
+	type ObserverStatus,
 	type RawEventSweeper,
 } from "@codemem/core";
 
@@ -8,8 +9,34 @@ type TierPreview = {
 	provider: string;
 	model: string;
 	runtime: string;
+	/** The configured effort. */
 	reasoningEffort: string | null;
+	/** What the last request for this tier did with it; absent before one reached the service. */
+	appliedReasoning?: {
+		/** The effort a successful request used; null at the service default or on failure. */
+		effort: string | null;
+		requestSucceeded: boolean;
+		fallbackReason: ObserverStatus["reasoningEffortFallbackReason"];
+	};
 };
+
+function appliedReasoning(
+	status:
+		| Pick<
+				ObserverStatus,
+				| "actualReasoningEffort"
+				| "reasoningEffortRequestSucceeded"
+				| "reasoningEffortFallbackReason"
+		  >
+		| undefined,
+): TierPreview["appliedReasoning"] {
+	if (status?.reasoningEffortRequestSucceeded == null) return undefined;
+	return {
+		effort: status.actualReasoningEffort ?? null,
+		requestSucceeded: status.reasoningEffortRequestSucceeded,
+		fallbackReason: status.reasoningEffortFallbackReason ?? null,
+	};
+}
 
 export type ObserverApplyStatus = {
 	state: "active" | "applying" | "failed";
@@ -53,11 +80,14 @@ export class ObserverRuntimeController {
 			const selected = config.observerTierRoutingEnabled
 				? buildTieredObserverSelection(config, { tier, observer: {}, reasons: [] }).observer
 				: config;
+			const last = config.observerTierRoutingEnabled ? active.tierReasoningEfforts?.[tier] : active;
+			const applied = appliedReasoning(last);
 			return {
 				provider: selected.observerProvider ?? active.provider,
 				model: selected.observerModel ?? active.model,
 				runtime: selected.observerRuntime ?? active.runtime,
 				reasoningEffort: selected.observerReasoningEffort ?? null,
+				...(applied ? { appliedReasoning: applied } : {}),
 			};
 		};
 		return {
