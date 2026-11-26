@@ -45,6 +45,11 @@ import {
 	stripTrailingCommas,
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
+import {
+	budgetObserverPrompts,
+	DEFAULT_OBSERVER_MAX_CHARS,
+	type ObserverPromptBudget,
+} from "./observer-prompt-budget.js";
 import { parseObserverSSE } from "./observer-sse.js";
 import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
@@ -215,6 +220,8 @@ export interface ObserverStatus {
 	reasoningEffortFallbackReason?: V2EffortReport["fallbackReason"];
 	/** The last routed request's effort per tier, when tier routing uses separate clients. */
 	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
+	/** Lengths of the last call's instructions and content against `observer_max_chars`. */
+	promptBudget?: ObserverPromptBudget | null;
 	lastError?: { code: string; message: string } | null;
 }
 
@@ -669,7 +676,7 @@ export function loadObserverConfig(
 		observerReasoningEffort: null,
 		observerReasoningSummary: null,
 		observerMaxOutputTokens: null,
-		observerMaxChars: 12_000,
+		observerMaxChars: DEFAULT_OBSERVER_MAX_CHARS,
 		observerMaxTokens: 4_000,
 		observerHeaders: {},
 		observerAuthSource: "auto",
@@ -1549,21 +1556,8 @@ function nowMs(): number {
 	return Date.now();
 }
 
-function clipObserverPrompts(
-	systemPrompt: string,
-	userPrompt: string,
-	maxChars: number,
-): { system: string; user: string } {
-	const minUserBudget = Math.floor(maxChars * 0.25);
-	const systemBudget = Math.max(0, maxChars - minUserBudget);
-	const system = (
-		systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt
-	).toWellFormed();
-	const userBudget = Math.max(minUserBudget, maxChars - system.length);
-	const user = (
-		userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt
-	).toWellFormed();
-	return { system, user };
+function copyPromptBudget(budget: ObserverPromptBudget | null): ObserverPromptBudget | null {
+	return budget ? { ...budget } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1643,6 +1637,8 @@ export class ObserverClient {
 	private _codexSidecarModelFallbackReason: string | null = null;
 	private _openCodeV2Effort: V2EffortReport | null = null;
 	private readonly _tierEfforts: Partial<Record<"simple" | "rich", ObserverEffortStatus>> = {};
+	private _lastPromptBudget: ObserverPromptBudget | null = null;
+	private _reportedOverBudgetInstructionChars: number | null = null;
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1915,6 +1911,7 @@ export class ObserverClient {
 				type: method,
 				hasToken: !!this.auth.token,
 			},
+			promptBudget: copyPromptBudget(this._lastPromptBudget),
 		};
 		Object.assign(status, this._requestedVersusActualStatus());
 		if (this._lastErrorMessage) {
@@ -2000,8 +1997,7 @@ export class ObserverClient {
 	 */
 	async observe(systemPrompt: string, userPrompt: string): Promise<ObserverResponse> {
 		const startedAt = nowMs();
-		// Enforce configured prompt-length cap (matches Python behavior)
-		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
+		const clipped = this._budgetPrompts(systemPrompt, userPrompt);
 
 		if (this.runtime === "claude_sidecar") {
 			this._lastResolvedModel = this._sidecarModel;
@@ -2017,6 +2013,30 @@ export class ObserverClient {
 		);
 		if (call.raw) this._clearLastError();
 		return this._buildResponse(call, startedAt, authRetry);
+	}
+
+	/**
+	 * Fit a call into `observer_max_chars` without cutting its instructions. Instructions
+	 * longer than the whole budget are a configuration error: log it once per length and
+	 * still send them in full.
+	 */
+	private _budgetPrompts(
+		systemPrompt: string,
+		userPrompt: string,
+	): { system: string; user: string } {
+		const { system, user, budget } = budgetObserverPrompts(systemPrompt, userPrompt, this.maxChars);
+		this._lastPromptBudget = budget;
+		if (
+			budget.instructionsOverBudget &&
+			this._reportedOverBudgetInstructionChars !== budget.instructionChars
+		) {
+			this._reportedOverBudgetInstructionChars = budget.instructionChars;
+			console.warn(
+				`[codemem] Observer instructions are ${budget.instructionChars} characters, more than ` +
+					`observer_max_chars (${budget.maxChars}). They are sent in full; raise observer_max_chars.`,
+			);
+		}
+		return { system, user };
 	}
 
 	private async _callWithAuthRetry<T extends ObserverCallResult>(
@@ -2095,7 +2115,7 @@ export class ObserverClient {
 		schema: Record<string, unknown>,
 	): Promise<ObserverStructuredJsonResponse> {
 		const startedAt = nowMs();
-		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
+		const clipped = this._budgetPrompts(systemPrompt, userPrompt);
 		if (this.usesOpenAIStructuredOutputs()) {
 			if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 				this._initProvider(true);

@@ -13,6 +13,7 @@ import {
 import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
+import { DEFAULT_OBSERVER_MAX_CHARS, observerContentBudget } from "./observer-prompt-budget.js";
 
 // ---------------------------------------------------------------------------
 // Constants — prompt fragments matching Python's observer_prompts.py
@@ -481,7 +482,7 @@ export function buildObserverRepairPrompt(
 	system: string,
 	user: string,
 	previousRaw: string,
-	maxChars = 12_000,
+	maxChars = DEFAULT_OBSERVER_MAX_CHARS,
 ): { system: string; user: string } {
 	const repairDirective =
 		"Your previous reply was invalid because it did not follow the required XML-only schema. " +
@@ -491,10 +492,8 @@ export function buildObserverRepairPrompt(
 		"For that observation, copy the entire previous reply into <narrative>; use single-clause phrases from it for <title>, <subtitle>, and <fact>; preserve negation words; " +
 		"use only the fixed concept taxonomy and file paths that literally appear in the previous reply. Do not include prose outside XML.";
 	const repairSystem = `${repairDirective}\n\n${system}`;
-	const minUserBudget = Math.floor(maxChars * 0.25);
-	const systemBudget = Math.max(0, maxChars - minUserBudget);
-	const clippedSystemLength = Math.min(repairSystem.length, systemBudget);
-	const userBudget = Math.max(minUserBudget, maxChars - clippedSystemLength);
+	// The observer sends these instructions whole, so the content gets what they leave.
+	const userBudget = observerContentBudget(maxChars, repairSystem.length);
 	const previousPrefix = "Previous invalid response to rewrite as valid XML:\n";
 	const contextPrefix = "\n\nOriginal session context:\n";
 	const contentBudget = Math.max(0, userBudget - previousPrefix.length - contextPrefix.length);

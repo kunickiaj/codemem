@@ -9,7 +9,9 @@ import {
 	createMemoryDiagnosticsCommand,
 	estimateBenchmarkAttemptCost,
 	forgetMemoryCommand,
+	formatBenchmarkPromptBudget,
 	formatBenchmarkReasoningEffort,
+	formatPromptBudget,
 	formatTransmittedReasoningEffort,
 	memoryCommand,
 	reconcileExtractionBenchmarkStatus,
@@ -294,6 +296,45 @@ describe("benchmark reasoning effort fallbacks", () => {
 		});
 
 		expect(formatBenchmarkReasoningEffort(summary)).toBe("xhigh");
+	});
+});
+
+describe("prompt budget labels", () => {
+	const budget = {
+		maxChars: 12_000,
+		instructionChars: 10_419,
+		contentBudgetChars: 3_000,
+		contentChars: 8_100,
+		sentContentChars: 3_000,
+		contentClipped: true,
+		instructionsOverBudget: false,
+	};
+
+	it("labels one call's lengths", () => {
+		expect(formatPromptBudget(budget)).toBe(
+			"instructions 10419, content 8100 -> 3000 (clipped) of budget 12000",
+		);
+		expect(formatPromptBudget({ ...budget, instructionsOverBudget: true })).toContain(
+			"; instructions exceed the budget",
+		);
+		expect(formatPromptBudget(null)).toBe("not measured");
+	});
+
+	it("counts clipped runs across a benchmark", () => {
+		const unclipped = {
+			...budget,
+			contentChars: 2_000,
+			sentContentChars: 2_000,
+			contentClipped: false,
+		};
+
+		expect(
+			formatBenchmarkPromptBudget([
+				{ promptBudget: budget },
+				{ promptBudget: unclipped },
+				{ promptBudget: null },
+			]),
+		).toBe("12000; content clipped in 1/2 run(s); instructions over budget in 0");
 	});
 });
 

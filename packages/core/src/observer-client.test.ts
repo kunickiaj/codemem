@@ -1658,7 +1658,7 @@ describe("ObserverClient.observe()", () => {
 		}
 	});
 
-	it("truncates prompts to maxChars", async () => {
+	it("sends instructions whole and clips only the content to maxChars", async () => {
 		const observerApiKey = fixtureToken("truncate-prompts");
 		let capturedBody: Record<string, unknown> | undefined;
 
@@ -1702,7 +1702,7 @@ describe("ObserverClient.observe()", () => {
 		const systemMsg = input.find((m: Record<string, unknown>) => m.role === "developer");
 		const systemText = ((systemMsg?.content as Array<Record<string, unknown>> | undefined)?.[0]
 			?.text ?? "") as string;
-		expect(systemText.length).toBeLessThanOrEqual(100);
+		expect(systemText).toBe(longSystem);
 	});
 
 	it("retries once on auth error", async () => {
@@ -2220,8 +2220,8 @@ describe("ObserverClient.observeStructuredJson() failures", () => {
 			});
 
 			const input = payload?.input as Array<{ content: Array<{ text: string }> }>;
-			const promptLength = input.reduce((sum, message) => sum + message.content[0].text.length, 0);
-			expect(promptLength).toBe(client.maxChars);
+			const lengths = input.map((message) => message.content[0].text.length);
+			expect(lengths).toEqual([10_000, client.maxChars / 4]);
 		} finally {
 			globalThis.fetch = previousFetch;
 		}
