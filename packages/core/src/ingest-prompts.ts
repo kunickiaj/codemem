@@ -61,14 +61,18 @@ const SKIP_GUIDANCE = `Skip routine operations WITHOUT learnings:
 - Package installations with no errors or insights
 - Simple file reads with no discoveries
 - Repetitive operations already documented with no new findings
+- Reading notes, a handoff or other context and only acknowledging it
+- A request that could not be carried out and produced no result
+- Conversation unrelated to the project's work, with nothing to carry forward
 If nothing meaningful happened AND nothing was learned:
 - Output no <observation> blocks
-- Output <skip_summary reason="low-signal"/> instead of a <summary> block.`;
+- Output <skip_summary reason="low-signal"/> instead of a <summary> block.
+This rule holds however much observed content there is: more detail about routine activity is not a reason to write a summary.`;
 
 const WORTHINESS_GUIDANCE = `Observation worthiness policy:
 - Emit an <observation> only for a durable, reusable lesson such as a constraint, root cause, decision with rationale, or how-it-works insight.
 - When a durable lesson exists, emit it as an <observation>; do not leave it only in <summary>.
-- Routine status, review, setup, and workflow narration belongs only in <summary>.
+- Routine status, review, setup, and workflow narration belongs only in <summary>, and only when the batch also contains work worth summarizing.
 - Zero observations is valid when the session contains no durable lesson.`;
 
 const NARRATIVE_GUIDANCE = `Create narratives that tell the complete story:
@@ -120,7 +124,7 @@ const OUTPUT_GUIDANCE =
 	"Output only XML. Do not include commentary outside XML.\n\n" +
 	"Emit <observation> blocks only for content that passes the observation worthiness bar. " +
 	"Observations are the durable layer - they capture what was built, fixed, learned, or decided. " +
-	"Also emit a <summary> block to track session progress; the summary alone carries routine activity.\n\n" +
+	"Also emit a <summary> block to track session progress unless the skip rule above applies; the summary alone carries routine activity.\n\n" +
 	"For rich multi-thread sessions, prefer one broad summary plus a small set of durable observations covering the highest-value subthreads.\n\n" +
 	"For rich sessions, do not return summary-only output when multiple substantial durable subthreads are present.\n\n" +
 	"Do not collapse a rich batch into only the final or most recent thread when earlier threads produced durable decisions, learnings, or outcomes.\n\n" +
@@ -388,7 +392,11 @@ function buildObserverSystemPrompt(
 		systemBlocks.push("", OUTPUT_GUIDANCE, "", "Observation XML schema:", OBSERVATION_SCHEMA);
 	}
 	if (context.includeSummary && outputMode === "legacy_xml") {
-		systemBlocks.push("", "Summary XML schema:", SUMMARY_SCHEMA);
+		systemBlocks.push(
+			"",
+			"Summary XML schema (use it only when the skip rule does not apply):",
+			SUMMARY_SCHEMA,
+		);
 	} else if (context.includeSummary) {
 		systemBlocks.push("", SUMMARY_GUIDANCE, "", "Emit a summary unless status is skipped.");
 	} else if (outputMode === "json_schema") {

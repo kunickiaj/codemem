@@ -130,7 +130,7 @@ const DEFAULTS: ConfigData = {
 	observer_auth_timeout_ms: 1500,
 	observer_auth_cache_ttl_s: 300,
 	observer_headers: {},
-	observer_max_chars: 12000,
+	observer_max_chars: 24000,
 	pack_observation_limit: 50,
 	pack_session_limit: 10,
 	sync_enabled: false,

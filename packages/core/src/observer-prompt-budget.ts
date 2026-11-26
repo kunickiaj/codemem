@@ -4,7 +4,7 @@
  */
 
 /** Default `observer_max_chars`, shared by the observer client, ingest and replay. */
-export const DEFAULT_OBSERVER_MAX_CHARS = 12_000;
+export const DEFAULT_OBSERVER_MAX_CHARS = 24_000;
 
 /**
  * The lowest `observer_max_chars` the configuration accepts. Its quarter-budget content
