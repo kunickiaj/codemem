@@ -9,7 +9,11 @@ import {
 	ENROLLMENT_REMOVAL_TRIGGER_NAMES,
 	ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS,
 } from "./coordinator-device-removal.js";
-import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
+import { removalDeviceKey } from "./coordinator-device-removal-test-harness.js";
+import {
+	deleteEnrollmentWithoutTombstone,
+	seedEnrollment,
+} from "./coordinator-enrollment-test-fixtures.js";
 
 export interface PeerRemovalApiFixture {
 	store: Store;
@@ -96,10 +100,13 @@ async function signedPost(
 		},
 	});
 }
-async function api(f: PeerRemovalApiFixture, rate: CoordinatorRequestRateLimitOptions = {}) {
+async function api(
+	f: PeerRemovalApiFixture,
+	rate: CoordinatorRequestRateLimitOptions = {},
+	deviceId = `${f.prefix}-caller`,
+) {
 	const { keys, publicKey } = await signingKey();
 	const groupId = `${f.prefix}-group`;
-	const deviceId = `${f.prefix}-caller`;
 	await f.store.createGroup(groupId);
 	await f.store.enrollDevice(groupId, { deviceId, publicKey, fingerprint: "fixture" });
 	const close = vi.spyOn(f.store, "close").mockResolvedValue();
@@ -155,6 +162,121 @@ export function registerPeerRemovalApiContract(test: Test) {
 	registerParsingAndRace(test);
 	registerLookupRace(test);
 	registerUnexpectedFailures(test);
+	registerCallerSnapshot(test);
+	registerUnsupportedCaller(test);
+}
+
+/** A peer enrolled in its own group, and the request that asks about it by its key. */
+async function sharedPeer(f: PeerRemovalApiFixture, name: string) {
+	const groupId = `${f.prefix}-${name}-group`;
+	const peer = {
+		groupId,
+		deviceId: `${f.prefix}-${name}-peer`,
+		...(await removalDeviceKey(`${f.prefix}-${name}`)),
+	};
+	await f.store.createGroup(groupId);
+	await seedEnrollment(f.exec, peer);
+	const body = JSON.stringify({
+		peers: [{ device_id: peer.deviceId, public_key: peer.publicKey }],
+	});
+	return { groupId, peer, body };
+}
+
+function registerCallerSnapshot(test: Test) {
+	test("a key rotation between admission and lookup leaves the old key no key evidence", async ({
+		fixture: f,
+	}) => {
+		const snapshot = f.store.lookupPeerRemovals.bind(f.store);
+		const c = await api(f);
+		// The old key is still enrolled in one other group; the replacement key in another.
+		const old = await sharedPeer(f, "old-key");
+		await f.store.enrollDevice(old.groupId, {
+			deviceId: c.deviceId,
+			publicKey: c.publicKey,
+			fingerprint: "fixture",
+		});
+		const replacement = await removalDeviceKey(`${f.prefix}-replacement`);
+		const other = await sharedPeer(f, "replacement");
+		await seedEnrollment(f.exec, { groupId: other.groupId, deviceId: c.deviceId, ...replacement });
+		const body = JSON.stringify({
+			peers: [...JSON.parse(old.body).peers, ...JSON.parse(other.body).peers],
+		});
+		c.lookup.mockImplementationOnce(async (input) => {
+			await deleteEnrollmentWithoutTombstone(
+				f.exec,
+				"group_id = ? AND device_id = ?",
+				c.groupId,
+				c.deviceId,
+			);
+			await seedEnrollment(f.exec, { groupId: c.groupId, deviceId: c.deviceId, ...replacement });
+			return snapshot(input);
+		});
+
+		const reply = await (await c.post(body)).json();
+
+		expect(reply).toMatchObject({
+			enrolled: [old.peer.deviceId, other.peer.deviceId].sort(),
+			key_evidence: { removed: [], enrolled: [] },
+		});
+	});
+
+	test("archiving the authenticating group between admission and lookup leaves no key evidence", async ({
+		fixture: f,
+	}) => {
+		const snapshot = f.store.lookupPeerRemovals.bind(f.store);
+		const c = await api(f);
+		const other = await sharedPeer(f, "other");
+		await f.store.enrollDevice(other.groupId, {
+			deviceId: c.deviceId,
+			publicKey: c.publicKey,
+			fingerprint: "fixture",
+		});
+		// While the authenticating group is current, the other shared group gives evidence.
+		expect(await (await c.post(other.body)).json()).toMatchObject({
+			key_evidence: { removed: [], enrolled: [other.peer.deviceId] },
+		});
+		c.lookup.mockImplementationOnce(async (input) => {
+			await f.store.archiveGroup(c.groupId);
+			return snapshot(input);
+		});
+
+		const reply = await (await c.post(other.body)).json();
+
+		expect(reply).toMatchObject({
+			enrolled: [other.peer.deviceId],
+			key_evidence: { removed: [], enrolled: [] },
+		});
+	});
+}
+
+function registerUnsupportedCaller(test: Test) {
+	test("a legacy caller whose ID the evidence does not support still gets the legacy reply", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f, {}, `${f.prefix}-${"long-legacy-id-".repeat(20)}`);
+		expect(c.deviceId.length).toBeGreaterThan(256);
+		const removed = {
+			groupId: c.groupId,
+			deviceId: `${f.prefix}-gone`,
+			...(await removalDeviceKey(`${f.prefix}-gone`)),
+		};
+		await seedEnrollment(f.exec, removed);
+		expect(await f.store.removeDevice(removed.groupId, removed.deviceId)).toBe(true);
+
+		const response = await c.post(
+			JSON.stringify({ peers: [{ device_id: removed.deviceId, public_key: removed.publicKey }] }),
+		);
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [removed.deviceId],
+			enrolled: [],
+			removal_seq: expect.any(Number),
+			key_evidence: { removed: [], enrolled: [] },
+		});
+	});
 }
 
 function registerRemovedCallerAdmission(test: Test) {
@@ -472,7 +594,7 @@ function registerRateAndReplay(test: Test) {
 		});
 	}
 }
-/** Each store result breaks the contract in one way, and each reply is the fixed unavailable one. */
+/** Each store result breaks a legacy field, and each reply is the fixed unavailable one. */
 async function rejectMalformedSnapshots(c: Awaited<ReturnType<typeof api>>) {
 	const noKeys = { removed: [], enrolled: [] };
 	c.lookup.mockResolvedValueOnce({
@@ -499,13 +621,26 @@ async function rejectMalformedSnapshots(c: Awaited<ReturnType<typeof api>>) {
 		key_evidence: noKeys,
 	});
 	await failed(await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] })));
+}
+
+/** Each store result breaks only the key evidence, and each reply keeps the legacy fields. */
+async function answerWithoutBrokenEvidence(c: Awaited<ReturnType<typeof api>>) {
+	const noKeys = { removed: [], enrolled: [] };
+	const legacyOnly = {
+		version: 1,
+		revoked: [],
+		removed: [],
+		enrolled: [],
+		removal_seq: 0,
+		key_evidence: noKeys,
+	};
 	c.lookup.mockResolvedValueOnce({
 		revoked: [],
 		removed: [],
 		enrolled: [],
 		removal_seq: 0,
 	} as never);
-	await failed(await c.post(EMPTY));
+	expect(await (await c.post(EMPTY)).json()).toEqual(legacyOnly);
 	c.lookup.mockResolvedValueOnce({
 		revoked: [],
 		removed: [],
@@ -513,7 +648,7 @@ async function rejectMalformedSnapshots(c: Awaited<ReturnType<typeof api>>) {
 		removal_seq: 0,
 		key_evidence: { removed: ["unrequested"], enrolled: [] },
 	});
-	await failed(await c.post(EMPTY));
+	expect(await (await c.post(EMPTY)).json()).toEqual(legacyOnly);
 	c.lookup.mockResolvedValueOnce({
 		revoked: [],
 		removed: [],
@@ -521,7 +656,9 @@ async function rejectMalformedSnapshots(c: Awaited<ReturnType<typeof api>>) {
 		removal_seq: 0,
 		key_evidence: { removed: [], enrolled: [c.deviceId] },
 	});
-	await failed(await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] })));
+	expect(
+		await (await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] }))).json(),
+	).toEqual(legacyOnly);
 }
 
 function registerReadFailures(test: Test) {
@@ -537,6 +674,7 @@ function registerReadFailures(test: Test) {
 		c.lookup.mockResolvedValueOnce({ revoked: [] } as never);
 		await failed(await c.post(EMPTY));
 		await rejectMalformedSnapshots(c);
+		await answerWithoutBrokenEvidence(c);
 		expect(c.close).toHaveBeenCalledTimes(9);
 	});
 	test("a blocked legacy row cannot become an empty complete answer", async ({ fixture: f }) => {

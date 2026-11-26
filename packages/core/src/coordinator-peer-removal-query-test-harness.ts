@@ -375,11 +375,11 @@ async function callerIn(f: RemovalFixture, ...groups: string[]) {
 	const caller = await target(f, "caller", first);
 	await enroll(f, caller);
 	for (const group of others) await enroll(f, { ...caller, groupId: `${f.prefix}-${group}` });
-	return { groupId: caller.groupId, deviceId: caller.deviceId };
+	return { groupId: caller.groupId, deviceId: caller.deviceId, publicKey: caller.key.publicKey };
 }
 const lookupAs = (
 	f: RemovalFixture,
-	caller: { groupId: string; deviceId: string },
+	caller: { groupId: string; deviceId: string; publicKey: string },
 	...peers: { deviceId: string; publicKey?: string }[]
 ) => f.store.lookupPeerRemovals({ peers, caller });
 

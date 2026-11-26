@@ -3803,7 +3803,7 @@ describe("POST /v1/peers/revocations", () => {
 				{ deviceId: "active", publicKey: "pk-active" },
 			],
 			// Key evidence is limited to devices related to this signed caller.
-			caller: { groupId: "g1", deviceId: caller.device_id },
+			caller: { groupId: "g1", deviceId: caller.device_id, publicKey: caller.public_key },
 		});
 		expect(store.fillEnrollmentKeyIds).toHaveBeenCalledWith({ limit: 200 });
 	});

@@ -91,21 +91,31 @@ function completeSnapshot(
 		!["revoked", "removed", "enrolled"].every((field) => validIds(value[field], requested))
 	)
 		throw new Error("peer_revocation_unavailable");
-	const evidence = value.key_evidence as Record<string, unknown> | null | undefined;
+	const result = raw as CoordinatorPeerRemovalLookupResult;
+	if (result.removed.some((id) => result.revoked.includes(id)))
+		throw new Error("peer_revocation_unavailable");
+	return { ...result, key_evidence: checkedKeyEvidence(value.key_evidence, requested, result) };
+}
+
+/**
+ * The key evidence when it keeps the contract, or none. A broken evidence answer
+ * costs only the evidence: the legacy fields still answer as before it existed.
+ */
+function checkedKeyEvidence(
+	raw: unknown,
+	requested: Set<string>,
+	result: CoordinatorPeerRemovalLookupResult,
+): CoordinatorPeerRemovalLookupResult["key_evidence"] {
+	const evidence = raw as Record<string, unknown> | null | undefined;
 	if (
 		!evidence ||
 		typeof evidence !== "object" ||
-		!["removed", "enrolled"].every((field) => validIds(evidence[field], requested))
-	)
-		throw new Error("peer_revocation_unavailable");
-	const result = raw as CoordinatorPeerRemovalLookupResult;
-	if (
-		result.removed.some((id) => result.revoked.includes(id)) ||
+		!["removed", "enrolled"].every((field) => validIds(evidence[field], requested)) ||
 		// A key enrolled under an ID is an enrollment of that ID.
-		result.key_evidence.enrolled.some((id) => !result.enrolled.includes(id))
+		(evidence.enrolled as string[]).some((id) => !result.enrolled.includes(id))
 	)
-		throw new Error("peer_revocation_unavailable");
-	return result;
+		return { removed: [], enrolled: [] };
+	return evidence as unknown as CoordinatorPeerRemovalLookupResult["key_evidence"];
 }
 
 /**
@@ -125,7 +135,7 @@ export function registerCoordinatorPeerRevocationCheckRoute(
 		try {
 			const check = await authorizeCheck(c, deps, store, { groupId, raw });
 			if ("denied" in check) return check.denied;
-			const caller = { groupId, deviceId: check.deviceId };
+			const caller = { groupId, deviceId: check.deviceId, publicKey: check.publicKey };
 			return await checkResponse(c, store, deps.parseJsonObject(raw)?.peers, caller);
 		} catch {
 			return c.json({ error: "peer_revocation_unavailable" }, 503);
@@ -141,7 +151,7 @@ async function authorizeCheck(
 	deps: PeerRevocationCheckDeps,
 	store: CoordinatorStore,
 	request: { groupId: string; raw: Uint8Array },
-): Promise<{ denied: Response } | { deviceId: string }> {
+): Promise<{ denied: Response } | { deviceId: string; publicKey: string }> {
 	const auth = await deps.authorizeRequest(store, {
 		method: c.req.method,
 		url: c.req.url,
@@ -160,14 +170,17 @@ async function authorizeCheck(
 		};
 	const deviceId = String(auth.enrollment.device_id);
 	const limited = deps.rateLimitedResponse(c, deviceId, { authenticated: true });
-	return limited ? { denied: limited } : { deviceId };
+	// The key the signature was verified with, so the lookup relates devices to this key only.
+	return limited
+		? { denied: limited }
+		: { deviceId, publicKey: String(auth.enrollment.public_key) };
 }
 
 async function checkResponse(
 	c: Context,
 	store: CoordinatorStore,
 	rawPeers: unknown,
-	caller: { groupId: string; deviceId: string },
+	caller: { groupId: string; deviceId: string; publicKey: string },
 ): Promise<Response> {
 	const peers = parsePeerRevocationCheckPeers(rawPeers);
 	if (!peers) return c.json({ error: "peers_invalid" }, 400);

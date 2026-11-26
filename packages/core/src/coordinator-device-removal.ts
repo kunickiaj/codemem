@@ -870,7 +870,7 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		raw: CoordinatorPeerRemovalLookupInput,
 	): Promise<CoordinatorPeerRemovalLookupResult> {
 		const entries = await capturePeerRemovalLookup(raw);
-		const caller = capturePeerRemovalCaller(raw);
+		const caller = await capturePeerRemovalCaller(raw);
 		const results = await this.backend
 			.batch(peerRemovalSnapshotStatements(entries, REMOVAL_AVAILABLE_SQL, caller))
 			.catch(removalBackendFailure);

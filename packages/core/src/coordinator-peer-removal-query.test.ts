@@ -34,8 +34,6 @@ it("partial and malformed snapshots fail closed, including on an empty request",
 		reads([state], [{ ...flags, entry: 1 }]),
 		reads([state], [{ ...flags, removed: true }]),
 		reads([state], [{ entry: 0, revoked: 0, removed: 0 }]),
-		reads([state], [{ entry: 0, revoked: 0, removed: 0, enrolled: 0 }]),
-		reads([state], [{ ...flags, key_enrolled: 2 }]),
 		async () => [{ results: [state] }],
 		async () => [{ success: false, results: [state] }, { results: [flags] }],
 		async () => {
@@ -52,6 +50,20 @@ it("partial and malformed snapshots fail closed, including on an empty request",
 	await expect(
 		operations(reads([{ available: 0, removal_seq: 0 }], [])).lookupPeerRemovals({ peers: [] }),
 	).rejects.toThrow("device_removal_unavailable");
+});
+
+it("malformed key flags cost only the key evidence, never the legacy reply", async () => {
+	const state = { available: 1, removal_seq: 3 };
+	const legacy = { revoked: [], removed: ["asked"], enrolled: ["asked"], removal_seq: 3 };
+	for (const row of [
+		{ entry: 0, revoked: 0, removed: 1, enrolled: 1 },
+		{ ...flags, key_enrolled: 2 },
+		{ ...flags, key_removed: null },
+	])
+		expect(await operations(reads([state], [row])).lookupPeerRemovals(request)).toEqual({
+			...legacy,
+			key_evidence: { removed: [], enrolled: [] },
+		});
 });
 
 it("only captured requested IDs and the five result fields are returned, with global duplicate-ID revocation precedence", async () => {
