@@ -1986,7 +1986,6 @@ export type CoordinatorEnrollmentMaintenanceStage =
 	| "complete_device_setup"
 	| "list_devices"
 	| "list_consumed_team_invites"
-	| "list_team_member_removals"
 	| "reconcile_snapshot";
 
 export interface CoordinatorEnrollmentMaintenanceFailure {
@@ -2026,8 +2025,6 @@ function coordinatorEnrollmentFailureCode(error: unknown): string {
 			"coordinator_invite_list_malformed",
 			"reconciliation_time_invalid",
 			"team_member_removal_invalid",
-			"team_member_removal_list_invalid",
-			"team_member_removal_list_too_long",
 		]).has(message)
 	) {
 		return message;
@@ -2214,8 +2211,11 @@ async function reconcileConfiguredCoordinatorGroup(
 		const invites = await listInvites({ groupId, remoteUrl, adminSecret });
 		// Read after the invitations: a removal recorded between the two reads is
 		// still applied, so no invitation in this snapshot restores that member.
-		stage = "list_team_member_removals";
-		const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret });
+		// A failed read still reconciles devices, but grants no Team access from
+		// an invitation; reconciliation reports each invitation it held back.
+		const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret }).catch(
+			() => undefined,
+		);
 		stage = "complete_device_setup";
 		context.assertCurrent();
 		stage = "reconcile_snapshot";

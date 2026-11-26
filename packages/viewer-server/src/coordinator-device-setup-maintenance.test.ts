@@ -19,6 +19,7 @@ import {
 	type LinkedLegacySetupFixture,
 	linkedLegacySetupFixture,
 } from "../../core/src/linked-legacy-setup-test-fixtures.js";
+import { linkTeamToCoordinatorGroup } from "../../core/src/team-member-removal-test-fixtures.js";
 import { reconcileConfiguredCoordinatorEnrollment, syncRoutes } from "./routes/sync.js";
 
 type Options = NonNullable<Parameters<typeof reconcileConfiguredCoordinatorEnrollment>[1]>;
@@ -545,24 +546,64 @@ it("applies the group's Team member removals in the same reconciliation", async 
 	);
 });
 
-it("reconciles nothing when the Team member removals cannot be read", async () => {
-	// Arrange
-	options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
-	options.listTeamMemberRemovals = vi.fn(async () => {
-		throw new Error("team_member_removal_list_invalid");
-	});
-	// Act
-	const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
-	// Assert
-	expect(result.failures).toEqual([
-		{
+it.each([
+	["a proxy's HTML not-found page", 404, "<html><body>Not Found</body></html>"],
+	["a JSON not-found answer without an error code", 404, "{}"],
+	["missing removal storage", 503, '{"error":"team_member_removal_unavailable"}'],
+	["an empty removal list", 200, '{"version":1,"items":[],"next_after_seq":null}'],
+])(
+	"on a fresh admin machine, grants Team access only after a successful removal read: %s",
+	async (label, status, body) => {
+		// Arrange: an accepted invitation for a Team this group set up, and nothing recorded locally.
+		const team = linkTeamToCoordinatorGroup(store.db, {
+			candidateId: "candidate-a",
+			coordinatorId: "https://coord.example.test",
 			groupId: "group-a",
-			stage: "list_team_member_removals",
-			code: "team_member_removal_list_invalid",
-		},
-	]);
-	expect(options.reconcileSnapshot).not.toHaveBeenCalled();
-});
+		});
+		store.db
+			.prepare(`INSERT INTO policy_teams(team_id, display_name, status, provenance, revision,
+		 migration_state, idempotency_key, created_at, updated_at)
+		 VALUES (?, 'Team', 'active', 'test', 'r1', 'user_managed', 'team', ?, ?)`)
+			.run(team, now, now);
+		options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
+		options.listConsumedTeamInvites = vi.fn(async () => [
+			{
+				invite_id: "invite-team",
+				group_id: "group-a",
+				policy_team_id: team,
+				assigned_identity_id: "identity-invited",
+				recipient_actor_id: "identity-invited",
+				bound_device_id: "device-invited",
+				consumed_at: now,
+			},
+		]);
+		options.listTeamMemberRemovals = undefined;
+		options.reconcileSnapshot = undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL) => {
+				if (!String(url).includes("/v1/admin/team-member-removals"))
+					throw new Error("Unexpected network request");
+				return new Response(body, { status });
+			}),
+		);
+		// Act
+		const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
+		// Assert
+		const granted = status === 200 ? 1 : 0;
+		expect(result, label).toMatchObject({
+			groupsProcessed: 1,
+			failedGroups: 0,
+			membershipsAdded: granted,
+		});
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) FROM policy_team_memberships WHERE team_id = ?")
+				.pluck()
+				.get(team),
+		).toBe(granted);
+	},
+);
 
 it("rechecks a healthy canonical context after the asynchronous invite read", async () => {
 	// Arrange

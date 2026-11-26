@@ -55,14 +55,15 @@ describe("reading a group's Team member removals", () => {
 		expect(new Headers(init.headers).get("X-Codemem-Coordinator-Admin")).toBe("synthetic-admin");
 	});
 
-	it("reads an empty list from a coordinator that predates the route", async () => {
-		respond([404, "404 Not Found"]);
-
-		await expect(coordinatorListTeamMemberRemovalsAction(OPTIONS)).resolves.toEqual([]);
-	});
-
 	it.each([
 		["a known group", 404, { error: "group_not_found" }, "group_not_found"],
+		[
+			"a proxy's HTML not-found page",
+			404,
+			"<html>Not Found</html>",
+			"team_member_removal_unavailable",
+		],
+		["a JSON not-found answer without an error code", 404, {}, "team_member_removal_unavailable"],
 		[
 			"storage that is missing or differs",
 			503,

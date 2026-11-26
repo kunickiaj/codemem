@@ -86,20 +86,11 @@ function parsePage(payload: Record<string, unknown> | null, groupId: string, aft
 	return { items, next: next as number | null };
 }
 
-/** A coordinator from before per-Team removals answers the route with its plain not-found page. */
-function routeAbsent(status: number, payload: Record<string, unknown> | null): boolean {
-	if (status !== 404) return false;
-	const error = payload?.error;
-	return (
-		error === undefined || (typeof error === "string" && error.startsWith("non_json_response"))
-	);
-}
-
-/** One page, or `absent` when the coordinator predates the route. Throws a safe code on any other failure. */
+/** One page. Any failure throws a safe code. */
 async function readPage(
 	opts: CoordinatorListTeamMemberRemovalsActionOptions,
 	afterSeq: number,
-): Promise<Record<string, unknown> | null | "absent"> {
+): Promise<Record<string, unknown> | null> {
 	const endpoint = new URL(`${opts.remoteUrl.replace(/\/+$/u, "")}${TEAM_MEMBER_REMOVALS_PATH}`);
 	endpoint.searchParams.set("group_id", opts.groupId);
 	if (afterSeq > 0) endpoint.searchParams.set("after_seq", String(afterSeq));
@@ -108,7 +99,6 @@ async function readPage(
 		timeoutS: opts.timeoutS ?? 3,
 		maxResponseBytes: MAX_RESPONSE_BYTES,
 	});
-	if (afterSeq === 0 && routeAbsent(status, payload)) return "absent";
 	if (status >= 200 && status < 300) return payload;
 	const error = payload?.error;
 	const code =
@@ -119,9 +109,11 @@ async function readPage(
 }
 
 /**
- * Every removal the coordinator holds for the group, oldest first. A
- * coordinator without the route has no removals and yields an empty list.
- * Any other failure throws, so callers never act on a partial list.
+ * Every removal the coordinator holds for the group, oldest first. Any
+ * failure throws, so callers never act on a partial or missing list. A
+ * not-found answer is a failure too: the coordinator exposes no version or
+ * capability that proves it predates removals, and a proxy can answer the
+ * same way.
  */
 export async function coordinatorListTeamMemberRemovalsAction(
 	opts: CoordinatorListTeamMemberRemovalsActionOptions,
@@ -131,9 +123,7 @@ export async function coordinatorListTeamMemberRemovalsAction(
 	const removals: CoordinatorTeamMemberRemoval[] = [];
 	let afterSeq = 0;
 	for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
-		const payload = await readPage(opts, afterSeq);
-		if (payload === "absent") return [];
-		const page = parsePage(payload, opts.groupId, afterSeq);
+		const page = parsePage(await readPage(opts, afterSeq), opts.groupId, afterSeq);
 		removals.push(...page.items);
 		if (page.next === null) return removals;
 		afterSeq = page.next;

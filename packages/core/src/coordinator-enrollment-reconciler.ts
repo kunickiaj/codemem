@@ -322,8 +322,10 @@ export interface CoordinatorEnrollmentSnapshotInput {
 	enrollments: CoordinatorEnrollment[];
 	consumedTeamInvites: CoordinatorConsumedTeamInvite[];
 	/**
-	 * The group's per-Team member removals. They are recorded and applied
-	 * first, in the same transaction, so no invitation restores one.
+	 * The group's per-Team member removals, read from the coordinator in this
+	 * same check. They are recorded and applied first, in the same transaction,
+	 * so no invitation restores one. Without a successful read, no accepted
+	 * invitation grants Team access.
 	 */
 	teamMemberRemovals?: readonly TeamMemberRemovalRecord[];
 	localDeviceId?: string;
@@ -334,6 +336,8 @@ export interface CoordinatorEnrollmentSnapshotInput {
  * Records the group's Team member removals, then returns the accepted Team
  * invitations whose person was not removed. A removed person stays removed,
  * whichever invitation they hold, so each of theirs is reported instead.
+ * Without a fresh removal list, every invitation is held back and reported,
+ * because this machine may not know of a removal yet.
  */
 function applyRemovalsBeforeInvites(
 	db: Database,
@@ -341,9 +345,16 @@ function applyRemovalsBeforeInvites(
 	now: string,
 	issue: (kind: "team_membership", referenceId: unknown, code: string) => void,
 ): CoordinatorConsumedTeamInvite[] {
-	const { coordinatorId, groupId } = input;
-	const removals = input.teamMemberRemovals ?? [];
-	applyTeamMemberRemovals(db, { coordinatorId, groupId, removals, now });
+	const { coordinatorId, groupId, teamMemberRemovals: removals } = input;
+	if (!removals) {
+		for (const invite of input.consumedTeamInvites)
+			issue("team_membership", invite.invite_id, "team_member_removals_unavailable");
+		return [];
+	}
+	const applied = applyTeamMemberRemovals(db, { coordinatorId, groupId, removals, now });
+	// A removal for a Team this group did not set up has no effect here.
+	for (const ignored of applied.ignored)
+		issue("team_membership", ignored.teamId, "team_member_removal_other_group");
 	return input.consumedTeamInvites.filter((invite) => {
 		const removed =
 			invite.group_id === groupId &&

@@ -297,10 +297,22 @@ read the removals to keep those memberships removed.
 An admin device's Viewer reads the full list for each configured group on every enrollment check, after it reads
 the accepted invitations, and applies both in one local transaction. It revokes each removed membership, wakes
 the affected Project access, and keeps every Team setup and Team invitation from making that person a member
-again. A coordinator from before 0052 answers the route with its plain not-found page, and the Viewer reads that
-as no removals. Any other failure, including `503 team_member_removal_unavailable` from a Worker deployed
-without the migration, stops that group's enrollment check at the `list_team_member_removals` stage until the
-list can be read. That is why the migration goes in before the Worker.
+again. From the moment the removal is recorded, the device's sync admission refuses the person's devices every
+scope that holds one of the Team's Projects, through a mapping of any kind or through memories already stored
+there. A scope that holds only Projects the person still has another way, such as a direct share or another
+Team, stays open to them. A removal applies only to a Team that its coordinator group set up on that device. A
+record for any other Team is kept without effect and reported.
+
+If the removal list cannot be read, for any reason, the Viewer still reconciles enrolled devices but grants no
+Team access from an accepted invitation in that check, and reports each invitation it held back. A not-found
+answer counts as a failure, because the coordinator exposes nothing that proves it predates removals. A coordinator
+from before 0052, or a Worker deployed without the migration, therefore holds back new Team members on upgraded
+admin devices until the migration and Worker are in place. That is why the migration goes in before the Worker.
+
+Removals take effect only on admin devices that run a version that reads them. Admin devices on 0.50.0-beta.2 or
+earlier ignore the list: they can still add a removed person back from an accepted invitation, and they keep
+serving that person's devices until the coordinator drops them from the Team's scopes. Upgrade every admin device
+of the group before relying on Team member removal.
 
 ### Device rebind storage (0038)
 
