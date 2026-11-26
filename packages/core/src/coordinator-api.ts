@@ -104,6 +104,7 @@ import type {
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
 import { CoordinatorReciprocalApprovalRequestChangedError } from "./coordinator-store-contract.js";
+import { registerCoordinatorTeamMemberRemovalRoutes } from "./coordinator-team-member-removal-routes.js";
 import { PROJECT_INVITE_PENDING_STATUS } from "./project-invite-acceptance.js";
 import {
 	normalizeDeviceDisplayName,
@@ -378,6 +379,11 @@ function registerCoordinatorRuntimeRoutes(
 	});
 	registerCoordinatorDeviceRemovalRoutes(app, {
 		rateLimitedResponse: deps.rateLimitedResponse,
+		storeFactory: () => createStore({ existingOnly: true }),
+		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
+	});
+	registerCoordinatorTeamMemberRemovalRoutes(app, {
+		...deps,
 		storeFactory: () => createStore({ existingOnly: true }),
 		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
 	});

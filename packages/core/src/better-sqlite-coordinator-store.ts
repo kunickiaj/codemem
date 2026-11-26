@@ -365,6 +365,13 @@ import {
 	normalizeCoordinatorUpdateScopeInput,
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
+import {
+	type CoordinatorListTeamMemberRemovalsInput,
+	type CoordinatorRecordTeamMemberRemovalInput,
+	TEAM_MEMBER_REMOVAL_SCHEMA_SQL,
+	TEAM_MEMBER_REMOVAL_STORAGE_PRESENT_SQL,
+	TeamMemberRemovalOperations,
+} from "./coordinator-team-member-removals.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
@@ -1140,11 +1147,18 @@ export function initializeBaseSchema(db: DatabaseType): void {
 			SET invite_kind = CASE WHEN operation_id IS NOT NULL THEN 'project_share' ELSE 'legacy_enrollment' END
 			WHERE invite_kind IS NULL;`,
 	);
+	initializePostStageStorage(db);
+}
+
+/** Storage numbered after the last auth stage. Each piece is installed only when it is incomplete. */
+function initializePostStageStorage(db: DatabaseType): void {
 	// Every enrollment writer needs this storage, whatever the account schema state.
 	initializeDeviceRemovalSchema(db);
 	initializeBoundaryReadinessSchema(db);
 	if (db.prepare(DEVICE_REJOIN_STORAGE_PRESENT_SQL).pluck().get() !== 1)
 		db.transaction(() => db.exec(DEVICE_REJOIN_SCHEMA_SQL)).immediate();
+	if (db.prepare(TEAM_MEMBER_REMOVAL_STORAGE_PRESENT_SQL).pluck().get() !== 1)
+		db.transaction(() => db.exec(TEAM_MEMBER_REMOVAL_SCHEMA_SQL)).immediate();
 }
 
 export function connectCoordinator(
@@ -1207,6 +1221,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly deviceRemovals: DeviceRemovalOperations;
 	private removalSchemaSeen = false;
 	private readonly boundaryReadiness: BoundaryReadinessOperations;
+	private readonly teamMemberRemovals: TeamMemberRemovalOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1239,6 +1254,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			boundaryReadinessScopeAccess(this),
 			options.authClock,
 		);
+		this.teamMemberRemovals = new TeamMemberRemovalOperations(ledgerBackend, options.authClock);
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
@@ -2138,6 +2154,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async discardBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
 		return this.boundaryReadiness.discardBoundaryReadiness(input);
+	}
+
+	async recordTeamMemberRemoval(input: CoordinatorRecordTeamMemberRemovalInput) {
+		return this.teamMemberRemovals.recordTeamMemberRemoval(input);
+	}
+
+	async listTeamMemberRemovals(input: CoordinatorListTeamMemberRemovalsInput) {
+		return this.teamMemberRemovals.listTeamMemberRemovals(input);
 	}
 
 	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {

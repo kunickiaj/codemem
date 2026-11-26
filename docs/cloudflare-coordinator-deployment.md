@@ -256,6 +256,34 @@ For a database originally created from `schema.sql` or an exported install, foll
 [the baseline procedure](#baseline-a-d1-database-whose-schema-came-from-outside-the-migrations) before applying
 migrations; do not replay from `0001` or reset the database to make the migration bookkeeping match.
 
+### Team member removals (0052)
+
+Migration `0052_add_team_member_removals.sql` only creates new objects: one empty table, two indexes and two
+triggers that refuse any update or delete of its rows. It changes no existing table or row. A Worker from before
+0052 keeps working with it applied, so apply it before deploying the Worker that uses it. That Worker answers
+`503 team_member_removal_unavailable` on both admin routes until every object exists with exactly the shipped
+definition, and every other route keeps working. A SQLite coordinator installs the same storage when it opens its
+file and leaves an object of the same name but another definition in place, still unavailable.
+
+An admin device records that a person was removed from one Team with
+`POST /v1/admin/team-member-removals` and the body `{ "group_id", "team_id", "identity_id" }`, plus an optional
+`removed_by_device_id` kept for display. A removal is permanent for that identity and numbered by one
+coordinator sequence. A new removal answers `201`. Removing the same person from the same Team again writes
+nothing and answers `200` with the first removal. An unknown group answers `404 group_not_found`, and a body with
+any other field or a malformed identifier `400 invalid_input`. No route restores, edits or deletes a removal.
+
+A removed person comes back only through a new Team invitation, which assigns a new identity that no removal
+names. Add-device invitations, account linking, rejoin, owner enrollment and invitation-based device rejoin keep
+the removed identity, so they never lift its removal. A Team invitation that was issued before the removal and
+is still unused also brings the person in under a new identity, and the coordinator cannot tell it apart from an
+invitation for someone else. The Viewer's removal step therefore lists the Team's pending, unexpired and
+unrevoked invitations and lets the admin revoke them in the same step through the existing revoke route.
+
+`GET /v1/admin/team-member-removals?group_id=...` only reads. It lists a group's removals oldest first, 200 per
+page, and accepts `team_id` and the previous page's `next_after_seq` as `after_seq`. Both routes require the
+admin secret. A removal grants and revokes nothing on the coordinator. Clients that support Team member removal
+read the removals to keep those memberships removed.
+
 ### Device rebind storage (0038)
 
 Migration `0038_add_device_rebind.sql` adds two tables for signing in on a device whose
@@ -731,7 +759,9 @@ every migration from `0001` and fail on the first change that already exists. Re
    The statement records every numbered migration from `0001` through that stage's last migration (`0045` for `v2`,
    `0046` for `prior_extension`, `0047` for `current`). For `current` it also records `0048` when the device removal
    storage that `0048` adds already exists, `0049` when its enrollment triggers already exist,
-   and `0050` when its readiness record storage already exists. Each is checked on its own.
+   `0050` when its readiness record storage already exists, `0051` when its rejoin storage already exists,
+   and `0052` when every object of its Team member removal storage exists with the shipped definition. Each is
+   checked on its own.
    A migration whose objects are missing stays unrecorded and the next
    `migrations apply` runs it. The statement requires that stage's auth readiness checks to pass and
    checks table and column names for the remaining earlier tables, including controller attestations and sign-in
