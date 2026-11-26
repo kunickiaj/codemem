@@ -485,6 +485,42 @@ describe("live status for tier-routed requests", () => {
 			},
 		});
 	});
+
+	it("reports a tier's effort outcome and prompt budget from one recorded request", async () => {
+		const observer = serviceObserver({
+			observer_tier_routing_enabled: true,
+			observer_simple_model: "gpt-5.6",
+			observer_reasoning_effort: "high",
+		});
+		store.recordRawEvent({
+			opencodeSessionId: "tiered",
+			eventId: "prompt",
+			eventType: "user_prompt",
+			payload: { type: "user_prompt", prompt_text: "Check the queue" },
+		});
+
+		await flushRawEvents(store, { observer }, { opencodeSessionId: "tiered" }).catch(
+			() => undefined,
+		);
+
+		const status = observer.getStatus();
+		expect(generations).toEqual([{ origin: FIRST, variant: "high" }]);
+		expect(status.tierReasoningEfforts?.simple).toMatchObject({
+			attemptedReasoningEffort: "high",
+			actualReasoningEffort: "high",
+			reasoningEffortRequestSucceeded: true,
+		});
+		expect(status.tierPromptBudgets?.simple).toMatchObject({
+			maxChars: 12_000,
+			contentClipped: false,
+		});
+		expect(status.tierPromptBudgets?.simple?.sections?.map((section) => section.name)).toEqual([
+			"request",
+			"transcript",
+		]);
+		expect(status.tierReasoningEfforts?.rich).toBeUndefined();
+		expect(status.tierPromptBudgets?.rich).toBeUndefined();
+	});
 });
 
 describe("replay metadata for the OpenCode service", () => {
