@@ -153,6 +153,16 @@ export function scopeAuthorizationFailureReason(
 	}
 }
 
+/**
+ * The reason a peer is told when a scope is denied. Whether this device knows the scope,
+ * holds it inactive, at an older epoch or under another authority is not the peer's to
+ * learn, so all of those get the same answer. The precise reason stays in local diagnostics.
+ * A request on a wire format that cannot carry a scope keeps its own reason.
+ */
+export function peerFacingScopeResetReason(reason: SyncScopeResetReason): SyncScopeResetReason {
+	return reason === "unsupported_scope" ? reason : "missing_scope";
+}
+
 export function addSyncScopeToBoundary<T extends SyncResetBoundaryShape>(
 	boundary: T,
 	scopeId: string | null,

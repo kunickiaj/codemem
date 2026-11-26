@@ -1747,6 +1747,7 @@ export {
 	listAuthorizedScopesForPeer,
 	listPerPeerScopeSyncState,
 	parseSyncScopeRequest,
+	peerFacingScopeResetReason,
 	SYNC_SCOPE_QUERY_PARAM,
 	scopeAuthorizationFailureReason,
 	syncScopeResetRequiredPayload,

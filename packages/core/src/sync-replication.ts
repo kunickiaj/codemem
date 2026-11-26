@@ -4344,8 +4344,9 @@ function applyReplicationOpsInternal(
 						continue;
 					}
 				} else {
+					// An op type this version cannot apply. Recording its id would mark the id
+					// applied, so a peer that knew a future op's id could suppress that op here.
 					result.skipped++;
-					insertReplicationOpRow(d, op);
 					continue;
 				}
 

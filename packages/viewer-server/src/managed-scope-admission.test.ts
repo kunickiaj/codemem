@@ -287,7 +287,7 @@ describe("managed authorization for the existing row behind another scope's oper
 			expect(await denied.json()).toMatchObject({
 				error: "reset_required",
 				reason: "missing_scope",
-				scope_id: "managed-work",
+				scope_id: null,
 			});
 			expect(contentState()).toEqual(before);
 			// Arrange: restore A and keep the control mutation inside C, not across scopes.
@@ -389,7 +389,7 @@ describe("managed authorization for every duplicate import key row", () => {
 			expect(await response.json()).toMatchObject({
 				error: "reset_required",
 				reason: "missing_scope",
-				scope_id: "managed-work",
+				scope_id: null,
 			});
 			expect(contentState()).toEqual(before);
 		},
@@ -417,7 +417,7 @@ describe("origin cleanup after managed membership revocation", () => {
 		});
 		// Assert: the cleanup exception cannot grant content access.
 		expect(denied.status).toBe(409);
-		expect(await denied.json()).toMatchObject({ reason: "scope_inactive" });
+		expect(await denied.json()).toMatchObject({ reason: "missing_scope" });
 		expect(contentState()).toEqual(before);
 		// Act: use the SDK's access_cleanup control, signed by the original content source.
 		const permitted = await root.request("/v1/ops", root.peer.keysDir, {
@@ -687,7 +687,7 @@ describe("pushed moves between Projects", () => {
 		expect(await response.json()).toMatchObject({
 			error: "reset_required",
 			reason: "missing_scope",
-			scope_id: "other-work",
+			scope_id: null,
 		});
 		expect(contentState()).toEqual(before);
 	});
@@ -733,6 +733,66 @@ describe("pushed moves between Projects", () => {
 		expect(memoryRows("old-side-seed-memory")).toEqual([{ scope_id: "other-work", active: 1 }]);
 		expect(contentState()).toEqual(before);
 	});
+});
+
+describe("scope denials a peer sees", () => {
+	const run = (sql: string) => root.store.db.prepare(sql).run();
+	const set = (column: string, value: string | number) =>
+		run(
+			`UPDATE replication_scopes SET ${column} = ${typeof value === "string" ? `'${value}'` : value} WHERE scope_id = 'managed-work'`,
+		);
+	/** States of managed-work the peer must not be able to tell apart, each with its undo. */
+	const states: Record<string, { apply: () => void; undo: () => void }> = {
+		inactive: { apply: () => set("status", "inactive"), undo: () => set("status", "active") },
+		"stale epoch": {
+			apply: () => set("membership_epoch", 2),
+			undo: () => set("membership_epoch", 1),
+		},
+		"colliding local scope": {
+			apply: () => set("authority_type", "local"),
+			undo: () => set("authority_type", "coordinator"),
+		},
+	};
+
+	async function denial() {
+		const pull = await root.request(scopedOpsPath);
+		const push = await root.request("/v1/ops", root.peer.keysDir, {
+			method: "POST",
+			body: { sync_capability: "scoped", ops: [memoryOp("managed-work", "probe")] },
+		});
+		return {
+			pull: { status: pull.status, body: await pull.json() },
+			push: { status: push.status, body: await push.json() },
+		};
+	}
+
+	it.each(Object.keys(states))(
+		"answers %s exactly as for a scope this device does not know",
+		async (state) => {
+			// Arrange
+			await root.refresh();
+			const before = contentState();
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			// Act: the state, then the same scope with no rows at all.
+			states[state]?.apply();
+			const answer = await denial();
+			states[state]?.undo();
+			run("DELETE FROM scope_memberships WHERE scope_id = 'managed-work'");
+			run("DELETE FROM replication_scopes WHERE scope_id = 'managed-work'");
+			const unknown = await denial();
+
+			// Assert: same status and body, nothing written.
+			expect(answer).toEqual(unknown);
+			expect(unknown.pull).toMatchObject({ status: 409, body: { reason: "missing_scope" } });
+			expect(unknown.push.body).toMatchObject({ reason: "missing_scope" });
+			expect(contentState()).toEqual(before);
+			// The precise reason stays in this device's log.
+			const precise = { inactive: "scope_inactive", "stale epoch": "stale_epoch" }[state];
+			if (precise) expect(warn).toHaveBeenCalledWith(expect.stringContaining(`reason=${precise}`));
+			warn.mockRestore();
+		},
+	);
 });
 
 describe("managed normalized operations in legacy POST envelopes", () => {
@@ -877,7 +937,7 @@ describe("managed POST admission before applying mixed or misleading envelopes",
 			expect(response.status).toBe(403);
 			expect(await response.json()).toMatchObject({
 				error: "scope_rejected",
-				reason: "sender_not_member",
+				reason: "missing_scope",
 			});
 			expect(contentState()).toEqual(before);
 		},

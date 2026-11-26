@@ -12097,18 +12097,16 @@ describe("viewer-server", () => {
 					});
 					expect(res.status).toBe(403);
 					const body = (await res.json()) as Record<string, unknown>;
+					// The peer gets one generic reason; the precise one is recorded here.
 					expect(body).toMatchObject({
 						error: "scope_rejected",
-						reason: "sender_not_member",
+						reason: "missing_scope",
 					});
 					expect(body.rejections).toEqual(
 						expect.arrayContaining([
-							expect.objectContaining({ op_id: "private-op-1", reason: "sender_not_member" }),
-							expect.objectContaining({ op_id: "private-delete-1", reason: "sender_not_member" }),
-							expect.objectContaining({
-								op_id: "shared-delete-1",
-								reason: "sender_not_member",
-							}),
+							expect.objectContaining({ op_id: "private-op-1", reason: "missing_scope" }),
+							expect.objectContaining({ op_id: "private-delete-1", reason: "missing_scope" }),
+							expect.objectContaining({ op_id: "shared-delete-1", reason: "missing_scope" }),
 						]),
 					);
 					const deleted = store.db

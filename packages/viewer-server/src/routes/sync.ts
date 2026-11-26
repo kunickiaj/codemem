@@ -17,6 +17,7 @@ import type {
 	DeviceIdentityBindingCommitRequestV1,
 	DeviceIdentityBindingPreviewRequestV1,
 	DeviceIdentityCoordinatorEvidence,
+	InboundScopeRejection,
 	LegacyPairingAssignmentConversionResult,
 	MaintenanceJobSnapshot,
 	MemoryStore,
@@ -153,6 +154,7 @@ import {
 	parseReassignScopePayload,
 	parseRecipientPolicyEdgeCommitRequest,
 	parseSyncScopeRequest,
+	peerFacingScopeResetReason,
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
 	planShareOperation,
@@ -5295,12 +5297,14 @@ function rejectUnauthorizedInboundBatch(
 		peerDeviceId: context.peerDeviceId,
 	});
 	if (rejected) {
+		// The core recorded each precise rejection locally; the peer gets the generic form.
 		recordInboundScopeFailure(context);
+		const rejections = peerFacingRejections(ops, rejected.rejections);
 		return c.json(
 			{
 				error: "scope_rejected",
-				reason: rejected.rejections[0]?.reason ?? "scope_mismatch",
-				rejections: rejected.rejections,
+				reason: rejections[0]?.reason ?? "scope_mismatch",
+				rejections,
 				sync_capability: LOCAL_SYNC_CAPABILITY,
 				scope_id: options.scopeId,
 			},
@@ -5312,15 +5316,42 @@ function rejectUnauthorizedInboundBatch(
 	const failure = validateManagedScopes(scopeIds, context);
 	if (!failure) return null;
 	recordInboundScopeFailure(context);
+	const reason = peerFacingScopeResetReason(failure.reason);
+	// The failing scope may be where a stored copy lives. Name it only if the peer did.
+	const named = new Set([options.scopeId, ...ops.map(cleanOpScopeId)]);
+	const scopeId = named.has(failure.scopeId) ? failure.scopeId : options.scopeId;
+	if (reason !== failure.reason || scopeId !== failure.scopeId)
+		logWithheldScopeDenial(failure.reason, failure.scopeId);
 	return c.json(
 		syncScopeResetRequiredPayload(
 			getSyncResetState(context.db),
-			failure.reason,
+			reason,
 			LOCAL_SYNC_CAPABILITY,
-			failure.scopeId,
+			scopeId,
 		),
 		409,
 	);
+}
+
+/** Records locally what a scope denial withheld from the peer's answer. */
+function logWithheldScopeDenial(reason: SyncScopeResetReason, scopeId: string | null): void {
+	console.warn(`[sync] scope denied to peer: reason=${reason} scope=${scopeId ?? "none"}`);
+}
+
+/**
+ * Rejections as a peer may see them: each names its op's own scope, never the scope of a
+ * stored copy, and membership and scope state collapse into one reason.
+ */
+function peerFacingRejections(
+	ops: readonly ReplicationOp[],
+	rejections: readonly InboundScopeRejection[],
+): InboundScopeRejection[] {
+	const declared = new Map(ops.map((op) => [op.op_id, cleanOpScopeId(op) || null]));
+	return rejections.map((rejection) => ({
+		...rejection,
+		scope_id: declared.get(rejection.op_id) ?? null,
+		reason: rejection.reason === "scope_mismatch" ? rejection.reason : "missing_scope",
+	}));
 }
 
 function recordInboundScopeFailure(
@@ -5445,9 +5476,12 @@ function syncScopeProvided(
 function syncScopeResetResponse(
 	c: Context,
 	store: MemoryStore,
-	reason: SyncScopeResetReason,
+	preciseReason: SyncScopeResetReason,
 	syncChannelPeerPin?: SyncProtocolRouteOptions["syncChannelPeerPin"],
 ): Response {
+	const reason = peerFacingScopeResetReason(preciseReason);
+	if (reason !== preciseReason)
+		logWithheldScopeDenial(preciseReason, c.req.query(SYNC_SCOPE_QUERY_PARAM) ?? null);
 	if (syncChannelPeerPin !== undefined) {
 		// An unauthorized scope must not disclose the legacy default boundary.
 		return c.json(
