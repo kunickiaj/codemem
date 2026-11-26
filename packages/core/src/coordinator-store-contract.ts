@@ -7,6 +7,7 @@ import type {
 	CoordinatorLegacyTeamCompletionRecord,
 	CoordinatorLegacyTeamCompletionWriteResult,
 } from "./coordinator-legacy-team-completion.js";
+import type { CoordinatorTeamMemberRemovalStore } from "./coordinator-team-member-removals.js";
 import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
 
 /**
@@ -546,6 +547,7 @@ export interface CoordinatorStore
 	extends CoordinatorDeviceRevocationStore,
 		CoordinatorDeviceRemovalStore,
 		CoordinatorBoundaryReadinessStore,
+		CoordinatorTeamMemberRemovalStore,
 		Partial<CoordinatorAuthSchemaStore> {
 	close(): Promise<void>;
 	createGroup(groupId: string, displayName?: string | null): Promise<void>;

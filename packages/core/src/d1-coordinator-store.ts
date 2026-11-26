@@ -307,6 +307,11 @@ import {
 	normalizeCoordinatorUpdateScopeInput,
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
+import {
+	type CoordinatorListTeamMemberRemovalsInput,
+	type CoordinatorRecordTeamMemberRemovalInput,
+	TeamMemberRemovalOperations,
+} from "./coordinator-team-member-removals.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 interface D1RunResultLike {
@@ -1778,6 +1783,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly deviceRemovals: DeviceRemovalOperations;
 	private removalSchemaSeen = false;
 	private readonly boundaryReadiness: BoundaryReadinessOperations;
+	private readonly teamMemberRemovals: TeamMemberRemovalOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1804,6 +1810,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			boundaryReadinessScopeAccess(this),
 			options.authClock,
 		);
+		this.teamMemberRemovals = new TeamMemberRemovalOperations(ledgerBackend, options.authClock);
 		const authBackend = createD1AuthLinkBackend(db);
 		this.controllerBackend = authBackend;
 		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
@@ -2681,6 +2688,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async discardBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
 		return this.boundaryReadiness.discardBoundaryReadiness(input);
+	}
+
+	async recordTeamMemberRemoval(input: CoordinatorRecordTeamMemberRemovalInput) {
+		return this.teamMemberRemovals.recordTeamMemberRemoval(input);
+	}
+
+	async listTeamMemberRemovals(input: CoordinatorListTeamMemberRemovalsInput) {
+		return this.teamMemberRemovals.listTeamMemberRemovals(input);
 	}
 
 	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {

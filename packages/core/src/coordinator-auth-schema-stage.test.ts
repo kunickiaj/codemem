@@ -24,6 +24,7 @@ import {
 	ENROLLMENT_REMOVAL_MIGRATION_NAME,
 } from "./coordinator-device-removal.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
+import { TEAM_MEMBER_REMOVAL_MIGRATION_NAME } from "./coordinator-team-member-removals.js";
 
 const migrations = new URL("../../cloudflare-coordinator-worker/migrations/", import.meta.url);
 const numbered = readdirSync(migrations)
@@ -204,7 +205,21 @@ describe("ledger baseline of migrations after the last auth stage", () => {
 
 		apply(db, DEVICE_REJOIN_MIGRATION_NAME);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db)).toEqual(numbered);
+		expect(names(db).toSorted()).toEqual(numbered);
+	});
+
+	it("does not baseline Team member removal storage until its delete guard exists", () => {
+		const db = current();
+		db.exec("DROP TRIGGER coordinator_team_member_removal_no_delete");
+		db.exec(ledger);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(
+			numbered.filter((name) => name !== TEAM_MEMBER_REMOVAL_MIGRATION_NAME),
+		);
+
+		apply(db, TEAM_MEMBER_REMOVAL_MIGRATION_NAME);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db).toSorted()).toEqual(numbered);
 	});
 
 	it.each([

@@ -59,6 +59,7 @@ export const COORDINATOR_D1_MIGRATION_NAMES: readonly string[] = Object.freeze([
 	"0049_add_enrollment_removal_triggers.sql",
 	"0050_add_boundary_readiness.sql",
 	"0051_add_device_rejoin.sql",
+	"0052_add_team_member_removals.sql",
 ]);
 
 /** Every V2 table and column, including auth tables, required by every baseline stage. */

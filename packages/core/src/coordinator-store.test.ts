@@ -53,6 +53,7 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_scope_membership_effect_receipts",
 	"coordinator_scope_memberships",
 	"coordinator_scopes",
+	"coordinator_team_member_removals",
 	"enrolled_devices",
 	"groups",
 	"presence_records",
