@@ -398,6 +398,11 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+// Each 500-subject case builds a full roster before the completion runs. On CI the first one,
+// which also warms the runtime, took up to 5.6 s against Vitest's 5 s default, and the others
+// up to 3.7 s. This bound leaves room for a loaded runner without changing any assertion.
+const ROSTER_CASE_TIMEOUT_MS = 30_000;
+
 for (const kind of ["SQLite", "D1"] as const) {
 	const test = backendTest(kind, { accountSchema: "v2" });
 
@@ -520,37 +525,40 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(await fresh.evaluate()).toEqual({ current: 1, compatible: 0 });
 	});
 
-	test(`${kind} full 500 recovered subjects with production-shaped writer IDs`, async ({
-		fixture: f,
-	}) => {
-		// Arrange: all independent original sources remain verified; only identifier shape changes.
-		const { value, preparationMs } = await recoveredRoster(f, kind, "writer");
-		const before = snapshot(f, [completions]);
-		const oldHistory = completionRows(f);
-		const metrics = observeRosterOperation(f, { revokeAtInsert: false });
-		const started = performance.now();
-		// Act: preserve normal 500-subject behavior under the existing cap and default timeout.
-		try {
-			const result = await f.store.createLegacyTeamCompletion(futureGroup, value);
-			// Assert
-			expect(result.status).toBe("created");
-			expect(result.manifest.device_decisions).toHaveLength(500);
-			expect(snapshot(f, [completions])).toEqual(before);
-			expect(completionRows(f).slice(0, 500)).toEqual(oldHistory);
-			expect(metrics.snapshotBytes).toBeGreaterThan(0);
-			expect(metrics.snapshotBytes).toBeLessThanOrEqual(2_000_000);
-		} finally {
-			console.info("writer-shaped-full-recovery-roster", {
-				backend: kind,
-				preparationMs,
-				operationMs: performance.now() - started,
-				...metrics,
-			});
-		}
-	});
+	test(
+		`${kind} full 500 recovered subjects with production-shaped writer IDs`,
+		async ({ fixture: f }) => {
+			// Arrange: all independent original sources remain verified; only identifier shape changes.
+			const { value, preparationMs } = await recoveredRoster(f, kind, "writer");
+			const before = snapshot(f, [completions]);
+			const oldHistory = completionRows(f);
+			const metrics = observeRosterOperation(f, { revokeAtInsert: false });
+			const started = performance.now();
+			// Act: preserve normal 500-subject behavior under the existing subject cap.
+			try {
+				const result = await f.store.createLegacyTeamCompletion(futureGroup, value);
+				// Assert
+				expect(result.status).toBe("created");
+				expect(result.manifest.device_decisions).toHaveLength(500);
+				expect(snapshot(f, [completions])).toEqual(before);
+				expect(completionRows(f).slice(0, 500)).toEqual(oldHistory);
+				expect(metrics.snapshotBytes).toBeGreaterThan(0);
+				expect(metrics.snapshotBytes).toBeLessThanOrEqual(2_000_000);
+			} finally {
+				console.info("writer-shaped-full-recovery-roster", {
+					backend: kind,
+					preparationMs,
+					operationMs: performance.now() - started,
+					...metrics,
+				});
+			}
+		},
+		ROSTER_CASE_TIMEOUT_MS,
+	);
 
 	test.for(["success", "late source revocation"] as const)(
 		`${kind} full 500 recovered subjects: %s`,
+		{ timeout: ROSTER_CASE_TIMEOUT_MS },
 		async (mode, { fixture: f }) => {
 			// Arrange: 500 distinct authentic subjects, old histories, and original source receipts.
 			const { value, preparationMs } = await recoveredRoster(f, kind);
@@ -939,41 +947,43 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(snapshot(f)).toEqual(before);
 	});
 
-	test(`${kind} 500 authentic distinct roster subjects allow one retained recovery proof`, async ({
-		fixture: f,
-	}) => {
-		// Arrange: full supported roster, with 499 ordinary owners and one recovered A.
-		const { value } = await recovery(f, kind);
-		const keys = new Set([signer.publicKey]);
-		for (let index = 1; index < 500; index++) {
-			const publicKey = rosterKey(index);
-			keys.add(publicKey);
-			const deviceId = `roster-device-${index}`;
-			const owner = `roster-owner-${index}`;
-			const fingerprint = fingerprintPublicKey(publicKey);
-			f.db
-				.prepare(`INSERT INTO enrolled_devices
+	test(
+		`${kind} 500 authentic distinct roster subjects allow one retained recovery proof`,
+		async ({ fixture: f }) => {
+			// Arrange: full supported roster, with 499 ordinary owners and one recovered A.
+			const { value } = await recovery(f, kind);
+			const keys = new Set([signer.publicKey]);
+			for (let index = 1; index < 500; index++) {
+				const publicKey = rosterKey(index);
+				keys.add(publicKey);
+				const deviceId = `roster-device-${index}`;
+				const owner = `roster-owner-${index}`;
+				const fingerprint = fingerprintPublicKey(publicKey);
+				f.db
+					.prepare(`INSERT INTO enrolled_devices
 				(group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at)
 				VALUES (?,?,?,?,?,1,?)`)
-				.run(futureGroup, deviceId, publicKey, fingerprint, owner, now);
-			value.memberships.push({ identity_id: owner, role: "member" });
-			value.device_decisions.push({
-				device_id: deviceId,
-				key_fingerprint: fingerprint,
-				enabled: true,
-				identity_id: owner,
-				decision: "included",
-			});
-		}
-		expect(keys.size).toBe(500);
-		const before = snapshot(f, [completions]);
-		// Act: retain the default timeout; no early subject cap or fake fixture keys.
-		const result = await f.store.createLegacyTeamCompletion(futureGroup, value);
-		// Assert
-		expect(result.status).toBe("created");
-		expect(result.manifest.device_decisions).toHaveLength(500);
-		expect(snapshot(f, [completions])).toEqual(before);
-	});
+					.run(futureGroup, deviceId, publicKey, fingerprint, owner, now);
+				value.memberships.push({ identity_id: owner, role: "member" });
+				value.device_decisions.push({
+					device_id: deviceId,
+					key_fingerprint: fingerprint,
+					enabled: true,
+					identity_id: owner,
+					decision: "included",
+				});
+			}
+			expect(keys.size).toBe(500);
+			const before = snapshot(f, [completions]);
+			// Act: no early subject cap or fake fixture keys.
+			const result = await f.store.createLegacyTeamCompletion(futureGroup, value);
+			// Assert
+			expect(result.status).toBe("created");
+			expect(result.manifest.device_decisions).toHaveLength(500);
+			expect(snapshot(f, [completions])).toEqual(before);
+		},
+		ROSTER_CASE_TIMEOUT_MS,
+	);
 
 	test.for(["enrollment", "group"] as const)(
 		`${kind} retained original source survives removal of its %s`,
