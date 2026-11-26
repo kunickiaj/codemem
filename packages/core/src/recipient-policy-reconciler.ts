@@ -131,6 +131,7 @@ const RETRYABLE_ACTIVE_AUTHORITY_ERRORS = new Set([
 ]);
 const SAFE_RECONCILIATION_ERRORS = new Set([
 	"recipient_policy_active_managed_scope_required",
+	"recipient_policy_shared_scope_boundary",
 	"recipient_policy_authority_state_missing",
 	"recipient_policy_capability_undetermined",
 	"recipient_policy_capability_unsupported",
@@ -292,18 +293,45 @@ function mappedProjectsForScope(
 	);
 }
 
-function boundary(db: Database, projectId: string): ManagedProjectBoundary {
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	const mappings = db
-		.prepare(
-			`SELECT workspace_identity, project_pattern, scope_id
-			 FROM project_scope_mappings ORDER BY id`,
-		)
-		.all() as Array<{
-		workspace_identity: string | null;
-		project_pattern: string;
-		scope_id: string;
-	}>;
+/**
+ * The safe code for a Project mapped to a shared scope that holds other Projects too. It
+ * cannot move to recipient policy until it has a managed scope of its own, and no action in
+ * the product creates one today, so it stays in legacy enforcement without needing attention.
+ */
+export const RECIPIENT_POLICY_SHARED_SCOPE_CODE = "recipient_policy_shared_scope_boundary";
+
+interface BoundaryInputs {
+	repositoryIdentities: ReadonlyMap<string, string>;
+	mappings: Array<{ workspace_identity: string | null; project_pattern: string; scope_id: string }>;
+}
+
+function readBoundaryInputs(db: Database): BoundaryInputs {
+	return {
+		repositoryIdentities: repositoryIdentitiesByWorkspace(db),
+		mappings: db
+			.prepare(
+				`SELECT workspace_identity, project_pattern, scope_id
+				 FROM project_scope_mappings ORDER BY id`,
+			)
+			.all() as BoundaryInputs["mappings"],
+	};
+}
+
+/** Whether the scope is an active non-managed scope that the mappings give several Projects. */
+function isSharedMultiProjectScope(db: Database, scopeId: string, mappedProjects: Set<string>) {
+	if (mappedProjects.size < 2) return false;
+	const scope = db
+		.prepare("SELECT kind FROM replication_scopes WHERE scope_id = ? AND status = 'active'")
+		.get(scopeId) as { kind: string } | undefined;
+	return scope !== undefined && scope.kind !== "managed_project";
+}
+
+/** The Project's managed boundary, or the safe code that says why it has none. */
+function checkBoundary(
+	db: Database,
+	{ repositoryIdentities, mappings }: BoundaryInputs,
+	projectId: string,
+): ManagedProjectBoundary | { blocked: string } {
 	const matchingMappings = mappings.filter(
 		(mapping) =>
 			mapping.workspace_identity != null &&
@@ -315,7 +343,7 @@ function boundary(db: Database, projectId: string): ManagedProjectBoundary {
 	const matchingScopeIds = [...new Set(matchingMappings.map((mapping) => mapping.scope_id))];
 	const mapping = matchingMappings[0];
 	if (!mapping || matchingScopeIds.length !== 1 || !validId(mapping.scope_id)) {
-		throw new Error("recipient_policy_exact_mapping_required");
+		return { blocked: "recipient_policy_exact_mapping_required" };
 	}
 	const scopes = db
 		.prepare(
@@ -330,6 +358,9 @@ function boundary(db: Database, projectId: string): ManagedProjectBoundary {
 	}>;
 	const scopeMappings = mappings.filter((candidate) => candidate.scope_id === mapping.scope_id);
 	const mappedProjects = mappedProjectsForScope(scopeMappings, repositoryIdentities);
+	if (scopes.length === 0 && isSharedMultiProjectScope(db, mapping.scope_id, mappedProjects)) {
+		return { blocked: RECIPIENT_POLICY_SHARED_SCOPE_CODE };
+	}
 	if (
 		scopes.length !== 1 ||
 		mappedProjects.size !== 1 ||
@@ -338,9 +369,29 @@ function boundary(db: Database, projectId: string): ManagedProjectBoundary {
 		!validId(scopes[0]?.coordinator_id ?? "") ||
 		!validId(scopes[0]?.group_id ?? "")
 	) {
-		throw new Error("recipient_policy_active_managed_scope_required");
+		return { blocked: "recipient_policy_active_managed_scope_required" };
 	}
 	return { scopeId: scopes[0]?.scope_id ?? "" };
+}
+
+function boundary(db: Database, projectId: string): ManagedProjectBoundary {
+	const checked = checkBoundary(db, readBoundaryInputs(db), projectId);
+	if ("blocked" in checked) throw new Error(checked.blocked);
+	return checked;
+}
+
+/**
+ * Returns a function that reports why a Project has no managed boundary, or null when it has
+ * one. It reads the mappings once, so a caller can check many Projects cheaply.
+ */
+export function createRecipientPolicyBoundaryInspector(
+	db: Database,
+): (canonicalProjectIdentity: string) => string | null {
+	const inputs = readBoundaryInputs(db);
+	return (projectId) => {
+		const checked = checkBoundary(db, inputs, projectId);
+		return "blocked" in checked ? checked.blocked : null;
+	};
 }
 
 function activeSnapshotDevices(
@@ -1969,9 +2020,12 @@ async function executeRecipientPolicyReconciliation(
 	} catch (error) {
 		const safeErrorCode = safeError(error, "recipient_policy_reconciliation_failed");
 		authority(run, { safeErrorCode, now: run.effects.now() });
+		const waiting =
+			safeErrorCode === "recipient_policy_snapshot_not_fresh" ||
+			safeErrorCode === RECIPIENT_POLICY_SHARED_SCOPE_CODE;
 		return result(
 			run.projectId,
-			safeErrorCode === "recipient_policy_snapshot_not_fresh" ? "waiting" : "needs_attention",
+			waiting ? "waiting" : "needs_attention",
 			run.activeGeneration,
 			safeErrorCode,
 			run.revokedDeviceIds,

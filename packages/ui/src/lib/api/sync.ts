@@ -1861,6 +1861,7 @@ export function finishLegacyTeamSetup(
 
 export type RecipientPolicyReconciliationReadState =
 	| "active"
+	| "legacy_scope"
 	| "needs_attention"
 	| "pending"
 	| "verifying"

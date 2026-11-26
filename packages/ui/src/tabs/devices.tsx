@@ -189,12 +189,14 @@ type DeviceActionFocusIdentity = {
 
 const deviceActionFocusIdentities = new WeakMap<HTMLElement, DeviceActionFocusIdentity>();
 
+// A Project left in its shared scope needs nothing, so any other state outranks it.
 const STATUS_PRIORITY: Record<RecipientPolicyReconciliationReadState, number> = {
-	active: 0,
-	verifying: 1,
-	pending: 2,
-	waiting: 3,
-	needs_attention: 4,
+	legacy_scope: 0,
+	active: 1,
+	verifying: 2,
+	pending: 3,
+	waiting: 4,
+	needs_attention: 5,
 };
 
 const PENDING_STATUS = {
