@@ -68,6 +68,7 @@ import {
 	observerOutputTotalUsage,
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
+import { DEFAULT_OBSERVER_MAX_CHARS } from "./observer-prompt-budget.js";
 import { resolveProject } from "./project.js";
 import { normalizeProjectLabel } from "./project-label.js";
 import { resolveAdjacentDelegatedContext } from "./raw-event-context.js";
@@ -645,7 +646,7 @@ function createIngestSession(
 	const storeSummary = !options.historicalRecovery && (options.storeSummary ?? true);
 	const storeTyped = options.storeTyped ?? true;
 	const maxChars = options.maxChars ?? 12_000;
-	const observerMaxChars = options.observerMaxChars ?? 12_000;
+	const observerMaxChars = options.observerMaxChars ?? DEFAULT_OBSERVER_MAX_CHARS;
 	const captureRoutingEnabled =
 		!options.historicalRecovery && process.env.CODEMEM_CAPTURE_ROUTING === "1";
 	const d = drizzle(store.db, { schema });
@@ -892,9 +893,12 @@ async function runObserverInference(
 ): Promise<ObserverInferenceStage> {
 	const selection = selectObserverForIngest(stage, prepared, options);
 	const outputCapability = resolveObserverOutputCapability(selection.observer);
-	const { system, user } = buildObserverPrompt(prepared.observerContext, {
+	const prompt = buildObserverPrompt(prepared.observerContext, {
 		outputMode: outputCapability.actualMode,
+		maxChars: selection.observer.maxChars ?? stage.observerMaxChars,
 	});
+	selection.observer.noteContentSections?.(prompt);
+	const { system, user } = prompt;
 	options.historicalRecovery?.onObserverInferenceStart?.();
 	const output = await observeRawEventOutput(selection.observer, system, user, outputCapability, {
 		store,

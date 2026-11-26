@@ -10,9 +10,15 @@ import {
 	DELEGATED_BRIEF_LABEL,
 	MAX_DELEGATED_CONTEXT_CHARS,
 } from "./capture-context.js";
+import { budgetToolEvents } from "./ingest-events.js";
 import { stripPrivate, stripPrivateObj } from "./ingest-sanitize.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
+import {
+	DEFAULT_OBSERVER_MAX_CHARS,
+	type ObserverContentSection,
+	observerContentBudget,
+} from "./observer-prompt-budget.js";
 
 // ---------------------------------------------------------------------------
 // Constants — prompt fragments matching Python's observer_prompts.py
@@ -261,27 +267,54 @@ function formatJson(value: unknown): string {
 	}
 }
 
-/** Every rendered value of a tool event, keys included, loses its private blocks before escaping. */
-function formatToolEvent(event: ToolEvent): string {
-	const toolName = stripPrivate(event.toolName);
-	const timestamp = stripPrivate(event.timestamp ?? "");
-	const cwd = stripPrivate(event.cwd ?? "");
-	const params = escapeXml(formatJson(stripPrivateObj(event.toolInput)));
-	const outcome = escapeXml(formatJson(stripPrivateObj(event.toolOutput)));
-	const error = escapeXml(formatJson(stripPrivateObj(event.toolError)));
+/** A tool event whose every rendered value, keys included, has lost its private blocks. */
+function visibleToolEvent(event: ToolEvent): ToolEvent {
+	return {
+		toolName: stripPrivate(event.toolName),
+		timestamp: stripPrivate(event.timestamp ?? "") || null,
+		cwd: stripPrivate(event.cwd ?? "") || null,
+		toolInput: stripPrivateObj(event.toolInput),
+		toolOutput: stripPrivateObj(event.toolOutput),
+		toolError: stripPrivateObj(event.toolError),
+	};
+}
+
+type ToolEventField = "parameters" | "outcome" | "error";
+const TOOL_EVENT_FIELDS: readonly ToolEventField[] = ["parameters", "outcome", "error"];
+
+/** A tool event's field values as text, with private blocks removed. */
+function toolEventFields(event: ToolEvent): Record<ToolEventField, string> {
+	return {
+		parameters: formatJson(stripPrivateObj(event.toolInput)),
+		outcome: formatJson(stripPrivateObj(event.toolOutput)),
+		error: formatJson(stripPrivateObj(event.toolError)),
+	};
+}
+
+/** One tool event with these escaped field values; a field without text is left out. */
+function renderToolEvent(event: ToolEvent, escaped: Record<ToolEventField, string>): string {
 	const parts = ["<observed_from_primary_session>"];
-	parts.push(`  <what_happened>${escapeXml(toolName)}</what_happened>`);
-	if (timestamp) {
-		parts.push(`  <occurred_at>${escapeXml(timestamp)}</occurred_at>`);
+	parts.push(`  <what_happened>${escapeXml(event.toolName)}</what_happened>`);
+	if (event.timestamp) {
+		parts.push(`  <occurred_at>${escapeXml(event.timestamp)}</occurred_at>`);
 	}
-	if (cwd) {
-		parts.push(`  <working_directory>${escapeXml(cwd)}</working_directory>`);
+	if (event.cwd) {
+		parts.push(`  <working_directory>${escapeXml(event.cwd)}</working_directory>`);
 	}
-	if (params) parts.push(`  <parameters>${params}</parameters>`);
-	if (outcome) parts.push(`  <outcome>${outcome}</outcome>`);
-	if (error) parts.push(`  <error>${error}</error>`);
+	for (const field of TOOL_EVENT_FIELDS) {
+		if (escaped[field]) parts.push(`  <${field}>${escaped[field]}</${field}>`);
+	}
 	parts.push("</observed_from_primary_session>");
 	return parts.join("\n");
+}
+
+function formatToolEvent(event: ToolEvent): string {
+	const fields = toolEventFields(event);
+	return renderToolEvent(event, {
+		parameters: escapeXml(fields.parameters),
+		outcome: escapeXml(fields.outcome),
+		error: escapeXml(fields.error),
+	});
 }
 
 function truncateMiddle(text: string, limit: number): string {
@@ -364,16 +397,6 @@ function buildObserverSystemPrompt(
 	return systemBlocks.join("\n\n").trim();
 }
 
-function appendDelegatedBriefs(user: string, briefs: readonly string[]): string {
-	const label = `\n\n[${DELEGATED_BRIEF_LABEL}]\n`;
-	const body = escapedDelegatedBriefsWithinBudget(
-		boundedDelegatedBriefs(briefs),
-		MAX_DELEGATED_CONTEXT_CHARS - label.length,
-	);
-	if (!body) return user;
-	return `${user}${label}${body}`;
-}
-
 function escapedDelegatedBriefsWithinBudget(briefs: readonly string[], budget: number): string {
 	let remaining = budget;
 	const bounded: string[] = [];
@@ -411,69 +434,348 @@ function escapeXmlWithinBudget(text: string, budget: number): string {
  */
 export function buildObserverPrompt(
 	context: ObserverContext,
-	options: { outputMode?: "json_schema" | "legacy_xml" } = {},
+	options: {
+		outputMode?: "json_schema" | "legacy_xml";
+		/** The observer's `observer_max_chars`; when set, over-budget content is fitted by section. */
+		maxChars?: number;
+	} = {},
 ): {
 	system: string;
 	user: string;
+	/** The assembled content's length before fitting. */
+	contentChars: number;
+	sections: ObserverContentSection[];
 } {
 	const outputMode = options.outputMode ?? "legacy_xml";
 	const system = buildObserverSystemPrompt(context, outputMode);
+	const sections = observedContentSections(context);
+	const full = assembleContent(sections.map((section) => section.text));
+	const contentBudget =
+		options.maxChars === undefined
+			? Number.POSITIVE_INFINITY
+			: observerContentBudget(options.maxChars, system.length);
+	const sent =
+		full.length <= contentBudget
+			? sections.map((section) => section.text)
+			: fitSections(sections, contentBudget);
+	return {
+		system,
+		user: assembleContent(sent),
+		contentChars: full.length,
+		sections: sections.map((section, index) => ({
+			name: section.name,
+			chars: section.text.length,
+			sentChars: sent[index]?.length ?? 0,
+		})),
+	};
+}
 
-	// User prompt: observed session context. User and assistant text loses its private
-	// blocks here, whatever path built the context.
-	const userBlocks: string[] = ["Observed session context:"];
+const CONTENT_HEADER = "Observed session context:";
+const CUT_MARKER = "\n[...]\n";
+/** Where tool events were left out. */
+const OMITTED_MARKER = CUT_MARKER.trim();
+/** A diff summary or recent-files list keeps at most this many characters when content is cut. */
+const FILE_LIST_CAP = 400;
+
+type ContentSectionName =
+	| "request"
+	| "transcript"
+	| "diff_summary"
+	| "recent_files"
+	| "tool_events"
+	| "summary_context"
+	| "delegated_briefs";
+
+interface ContentSection {
+	name: ContentSectionName;
+	/** The section as sent when content is within budget. */
+	text: string;
+	/** The section within `limit` characters with a cut marker, or "" to leave it out. */
+	fit: (limit: number) => string;
+}
+
+/**
+ * The observed sections in the order they are sent; absent sections are left out.
+ * User and assistant text loses its private blocks here, whatever path built the context.
+ */
+function observedContentSections(context: ObserverContext): ContentSection[] {
+	const sections: ContentSection[] = [];
 	const userPrompt = stripPrivate(context.userPrompt);
-	const project = stripPrivate(context.project ?? "");
+	if (userPrompt) sections.push(requestSection(context, userPrompt));
 	const transcript = stripPrivate(context.transcript);
-	const diffSummary = stripPrivate(context.diffSummary);
-	const recentFiles = stripPrivate(context.recentFiles);
-	const assistant = stripPrivate(context.lastAssistantMessage ?? "");
-
-	if (userPrompt) {
-		const promptBlock = ["<observed_from_primary_session>"];
-		promptBlock.push(`  <user_request>${escapeXml(userPrompt)}</user_request>`);
-		if (context.promptNumber != null) {
-			promptBlock.push(`  <prompt_number>${context.promptNumber}</prompt_number>`);
-		}
-		if (project) {
-			promptBlock.push(`  <project>${escapeXml(project)}</project>`);
-		}
-		promptBlock.push("</observed_from_primary_session>");
-		userBlocks.push(promptBlock.join("\n"));
-	}
-
 	if (transcript.trim()) {
-		userBlocks.push(
-			`<conversation_transcript>\n${escapeXml(transcript)}\n</conversation_transcript>`,
+		sections.push(
+			wrappedSection(
+				"transcript",
+				"<conversation_transcript>\n",
+				transcript,
+				"\n</conversation_transcript>",
+			),
 		);
 	}
-
-	if (diffSummary) {
-		userBlocks.push(
-			`<observed_from_primary_session>\n  <diff_summary>${escapeXml(diffSummary)}</diff_summary>\n</observed_from_primary_session>`,
+	const diffSummary = stripPrivate(context.diffSummary);
+	if (diffSummary) sections.push(primarySessionSection("diff_summary", diffSummary));
+	const recentFiles = stripPrivate(context.recentFiles);
+	if (recentFiles) sections.push(primarySessionSection("recent_files", recentFiles));
+	if (context.toolEvents.length > 0) {
+		sections.push(toolEventsSection(context.toolEvents.map(visibleToolEvent)));
+	}
+	const assistant = context.includeSummary ? stripPrivate(context.lastAssistantMessage ?? "") : "";
+	if (assistant) {
+		sections.push(
+			wrappedSection(
+				"summary_context",
+				"Summary context:\n\n<summary_context>\n  <assistant_response>",
+				assistant,
+				"</assistant_response>\n</summary_context>",
+			),
 		);
 	}
+	const briefs = delegatedBriefsSection(context.delegatedBriefs ?? []);
+	if (briefs) sections.push(briefs);
+	return sections;
+}
 
-	if (recentFiles) {
-		userBlocks.push(
-			`<observed_from_primary_session>\n  <recent_files>${escapeXml(recentFiles)}</recent_files>\n</observed_from_primary_session>`,
+function assembleContent(sectionTexts: readonly string[]): string {
+	return [CONTENT_HEADER, ...sectionTexts.filter(Boolean)].join("\n\n");
+}
+
+function requestSection(context: ObserverContext, userPrompt: string): ContentSection {
+	const suffix = ["</user_request>"];
+	if (context.promptNumber != null) {
+		suffix.push(`  <prompt_number>${context.promptNumber}</prompt_number>`);
+	}
+	const project = stripPrivate(context.project ?? "");
+	if (project) suffix.push(`  <project>${escapeXml(project)}</project>`);
+	suffix.push("</observed_from_primary_session>");
+	return wrappedSection(
+		"request",
+		"<observed_from_primary_session>\n  <user_request>",
+		userPrompt,
+		suffix.join("\n"),
+	);
+}
+
+function primarySessionSection(
+	name: "diff_summary" | "recent_files",
+	text: string,
+): ContentSection {
+	return wrappedSection(
+		name,
+		`<observed_from_primary_session>\n  <${name}>`,
+		text,
+		`</${name}>\n</observed_from_primary_session>`,
+	);
+}
+
+function delegatedBriefsSection(delegatedBriefs: readonly string[]): ContentSection | null {
+	const prefix = `[${DELEGATED_BRIEF_LABEL}]\n`;
+	// Bounding also removes private blocks.
+	const briefs = boundedDelegatedBriefs(delegatedBriefs);
+	const text = escapedDelegatedBriefsWithinBudget(
+		briefs,
+		MAX_DELEGATED_CONTEXT_CHARS - DELEGATED_BRIEF_LABEL.length - 5,
+	);
+	if (!text) return null;
+	return {
+		name: "delegated_briefs",
+		text: `${prefix}${text}`,
+		fit: (limit) => {
+			const cut = cutEscaped(briefs.join("\n\n"), limit - prefix.length);
+			return cut ? `${prefix}${cut}` : "";
+		},
+	};
+}
+
+/** A section whose `raw` text is escaped inside fixed markup; only the text is ever cut. */
+function wrappedSection(
+	name: ContentSectionName,
+	prefix: string,
+	raw: string,
+	suffix: string,
+): ContentSection {
+	return {
+		name,
+		text: `${prefix}${escapeXml(raw)}${suffix}`,
+		fit: (limit) => {
+			const cut = cutEscaped(raw, limit - prefix.length - suffix.length);
+			return cut ? `${prefix}${cut}${suffix}` : "";
+		},
+	};
+}
+
+/** A kept tool event gets at least this many characters before a lower-priority event is left out. */
+const MIN_TOOL_EVENT_CHARS = 300;
+
+/**
+ * Over budget, every tool event's field values are cut head-and-tail inside their
+ * tags. When that would leave an event fewer than MIN_TOOL_EVENT_CHARS, or a field
+ * with nothing, events are left out one at a time by the existing priority (errors,
+ * then edits and writes, shell commands, reads, other tools; earlier first within a
+ * rank). Kept events stay in their original order, with a marker where events were
+ * left out.
+ */
+function toolEventsSection(events: ToolEvent[]): ContentSection {
+	return {
+		name: "tool_events",
+		text: events.map((event) => formatToolEvent(event)).join("\n\n"),
+		fit: (limit) => {
+			for (let count = events.length; count >= 1; count -= 1) {
+				const kept =
+					count === events.length
+						? events
+						: budgetToolEvents(events, Number.MAX_SAFE_INTEGER, count);
+				const fitted = fitToolEvents(events, kept, limit);
+				if (fitted !== null) return fitted;
+			}
+			return OMITTED_MARKER.length <= limit ? OMITTED_MARKER : "";
+		},
+	};
+}
+
+/** The kept events within `limit`, or null when one of them would not fit. */
+function fitToolEvents(
+	events: readonly ToolEvent[],
+	kept: readonly ToolEvent[],
+	limit: number,
+): string | null {
+	const keptSet = new Set(kept);
+	// null marks where events were left out.
+	const parts: Array<ToolEvent | null> = [];
+	for (const event of events) {
+		if (keptSet.has(event)) parts.push(event);
+		else if (parts.at(-1) !== null) parts.push(null);
+	}
+	const keptParts = parts.filter((part): part is ToolEvent => part !== null);
+	const sizes = keptParts.map((event) => formatToolEvent(event).length);
+	const markers = parts.length - keptParts.length;
+	const available = limit - 2 * (parts.length - 1) - markers * OMITTED_MARKER.length;
+	const limits = waterFill(sizes, available);
+	const fitted = keptParts.map((event, index) => {
+		const text = fitToolEvent(event, limits[index] ?? 0);
+		const minimum = Math.min(MIN_TOOL_EVENT_CHARS, sizes[index] ?? 0);
+		return text.length >= minimum ? text : "";
+	});
+	if (fitted.some((text) => !text)) return null;
+	let next = 0;
+	return parts.map((part) => (part === null ? OMITTED_MARKER : fitted[next++])).join("\n\n");
+}
+
+/**
+ * One tool event within `limit`: the field values are cut inside complete tags, the
+ * shorter fields first kept whole, and "" when a field would be left with nothing.
+ */
+function fitToolEvent(event: ToolEvent, limit: number): string {
+	const full = formatToolEvent(event);
+	if (full.length <= limit) return full;
+	const fields = toolEventFields(event);
+	const present = TOOL_EVENT_FIELDS.filter((field) => fields[field]);
+	const placeholder = { parameters: "", outcome: "", error: "" };
+	for (const field of present) placeholder[field] = " ";
+	const markup = renderToolEvent(event, placeholder).length - present.length;
+	const limits = waterFill(
+		present.map((field) => escapeXml(fields[field]).length),
+		limit - markup,
+		{ proportional: false },
+	);
+	const escaped = { parameters: "", outcome: "", error: "" };
+	for (const [index, field] of present.entries()) {
+		escaped[field] = cutEscaped(fields[field], limits[index] ?? 0);
+		if (!escaped[field]) return "";
+	}
+	return renderToolEvent(event, escaped);
+}
+
+/**
+ * Split `budget` across items, smallest first, so an item that fits whole passes its
+ * spare share to the larger ones: in proportion to size, or in equal shares so short
+ * items stay whole. Limits never exceed sizes.
+ */
+function waterFill(
+	sizes: readonly number[],
+	budget: number,
+	{ proportional }: { proportional: boolean } = { proportional: true },
+): number[] {
+	const order = sizes.map((size, index) => ({ size, index })).sort((a, b) => a.size - b.size);
+	const limits = sizes.map(() => 0);
+	let remaining = Math.max(0, budget);
+	let total = sizes.reduce((sum, size) => sum + size, 0);
+	for (const [position, { size, index }] of order.entries()) {
+		const equalShare = Math.floor(remaining / (order.length - position));
+		const share = proportional ? Math.floor((remaining * size) / Math.max(1, total)) : equalShare;
+		const limit = Math.min(size, share);
+		limits[index] = limit;
+		remaining -= limit;
+		total -= size;
+	}
+	return limits;
+}
+
+/**
+ * Cut over-budget content by section instead of taking a prefix. The request stays
+ * whole, unless it alone is over budget, in which case it is the only section sent.
+ * The summary context keeps at most a quarter of the budget, each file list at most
+ * FILE_LIST_CAP, and the transcript and tool events share the rest in proportion to
+ * their size. Earlier delegated briefs are context only, so they get what is left,
+ * as they did when they sat at the end of a prefix cut.
+ */
+function fitSections(sections: readonly ContentSection[], contentBudget: number): string[] {
+	const separator = 2;
+	let remaining = contentBudget - CONTENT_HEADER.length;
+	const limits = new Map<ContentSection, number>();
+	const allot = (section: ContentSection, cap: number) => {
+		const limit = Math.max(0, Math.min(section.text.length, cap, remaining - separator));
+		limits.set(section, limit);
+		if (limit > 0) remaining -= limit + separator;
+	};
+	const named = (...names: ContentSectionName[]) =>
+		sections.filter((section) => names.includes(section.name));
+	const [request] = named("request");
+	if (request && request.text.length + separator > remaining) {
+		return sections.map((section) =>
+			section === request ? request.fit(remaining - separator) : "",
 		);
 	}
+	if (request) allot(request, request.text.length);
+	for (const section of named("summary_context")) allot(section, Math.floor(contentBudget / 4));
+	for (const section of named("diff_summary", "recent_files")) allot(section, FILE_LIST_CAP);
+	const shared = named("transcript", "tool_events");
+	const shares = waterFill(
+		shared.map((section) => section.text.length + separator),
+		remaining,
+	);
+	for (const [index, section] of shared.entries()) allot(section, (shares[index] ?? 0) - separator);
+	for (const section of named("delegated_briefs")) allot(section, section.text.length);
+	return sections.map((section) => {
+		const limit = limits.get(section) ?? 0;
+		return section.text.length <= limit ? section.text : section.fit(limit);
+	});
+}
 
-	for (const event of context.toolEvents) {
-		userBlocks.push(formatToolEvent(event));
+/** Head, middle and tail of `text` within `limit`, with cut markers; "" when nothing fits. */
+function cutWithMarker(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	if (limit < CUT_MARKER.length + 2) return "";
+	if (limit > 30) return truncateMiddle(text, limit);
+	const keep = Math.floor((limit - CUT_MARKER.length) / 2);
+	return `${text.slice(0, keep)}${CUT_MARKER}${text.slice(text.length - keep)}`;
+}
+
+/**
+ * `raw` escaped within `limit`, cut head-and-tail before escaping so an entity is never
+ * split; "" when nothing fits.
+ */
+function cutEscaped(raw: string, limit: number): string {
+	const whole = escapeXml(raw);
+	if (whole.length <= limit) return whole;
+	let rawLimit = Math.min(raw.length - 1, limit);
+	while (rawLimit >= CUT_MARKER.length + 2) {
+		const escaped = escapeXml(cutWithMarker(raw, rawLimit).toWellFormed());
+		if (escaped.length <= limit) return escaped;
+		// Escaping lengthens the text, so shrink the raw cut by the overflow's share.
+		rawLimit = Math.min(rawLimit - 1, Math.floor((rawLimit * limit) / escaped.length));
 	}
-
-	if (context.includeSummary && assistant) {
-		userBlocks.push("Summary context:");
-		userBlocks.push(
-			`<summary_context>\n  <assistant_response>${escapeXml(assistant)}</assistant_response>\n</summary_context>`,
-		);
-	}
-
-	const user = appendDelegatedBriefs(userBlocks.join("\n\n").trim(), context.delegatedBriefs ?? []);
-
-	return { system, user };
+	return "";
 }
 
 /** Build the one-shot prompt used to repair malformed observer XML. */
@@ -481,7 +783,7 @@ export function buildObserverRepairPrompt(
 	system: string,
 	user: string,
 	previousRaw: string,
-	maxChars = 12_000,
+	maxChars = DEFAULT_OBSERVER_MAX_CHARS,
 ): { system: string; user: string } {
 	const repairDirective =
 		"Your previous reply was invalid because it did not follow the required XML-only schema. " +
@@ -491,10 +793,8 @@ export function buildObserverRepairPrompt(
 		"For that observation, copy the entire previous reply into <narrative>; use single-clause phrases from it for <title>, <subtitle>, and <fact>; preserve negation words; " +
 		"use only the fixed concept taxonomy and file paths that literally appear in the previous reply. Do not include prose outside XML.";
 	const repairSystem = `${repairDirective}\n\n${system}`;
-	const minUserBudget = Math.floor(maxChars * 0.25);
-	const systemBudget = Math.max(0, maxChars - minUserBudget);
-	const clippedSystemLength = Math.min(repairSystem.length, systemBudget);
-	const userBudget = Math.max(minUserBudget, maxChars - clippedSystemLength);
+	// The observer sends these instructions whole, so the content gets what they leave.
+	const userBudget = observerContentBudget(maxChars, repairSystem.length);
 	const previousPrefix = "Previous invalid response to rewrite as valid XML:\n";
 	const contextPrefix = "\n\nOriginal session context:\n";
 	const contentBudget = Math.max(0, userBudget - previousPrefix.length - contextPrefix.length);

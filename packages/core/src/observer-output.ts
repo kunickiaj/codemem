@@ -404,13 +404,12 @@ async function observeJsonSchema(
 			OBSERVER_ENVELOPE_JSON_SCHEMA,
 		);
 	const firstResponse = await invoke();
+	// Snapshot the first attempt before a retry replaces the client's last-call status.
+	const firstStatus = snapshotObserverStatus(observer, firstResponse);
 	const retryReason = observerOutputRetryReason(firstResponse);
 	const retryResponse = retryReason ? await invoke() : null;
 	const response = retryResponse ?? firstResponse;
-	const retryDiagnostics = {
-		retryAttempted: retryReason != null,
-		retryReason,
-	};
+	const retryDiagnostics = { retryAttempted: retryReason != null, retryReason };
 	const telemetry = failureTelemetry(firstResponse, retryResponse);
 	const responseFailure = structuredResponseFailure(
 		response,
@@ -440,7 +439,9 @@ async function observeJsonSchema(
 		normalizeObserverEnvelopeV1(parsedEnvelope.envelope),
 	);
 	return {
-		initial: retryReason ? toAttempt(observer, firstResponse, emptyParsedOutput()) : finalAttempt,
+		initial: retryReason
+			? { ...toAttempt(observer, firstResponse, emptyParsedOutput()), status: firstStatus }
+			: finalAttempt,
 		repaired: retryReason ? finalAttempt : null,
 		final: finalAttempt,
 		repairApplied: false,

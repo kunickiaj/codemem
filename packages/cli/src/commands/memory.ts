@@ -31,6 +31,7 @@ import {
 	ObserverOutputError,
 	type ObserverOutputMode,
 	ObserverOutputTransportError,
+	type ObserverPromptBudget,
 	type ObserverTokenUsage,
 	observerBaseUrlForProviderOverride,
 	replayBatchExtraction,
@@ -923,15 +924,7 @@ function createMemoryExtractionReplayCommand(): Command {
 						p.log.message(`  - ${reason}`);
 					}
 				}
-				p.log.info(
-					[
-						`Fresh summaries: ${result.evaluation.counts.summaries}`,
-						`Fresh observations: ${result.evaluation.counts.observations}`,
-						`Summary thread coverage: ${result.evaluation.coverage.summaryThreadCoverage}`,
-						`Observation thread coverage: ${result.evaluation.coverage.observationThreadCoverage}`,
-						`Total thread coverage: ${result.evaluation.coverage.totalThreadCoverage}`,
-					].join("\n"),
-				);
+				p.log.info(replayCoverageLines(result).join("\n"));
 				p.outro("done");
 			} catch (error) {
 				if (error instanceof ContextOnlyReplayError) {
@@ -1064,6 +1057,54 @@ export function formatBenchmarkReasoningEffort(summary: {
 	const applied = summary.reasoningEffort ?? "not transmitted";
 	if (summary.reasoningEffortFallbackRuns === 0) return applied;
 	return `${applied} (requested ${summary.requestedReasoningEffort}; ${summary.reasoningEffortFallbackRuns} run(s) used the service default)`;
+}
+
+function replayCoverageLines(result: ExtractionReplayResult): string[] {
+	return [
+		`Prompt: ${formatPromptBudget(result.observer.promptBudget)}`,
+		`Fresh summaries: ${result.evaluation.counts.summaries}`,
+		`Fresh observations: ${result.evaluation.counts.observations}`,
+		`Summary thread coverage: ${result.evaluation.coverage.summaryThreadCoverage}`,
+		`Observation thread coverage: ${result.evaluation.coverage.observationThreadCoverage}`,
+		`Total thread coverage: ${result.evaluation.coverage.totalThreadCoverage}`,
+	];
+}
+
+/** One call's prompt lengths, for example "instructions 10419, content 12000 -> 3000 (clipped) of budget 12000". */
+export function formatPromptBudget(budget: ObserverPromptBudget | null): string {
+	if (!budget) return "not measured";
+	const clipped = budget.contentClipped ? " (clipped)" : "";
+	const over = budget.instructionsOverBudget ? "; instructions exceed the budget" : "";
+	const sections = budget.sections
+		? `; sections ${budget.sections.map((section) => `${section.name} ${section.chars} -> ${section.sentChars}`).join(", ")}`
+		: "";
+	return `instructions ${budget.instructionChars}, content ${budget.contentChars} -> ${budget.sentContentChars}${clipped} of budget ${budget.maxChars}${over}${sections}`;
+}
+
+/** The budget across benchmark runs and how many runs clipped content or overran it. */
+export function formatBenchmarkPromptBudget(
+	runs: readonly { promptBudget: ObserverPromptBudget | null }[],
+): string {
+	const budgets = runs.flatMap((run) => (run.promptBudget ? [run.promptBudget] : []));
+	if (budgets.length === 0) return "not measured";
+	const limits = new Set(budgets.map((budget) => budget.maxChars));
+	const clipped = budgets.filter((budget) => budget.contentClipped).length;
+	const over = budgets.filter((budget) => budget.instructionsOverBudget).length;
+	const limit = limits.size === 1 ? String(budgets[0]?.maxChars) : "mixed";
+	return `${limit}; content clipped in ${clipped}/${budgets.length} run(s); instructions over budget in ${over}`;
+}
+
+function benchmarkRunObserver(observer: ExtractionReplayResult["observer"]) {
+	return {
+		provider: observer.provider,
+		model: observer.model,
+		transport: observer.transport,
+		requestedModel: observer.requestedModel,
+		resolvedModel: observer.resolvedModel,
+		modelFallbackApplied: observer.modelFallbackApplied,
+		modelFallbackReason: observer.modelFallbackReason,
+		promptBudget: observer.promptBudget,
+	};
 }
 
 export function summarizeBenchmarkReasoning(
@@ -1515,6 +1556,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						resolvedModel: string | null;
 						modelFallbackApplied: boolean;
 						modelFallbackReason: string | null;
+						promptBudget: ObserverPromptBudget | null;
 						tier: "simple" | "rich" | null;
 						openaiUseResponses: boolean;
 						reasoningEffort: string | null;
@@ -1557,6 +1599,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					resolvedModel: string | null;
 					modelFallbackApplied: boolean;
 					modelFallbackReason: string | null;
+					promptBudget: ObserverPromptBudget | null;
 					requestedOutputMode: ObserverOutputMode;
 					actualOutputMode: ObserverOutputMode;
 					outputValidation: "valid" | "invalid" | "not_applicable";
@@ -1804,13 +1847,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							status: reconciled.status,
 							reason: reconciled.reason,
 							tier: result.observer.tier ?? "manual",
-							provider: result.observer.provider,
-							model: result.observer.model,
-							transport: result.observer.transport,
-							requestedModel: result.observer.requestedModel,
-							resolvedModel: result.observer.resolvedModel,
-							modelFallbackApplied: result.observer.modelFallbackApplied,
-							modelFallbackReason: result.observer.modelFallbackReason,
+							...benchmarkRunObserver(result.observer),
 							requestedOutputMode: result.observer.requestedOutputMode,
 							actualOutputMode: result.observer.actualOutputMode,
 							outputValidation: result.observer.outputValidation,
@@ -1983,6 +2020,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Max output tokens: ${UNSENT_REQUEST_LIMIT_TRANSPORTS.has(observerSummary.transport) ? "not transmitted" : (observerSummary.maxOutputTokens ?? "mixed")}`,
 						`Temperature: ${observerSummary.transport === "mixed" ? "mixed" : (observerSummary.temperature ?? "not transmitted")}`,
 						`Transcript budget override: ${transcriptBudget ?? "default"}`,
+						`Prompt budget: ${formatBenchmarkPromptBudget(attempts)}`,
 						`Repetitions: ${summary.repetitions}`,
 						`Context-only skips: ${summary.contextOnlySkipped} (${summary.scheduledTotal} scheduled; ${summary.total} observer attempts)`,
 						`Shape-quality passes: ${summary.shapeQualityPasses}/${summary.shapeQualityTotal}`,

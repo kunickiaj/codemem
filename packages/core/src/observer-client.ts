@@ -45,6 +45,13 @@ import {
 	stripTrailingCommas,
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
+import {
+	budgetObserverPrompts,
+	DEFAULT_OBSERVER_MAX_CHARS,
+	MIN_OBSERVER_MAX_CHARS,
+	type ObserverPromptBudget,
+	type PreparedObserverPrompt,
+} from "./observer-prompt-budget.js";
 import { parseObserverSSE } from "./observer-sse.js";
 import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
@@ -215,6 +222,10 @@ export interface ObserverStatus {
 	reasoningEffortFallbackReason?: V2EffortReport["fallbackReason"];
 	/** The last routed request's effort per tier, when tier routing uses separate clients. */
 	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
+	/** Lengths of the last call's instructions and content against `observer_max_chars`. */
+	promptBudget?: ObserverPromptBudget | null;
+	/** The last routed call's prompt budget per tier, when tier routing uses separate clients. */
+	tierPromptBudgets?: Partial<Record<"simple" | "rich", ObserverPromptBudget>>;
 	lastError?: { code: string; message: string } | null;
 }
 
@@ -394,6 +405,16 @@ function parseIntSafe(value: unknown, fallback: number): number {
 	if (value == null) return fallback;
 	const n = typeof value === "string" ? Number.parseInt(value, 10) : Number(value);
 	return Number.isFinite(n) ? n : fallback;
+}
+
+/** A configured `observer_max_chars`, raised to the minimum with a warning when lower. */
+function maxCharsFrom(value: unknown, fallback: number): number {
+	const parsed = parseIntSafe(value, fallback);
+	if (parsed >= MIN_OBSERVER_MAX_CHARS) return parsed;
+	console.warn(
+		`[codemem] observer_max_chars ${parsed} is below the minimum of ${MIN_OBSERVER_MAX_CHARS}; using ${MIN_OBSERVER_MAX_CHARS}.`,
+	);
+	return MIN_OBSERVER_MAX_CHARS;
 }
 
 function coerceStringMap(value: unknown): Record<string, string> | null {
@@ -669,7 +690,7 @@ export function loadObserverConfig(
 		observerReasoningEffort: null,
 		observerReasoningSummary: null,
 		observerMaxOutputTokens: null,
-		observerMaxChars: 12_000,
+		observerMaxChars: DEFAULT_OBSERVER_MAX_CHARS,
 		observerMaxTokens: 4_000,
 		observerHeaders: {},
 		observerAuthSource: "auto",
@@ -742,7 +763,7 @@ export function loadObserverConfig(
 		const n = Number(data.observer_max_output_tokens);
 		cfg.observerMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerMaxOutputTokens;
 	}
-	cfg.observerMaxChars = parseIntSafe(data.observer_max_chars, cfg.observerMaxChars);
+	cfg.observerMaxChars = maxCharsFrom(data.observer_max_chars, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(data.observer_max_tokens, cfg.observerMaxTokens);
 	if (typeof data.observer_auth_source === "string")
 		cfg.observerAuthSource = data.observer_auth_source;
@@ -825,7 +846,7 @@ export function loadObserverConfig(
 	}
 	cfg.observerAuthSource = authSourceWithOverride(cfg.observerAuthSource, options);
 	cfg.observerAuthFile = process.env.CODEMEM_OBSERVER_AUTH_FILE ?? cfg.observerAuthFile;
-	cfg.observerMaxChars = parseIntSafe(process.env.CODEMEM_OBSERVER_MAX_CHARS, cfg.observerMaxChars);
+	cfg.observerMaxChars = maxCharsFrom(process.env.CODEMEM_OBSERVER_MAX_CHARS, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(
 		process.env.CODEMEM_OBSERVER_MAX_TOKENS,
 		cfg.observerMaxTokens,
@@ -1549,21 +1570,29 @@ function nowMs(): number {
 	return Date.now();
 }
 
-function clipObserverPrompts(
-	systemPrompt: string,
-	userPrompt: string,
-	maxChars: number,
-): { system: string; user: string } {
-	const minUserBudget = Math.floor(maxChars * 0.25);
-	const systemBudget = Math.max(0, maxChars - minUserBudget);
-	const system = (
-		systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt
-	).toWellFormed();
-	const userBudget = Math.max(minUserBudget, maxChars - system.length);
-	const user = (
-		userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt
-	).toWellFormed();
-	return { system, user };
+type ObserverTier = "simple" | "rich";
+
+/** A tier client's last request, kept on the configured client for live status. */
+interface TierRequestStatus {
+	effort: ObserverEffortStatus;
+	promptBudget: ObserverPromptBudget | null;
+}
+
+/** One view of the recorded tier requests, or undefined when the view has nothing. */
+function tierView<T>(
+	statuses: Partial<Record<ObserverTier, TierRequestStatus>>,
+	pick: (status: TierRequestStatus) => T | null,
+): Partial<Record<ObserverTier, T>> | undefined {
+	const entries = Object.entries(statuses).flatMap(([tier, status]) => {
+		const value = status ? pick(status) : null;
+		return value == null ? [] : [[tier, value] as const];
+	});
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function copyPromptBudget(budget: ObserverPromptBudget | null): ObserverPromptBudget | null {
+	if (!budget) return null;
+	return { ...budget, sections: budget.sections?.map((section) => ({ ...section })) ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,7 +1671,10 @@ export class ObserverClient {
 	private _codexSidecarModelFallbackApplied = false;
 	private _codexSidecarModelFallbackReason: string | null = null;
 	private _openCodeV2Effort: V2EffortReport | null = null;
-	private readonly _tierEfforts: Partial<Record<"simple" | "rich", ObserverEffortStatus>> = {};
+	private readonly _tierStatuses: Partial<Record<ObserverTier, TierRequestStatus>> = {};
+	private _lastPromptBudget: ObserverPromptBudget | null = null;
+	private _preparedPrompt: PreparedObserverPrompt | null = null;
+	private _reportedOverBudgetInstructionChars: number | null = null;
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1915,6 +1947,10 @@ export class ObserverClient {
 				type: method,
 				hasToken: !!this.auth.token,
 			},
+			promptBudget: copyPromptBudget(this._lastPromptBudget),
+			tierPromptBudgets: tierView(this._tierStatuses, (tier) =>
+				copyPromptBudget(tier.promptBudget),
+			),
 		};
 		Object.assign(status, this._requestedVersusActualStatus());
 		if (this._lastErrorMessage) {
@@ -1942,10 +1978,8 @@ export class ObserverClient {
 				modelFallbackReason: this._codexSidecarModelFallbackReason,
 			};
 		}
-		const tiers =
-			Object.keys(this._tierEfforts).length > 0
-				? { tierReasoningEfforts: { ...this._tierEfforts } }
-				: {};
+		const efforts = tierView(this._tierStatuses, (tier) => ({ ...tier.effort }));
+		const tiers = efforts ? { tierReasoningEfforts: efforts } : {};
 		if (this.runtime !== "opencode_v2") return tiers;
 		const effort = this._openCodeV2Effort;
 		return {
@@ -1959,9 +1993,15 @@ export class ObserverClient {
 		};
 	}
 
-	/** Keep a tier client's last effort outcome where this client's status can report it. */
-	recordTierStatus(tier: "simple" | "rich", status: ObserverStatus): void {
-		this._tierEfforts[tier] = effortStatus(status);
+	/**
+	 * Keep a tier client's last request, its effort outcome and prompt budget, where this
+	 * client's status can report it.
+	 */
+	recordTierStatus(tier: ObserverTier, status: ObserverStatus): void {
+		this._tierStatuses[tier] = {
+			effort: effortStatus(status),
+			promptBudget: copyPromptBudget(status.promptBudget ?? null),
+		};
 	}
 
 	/** Force-refresh auth credentials. */
@@ -2000,8 +2040,7 @@ export class ObserverClient {
 	 */
 	async observe(systemPrompt: string, userPrompt: string): Promise<ObserverResponse> {
 		const startedAt = nowMs();
-		// Enforce configured prompt-length cap (matches Python behavior)
-		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
+		const clipped = this._budgetPrompts(systemPrompt, userPrompt);
 
 		if (this.runtime === "claude_sidecar") {
 			this._lastResolvedModel = this._sidecarModel;
@@ -2017,6 +2056,49 @@ export class ObserverClient {
 		);
 		if (call.raw) this._clearLastError();
 		return this._buildResponse(call, startedAt, authRetry);
+	}
+
+	/**
+	 * Attach the lengths a builder prepared for this content, for status and replay.
+	 * Every call that sends this exact content uses them, so a retry reports the same
+	 * pre-fit lengths; other content, such as a repair prompt, does not.
+	 */
+	noteContentSections(prepared: PreparedObserverPrompt): void {
+		this._preparedPrompt = {
+			user: prepared.user,
+			contentChars: prepared.contentChars,
+			sections: prepared.sections.map((section) => ({ ...section })),
+		};
+	}
+
+	/**
+	 * Fit a call into `observer_max_chars` without cutting its instructions. Instructions
+	 * longer than the whole budget are a configuration error: log it once per length and
+	 * still send them in full.
+	 */
+	private _budgetPrompts(
+		systemPrompt: string,
+		userPrompt: string,
+	): { system: string; user: string } {
+		const prepared = this._preparedPrompt?.user === userPrompt ? this._preparedPrompt : null;
+		const { system, user, budget } = budgetObserverPrompts(
+			systemPrompt,
+			userPrompt,
+			this.maxChars,
+			prepared,
+		);
+		this._lastPromptBudget = budget;
+		if (
+			budget.instructionsOverBudget &&
+			this._reportedOverBudgetInstructionChars !== budget.instructionChars
+		) {
+			this._reportedOverBudgetInstructionChars = budget.instructionChars;
+			console.warn(
+				`[codemem] Observer instructions are ${budget.instructionChars} characters, more than ` +
+					`observer_max_chars (${budget.maxChars}). They are sent in full; raise observer_max_chars.`,
+			);
+		}
+		return { system, user };
 	}
 
 	private async _callWithAuthRetry<T extends ObserverCallResult>(
@@ -2095,7 +2177,7 @@ export class ObserverClient {
 		schema: Record<string, unknown>,
 	): Promise<ObserverStructuredJsonResponse> {
 		const startedAt = nowMs();
-		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
+		const clipped = this._budgetPrompts(systemPrompt, userPrompt);
 		if (this.usesOpenAIStructuredOutputs()) {
 			if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 				this._initProvider(true);

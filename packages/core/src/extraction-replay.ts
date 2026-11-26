@@ -49,12 +49,14 @@ import {
 	type ObserverTokenUsage,
 } from "./observer-client.js";
 import {
+	type ObserverOutputAttempt,
 	type ObserverOutputCapabilityReason,
 	type ObserverOutputMode,
 	type ObserverOutputValidation,
 	observeAndNormalizeObserverOutput,
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
+import { DEFAULT_OBSERVER_MAX_CHARS, type ObserverPromptBudget } from "./observer-prompt-budget.js";
 import { resolveProject } from "./project.js";
 import {
 	hydrateRawEvent,
@@ -220,6 +222,8 @@ export interface ExtractionReplayResult {
 		reasoningSummary: string | null;
 		maxOutputTokens: number | null;
 		temperature: number | null;
+		/** The extraction call's instruction and content lengths against `observer_max_chars`. */
+		promptBudget: ObserverPromptBudget | null;
 		repairApplied: boolean;
 		requestedOutputMode: ObserverOutputMode;
 		actualOutputMode: Exclude<ObserverOutputMode, "forced_tool">;
@@ -285,6 +289,19 @@ export interface ExtractionReplayObserverIdentity {
 	reasoningSummary: string | null;
 	maxOutputTokens: number | null;
 	temperature: number | null;
+	/** The last call's instruction and content lengths against `observer_max_chars`. */
+	promptBudget: ObserverPromptBudget | null;
+}
+
+/** The extraction call's output and lengths; a repair or retry is reported separately. */
+function initialAttemptFields(initial: ObserverOutputAttempt) {
+	return {
+		promptBudget: initial.status.promptBudget ?? null,
+		initialRaw: initial.raw,
+		initialElapsedMs: initial.elapsedMs,
+		initialUsage: initial.usage,
+		initialParsed: initial.parsed,
+	};
 }
 
 type TransmittedRequestSettings = Pick<
@@ -356,6 +373,7 @@ export function extractionReplayObserverIdentity(
 		modelFallbackReason: status.modelFallbackReason ?? null,
 		openaiUseResponses: observer.openaiUseResponses,
 		...transmittedRequestSettings(observer, status, transport),
+		promptBudget: status.promptBudget ?? null,
 	};
 }
 
@@ -608,7 +626,7 @@ async function prepareReplayBatch(
 		};
 
 		const maxChars = opts.maxChars ?? 12_000;
-		const observerMaxChars = opts.observerMaxChars ?? 12_000;
+		const observerMaxChars = opts.observerMaxChars ?? DEFAULT_OBSERVER_MAX_CHARS;
 		const normalizedEvents = normalizeAdapterEvents(events);
 		const { primaryEvents, delegatedBriefs: currentDelegatedBriefs } =
 			partitionDelegatedBriefEvents(normalizedEvents);
@@ -738,7 +756,9 @@ async function replayPreparedBatch(
 	const outputCapability = resolveObserverOutputCapability(observer);
 	const prompt = buildObserverPrompt(prepared.observerContext, {
 		outputMode: outputCapability.actualMode,
+		maxChars: observer.maxChars,
 	});
+	observer.noteContentSections?.(prompt);
 	const response = await observeAndNormalizeObserverOutput(
 		observer,
 		prompt.system,
@@ -864,10 +884,7 @@ async function replayPreparedBatch(
 			repairAttempted,
 			retryAttempted: response.diagnostics.retryAttempted,
 			retryReason: response.diagnostics.retryReason,
-			initialRaw: response.initial.raw,
-			initialElapsedMs: response.initial.elapsedMs,
-			initialUsage: response.initial.usage,
-			initialParsed: response.initial.parsed,
+			...initialAttemptFields(response.initial),
 			initialDiagnostics,
 			repairedRaw: response.repaired?.raw ?? null,
 			repairedElapsedMs: response.repaired?.elapsedMs ?? null,

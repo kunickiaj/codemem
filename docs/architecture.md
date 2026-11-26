@@ -357,7 +357,7 @@ The observer turns raw session transcripts into typed, structured memories. It's
 - Legacy XML extraction scans forwards and indexes closing tags instead of retrying body searches at every malformed opening.
 - Initial and repair XML responses are limited to 1,048,576 UTF-16 code units, the same size as the existing SSE buffer ceiling. Oversized responses fail before parsing with `observer_output_too_large`, without truncation or partial-memory retention. An oversized initial response does not trigger repair; an oversized repair response fails the whole call, leaving existing raw-event retry rules in control.
 - The public `parseObserverResponse` and `inspectObserverResponseStructure` helpers throw `RangeError` above this limit.
-- The transcript `observer_max_chars` setting controls the input budget, not this XML output limit.
+- The transcript `observer_max_chars` setting controls the input budget, not this XML output limit. Instructions are never cut to fit it; only the observed content is clipped.
 - Simple-tier reasoning uses the global `observer_reasoning_effort` / `observer_reasoning_summary` overrides; the corresponding `observer_rich_reasoning_*` settings take precedence for rich-tier requests.
 - If a configured `observer_model` is not available in Claude CLI, codemem retries once with Claude's default model.
 - When a tier-selected path cannot honor the requested runtime/provider/model combination, codemem records the requested-versus-actual details plus a visible fallback reason rather than silently masking the downgrade.

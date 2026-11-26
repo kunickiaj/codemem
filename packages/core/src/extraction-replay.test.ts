@@ -837,3 +837,44 @@ describe("extraction replay", () => {
 		expect(result.observerContext.userPrompt).toContain("Session context:");
 	});
 });
+
+describe("replay prompt budget", () => {
+	it("reports the extraction call's prompt lengths", async () => {
+		const dbPath = createSingleEventReplayFixture("prompt-budget", 40009);
+		const promptBudget = {
+			maxChars: 12_000,
+			instructionChars: 10_419,
+			contentBudgetChars: 3_000,
+			contentChars: 4_200,
+			sentContentChars: 3_000,
+			contentClipped: true,
+			instructionsOverBudget: false,
+			sections: null,
+		};
+		const observer = {
+			provider: "test",
+			model: "test-model",
+			maxChars: 12_000,
+			observe: async () => ({
+				raw: "<observation/>",
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+				promptBudget,
+			}),
+		} as unknown as ObserverClient;
+
+		const result = await replayBatchExtraction(dbPath, observer, {
+			batchId: 40009,
+			scenarioId: "simple-batch-shape",
+		});
+
+		expect(result.observer.promptBudget).toEqual(promptBudget);
+	});
+});

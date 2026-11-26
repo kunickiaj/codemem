@@ -105,3 +105,48 @@ describe("observer status reasoning effort", () => {
 		}
 	});
 });
+
+describe("observer status prompt budget", () => {
+	it("reports the active observer's last prompt lengths", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-observer-status-"));
+		vi.stubEnv("HOME", home);
+		const promptBudget = {
+			maxChars: 12_000,
+			instructionChars: 10_419,
+			contentBudgetChars: 3_000,
+			contentChars: 9_000,
+			sentContentChars: 3_000,
+			contentClipped: true,
+			instructionsOverBudget: false,
+			sections: null,
+		};
+		const observer = {
+			getStatus: () => ({
+				provider: "openai",
+				model: "gpt-5.6",
+				runtime: "opencode_v2",
+				auth: { source: "opencode_service", type: "opencode_v2", hasToken: false },
+				promptBudget,
+			}),
+		} as unknown as ObserverClient;
+		const store = {
+			rawEventBacklogTotals: () => ({ pending: 0, sessions: 0 }),
+			latestRawEventFlushFailure: () => null,
+		};
+		try {
+			const app = observerStatusRoutes({
+				getObserver: () => observer,
+				getStore: () => store as never,
+				getSweeper: () => null,
+			});
+
+			const response = await app.request("/api/observer-status");
+			const body = (await response.json()) as { active: { promptBudget: unknown } };
+
+			expect(body.active.promptBudget).toEqual(promptBudget);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+});

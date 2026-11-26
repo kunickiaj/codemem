@@ -9,7 +9,9 @@ import {
 	createMemoryDiagnosticsCommand,
 	estimateBenchmarkAttemptCost,
 	forgetMemoryCommand,
+	formatBenchmarkPromptBudget,
 	formatBenchmarkReasoningEffort,
+	formatPromptBudget,
 	formatTransmittedReasoningEffort,
 	memoryCommand,
 	reconcileExtractionBenchmarkStatus,
@@ -294,6 +296,81 @@ describe("benchmark reasoning effort fallbacks", () => {
 		});
 
 		expect(formatBenchmarkReasoningEffort(summary)).toBe("xhigh");
+	});
+});
+
+describe("prompt budget labels", () => {
+	const budget = {
+		maxChars: 12_000,
+		instructionChars: 10_419,
+		contentBudgetChars: 3_000,
+		contentChars: 8_100,
+		sentContentChars: 3_000,
+		contentClipped: true,
+		instructionsOverBudget: false,
+		sections: null,
+	};
+
+	it("labels one call's lengths", () => {
+		expect(formatPromptBudget(budget)).toBe(
+			"instructions 10419, content 8100 -> 3000 (clipped) of budget 12000",
+		);
+		expect(formatPromptBudget({ ...budget, instructionsOverBudget: true })).toContain(
+			"; instructions exceed the budget",
+		);
+		expect(formatPromptBudget(null)).toBe("not measured");
+		expect(
+			formatPromptBudget({
+				...budget,
+				sections: [
+					{ name: "request", chars: 306, sentChars: 306 },
+					{ name: "transcript", chars: 4_788, sentChars: 756 },
+				],
+			}),
+		).toContain("; sections request 306 -> 306, transcript 4788 -> 756");
+	});
+
+	it("counts clipped runs across a benchmark", () => {
+		const unclipped = {
+			...budget,
+			contentChars: 2_000,
+			sentContentChars: 2_000,
+			contentClipped: false,
+		};
+
+		expect(
+			formatBenchmarkPromptBudget([
+				{ promptBudget: budget },
+				{ promptBudget: unclipped },
+				{ promptBudget: null },
+			]),
+		).toBe("12000; content clipped in 1/2 run(s); instructions over budget in 0");
+	});
+});
+
+describe("benchmark output for a batch its builder fitted", () => {
+	it("reports the content as clipped with its length before fitting", () => {
+		const fitted = {
+			maxChars: 12_000,
+			instructionChars: 10_419,
+			contentBudgetChars: 3_000,
+			contentChars: 13_358,
+			sentContentChars: 3_000,
+			contentClipped: true,
+			instructionsOverBudget: false,
+			sections: [
+				{ name: "request", chars: 306, sentChars: 306 },
+				{ name: "transcript", chars: 4_788, sentChars: 756 },
+				{ name: "tool_events", chars: 7_308, sentChars: 1_155 },
+				{ name: "summary_context", chars: 923, sentChars: 750 },
+			],
+		};
+
+		expect(formatBenchmarkPromptBudget([{ promptBudget: fitted }])).toBe(
+			"12000; content clipped in 1/1 run(s); instructions over budget in 0",
+		);
+		expect(formatPromptBudget(fitted)).toContain("content 13358 -> 3000 (clipped)");
+		expect(formatPromptBudget(fitted)).toContain("tool_events 7308 -> 1155");
 	});
 });
 
