@@ -38,6 +38,24 @@ Recommended sequence:
 
 If the basic coordinator flow is broken locally, the Worker path will mostly just make the debugging more annoying.
 
+### Commands that print secrets or signed URLs
+
+Several commands in this guide print, or can print, a secret or a signed download URL. Keep that output out of shared
+terminals, agent transcripts, CI logs, support requests and chat, because none of it can be recalled once copied:
+
+- `wrangler d1 export` prints a presigned URL that downloads the whole coordinator database for about an hour and cannot
+  be revoked. Use the form in [Back up the database](#back-up-the-database), which writes the export and everything
+  the command prints to files with mode 600 and prints nothing.
+- `wrangler secret put` reads the value from its prompt. Type or paste it there; do not pass it with `echo`, a pipe or
+  an argument, and do not print it afterwards.
+- Admin requests with `curl` read the admin secret from `CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET`. Do not type the
+  secret into the command, save it in a request file, or add `-v`, `--verbose` or `--trace`, which print request
+  headers.
+- `codemem coordinator owner enroll --prepare` writes a private request file that holds a browser-start code. Do not
+  print the file or paste it.
+- An invitation is a bearer credential: whoever holds it can use it. Send it only to the person it is for, over a
+  private channel.
+
 ## Prerequisites
 
 - Cloudflare account with Workers + D1 enabled
@@ -87,7 +105,8 @@ Admin operations use a separate secret header path. Set it before deploy:
 wrangler secret put CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET --config examples/cloudflare-coordinator/wrangler.toml
 ```
 
-This secret is required for admin routes such as invite creation and join-request review.
+This secret is required for admin routes such as invite creation and join-request review. Enter the value at
+Wrangler's prompt; see [Commands that print secrets or signed URLs](#commands-that-print-secrets-or-signed-urls).
 
 ## 4. Optional Google owner authentication
 
@@ -202,8 +221,36 @@ pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 migrations
 ```
 
 For an existing database, the same command applies only the migrations its ledger lacks. Before running it on a
-deployment that has users, pause auth writers, drain pending link attempts, back up the database and obtain separate
-approval. See [Auth schema stages](#auth-schema-stages-0045-to-0047) for what the last three migrations require.
+deployment that has users, pause auth writers, drain pending link attempts,
+[back up the database](#back-up-the-database) and obtain separate approval. See [Auth schema stages](#auth-schema-stages-0045-to-0047) for what the last three migrations require.
+
+### Back up the database
+
+Take a backup before applying migrations or running any statement that changes an existing database.
+`wrangler d1 export` writes the SQL to the `--output` file, and it also prints a presigned URL for the same export.
+Anyone who has that URL can download the whole coordinator database until it expires, about an hour later, and it
+cannot be revoked. Run the export into a new private directory outside the repository, so that its output goes to
+files only you can read, and print nothing from it:
+
+```fish
+set backup ~/coordinator-backup-(date -u +%Y%m%dT%H%M%SZ)
+mkdir -m 700 $backup
+and sh -c 'umask 077 && log=$1 && shift && exec "$@" >"$log" 2>&1' sh "$backup/export.log" \
+    pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 export codemem-coordinator \
+    --remote --output "$backup/coordinator.sql" --config ../../examples/cloudflare-coordinator/wrangler.toml
+echo $status
+```
+
+- `mkdir -m 700` creates a directory only you can open. It fails if the directory already exists, and then nothing
+  else runs, so the export never writes into an older file that someone else could read.
+- `umask 077` makes `coordinator.sql` and `export.log` mode 600. To confirm, run `stat -c '%a %n' $backup $backup/*`
+  on Linux or `stat -f '%Lp %N' $backup $backup/*` on macOS: the directory must show `700` and both files `600`.
+- Exit status `0` means the export finished. That is the only output to look at or report.
+- Do not print, `cat`, paste or attach `export.log`: it holds the signed URL. If the export fails, read the log in a
+  private terminal and describe the error in your own words, without the URL.
+- The SQL file holds every coordinator row. Keep the directory private, never paste from it, and delete it once it is
+  no longer needed.
+- A running export blocks other requests to the database, so take it while writers are paused.
 
 For a database originally created from `schema.sql` or an exported install, follow
 [the baseline procedure](#baseline-a-d1-database-whose-schema-came-from-outside-the-migrations) before applying
@@ -328,12 +375,13 @@ Turning relay on takes these steps, in order:
 The admission route takes an empty JSON object, because every value comes from the Worker's relay
 config and a fixed budget profile in code. It uses the same admin secret and request checks as the
 quota route, and the same 20-per-minute admin rate limit, counted separately from the quota route.
-It rejects an `Origin` header and any query string:
+It rejects an `Origin` header and any query string. The command reads the coordinator URL and admin secret from the
+environment; do not type the secret into it or add verbose output:
 
 ```fish
-curl -sS -X POST "https://<coordinator>/v1/admin/relay/admission" \
+curl -sS -X POST "$CODEMEM_SYNC_COORDINATOR_URL/v1/admin/relay/admission" \
   -H "Content-Type: application/json" \
-  -H "X-Codemem-Coordinator-Admin: <admin secret>" \
+  -H "X-Codemem-Coordinator-Admin: $CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET" \
   --data '{}'
 ```
 
@@ -396,9 +444,9 @@ names an unconfigured group, charges only the shared buckets.
 Each realm also needs its quota provisioned (step 7) before upgrades succeed:
 
 ```fish
-curl -sS -X POST "https://<coordinator>/v1/admin/relay/quota" \
+curl -sS -X POST "$CODEMEM_SYNC_COORDINATOR_URL/v1/admin/relay/quota" \
   -H "Content-Type: application/json" \
-  -H "X-Codemem-Coordinator-Admin: <admin secret>" \
+  -H "X-Codemem-Coordinator-Admin: $CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET" \
   --data '{"realm_id":"<64-hex realm ID>","enabled":true}'
 ```
 
@@ -607,7 +655,7 @@ curl --fail-with-body --request POST \
 
 Use the coordinator URL and admin secret already configured for the deployment.
 Do not paste the secret into a command, save it in a request file, or enable verbose
-HTTP logging. The response is
+HTTP logging (`-v`, `--verbose` or `--trace`). The response is
 `{ version: 1, filled, blocked, skipped, remaining, next }`. Each request fills at most
 500 rows and binds at most 1,000,000 serialized UTF-8 bytes per JSON value, so byte
 size can end a page earlier. While `remaining` is true, repeat with `{"limit":500,"after":NEXT}`, replacing
@@ -689,7 +737,8 @@ every migration from `0001` and fail on the first change that already exists. Re
    checks table and column names for the remaining earlier tables, including controller attestations and sign-in
    purge floors. This inventory does not validate column types, constraints, indexes, triggers or row validity.
    The auth-stage checks validate their own definitions and selected row invariants, not the whole database.
-   A successful baseline does not replace the operator's schema comparison and backup. Names already recorded
+   A successful baseline does not replace the operator's schema comparison and
+   [backup](#back-up-the-database). Names already recorded
    are skipped, so running it twice records nothing new.
 5. Run it once:
 
@@ -760,7 +809,8 @@ installs empty historical receipt storage, not owner records or authority, and d
 not resolve an owner, change access or ship a recovery UI. Runtime requests and normal
 store startup do not install this schema.
 
-The command does not pause writers, drain attempts or create a backup. D1 export
+The command does not pause writers, drain attempts or create a backup; take one first as described in
+[Back up the database](#back-up-the-database). D1 export
 returns the shared 0037 statement boundaries as `{ "statements": [...], "applied": false }`;
 it opens no database, ignores environment database defaults, applies nothing and
 does not check remote schema prerequisites or execution limits. Before separately
