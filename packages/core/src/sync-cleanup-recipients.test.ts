@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
 import {
+	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
 	filterReplicationOpsForSyncWithStatus,
 } from "./sync-replication.js";
@@ -109,5 +110,126 @@ describe("untargeted cleanup records", () => {
 		pairPeer("peer-new");
 
 		expect(sent(cleanup(OLD_SCOPE, "peer-new"), "peer-new")).toBe(true);
+	});
+});
+
+describe("a memory's move out of the local default scope", () => {
+	const NEW_SCOPE = "acme-new";
+	const move: ReplicationOp = {
+		op_id: "move-old-side",
+		entity_type: "memory_item",
+		entity_id: "key:moved",
+		op_type: "reassign_scope",
+		payload_json: toJson({
+			operation_id: "share-op",
+			memory_id: "key:moved",
+			old_scope_id: DEFAULT_SYNC_SCOPE_ID,
+			new_scope_id: NEW_SCOPE,
+			side: "old",
+			revision: 2,
+		}),
+		clock_rev: 2,
+		clock_updated_at: NOW,
+		clock_device_id: "local-device",
+		device_id: "local-device",
+		created_at: NOW,
+		scope_id: DEFAULT_SYNC_SCOPE_ID,
+	};
+
+	function outbound(peerDeviceId: string): ReplicationOp[] {
+		const [allowed] = filterReplicationOpsForSyncWithStatus(db, [move], peerDeviceId, {
+			localDeviceId: "local-device",
+			supportsReassignScope: true,
+		});
+		return allowed;
+	}
+
+	beforeEach(() => {
+		// Arrange: this device created the memory and moved it into the new Space.
+		insertMovedMemory();
+		db.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`,
+		).run(NEW_SCOPE, NEW_SCOPE, NOW, NOW);
+		for (const deviceId of ["local-device", "peer-inside"]) {
+			db.prepare(
+				`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+				 VALUES (?, ?, 'member', 'active', 1, ?)`,
+			).run(NEW_SCOPE, deviceId, NOW);
+		}
+		for (const peer of ["peer-inside", "peer-outside"]) pairPeer(peer);
+		pairPeer("peer-other-project", ["docs"]);
+	});
+
+	it("still reaches a device in the new Space as the move", () => {
+		expect(outbound("peer-inside")).toEqual([move]);
+	});
+
+	it("reaches a device outside the new Space as a cleanup notice that names no destination", () => {
+		// Act
+		const [notice, ...rest] = outbound("peer-outside");
+
+		// Assert
+		expect(rest).toEqual([]);
+		expect(notice).toMatchObject({
+			op_id: "move-old-side:cleanup:peer-outside",
+			op_type: "access_cleanup",
+			entity_id: "key:moved",
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+			device_id: "local-device",
+			clock_device_id: "local-device",
+		});
+		expect(JSON.parse(notice?.payload_json ?? "{}")).toEqual({
+			cleanup_scope_id: DEFAULT_SYNC_SCOPE_ID,
+			reason: "scope_reassignment",
+			target_peer_device_id: "peer-outside",
+		});
+		expect(JSON.stringify(notice)).not.toContain(NEW_SCOPE);
+	});
+
+	it("goes to no device the Project sharing rules would not have sent the memory to", () => {
+		expect(outbound("peer-other-project")).toEqual([]);
+	});
+
+	it("removes the outside device's copy, by the cleanup rules beta.2 receivers apply", () => {
+		// Arrange: the outside device's database holds the shared local default copy.
+		const [notice] = outbound("peer-outside");
+		if (!notice) throw new Error("missing notice");
+		const receiver = new Database(":memory:");
+		initTestSchema(receiver);
+		try {
+			const session = receiver
+				.prepare("INSERT INTO sessions(started_at, project) VALUES (?, 'api')")
+				.run(NOW);
+			receiver
+				.prepare(
+					`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+					 import_key, origin_device_id, rev, visibility, scope_id)
+					 VALUES (?, 'discovery', 'Moved', 'Moved body', ?, ?, 'key:moved', 'local-device', 1, 'shared', ?)`,
+				)
+				.run(session.lastInsertRowid, NOW, NOW, DEFAULT_SYNC_SCOPE_ID);
+
+			// Act: the receiver applies it as an authenticated push from this device.
+			const result = applyReplicationOps(receiver, [notice], "peer-outside", undefined, {
+				peerDeviceId: "local-device",
+			});
+
+			// Assert: the copy is gone, and nothing stored names the new Space.
+			expect(result).toMatchObject({ applied: 1, errors: [], rejected: 0 });
+			expect(receiver.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(0);
+			const stored = receiver.prepare("SELECT * FROM replication_ops").all();
+			expect(stored).toHaveLength(1);
+			expect(JSON.stringify(stored)).not.toContain(NEW_SCOPE);
+
+			// A move that reaches it later, after it joined the Space, finds no copy and no error.
+			const later = applyReplicationOps(receiver, [move], "peer-outside", undefined, {
+				peerDeviceId: "local-device",
+			});
+			expect(later).toMatchObject({ errors: [], rejected: 0 });
+			expect(receiver.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(0);
+		} finally {
+			receiver.close();
+		}
 	});
 });

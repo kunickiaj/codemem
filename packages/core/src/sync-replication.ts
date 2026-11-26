@@ -264,6 +264,40 @@ function parseAccessCleanupPayload(op: ReplicationOp): AccessCleanupPayload {
 }
 
 /**
+ * The op that tells this peer a memory left the local default scope. A peer in
+ * the destination scope gets the move itself. Any other peer gets a cleanup
+ * notice addressed to it, under its own op id, that removes its copy without
+ * naming the destination. The sender of such a move always created the memory,
+ * so the peer accepts the notice by the same rule. Other moves are unchanged.
+ */
+function outboundOldSideMove(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+	options: { applyScopeFilter: boolean },
+): ReplicationOp {
+	const peerId = cleanText(peerDeviceId);
+	if (!options.applyScopeFilter || !peerId) return op;
+	const move = parseReassignScopePayload(op);
+	if (move.side !== "old" || move.old_scope_id !== DEFAULT_SYNC_SCOPE_ID) return op;
+	const destination = getPeerCachedScopeAuthorization(db, {
+		deviceId: peerId,
+		scopeId: move.new_scope_id,
+	});
+	if (destination.authorized && destination.scope?.authority_type !== "local") return op;
+	return {
+		...op,
+		op_id: `${op.op_id}:cleanup:${peerId}`,
+		op_type: ACCESS_CLEANUP_OP_TYPE,
+		payload_json: toJson({
+			cleanup_scope_id: DEFAULT_SYNC_SCOPE_ID,
+			reason: "scope_reassignment",
+			target_peer_device_id: peerId,
+		}),
+	};
+}
+
+/**
  * Whether an untargeted cleanup may go to this peer. It names the memory and the
  * scope it left, so it goes only to a device that could have received the memory
  * there: a peer with any membership record in that scope, or, for the local
@@ -2568,7 +2602,7 @@ export function filterReplicationOpsForSyncWithStatus(
 				if (decision === "skip") {
 					addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
 				} else if (decision === "send") {
-					allowed.push(op);
+					allowed.push(outboundOldSideMove(db, op, peerDeviceId, { applyScopeFilter }));
 				}
 				if (decision !== "check") {
 					nextCursor = computeCursor(op.created_at, op.op_id);
