@@ -107,11 +107,15 @@ it("labels the configured effort as requested and shows what was applied", () =>
 	const [simple, rich] = renderTiers(
 		{
 			reasoningEffort: "high",
-			appliedReasoning: { effort: "high", outcome: "accepted", fallbackReason: null },
+			appliedReasoning: { effort: "high", requestSucceeded: true, fallbackReason: null },
 		},
 		{
 			reasoningEffort: "max",
-			appliedReasoning: { effort: null, outcome: "not_sent", fallbackReason: "variant_not_listed" },
+			appliedReasoning: {
+				effort: null,
+				requestSucceeded: true,
+				fallbackReason: "variant_not_listed",
+			},
 		},
 	);
 
@@ -128,7 +132,7 @@ it("shows only the requested effort before a request reports what was applied", 
 			reasoningEffort: "max",
 			appliedReasoning: {
 				effort: null,
-				outcome: "rejected_retried",
+				requestSucceeded: true,
 				fallbackReason: "variant_rejected",
 			},
 		},
@@ -136,4 +140,25 @@ it("shows only the requested effort before a request reports what was applied", 
 
 	expect(simple).toBe("openai · gpt-5.6 · Requested reasoning: high");
 	expect(rich).toContain("Applied: OpenCode default (OpenCode rejected it)");
+});
+
+it("says the last request failed instead of claiming an applied effort", () => {
+	const [simple, rich] = renderTiers(
+		{
+			reasoningEffort: "high",
+			appliedReasoning: { effort: null, requestSucceeded: false, fallbackReason: null },
+		},
+		{
+			reasoningEffort: "max",
+			appliedReasoning: {
+				effort: null,
+				requestSucceeded: false,
+				fallbackReason: "variant_rejected",
+			},
+		},
+	);
+
+	expect(simple).toBe("openai · gpt-5.6 · Requested reasoning: high · Last request failed");
+	expect(rich).toBe("openai · gpt-5.6 · Requested reasoning: max · Last request failed");
+	expect(document.body.textContent).not.toContain("Applied");
 });

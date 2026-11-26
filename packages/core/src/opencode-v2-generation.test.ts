@@ -199,7 +199,7 @@ describe("reasoning effort variants", () => {
 		expect(result).toEqual({
 			text: "OK",
 			error: null,
-			effort: { sent: "high", outcome: "accepted", reason: null },
+			effort: { attempted: "high", applied: "high", succeeded: true, fallbackReason: null },
 		});
 	});
 
@@ -214,7 +214,12 @@ describe("reasoning effort variants", () => {
 
 		expect(catalogCalls(fetcher)).toBe(1);
 		expect(sentModels(fetcher).map((model) => model.variant)).toEqual(["high", "max", undefined]);
-		expect(efforts[2]).toEqual({ sent: null, outcome: "not_sent", reason: "variant_not_listed" });
+		expect(efforts[2]).toEqual({
+			attempted: null,
+			applied: null,
+			succeeded: true,
+			fallbackReason: "variant_not_listed",
+		});
 	});
 
 	it("fetches the catalog again after ten minutes", async () => {
@@ -238,11 +243,12 @@ describe("reasoning effort variants", () => {
 		const second = await generate("openai", "gpt-6-luna", "high");
 
 		expect(first.effort).toEqual({
-			sent: null,
-			outcome: "not_sent",
-			reason: "variants_unavailable",
+			attempted: null,
+			applied: null,
+			succeeded: true,
+			fallbackReason: "variants_unavailable",
 		});
-		expect(second.effort?.outcome).toBe("accepted");
+		expect(second.effort?.applied).toBe("high");
 		expect(catalogCalls(fetcher)).toBe(2);
 	});
 });

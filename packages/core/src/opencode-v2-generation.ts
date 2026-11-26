@@ -153,9 +153,18 @@ function loadVariantCatalog(target: ServiceTarget): Promise<VariantCatalog | nul
 	return load;
 }
 
+/** Variants a service rejected, by service, model and variant, with when to try them again. */
+const rejectedVariants = new Map<string, number>();
+const rejectedVariantKey = (
+	target: ServiceTarget,
+	provider: string,
+	model: string,
+	variant: string,
+) => `${target.url.origin} ${provider}/${model} ${variant.toLowerCase()}`;
+
 type VariantSelection =
 	| { variant: string; reason: null }
-	| { variant: null; reason: "variant_not_listed" | "variants_unavailable" };
+	| { variant: null; reason: Exclude<V2EffortReport["fallbackReason"], null> };
 
 /**
  * The variant this service lists for the requested effort. A model without the
@@ -178,13 +187,19 @@ async function selectVariant(
 	}
 	if (!catalog) return { variant: null, reason: "variants_unavailable" };
 	const variant = find(catalog);
-	return variant ? { variant, reason: null } : { variant: null, reason: "variant_not_listed" };
+	if (!variant) return { variant: null, reason: "variant_not_listed" };
+	// A catalog can keep listing a variant the service rejects; skip it for a while.
+	const retryAt = rejectedVariants.get(rejectedVariantKey(target, provider, model, variant)) ?? 0;
+	return Date.now() < retryAt
+		? { variant: null, reason: "variant_rejected" }
+		: { variant, reason: null };
 }
 
 /** Forget every cached model catalog, so the next lookup fetches again. */
 export function clearOpenCodeV2ModelVariantCache(): void {
 	variantCatalogs.clear();
 	pendingCatalogs.clear();
+	rejectedVariants.clear();
 }
 
 export type V2GenerationResult =
@@ -300,21 +315,44 @@ export interface V2GenerationInput {
 	reasoningEffort?: string | null;
 }
 
-/** What a request did with the requested effort; null when no effort or no request. */
+/**
+ * What a request did with the requested effort; null when no effort was requested or
+ * no request reached the service. An effort counts as applied only when the
+ * generation succeeded.
+ */
 export interface V2EffortReport {
-	/** The variant sent first, or null when none was. */
-	sent: string | null;
-	outcome: "not_sent" | "accepted" | "rejected_retried";
-	reason: "variant_not_listed" | "variants_unavailable" | "variant_rejected" | null;
+	/** The variant sent on the first attempt, or null when none was. */
+	attempted: string | null;
+	/** The variant the successful generation used; null at the service default or on failure. */
+	applied: string | null;
+	/** Whether the request ended with a successful generation. */
+	succeeded: boolean;
+	/** Why the requested effort was not sent or was dropped, or null. */
+	fallbackReason: "variant_not_listed" | "variants_unavailable" | "variant_rejected" | null;
 }
 
 export type V2GenerationOutcome = V2GenerationResult & { effort: V2EffortReport | null };
 
+function effortReport(
+	attempted: string | null,
+	result: V2GenerationResult,
+	fallbackReason: V2EffortReport["fallbackReason"],
+): V2EffortReport {
+	const succeeded = result.error === null;
+	return {
+		attempted,
+		applied: succeeded && fallbackReason === null ? attempted : null,
+		succeeded,
+		fallbackReason,
+	};
+}
+
 /**
  * Use the service-owned provider connection; never read or export its credential.
  * The service replies with the text only, without token usage. A variant the service
- * rejects before generating is retried once without it, and the cached catalog for
- * that service is dropped; no other failure is retried.
+ * rejects before generating is retried once without it, the cached catalog for that
+ * service is dropped, and the variant is skipped for that model for a while; no
+ * other failure is retried.
  */
 export async function generateWithOpenCodeV2(
 	input: V2GenerationInput,
@@ -324,31 +362,30 @@ export async function generateWithOpenCodeV2(
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 	const requested = input.reasoningEffort?.trim().toLowerCase() || null;
+	let selection: VariantSelection | null = null;
 	try {
-		const selection = requested
-			? await selectVariant(target, input.provider, input.model, requested)
-			: null;
+		if (requested) selection = await selectVariant(target, input.provider, input.model, requested);
 		const variant = selection?.variant ?? null;
 		const first = await generateUntilModelReady(target, { ...input, variant }, controller);
-		if (first.error === "variant_unavailable") {
+		if (first.error === "variant_unavailable" && variant) {
 			variantCatalogs.delete(target.url.origin);
+			rejectedVariants.set(
+				rejectedVariantKey(target, input.provider, input.model, variant),
+				Date.now() + VARIANT_CACHE_TTL_MS,
+			);
 			const retry = await generateUntilModelReady(target, { ...input, variant: null }, controller);
-			const effort = {
-				sent: variant,
-				outcome: "rejected_retried",
-				reason: "variant_rejected",
-			} as const;
-			return retry.error === "variant_unavailable"
-				? { text: null, error: "request_failed", effort }
-				: { ...retry, effort };
+			const result: V2GenerationResult =
+				retry.error === "variant_unavailable" ? { text: null, error: "request_failed" } : retry;
+			return { ...result, effort: effortReport(variant, result, "variant_rejected") };
 		}
-		if (!selection) return { ...first, effort: null };
-		const effort: V2EffortReport = variant
-			? { sent: variant, outcome: "accepted", reason: null }
-			: { sent: null, outcome: "not_sent", reason: selection.reason };
-		return { ...first, effort };
+		const result: V2GenerationResult =
+			first.error === "variant_unavailable" ? { text: null, error: "request_failed" } : first;
+		const effort = selection ? effortReport(variant, result, selection.reason) : null;
+		return { ...result, effort };
 	} catch {
-		return { text: null, error: "request_failed", effort: null };
+		const failed = { text: null, error: "request_failed" } as const;
+		const effort = selection ? effortReport(selection.variant, failed, selection.reason) : null;
+		return { ...failed, effort };
 	} finally {
 		clearTimeout(timeout);
 	}

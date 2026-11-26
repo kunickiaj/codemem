@@ -117,8 +117,9 @@ it("reports each tier's requested and applied reasoning effort from live status"
 		tierReasoningEfforts: {
 			rich: {
 				requestedReasoningEffort: "max",
+				attemptedReasoningEffort: null,
 				actualReasoningEffort: null,
-				reasoningEffortOutcome: "not_sent",
+				reasoningEffortRequestSucceeded: true,
 				reasoningEffortFallbackApplied: true,
 				reasoningEffortFallbackReason: "variant_not_listed",
 			},
@@ -132,6 +133,10 @@ it("reports each tier's requested and applied reasoning effort from live status"
 	expect(simple).not.toHaveProperty("appliedReasoning");
 	expect(rich).toMatchObject({
 		reasoningEffort: "max",
-		appliedReasoning: { effort: null, outcome: "not_sent", fallbackReason: "variant_not_listed" },
+		appliedReasoning: {
+			effort: null,
+			requestSucceeded: true,
+			fallbackReason: "variant_not_listed",
+		},
 	});
 });

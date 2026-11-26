@@ -6,13 +6,14 @@ const FALLBACK_REASONS: Record<string, string> = {
 	variant_rejected: "OpenCode rejected it",
 };
 
-/** The configured effort, then what the last request applied when the connection reports it. */
+/** The configured effort, then what the last request applied, or that it failed, when the connection reports it. */
 function reasoningLabel(tier: ObserverTierPreview | undefined): string {
 	if (!tier?.reasoningEffort) return "";
 	const requested = ` · Requested reasoning: ${tier.reasoningEffort}`;
 	const applied = tier.appliedReasoning;
 	if (!applied) return requested;
-	if (applied.outcome === "accepted") return `${requested} · Applied: ${applied.effort}`;
+	if (!applied.requestSucceeded) return `${requested} · Last request failed`;
+	if (applied.effort) return `${requested} · Applied: ${applied.effort}`;
 	const reason = applied.fallbackReason ? FALLBACK_REASONS[applied.fallbackReason] : undefined;
 	return `${requested} · Applied: OpenCode default${reason ? ` (${reason})` : ""}`;
 }

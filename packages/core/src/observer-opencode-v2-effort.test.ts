@@ -29,6 +29,10 @@ interface FakeService {
 	catalogStatus?: number;
 	/** Answer every generation with this status and body instead of generating. */
 	failure?: { status: number; body: unknown };
+	/** Variants the service rejects although its catalog lists them. */
+	rejects?: string[];
+	/** Fail the request that follows a variant rejection. */
+	failAfterRejection?: boolean;
 }
 
 let services: Record<string, FakeService>;
@@ -61,7 +65,10 @@ function fakeFetch(input: string | URL | Request, init?: RequestInit) {
 	generations.push({ origin: url.origin, variant });
 	if (service.failure) return Promise.resolve(json(service.failure.status, service.failure.body));
 	const known = service.variants[`${providerID}/${id}`] ?? [];
-	if (variant && !known.includes(variant)) {
+	if (!variant && service.failAfterRejection && generations.length > 1) {
+		return Promise.resolve(json(500, { error: "boom" }));
+	}
+	if (variant && (!known.includes(variant) || service.rejects?.includes(variant))) {
 		return Promise.resolve(
 			json(400, {
 				_tag: "InvalidRequestError",
@@ -135,8 +142,9 @@ function effortOf(observer: ObserverClient) {
 	const status = observer.getStatus();
 	return {
 		requested: status.requestedReasoningEffort,
+		attempted: status.attemptedReasoningEffort,
 		applied: status.actualReasoningEffort,
-		outcome: status.reasoningEffortOutcome,
+		succeeded: status.reasoningEffortRequestSucceeded,
 		fallback: status.reasoningEffortFallbackApplied,
 		reason: status.reasoningEffortFallbackReason,
 	};
@@ -151,8 +159,9 @@ describe("reasoning effort on the OpenCode service", () => {
 		expect(sentVariants()).toEqual(["high"]);
 		expect(effortOf(observer)).toEqual({
 			requested: "high",
+			attempted: "high",
 			applied: "high",
-			outcome: "accepted",
+			succeeded: true,
 			fallback: false,
 			reason: null,
 		});
@@ -165,7 +174,7 @@ describe("reasoning effort on the OpenCode service", () => {
 
 		expect(sentVariants()).toEqual([undefined]);
 		expect(catalogFetches).toEqual([]);
-		expect(effortOf(observer)).toMatchObject({ requested: null, applied: null, outcome: null });
+		expect(effortOf(observer)).toMatchObject({ requested: null, applied: null, succeeded: null });
 	});
 
 	it.each([
@@ -264,8 +273,9 @@ describe("reasoning effort on the OpenCode service", () => {
 			expect(sentVariants()).toEqual([undefined]);
 			expect(effortOf(observer)).toEqual({
 				requested: "max",
+				attempted: null,
 				applied: null,
-				outcome: "not_sent",
+				succeeded: true,
 				fallback: true,
 				reason,
 			});
@@ -285,8 +295,9 @@ describe("a variant the service no longer accepts", () => {
 		expect(sentVariants()).toEqual(["high", "high", undefined]);
 		expect(effortOf(observer)).toEqual({
 			requested: "high",
+			attempted: "high",
 			applied: null,
-			outcome: "rejected_retried",
+			succeeded: true,
 			fallback: true,
 			reason: "variant_rejected",
 		});
@@ -295,7 +306,51 @@ describe("a variant the service no longer accepts", () => {
 		await observer.observe("system", "user");
 		expect(catalogFetches).toEqual([FIRST, FIRST]);
 		expect(sentVariants().at(-1)).toBeUndefined();
-		expect(effortOf(observer).outcome).toBe("not_sent");
+		expect(effortOf(observer)).toMatchObject({ attempted: null, reason: "variant_not_listed" });
+	});
+
+	it("skips a variant the catalog still lists after the service rejected it", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		services[FIRST] = { variants: { "openai/gpt-5.6": ["high"] }, rejects: ["high"] };
+		const observer = serviceObserver({ observer_reasoning_effort: "high" });
+		await observer.observe("system", "user");
+
+		await observer.observe("system", "user");
+
+		// One rejected attempt and its retry, then the default without a rejected request.
+		expect(sentVariants()).toEqual(["high", undefined, undefined]);
+		expect(effortOf(observer)).toMatchObject({
+			attempted: null,
+			applied: null,
+			succeeded: true,
+			fallback: true,
+			reason: "variant_rejected",
+		});
+
+		vi.advanceTimersByTime(10 * 60_000 + 1);
+		await observer.observe("system", "user");
+		expect(sentVariants().slice(3)).toEqual(["high", undefined]);
+	});
+
+	it("reports a failed request when the retry at the default also fails", async () => {
+		services[FIRST] = {
+			variants: { "openai/gpt-5.6": ["high"] },
+			rejects: ["high"],
+			failAfterRejection: true,
+		};
+		const observer = serviceObserver({ observer_reasoning_effort: "high" });
+
+		await expect(observer.observe("system", "user")).rejects.toBeInstanceOf(ObserverAuthError);
+
+		expect(sentVariants()).toEqual(["high", undefined]);
+		expect(effortOf(observer)).toEqual({
+			requested: "high",
+			attempted: "high",
+			applied: null,
+			succeeded: false,
+			fallback: false,
+			reason: "variant_rejected",
+		});
 	});
 
 	it("does not use one service's variant list for another service", async () => {
@@ -332,8 +387,14 @@ describe("a variant the service no longer accepts", () => {
 
 		await expect(observer.observe("system", "user")).rejects.toBeInstanceOf(ObserverAuthError);
 
+		// The effort was attempted, but a failed request applied nothing.
 		expect(sentVariants()).toEqual(["high"]);
-		expect(effortOf(observer).outcome).toBe("accepted");
+		expect(effortOf(observer)).toMatchObject({
+			attempted: "high",
+			applied: null,
+			succeeded: false,
+			fallback: false,
+		});
 	});
 });
 
@@ -347,8 +408,9 @@ describe("recording what was sent", () => {
 
 		expect(effortOf(observer)).toEqual({
 			requested: "high",
+			attempted: null,
 			applied: null,
-			outcome: null,
+			succeeded: null,
 			fallback: false,
 			reason: null,
 		});
@@ -415,8 +477,9 @@ describe("live status for tier-routed requests", () => {
 		expect(observer.getStatus().tierReasoningEfforts).toEqual({
 			simple: {
 				requestedReasoningEffort: "high",
+				attemptedReasoningEffort: null,
 				actualReasoningEffort: null,
-				reasoningEffortOutcome: "not_sent",
+				reasoningEffortRequestSucceeded: true,
 				reasoningEffortFallbackApplied: true,
 				reasoningEffortFallbackReason: "variant_not_listed",
 			},

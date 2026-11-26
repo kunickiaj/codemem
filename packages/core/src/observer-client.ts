@@ -204,12 +204,15 @@ export interface ObserverStatus {
 	modelFallbackReason?: string | null;
 	/** OpenCode service only: the configured reasoning effort. */
 	requestedReasoningEffort?: string | null;
-	/** OpenCode service only: the variant the last request sent and the service accepted. */
+	/** OpenCode service only: the variant the last request sent first, or null. */
+	attemptedReasoningEffort?: string | null;
+	/** OpenCode service only: the variant a successful last request used; null at the default or on failure. */
 	actualReasoningEffort?: string | null;
-	/** OpenCode service only: what the last request did with the effort; null before one reached the service. */
-	reasoningEffortOutcome?: V2EffortReport["outcome"] | null;
+	/** OpenCode service only: whether the last request succeeded; null before one reached the service. */
+	reasoningEffortRequestSucceeded?: boolean | null;
+	/** A successful last request used the service default instead of the requested effort. */
 	reasoningEffortFallbackApplied?: boolean;
-	reasoningEffortFallbackReason?: V2EffortReport["reason"];
+	reasoningEffortFallbackReason?: V2EffortReport["fallbackReason"];
 	/** The last routed request's effort per tier, when tier routing uses separate clients. */
 	tierReasoningEfforts?: Partial<Record<"simple" | "rich", ObserverEffortStatus>>;
 	lastError?: { code: string; message: string } | null;
@@ -219,8 +222,9 @@ export interface ObserverStatus {
 export type ObserverEffortStatus = Pick<
 	ObserverStatus,
 	| "requestedReasoningEffort"
+	| "attemptedReasoningEffort"
 	| "actualReasoningEffort"
-	| "reasoningEffortOutcome"
+	| "reasoningEffortRequestSucceeded"
 	| "reasoningEffortFallbackApplied"
 	| "reasoningEffortFallbackReason"
 >;
@@ -228,8 +232,9 @@ export type ObserverEffortStatus = Pick<
 function effortStatus(status: ObserverStatus): ObserverEffortStatus {
 	return {
 		requestedReasoningEffort: status.requestedReasoningEffort ?? null,
+		attemptedReasoningEffort: status.attemptedReasoningEffort ?? null,
 		actualReasoningEffort: status.actualReasoningEffort ?? null,
-		reasoningEffortOutcome: status.reasoningEffortOutcome ?? null,
+		reasoningEffortRequestSucceeded: status.reasoningEffortRequestSucceeded ?? null,
 		reasoningEffortFallbackApplied: status.reasoningEffortFallbackApplied === true,
 		reasoningEffortFallbackReason: status.reasoningEffortFallbackReason ?? null,
 	};
@@ -1945,10 +1950,11 @@ export class ObserverClient {
 		const effort = this._openCodeV2Effort;
 		return {
 			requestedReasoningEffort: this.reasoningEffort,
-			actualReasoningEffort: effort?.outcome === "accepted" ? effort.sent : null,
-			reasoningEffortOutcome: effort?.outcome ?? null,
-			reasoningEffortFallbackApplied: effort != null && effort.outcome !== "accepted",
-			reasoningEffortFallbackReason: effort?.reason ?? null,
+			attemptedReasoningEffort: effort?.attempted ?? null,
+			actualReasoningEffort: effort?.applied ?? null,
+			reasoningEffortRequestSucceeded: effort?.succeeded ?? null,
+			reasoningEffortFallbackApplied: effort?.succeeded === true && effort.fallbackReason !== null,
+			reasoningEffortFallbackReason: effort?.fallbackReason ?? null,
 			...tiers,
 		};
 	}

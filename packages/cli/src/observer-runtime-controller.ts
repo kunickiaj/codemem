@@ -13,8 +13,9 @@ type TierPreview = {
 	reasoningEffort: string | null;
 	/** What the last request for this tier did with it; absent before one reached the service. */
 	appliedReasoning?: {
+		/** The effort a successful request used; null at the service default or on failure. */
 		effort: string | null;
-		outcome: NonNullable<ObserverStatus["reasoningEffortOutcome"]>;
+		requestSucceeded: boolean;
 		fallbackReason: ObserverStatus["reasoningEffortFallbackReason"];
 	};
 };
@@ -23,14 +24,16 @@ function appliedReasoning(
 	status:
 		| Pick<
 				ObserverStatus,
-				"actualReasoningEffort" | "reasoningEffortOutcome" | "reasoningEffortFallbackReason"
+				| "actualReasoningEffort"
+				| "reasoningEffortRequestSucceeded"
+				| "reasoningEffortFallbackReason"
 		  >
 		| undefined,
 ): TierPreview["appliedReasoning"] {
-	if (!status?.reasoningEffortOutcome) return undefined;
+	if (status?.reasoningEffortRequestSucceeded == null) return undefined;
 	return {
 		effort: status.actualReasoningEffort ?? null,
-		outcome: status.reasoningEffortOutcome,
+		requestSucceeded: status.reasoningEffortRequestSucceeded,
 		fallbackReason: status.reasoningEffortFallbackReason ?? null,
 	};
 }

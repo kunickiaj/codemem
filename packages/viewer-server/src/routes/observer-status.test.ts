@@ -62,8 +62,9 @@ describe("observer status reasoning effort", () => {
 		vi.stubEnv("HOME", home);
 		const simple = {
 			requestedReasoningEffort: "high",
+			attemptedReasoningEffort: "high",
 			actualReasoningEffort: null,
-			reasoningEffortOutcome: "rejected_retried",
+			reasoningEffortRequestSucceeded: true,
 			reasoningEffortFallbackApplied: true,
 			reasoningEffortFallbackReason: "variant_rejected",
 		};
@@ -74,8 +75,9 @@ describe("observer status reasoning effort", () => {
 				runtime: "opencode_v2",
 				auth: { source: "opencode_service", type: "opencode_v2", hasToken: false },
 				requestedReasoningEffort: "high",
+				attemptedReasoningEffort: null,
 				actualReasoningEffort: null,
-				reasoningEffortOutcome: null,
+				reasoningEffortRequestSucceeded: null,
 				reasoningEffortFallbackApplied: false,
 				reasoningEffortFallbackReason: null,
 				tierReasoningEfforts: { simple },
@@ -96,7 +98,7 @@ describe("observer status reasoning effort", () => {
 			const body = (await response.json()) as { active: Record<string, unknown> };
 
 			expect(body.active.tierReasoningEfforts).toEqual({ simple });
-			expect(body.active.reasoningEffortOutcome).toBeNull();
+			expect(body.active.reasoningEffortRequestSucceeded).toBeNull();
 		} finally {
 			vi.unstubAllEnvs();
 			rmSync(home, { recursive: true, force: true });
