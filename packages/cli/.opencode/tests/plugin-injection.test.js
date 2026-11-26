@@ -712,6 +712,48 @@ describe("applyInjectedContextToMessages", () => {
     expect(buildInjectedContext).toHaveBeenCalledTimes(1);
   });
 
+  test("serves the cached pack unchanged when the ledger refuses to copy its trimmed attempt", async () => {
+    // The Viewer answers 422 attempt_incomplete for a cache reuse whose source attempt lost its
+    // unselected candidates; the ledger runner reports it as a failed result, not a throw.
+    const messageInjectionCache = new Map();
+    const exactBytes = "[codemem context]\n## Summary\n[1] (decision) Old but cached";
+    const buildInjectedContext = vi.fn().mockResolvedValueOnce({
+      text: exactBytes,
+      attemptId: "trimmed-attempt",
+      queryHash: "query-hash",
+      promptNumber: 1,
+    });
+    const confirmDelivery = vi.fn();
+    const ledgerRefusal = { exitCode: 1, stdout: "", stderr: "attempt_incomplete", transport: "viewer" };
+    const recordCacheReuse = vi.fn(() => ({
+      attemptId: "skipped-copy",
+      ready: Promise.resolve(ledgerRefusal),
+    }));
+    const apply = (output) =>
+      __testUtils.applyInjectedContextToMessages({
+        injectEnabled: true,
+        input: {},
+        output,
+        injectionToastShown: new Set(),
+        showToast: null,
+        resolveInjectQuery: ({ lastPromptText }) => lastPromptText,
+        buildInjectedContext,
+        messageInjectionCache,
+        confirmDelivery,
+        recordCacheReuse,
+      });
+    await apply({ messages: [userEntry("user-1", "first prompt")] });
+
+    const output = { messages: [userEntry("user-1", "first prompt")] };
+    const applied = await apply(output);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(applied).toBe(true);
+    expect(recordCacheReuse).toHaveBeenCalledTimes(1);
+    expect(output.messages[0].parts.at(-1).text).toBe(exactBytes);
+    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+  });
+
   test("reattaches many historical cached parts with constant ledger callback count", async () => {
     const sessionID = "sess-many-cached";
     const sessionCache = new Map();

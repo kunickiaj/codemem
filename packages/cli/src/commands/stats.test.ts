@@ -287,6 +287,8 @@ describe("stats command retrieval ledger", () => {
 			expect(result.retrieval_ledger).toEqual({
 				retrieval_attempts: 0,
 				retrieval_exposures: 0,
+				non_selected_retrieval_exposures: 0,
+				stale_non_selected_retrieval_exposures: 0,
 				expired_retrieval_attempts: 0,
 				oldest_retrieval_attempt_started_at: null,
 				outcome_evidence: 0,

@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import {
 	getAttributionDiagnostics,
 	MemoryStore,
+	NON_SELECTED_EXPOSURE_RETENTION_DAYS,
 	type RetrievalLedgerStats,
 	resolveDbPath,
 	retrievalLedgerStats,
@@ -93,7 +94,7 @@ function renderRetrievalLedger(ledger: RetrievalLedgerStats): string {
 	return [
 		"Retrieval ledger",
 		`  Attempts:  ${ledger.retrieval_attempts.toLocaleString()} (${ledger.expired_retrieval_attempts.toLocaleString()} past retention), oldest ${oldest}`,
-		`  Exposures: ${ledger.retrieval_exposures.toLocaleString()}`,
+		`  Exposures: ${ledger.retrieval_exposures.toLocaleString()} (${ledger.non_selected_retrieval_exposures.toLocaleString()} not selected, ${ledger.stale_non_selected_retrieval_exposures.toLocaleString()} of them older than ${NON_SELECTED_EXPOSURE_RETENTION_DAYS} days)`,
 		`  Outcome evidence: ${ledger.outcome_evidence.toLocaleString()} (${ledger.expired_outcome_evidence.toLocaleString()} past retention)`,
 	].join("\n");
 }

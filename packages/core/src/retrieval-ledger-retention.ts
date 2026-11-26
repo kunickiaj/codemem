@@ -3,8 +3,10 @@
  *
  * Each retrieval attempt and outcome evidence row carries a retention date. This removes
  * the rows whose date has passed, in short transactions, so a store with a large backlog
- * sheds it over several runs without holding the write lock for long. Pinned rows and rows
- * without a date are never removed.
+ * sheds it over several runs without holding the write lock for long. The candidates an
+ * attempt did not select are removed sooner, after NON_SELECTED_EXPOSURE_RETENTION_DAYS; the
+ * attempt and its selected candidates stay. Pinned rows and rows without a date are never
+ * removed.
  */
 import type { Database } from "better-sqlite3";
 import {
@@ -21,7 +23,9 @@ import {
 	startRetentionBudget,
 } from "./periodic-retention.js";
 import {
+	countStaleNonSelectedExposures,
 	purgeExpiredRetrievalAttempts,
+	purgeStaleNonSelectedExposures,
 	RETRIEVAL_LEDGER_CONTRACT_VERSION,
 } from "./retrieval-ledger.js";
 
@@ -44,6 +48,8 @@ export interface LedgerRetentionPassOptions {
 
 export interface LedgerRetentionPassResult {
 	retrievalAttemptsPurged: number;
+	/** Exposures removed by the shorter retention of candidates an attempt did not select. */
+	nonSelectedExposuresPurged: number;
 	outcomeEvidencePurged: number;
 	batches: number;
 	/** Whether every expired row was removed; false when the pass stopped at its budget. */
@@ -58,7 +64,11 @@ function tableExists(db: Database, name: string): boolean {
 	);
 }
 
-/** Removes expired retrieval attempts, then expired outcome evidence, within one budget. */
+/**
+ * Removes expired retrieval attempts, then the non-selected exposures of attempts past the
+ * shorter window, then expired outcome evidence, within one budget. A batch of the second rule
+ * trims up to `batchSize` attempts.
+ */
 export async function runLedgerRetentionPass(
 	db: Database,
 	options: LedgerRetentionPassOptions = {},
@@ -79,6 +89,19 @@ export async function runLedgerRetentionPass(
 				countBatch,
 			)
 		: { purged: 0, done: true };
+	let nonSelectedExposuresPurged = 0;
+	const nonSelected = tableExists(db, "retrieval_exposures")
+		? await drainInBatches(
+				(limit) => {
+					const trimmed = purgeStaleNonSelectedExposures(db, now, { limit });
+					nonSelectedExposuresPurged += trimmed.exposures;
+					return trimmed.attempts;
+				},
+				batchSize,
+				budget.outOfBudget,
+				countBatch,
+			)
+		: { purged: 0, done: true };
 	const evidence = tableExists(db, "outcome_evidence")
 		? await drainInBatches(
 				(limit) => purgeExpiredOutcomeEvidence(db, now, { limit }),
@@ -89,9 +112,10 @@ export async function runLedgerRetentionPass(
 		: { purged: 0, done: true };
 	return {
 		retrievalAttemptsPurged: attempts.purged,
+		nonSelectedExposuresPurged,
 		outcomeEvidencePurged: evidence.purged,
 		batches,
-		complete: attempts.done && evidence.done,
+		complete: attempts.done && nonSelected.done && evidence.done,
 		durationMs: budget.elapsedMs(),
 	};
 }
@@ -104,7 +128,7 @@ export interface LedgerRetentionRunnerOptions extends PeriodicRetentionRunnerOpt
 
 export function describeLedgerRetentionPass(result: LedgerRetentionPassResult): string {
 	const remaining = result.complete ? "" : "; more expired rows remain";
-	return `Retrieval ledger retention purged ${result.retrievalAttemptsPurged} attempts and ${result.outcomeEvidencePurged} outcome evidence rows in ${result.durationMs} ms${remaining}`;
+	return `Retrieval ledger retention purged ${result.retrievalAttemptsPurged} attempts, ${result.nonSelectedExposuresPurged} non-selected candidates and ${result.outcomeEvidencePurged} outcome evidence rows in ${result.durationMs} ms${remaining}`;
 }
 
 /** Runs ledger retention passes on a timer in a long-lived process. */
@@ -120,7 +144,10 @@ export class LedgerRetentionRunner extends PeriodicRetentionRunner {
 	protected async runPass(db: Database): Promise<RetentionPassOutcome> {
 		const result = await runLedgerRetentionPass(db, { ...this.passOptions, signal: this.signal });
 		return {
-			purged: result.retrievalAttemptsPurged + result.outcomeEvidencePurged,
+			purged:
+				result.retrievalAttemptsPurged +
+				result.nonSelectedExposuresPurged +
+				result.outcomeEvidencePurged,
 			complete: result.complete,
 			summary: describeLedgerRetentionPass(result),
 		};
@@ -130,6 +157,10 @@ export class LedgerRetentionRunner extends PeriodicRetentionRunner {
 export interface RetrievalLedgerStats {
 	retrieval_attempts: number;
 	retrieval_exposures: number;
+	/** Exposures of candidates their attempt did not select. */
+	non_selected_retrieval_exposures: number;
+	/** Of those, the ones past the shorter non-selected window that retention will remove. */
+	stale_non_selected_retrieval_exposures: number;
 	/** Attempts past their retention date that retention has not removed yet. */
 	expired_retrieval_attempts: number;
 	oldest_retrieval_attempt_started_at: string | null;
@@ -154,11 +185,15 @@ export function retrievalLedgerStats(
 		"contract_version = ? AND retention_pinned = 0 AND retention_until IS NOT NULL AND retention_until <= ?";
 	const attempts = tableExists(db, "retrieval_attempts");
 	const evidence = tableExists(db, "outcome_evidence");
+	const exposures = tableExists(db, "retrieval_exposures");
 	return {
 		retrieval_attempts: attempts ? count("SELECT count(*) FROM retrieval_attempts") : 0,
-		retrieval_exposures: tableExists(db, "retrieval_exposures")
-			? count("SELECT count(*) FROM retrieval_exposures")
+		retrieval_exposures: exposures ? count("SELECT count(*) FROM retrieval_exposures") : 0,
+		non_selected_retrieval_exposures: exposures
+			? count("SELECT count(*) FROM retrieval_exposures WHERE disposition <> 'selected'")
 			: 0,
+		stale_non_selected_retrieval_exposures:
+			exposures && attempts ? countStaleNonSelectedExposures(db, now) : 0,
 		expired_retrieval_attempts: attempts
 			? count(
 					`SELECT count(*) FROM retrieval_attempts WHERE ${expired}`,

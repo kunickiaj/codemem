@@ -363,6 +363,10 @@ export const retrievalExposures = sqliteTable(
 	(table) => [
 		uniqueIndex("idx_retrieval_exposures_attempt_rank").on(table.attempt_id, table.rank),
 		index("idx_retrieval_exposures_memory").on(table.memory_id),
+		// Non-selected retention reads only these rows.
+		index("idx_retrieval_exposures_not_selected")
+			.on(table.attempt_id)
+			.where(sql`${table.disposition} <> 'selected'`),
 	],
 );
 

@@ -8,6 +8,7 @@ import { purgeExpiredRetrievalAttempts } from "./retrieval-ledger.js";
 import {
 	type LedgerRetentionLogger,
 	LedgerRetentionRunner,
+	retrievalLedgerStats,
 	runLedgerRetentionPass,
 } from "./retrieval-ledger-retention.js";
 
@@ -17,16 +18,21 @@ const NOW = "2026-11-01T00:00:00.000Z";
 const PAST = "2026-10-01T00:00:00.000Z";
 const FUTURE = "2026-12-01T00:00:00.000Z";
 const EXPOSURES_PER_ATTEMPT = 3;
+const RECENT_START = "2026-10-25T00:00:00.000Z";
 
 let dir: string;
 let dbPath: string;
 let db: Db;
 
+/**
+ * An attempt with one selected candidate and two it dropped. It started a week before NOW by
+ * default, inside the shorter window for candidates it did not select.
+ */
 function insertAttempt(
 	target: Db,
 	id: string,
 	retentionUntil: string | null,
-	{ pinned = false } = {},
+	{ pinned = false, startedAt = RECENT_START } = {},
 ): void {
 	target
 		.prepare(
@@ -36,11 +42,12 @@ function insertAttempt(
 				recorder_version, retention_until, retention_pinned
 			) VALUES (?, 1, 'prompt_pack', 'automatic', ?, 'succeeded', 'handed_off', 3, 1, 3, 'test', ?, ?)`,
 		)
-		.run(id, "2026-08-01T00:00:00.000Z", retentionUntil, pinned ? 1 : 0);
+		.run(id, startedAt, retentionUntil, pinned ? 1 : 0);
 	const exposure = target.prepare(
-		"INSERT INTO retrieval_exposures(attempt_id, rank, disposition, handoff_status) VALUES (?, ?, 'dropped', 'not_attempted')",
+		"INSERT INTO retrieval_exposures(attempt_id, rank, disposition, handoff_status) VALUES (?, ?, ?, 'not_attempted')",
 	);
-	for (let rank = 1; rank <= EXPOSURES_PER_ATTEMPT; rank++) exposure.run(id, rank);
+	for (let rank = 1; rank <= EXPOSURES_PER_ATTEMPT; rank++)
+		exposure.run(id, rank, rank === 1 ? "selected" : "dropped");
 }
 
 function insertEvidence(
@@ -164,8 +171,9 @@ describe("runLedgerRetentionPass", () => {
 		// Act
 		const result = await runLedgerRetentionPass(db, { now: NOW, batchSize: 3 });
 
-		// Assert: 3 + 3 + 3 + 1 attempts, then one short (empty) evidence batch.
-		expect(result).toMatchObject({ retrievalAttemptsPurged: 10, batches: 5, complete: true });
+		// Assert: 3 + 3 + 3 + 1 attempts, then one short (empty) batch each for non-selected
+		// candidates and evidence.
+		expect(result).toMatchObject({ retrievalAttemptsPurged: 10, batches: 6, complete: true });
 		expect(attemptIds()).toEqual([]);
 		expect(orphanExposures()).toBe(0);
 	});
@@ -239,6 +247,144 @@ describe("runLedgerRetentionPass", () => {
 	});
 });
 
+/** Each exposure of an attempt as `rank:disposition`. */
+function exposureRows(id: string, target: Db = db): string[] {
+	return target
+		.prepare(
+			"SELECT rank || ':' || disposition FROM retrieval_exposures WHERE attempt_id = ? ORDER BY rank",
+		)
+		.pluck()
+		.all(id) as string[];
+}
+
+function attemptRow(id: string, target: Db = db): unknown {
+	return target.prepare("SELECT * FROM retrieval_attempts WHERE attempt_id = ?").get(id);
+}
+
+const daysBefore = (days: number, from = NOW) =>
+	new Date(Date.parse(from) - days * 86_400_000).toISOString();
+
+describe("non-selected candidate retention", () => {
+	it("removes candidates an attempt did not select once it is older than 14 days", async () => {
+		// Arrange: both attempts are within their 90-day retention.
+		insertAttempt(db, "fifteen-days", FUTURE, { startedAt: daysBefore(15) });
+		insertAttempt(db, "thirteen-days", FUTURE, { startedAt: daysBefore(13) });
+		const before = attemptRow("fifteen-days");
+
+		// Act
+		const result = await runLedgerRetentionPass(db, { now: NOW });
+
+		// Assert: the attempt row and its selected candidate are untouched.
+		expect(result).toMatchObject({ nonSelectedExposuresPurged: 2, complete: true });
+		expect(exposureRows("fifteen-days")).toEqual(["1:selected"]);
+		expect(exposureRows("thirteen-days")).toEqual(["1:selected", "2:dropped", "3:dropped"]);
+		expect(attemptRow("fifteen-days")).toEqual(before);
+	});
+
+	it("removes every disposition other than selected", async () => {
+		insertAttempt(db, "mixed", FUTURE, { startedAt: daysBefore(20) });
+		db.prepare(
+			"UPDATE retrieval_exposures SET disposition = 'trimmed' WHERE attempt_id = 'mixed' AND rank = 2",
+		).run();
+		db.prepare(
+			"INSERT INTO retrieval_exposures(attempt_id, rank, disposition, handoff_status) VALUES ('mixed', 4, 'deduped', 'not_attempted')",
+		).run();
+
+		await runLedgerRetentionPass(db, { now: NOW });
+
+		expect(exposureRows("mixed")).toEqual(["1:selected"]);
+	});
+
+	it("keeps the selected candidates until the attempt's own retention ends", async () => {
+		// Arrange: 89 days old, with a day left of its 90-day retention.
+		insertAttempt(db, "eighty-nine-days", daysBefore(-1), { startedAt: daysBefore(89) });
+
+		// Act
+		await runLedgerRetentionPass(db, { now: NOW });
+		const kept = exposureRows("eighty-nine-days");
+		await runLedgerRetentionPass(db, { now: daysBefore(-2) });
+
+		// Assert
+		expect(kept).toEqual(["1:selected"]);
+		expect(attemptIds()).toEqual([]);
+		expect(orphanExposures()).toBe(0);
+	});
+
+	it("leaves pinned and undated attempts whole", async () => {
+		insertAttempt(db, "pinned", null, { pinned: true, startedAt: daysBefore(60) });
+		insertAttempt(db, "undated", null, { startedAt: daysBefore(60) });
+
+		const result = await runLedgerRetentionPass(db, { now: NOW });
+
+		expect(result.nonSelectedExposuresPurged).toBe(0);
+		expect(exposureRows("pinned")).toHaveLength(EXPOSURES_PER_ATTEMPT);
+		expect(exposureRows("undated")).toHaveLength(EXPOSURES_PER_ATTEMPT);
+	});
+
+	it("works through both rules in batches of the configured size within one budget", async () => {
+		// Arrange: 5 expired attempts, and 5 kept attempts past the shorter window.
+		insertExpiredAttempts(5);
+		for (let index = 0; index < 5; index++)
+			insertAttempt(db, `stale-${index}`, FUTURE, { startedAt: daysBefore(30 + index) });
+
+		// Act
+		const result = await runLedgerRetentionPass(db, { now: NOW, batchSize: 2 });
+
+		// Assert: 2 + 2 + 1 expired attempts, 2 + 2 + 1 trimmed attempts, one empty evidence batch.
+		expect(result).toMatchObject({
+			retrievalAttemptsPurged: 5,
+			nonSelectedExposuresPurged: 10,
+			batches: 7,
+			complete: true,
+		});
+		expect(db.prepare("SELECT count(*) FROM retrieval_exposures").pluck().get()).toBe(5);
+	});
+
+	it("stops between the rules at its budget and finishes on a later pass", async () => {
+		// Arrange
+		insertExpiredAttempts(2);
+		for (let index = 0; index < 3; index++)
+			insertAttempt(db, `stale-${index}`, FUTURE, { startedAt: daysBefore(30) });
+
+		// Act: the 10 ms budget ends after the expired attempts' two batches.
+		const first = await runLedgerRetentionPass(db, {
+			now: NOW,
+			batchSize: 2,
+			maxRuntimeMs: 10,
+			clock: steppingClock(4),
+		});
+		const second = await runLedgerRetentionPass(db, { now: NOW, batchSize: 2 });
+
+		// Assert
+		expect(first).toMatchObject({
+			retrievalAttemptsPurged: 2,
+			nonSelectedExposuresPurged: 0,
+			complete: false,
+		});
+		expect(second).toMatchObject({ nonSelectedExposuresPurged: 6, complete: true });
+	});
+
+	it("counts the rows it will remove in the ledger stats", async () => {
+		insertAttempt(db, "stale", FUTURE, { startedAt: daysBefore(20) });
+		insertAttempt(db, "fresh", FUTURE, { startedAt: daysBefore(2) });
+		insertAttempt(db, "pinned", null, { pinned: true, startedAt: daysBefore(20) });
+
+		const before = retrievalLedgerStats(db, NOW);
+		const result = await runLedgerRetentionPass(db, { now: NOW });
+		const after = retrievalLedgerStats(db, NOW);
+
+		expect(before).toMatchObject({
+			non_selected_retrieval_exposures: 6,
+			stale_non_selected_retrieval_exposures: 2,
+		});
+		expect(result.nonSelectedExposuresPurged).toBe(before.stale_non_selected_retrieval_exposures);
+		expect(after).toMatchObject({
+			non_selected_retrieval_exposures: 4,
+			stale_non_selected_retrieval_exposures: 0,
+		});
+	});
+});
+
 describe("batched purge functions", () => {
 	it("removes the earliest expiry first and at most the limit", () => {
 		insertAttempt(db, "late", "2026-10-20T00:00:00.000Z");
@@ -281,7 +427,7 @@ describe("LedgerRetentionRunner", () => {
 		expect(log.step).toHaveBeenCalledTimes(1);
 		expect(log.step).toHaveBeenCalledWith(
 			expect.stringMatching(
-				/^Retrieval ledger retention purged 1 attempts and 0 outcome evidence rows in \d+ ms$/,
+				/^Retrieval ledger retention purged 1 attempts, 0 non-selected candidates and 0 outcome evidence rows in \d+ ms$/,
 			),
 		);
 		expect(log.warn).not.toHaveBeenCalled();
