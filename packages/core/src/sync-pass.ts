@@ -1998,9 +1998,24 @@ function carriedScope(op: ReplicationOp): string | null {
 }
 
 /**
- * Throws when the peer may no longer receive a batch: its pin is gone or now
- * pins another key, or the effective authorization the serving routes use,
- * with retained proofs and deny overlays, no longer allows a carried scope.
+ * The managed scope a move retraction removes the peer's copy from, or null.
+ * Only this device's access to it is rechecked: the retraction carries no content.
+ * A retraction from the legacy default scope keeps its own outbound rule.
+ */
+function retractedScope(op: ReplicationOp): string | null {
+	if (op.entity_type !== "memory_item" || op.op_type !== REASSIGN_SCOPE_OP_TYPE) return null;
+	if (!isOldSideMove(op)) return null;
+	const scopeId = op.scope_id?.trim();
+	return scopeId && scopeId !== DEFAULT_SYNC_SCOPE_ID ? scopeId : null;
+}
+
+/**
+ * Throws when a batch may no longer be sent. The peer's pin must still exist
+ * and pin the same key, and the effective authorization the serving routes
+ * use, with retained proofs and deny overlays, must still allow every carried
+ * scope for both the peer and this device under its current signing key.
+ * This device must also still have access to every managed scope a move
+ * retraction in the batch removes copies from.
  * The pass start filtered with raw membership, and a push spans network waits.
  */
 function requirePeerStillAuthorized(context: SyncExchangeContext, ops: ReplicationOp[]): void {
@@ -2013,6 +2028,11 @@ function requirePeerStillAuthorized(context: SyncExchangeContext, ops: Replicati
 	if (!pin || !binding || pin.pinned_fingerprint !== context.pinnedFingerprint)
 		throw new Error("peer access ended during push");
 	const scopeIds = new Set(ops.map(carriedScope).filter((scopeId) => scopeId !== null));
+	const localScopeIds = new Set([
+		...scopeIds,
+		...ops.map(retractedScope).filter((scopeId) => scopeId !== null),
+	]);
+	if (localScopeIds.size === 0) return;
 	for (const scopeId of scopeIds) {
 		const authorization = getEffectiveCachedScopeAuthorization(context.db, {
 			deviceId: context.peerDeviceId,
@@ -2021,6 +2041,20 @@ function requirePeerStillAuthorized(context: SyncExchangeContext, ops: Replicati
 		});
 		if (scopeAuthorizationFailureReason(authorization))
 			throw new Error("peer access ended during push");
+	}
+	const localPublicKey = context.db
+		.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+		.pluck()
+		.get(context.deviceId) as string | null | undefined;
+	for (const scopeId of localScopeIds) {
+		// An absent key must not match any proof, so it is passed as an empty key.
+		const localAuthorization = getEffectiveCachedScopeAuthorization(context.db, {
+			deviceId: context.deviceId,
+			scopeId,
+			expectedPublicKey: localPublicKey ?? "",
+		});
+		if (scopeAuthorizationFailureReason(localAuthorization))
+			throw new Error("this device's access ended during push");
 	}
 }
 

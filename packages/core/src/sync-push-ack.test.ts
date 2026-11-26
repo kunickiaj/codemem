@@ -1,7 +1,10 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
-import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
+import {
+	recordTestLocalIdentity,
+	refreshTestScopeRows,
+} from "./scope-membership-cache-test-fixtures.js";
 import { SecretScanner } from "./secret-scanner.js";
 import * as syncAuth from "./sync-auth.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
@@ -88,7 +91,8 @@ beforeEach(async () => {
 		setReplicationCursor(source, peerId, { lastApplied: baseline, lastAcked: baseline }, id);
 	}
 	setReplicationCursor(source, peerId, { lastApplied: baseline, lastAcked: baseline });
-	// The push rechecks each batch against retained coordinator proofs.
+	// The push rechecks each batch against retained coordinator proofs for both devices.
+	recordTestLocalIdentity(source, localId);
 	await refreshTestScopeRows(source);
 });
 
@@ -159,13 +163,15 @@ function receiverPayload(ops: ReplicationOp[]) {
 
 function executorFor(
 	push: (ops: ReplicationOp[]) => ReturnType<RequestJsonExecutor>,
-	options: { scoped?: boolean } = {},
+	options: { scoped?: boolean; features?: string[] } = {},
 ) {
+	const features = options.features ? { sync_features: options.features } : {};
 	return vi.fn<RequestJsonExecutor>(async (method, url, request) => {
 		if (url === `${baseUrl}/v1/status`) {
 			return [
 				200,
 				{
+					...features,
 					fingerprint: "ack-fingerprint",
 					protocol_version: "2",
 					sync_capability: options.scoped ? "scoped" : "enforcing",
@@ -946,3 +952,96 @@ it.each(
 		if (pull === "snapshot") expect(scopedReads).toEqual([]);
 	},
 );
+
+/** This device's move retraction: the old side tells the peer to drop its copy in the ACK scope. */
+function seedRetraction(memoryId: string, index: number): ReplicationOp {
+	const time = `2026-01-01T00:00:0${index}Z`;
+	const op: ReplicationOp = {
+		op_id: `ack-op-${index}`,
+		entity_type: "memory_item",
+		entity_id: memoryId,
+		op_type: "reassign_scope",
+		payload_json: JSON.stringify({
+			operation_id: `ack-move-${index}`,
+			memory_id: memoryId,
+			old_scope_id: scopeId,
+			new_scope_id: unrelatedScopeId,
+			side: "old",
+			revision: 1,
+		}),
+		clock_rev: 1,
+		clock_updated_at: time,
+		clock_device_id: localId,
+		device_id: localId,
+		created_at: time,
+		scope_id: scopeId,
+	};
+	source
+		.prepare(`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type,
+		payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+		VALUES (@op_id, @entity_type, @entity_id, @op_type, @payload_json, @clock_rev,
+		@clock_updated_at, @clock_device_id, @device_id, @created_at, @scope_id)`)
+		.run(op);
+	return op;
+}
+
+it("holds the ACK when this device loses access before a retraction batch, then resends only what the receiver already has", async () => {
+	// Arrange: an upsert and a later retraction from the scope, sent one op per request.
+	const [upsert] = seedOps(1);
+	if (!upsert) throw new Error("missing_fixture_op");
+	const retraction = seedRetraction(upsert.entity_id, 2);
+	const payloads: ReturnType<typeof receiverPayload>[] = [];
+	const sent: string[][] = [];
+	let loseAccess = true;
+	const executor = executorFor(
+		async (batch) => {
+			if (batch.length > 1) return [413, { error: "too_many_ops" }];
+			sent.push(batch.map((op) => op.op_id));
+			const payload = receiverPayload(batch);
+			payloads.push(payload);
+			// This device loses its proof for the scope once the first request lands.
+			if (loseAccess) {
+				source
+					.prepare("DELETE FROM scope_membership_authorization_evidence WHERE device_id = ?")
+					.run(localId);
+				loseAccess = false;
+			}
+			return [200, payload];
+		},
+		{ features: ["reassign_scope"] },
+	);
+
+	// Act: the pass stops before the retraction.
+	const stopped = await runSync(executor);
+
+	// Assert: the retraction never went out and the ACK stayed before the stopped batch.
+	expect(stopped.ok).toBe(false);
+	expect(sent).toEqual([[upsert.op_id]]);
+	expect(getReplicationCursor(source, peerId)[1]).toBe(baseline);
+
+	// Act: a refresh restores the proof and the next pass runs.
+	await refreshTestScopeRows(source);
+	const resumed = await runSync(executor);
+
+	// Assert: the receiver skips the upsert it already applied, applies the retraction
+	// once, and keeps one copy of each op; the ACK then covers both. A stopped pass
+	// keeps the whole window unacknowledged, as the relay protocol contract requires.
+	expect(resumed.ok).toBe(true);
+	expect(sent).toEqual([[upsert.op_id], [upsert.op_id], [retraction.op_id]]);
+	expect(payloads[1]).toMatchObject({ applied: 0, skipped: 1, errors: [] });
+	expect(payloads[2]).toMatchObject({ applied: 1, skipped: 0, errors: [] });
+	expect(
+		receiver
+			.prepare(
+				"SELECT op_id, COUNT(*) AS copies FROM replication_ops GROUP BY op_id ORDER BY op_id",
+			)
+			.all(),
+	).toEqual([
+		{ op_id: upsert.op_id, copies: 1 },
+		{ op_id: retraction.op_id, copies: 1 },
+	]);
+	expect(receiver.prepare("SELECT import_key, active FROM memory_items").all()).toEqual([
+		{ import_key: upsert.entity_id, active: 0 },
+	]);
+	expect(getReplicationCursor(source, peerId)[1]).toBe(cursorOf(retraction));
+});

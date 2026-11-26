@@ -13,6 +13,18 @@ import type { ScopeMembershipSnapshot } from "./scope-membership-snapshot.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const cacheTime = "2026-10-07T00:00:00.000Z";
+
+/** Records this device's signing identity, which a sender's retained proof must name. */
+export function recordTestLocalIdentity(
+	db: Database,
+	deviceId: string,
+	publicKey: string = CANONICAL_PUBLIC_KEY,
+): void {
+	db.prepare(
+		`INSERT OR IGNORE INTO sync_device (device_id, public_key, fingerprint, created_at)
+		 VALUES (?, ?, ?, ?)`,
+	).run(deviceId, publicKey, fingerprintPublicKey(publicKey), cacheTime);
+}
 export function cacheScope(overrides: Partial<CoordinatorScope> = {}): CoordinatorScope {
 	return {
 		scope_id: "scope-a",
