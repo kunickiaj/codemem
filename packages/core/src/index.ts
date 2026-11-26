@@ -1726,6 +1726,7 @@ export {
 	recordScopeReassignment,
 	rejectInboundScopeFailures,
 	replicationOpRequiresPersonalScopeAuthorization,
+	scopesWrittenByInboundOp,
 	setReplicationCursor,
 	setSyncResetState,
 	summarizeInboundScopeRejections,

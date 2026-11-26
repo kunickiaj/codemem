@@ -544,17 +544,18 @@ async function oldSideReassignment(operationId: string, memoryId: number) {
 }
 
 describe("managed destinations of an old-side reassignment from another group", () => {
-	it("denies destination changes when either actual peer or local signing key differs from retained enrollment", async () => {
-		// Arrange: the old scope is another group's and contains a real peer-origin memory.
-		await root.refresh();
-		const memoryId = await seedOtherGroupMemory("destination-denial-seed");
-		const before = contentState();
-		for (const mismatch of ["peer", "local"]) {
+	it.each(["peer", "local"])(
+		"applies the old side without the destination when the %s signing key differs from its enrollment",
+		async (mismatch) => {
+			// Arrange: the old scope is another group's and contains a real peer-origin memory.
+			// The old side retires only that copy and writes nothing in the destination, so, as on
+			// the pull path, it needs the old scope alone.
 			await root.refresh();
-			let signingKeys = root.peer.keysDir;
 			root.store.db
 				.prepare("UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ?")
 				.run(root.peer.publicKey, fingerprintPublicKey(root.peer.publicKey));
+			const memoryId = await seedOtherGroupMemory(`destination-${mismatch}-seed`);
+			let signingKeys = root.peer.keysDir;
 			if (mismatch === "peer") {
 				await seedOtherGroupScope(root.other.publicKey);
 				pinOtherKey();
@@ -562,24 +563,24 @@ describe("managed destinations of an old-side reassignment from another group", 
 			} else {
 				await root.refresh({ [root.localId]: root.other.publicKey }, { groupIds: ["group-1"] });
 			}
-			const op = await oldSideReassignment(`destination-${mismatch}-denied`, memoryId);
-			// Act: submit only the valid old mirror, not the managed/new mirror.
+			const op = await oldSideReassignment(`destination-${mismatch}-old-side`, memoryId);
+			// Act: submit only the old mirror, not the managed/new mirror.
 			const status = await root.request("/v1/status", signingKeys);
 			const response = await root.request("/v1/ops", signingKeys, {
 				method: "POST",
 				body: { sync_capability: "scoped", sync_features: ["reassign_scope"], ops: [op] },
 			});
-			// Assert: authentication succeeds, but destination admission precedes metadata writes.
+			// Assert: the old copy is retired and the destination holds nothing new.
 			expect(status.status).toBe(200);
-			expect(response.status).toBe(409);
-			expect(await response.json()).toMatchObject({
-				error: "reset_required",
-				reason: "missing_scope",
-				scope_id: "managed-work",
-			});
-			expect(contentState()).toEqual(before);
-		}
-	});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({ applied: 1, rejected: 0 });
+			expect(
+				root.store.db
+					.prepare("SELECT scope_id, active FROM memory_items WHERE import_key = ?")
+					.all(`destination-${mismatch}-seed-memory`),
+			).toEqual([{ scope_id: "other-work", active: 0 }]);
+		},
+	);
 
 	it("applies the same old-side reassignment when both actual keys match managed destination evidence", async () => {
 		// Arrange: the SDK creates a valid mirrored operation and only its old side is sent.
@@ -601,6 +602,136 @@ describe("managed destinations of an old-side reassignment from another group", 
 		expect(JSON.parse(row.metadata_json)).toMatchObject({
 			last_scope_reassignment: { new_scope_id: "managed-work", side: "old" },
 		});
+	});
+});
+
+/** Both mirrors of a move of `memoryId` from other-work to managed-work, built on a sender copy. */
+async function moveMirrors(operationId: string, memoryId: number) {
+	const path = join(root.directory, `${operationId}-mirrors.sqlite`);
+	await root.store.db.backup(path);
+	const sender = new Database(path);
+	initTestSchema(sender);
+	try {
+		const { oldOpId, newOpId } = recordScopeReassignment(sender, {
+			operationId,
+			memoryId,
+			oldScopeId: "other-work",
+			newScopeId: "managed-work",
+			deviceId: root.peer.deviceId,
+			createdAt: new Date().toISOString(),
+		});
+		const read = (opId: string) => {
+			const op = sender.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId);
+			if (!op) throw new Error("fixture_reassignment_missing");
+			return op as Record<string, unknown>;
+		};
+		return { oldOp: read(oldOpId), newOp: read(newOpId) };
+	} finally {
+		sender.close();
+	}
+}
+
+function memoryRows(entityId: string) {
+	return root.store.db
+		.prepare("SELECT scope_id, active FROM memory_items WHERE import_key = ? ORDER BY id")
+		.all(entityId);
+}
+
+function pushMove(ops: unknown[], signingKeys = root.peer.keysDir) {
+	return root.request("/v1/ops", signingKeys, {
+		method: "POST",
+		body: { sync_capability: "scoped", sync_features: ["reassign_scope"], ops },
+	});
+}
+
+/** The peer stays enrolled in managed-work, but other-work proves only another key for it. */
+async function unprovePeerInOtherWork() {
+	await root.refresh();
+	await seedOtherGroupScope(root.other.publicKey);
+}
+
+describe("pushed moves between Projects", () => {
+	it("accepts the new side on a device that is only in the destination Project", async () => {
+		// Arrange: build the move where the copy exists, then remove the copy and the older
+		// Project from this device, which now knows only the destination.
+		await root.refresh();
+		const memoryId = await seedOtherGroupMemory("destination-only-seed");
+		const entityId = "destination-only-seed-memory";
+		const { newOp } = await moveMirrors("destination-only", memoryId);
+		root.store.db.prepare("DELETE FROM memory_items WHERE import_key = ?").run(entityId);
+		root.store.db.prepare("DELETE FROM scope_memberships WHERE scope_id = 'other-work'").run();
+		root.store.db.prepare("DELETE FROM replication_scopes WHERE scope_id = 'other-work'").run();
+
+		// Act
+		const response = await pushMove([newOp]);
+
+		// Assert
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ applied: 1, rejected: 0 });
+		expect(memoryRows(entityId)).toEqual([{ scope_id: "managed-work", active: 1 }]);
+	});
+
+	it("refuses the new side from a sender not proven in the Project of a stored copy", async () => {
+		// Arrange: this device holds the copy in other-work.
+		await root.refresh();
+		const memoryId = await seedOtherGroupMemory("held-copy-seed");
+		const { newOp } = await moveMirrors("held-copy", memoryId);
+		await unprovePeerInOtherWork();
+		const before = contentState();
+
+		// Act
+		const response = await pushMove([newOp]);
+
+		// Assert: fails closed and writes nothing.
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			error: "reset_required",
+			reason: "missing_scope",
+			scope_id: "other-work",
+		});
+		expect(contentState()).toEqual(before);
+	});
+
+	it("moves the stored copy for a sender proven in both Projects", async () => {
+		// Arrange
+		await root.refresh();
+		const memoryId = await seedOtherGroupMemory("proven-move-seed");
+		const { oldOp, newOp } = await moveMirrors("proven-move", memoryId);
+
+		// Act
+		const response = await pushMove([oldOp, newOp]);
+
+		// Assert
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ applied: 2, rejected: 0 });
+		const rows = memoryRows("proven-move-seed-memory") as Array<{
+			scope_id: string;
+			active: number;
+		}>;
+		expect(rows.filter((row) => row.active === 1)).toEqual([
+			{ scope_id: "managed-work", active: 1 },
+		]);
+	});
+
+	it("refuses the old side from a sender not proven in the older Project, leaving its copy in place", async () => {
+		// Arrange: the sender is still proven in the destination, but not where the copy is.
+		await root.refresh();
+		const memoryId = await seedOtherGroupMemory("old-side-seed");
+		const { oldOp } = await moveMirrors("old-side", memoryId);
+		await unprovePeerInOtherWork();
+		const before = contentState();
+
+		// Act
+		const response = await pushMove([oldOp]);
+
+		// Assert: the copy is not retired and the op is not recorded.
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			reason: "missing_scope",
+			scope_id: "other-work",
+		});
+		expect(memoryRows("old-side-seed-memory")).toEqual([{ scope_id: "other-work", active: 1 }]);
+		expect(contentState()).toEqual(before);
 	});
 });
 

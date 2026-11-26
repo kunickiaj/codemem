@@ -198,6 +198,7 @@ import {
 	SYNC_SCOPE_QUERY_PARAM,
 	schema,
 	scopeAuthorizationFailureReason,
+	scopesWrittenByInboundOp,
 	serializeRecipientPolicyTeamMutation,
 	setPeerProjectFilterChecked,
 	summarizeInboundScopeRejections,
@@ -5262,35 +5263,23 @@ function validateManagedScopes(
 	return null;
 }
 
-function addExistingMutationScopes(
-	db: MemoryStore["db"],
-	ops: readonly ReplicationOp[],
-	scopeIds: Set<string>,
-): void {
-	const existingScopes = db.prepare(
-		"SELECT DISTINCT scope_id FROM memory_items WHERE import_key = ?",
-	);
-	for (const op of ops) {
-		if (!["upsert", "delete", "reassign_scope"].includes(op.op_type)) continue;
-		const rows = existingScopes.all(op.entity_id) as Array<{ scope_id: unknown }>;
-		for (const { scope_id: scope } of rows) {
-			if (typeof scope === "string" && scope.trim()) scopeIds.add(scope.trim());
-		}
-	}
-}
-
 function cleanOpScopeId(op: ReplicationOp): string {
 	return typeof op.scope_id === "string" ? op.scope_id.trim() : "";
 }
 
-/** Every scope a batch touches, including both sides of a reassignment. Payloads are already parsed. */
-function mutationScopeIds(ops: ReplicationOp[]): Set<string> {
+/**
+ * Every scope a pushed batch touches: each op's own scope, and each scope of a stored copy
+ * the op would change, by the rule the pull path uses. A move's new side needs only its new
+ * scope unless this device stores a copy elsewhere, and its old side needs its old scope.
+ */
+function inboundWriteScopeIds(
+	db: MemoryStore["db"],
+	ops: readonly ReplicationOp[],
+	senderId: string,
+): Set<string> {
 	const scopeIds = new Set(ops.map(cleanOpScopeId));
 	for (const op of ops) {
-		if (op.op_type !== "reassign_scope") continue;
-		const reassignment = parseReassignScopePayload(op);
-		scopeIds.add(reassignment.old_scope_id);
-		scopeIds.add(reassignment.new_scope_id);
+		for (const scopeId of scopesWrittenByInboundOp(db, op, senderId)) scopeIds.add(scopeId);
 	}
 	return scopeIds;
 }
@@ -5299,7 +5288,7 @@ function rejectUnauthorizedInboundBatch(
 	c: Context,
 	ops: ReplicationOp[],
 	context: ReturnType<typeof syncScopeAuthorizationContext>,
-	options: { enabled: boolean; scopeId: string | null; managedScopeIds: ReadonlySet<string> },
+	options: { enabled: boolean; scopeId: string | null },
 ): Response | null {
 	const rejected = rejectInboundScopeFailures(context.db, ops, context.localDeviceId, {
 		enabled: options.enabled,
@@ -5319,8 +5308,7 @@ function rejectUnauthorizedInboundBatch(
 		);
 	}
 	// Raw membership can reject a batch, but cannot authorize managed content by itself.
-	const scopeIds = new Set(options.managedScopeIds);
-	addExistingMutationScopes(context.db, ops, scopeIds);
+	const scopeIds = inboundWriteScopeIds(context.db, ops, context.peerDeviceId);
 	const failure = validateManagedScopes(scopeIds, context);
 	if (!failure) return null;
 	recordInboundScopeFailure(context);
@@ -5855,7 +5843,6 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const rejected = rejectUnauthorizedInboundBatch(c, validatedOps, scopeContext, {
 			enabled: negotiated !== "unsupported",
 			scopeId: scopeRequest.scope_id,
-			managedScopeIds: mutationScopeIds(validatedOps),
 		});
 		if (rejected) return rejected;
 
