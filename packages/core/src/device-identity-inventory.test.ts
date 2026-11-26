@@ -1010,3 +1010,39 @@ describe("device Identity inventory rejoin evidence", () => {
 		expect(result.items).toEqual([]);
 	});
 });
+
+describe("device Identity inventory for bootstrap-grant pairings", () => {
+	it("keeps a bootstrap-grant pairing pairing_required until a person pairs the same key", () => {
+		// Arrange: accepting an invitation pinned the inviter for its bootstrap grant.
+		const fingerprint = fingerprintPublicKey("inviter-key");
+		const db = new Database(":memory:");
+		initTestSchema(db);
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		).run("local-device", "local-key", fingerprintPublicKey("local-key"), NOW);
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at,
+			 pending_bootstrap_grant_id, discovered_via_group_id)
+			 VALUES ('legacy-peer', 'Inviter', ?, ?, ?, 'grant-1', 'group-1')`,
+		).run("inviter-key", fingerprint, NOW);
+		const input = {
+			localDeviceId: "local-device",
+			coordinator: {
+				availability: "available" as const,
+				safeErrorCode: null,
+				enrollments: [enrollment("legacy-peer", "inviter-key")],
+			},
+		};
+		const state = () =>
+			listDeviceIdentityInventory(db, input).items.find((item) => item.deviceId === "legacy-peer")
+				?.state;
+
+		// Act and assert: the grant is not evidence that a person paired it.
+		expect(state()).toBe("pairing_required");
+		db.prepare(
+			"UPDATE sync_peers SET explicit_pairing_fingerprint = ? WHERE peer_device_id = 'legacy-peer'",
+		).run(fingerprint);
+		expect(state()).toBe("setup_required");
+		db.close();
+	});
+});
