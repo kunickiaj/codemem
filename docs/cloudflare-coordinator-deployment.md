@@ -277,7 +277,14 @@ names. Add-device invitations, account linking, rejoin, owner enrollment and inv
 the removed identity, so they never lift its removal. A Team invitation that was issued before the removal and
 is still unused also brings the person in under a new identity, and the coordinator cannot tell it apart from an
 invitation for someone else. The Viewer's removal step therefore lists the Team's pending, unexpired and
-unrevoked invitations and lets the admin revoke them in the same step through the existing revoke route.
+unrevoked invitations and lets the admin revoke them in the same step.
+
+`POST /v1/admin/invites/revoke` with the body `{ "group_id", "invite_id" }` revokes an invitation that nobody has
+accepted. It answers `200` with `status` `revoked`, or `already_revoked` and the first revocation time.
+An accepted invitation answers `409 invite_consumed` and is left as it is, and an invitation the group does
+not have answers `404 invite_not_found`. A revoked invitation can no longer be inspected or accepted. The
+statement that accepts an invitation requires it to be neither revoked nor accepted, so a revocation and an
+acceptance cannot both win. The route requires the admin secret and needs no migration.
 
 `GET /v1/admin/team-member-removals?group_id=...` only reads. It lists a group's removals oldest first, 200 per
 page, and accepts `team_id` and the previous page's `next_after_seq` as `after_seq`. Both routes require the

@@ -2,6 +2,7 @@ import type { CoordinatorAuthSchemaStore } from "./coordinator-auth-schema.js";
 import type { CoordinatorBoundaryReadinessStore } from "./coordinator-boundary-readiness.js";
 import type { CoordinatorDeviceRemovalStore } from "./coordinator-device-removal.js";
 import type { CoordinatorDeviceRevocationStore } from "./coordinator-device-revocation.js";
+import type { CoordinatorInviteRevocationStore } from "./coordinator-invite-revocation.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -548,6 +549,7 @@ export interface CoordinatorStore
 		CoordinatorDeviceRemovalStore,
 		CoordinatorBoundaryReadinessStore,
 		CoordinatorTeamMemberRemovalStore,
+		CoordinatorInviteRevocationStore,
 		Partial<CoordinatorAuthSchemaStore> {
 	close(): Promise<void>;
 	createGroup(groupId: string, displayName?: string | null): Promise<void>;

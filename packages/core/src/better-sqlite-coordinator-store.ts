@@ -219,6 +219,10 @@ import {
 	IDENTITY_GROUP_GRANT_SCHEMA_SQL,
 	IDENTITY_GROUP_GRANT_SOURCE_SQL,
 } from "./coordinator-identity-group-grant.js";
+import {
+	type CoordinatorRevokeInviteInput,
+	InviteRevocationOperations,
+} from "./coordinator-invite-revocation.js";
 import { joinReviewGuardEvidence } from "./coordinator-join-review-guards.js";
 import {
 	captureLegacyCompletionOwnerProof,
@@ -1222,6 +1226,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private removalSchemaSeen = false;
 	private readonly boundaryReadiness: BoundaryReadinessOperations;
 	private readonly teamMemberRemovals: TeamMemberRemovalOperations;
+	private readonly inviteRevocations: InviteRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1255,6 +1260,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		this.teamMemberRemovals = new TeamMemberRemovalOperations(ledgerBackend, options.authClock);
+		this.inviteRevocations = new InviteRevocationOperations(ledgerBackend, options.authClock);
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
@@ -2162,6 +2168,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async listTeamMemberRemovals(input: CoordinatorListTeamMemberRemovalsInput) {
 		return this.teamMemberRemovals.listTeamMemberRemovals(input);
+	}
+
+	async revokeInvite(input: CoordinatorRevokeInviteInput) {
+		return this.inviteRevocations.revokeInvite(input);
 	}
 
 	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {

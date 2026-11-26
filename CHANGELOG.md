@@ -4,6 +4,7 @@
 
 ### Added
 
+- Admin devices can revoke an invitation that nobody has accepted with `POST /v1/admin/invites/revoke`. A revoked invitation can no longer be accepted. An accepted one is refused and left as it is.
 - Coordinators can store that a person was removed from one Team, so every admin device of the group can honor it. Admin devices record and list removals with `/v1/admin/team-member-removals`. A removal is permanent for that identity, and the person comes back only through a new Team invitation, under a new identity. Cloudflare deployments need migration `0052` before the new Worker records any. A SQLite coordinator adds the storage when it starts. Clients do not use the removals yet.
 - The pinned-peer check reply also reports, for the key each device was sent with, whether that key is removed or still enabled under the same device ID. It covers only devices that share a group with the asking device, now or through a removal there, and says nothing about blocked devices. Older clients ignore it.
 

@@ -68,6 +68,7 @@ import {
 	registerCoordinatorDeviceSetupRoutes,
 } from "./coordinator-device-setup-http.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { registerCoordinatorInviteRevocationRoute } from "./coordinator-invite-revocation.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import { registerCoordinatorKeyIdFillRoute } from "./coordinator-key-id-fill-api.js";
@@ -379,6 +380,11 @@ function registerCoordinatorRuntimeRoutes(
 	});
 	registerCoordinatorDeviceRemovalRoutes(app, {
 		rateLimitedResponse: deps.rateLimitedResponse,
+		storeFactory: () => createStore({ existingOnly: true }),
+		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
+	});
+	registerCoordinatorInviteRevocationRoute(app, {
+		...deps,
 		storeFactory: () => createStore({ existingOnly: true }),
 		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
 	});
