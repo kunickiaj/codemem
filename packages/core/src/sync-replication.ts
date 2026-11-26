@@ -32,9 +32,9 @@ import { readCodememConfigFile } from "./observer-config.js";
 import { readRetainedPeerProjectFilters } from "./peer-project-filter-retention.js";
 import { projectBasename } from "./project.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
-import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
+import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import {
 	getCachedScopeAuthorization,
 	getEffectiveCachedScopeAuthorization,
@@ -3850,8 +3850,7 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 function snapshotScopeBlocked(db: Database, scopeId: string, peerDeviceId: string | null): boolean {
 	if (isProjectScopeWithdrawn(db, scopeId)) return true;
 	return Boolean(
-		peerDeviceId &&
-			getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { scopeId, deviceId: peerDeviceId }),
+		peerDeviceId && isScopeDeviceAdmissionRefused(db, { scopeId, deviceId: peerDeviceId }),
 	);
 }
 

@@ -2,7 +2,7 @@
 // runtime-import-boundaries.test.ts enforces this dependency boundary.
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
-import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
+import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import { getRetainedScopeAuthorizationKey } from "./scope-membership-evidence.js";
 import {
 	explainScopeMembershipRevocation,
@@ -251,11 +251,7 @@ export function listCachedScopesForDevice(
 		.all(...params) as JoinedMembershipRow[];
 	const cacheStates = loadCacheStates(db, opts.authority ?? null);
 	const memberships = rows.filter(
-		(row) =>
-			getAnyRecipientPolicyDenyOverlayForScopeDevice(db, {
-				scopeId: row.scope_id,
-				deviceId: cleanDeviceId,
-			}) == null,
+		(row) => !isScopeDeviceAdmissionRefused(db, { scopeId: row.scope_id, deviceId: cleanDeviceId }),
 	);
 	return {
 		deviceId: cleanDeviceId,
@@ -371,7 +367,7 @@ function readCachedScopeAuthorization(
 		membership,
 		scope,
 		epoch,
-		policyDenied: !!getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { deviceId, scopeId }),
+		policyDenied: isScopeDeviceAdmissionRefused(db, { deviceId, scopeId }),
 	});
 	let revocation: ScopeMembershipRevocationNotice | null = null;
 	if (state === "revoked" && membership)

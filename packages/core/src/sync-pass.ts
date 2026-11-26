@@ -12,10 +12,10 @@ import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } from "./db.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
-import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
+import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import {
 	getEffectiveCachedScopeAuthorization,
 	pinnedKeyBinding,
@@ -694,7 +694,7 @@ function scopedSnapshotAccessFailure(
 	const requiredEpoch = Number(scope.membership_epoch ?? 0);
 	for (const deviceId of [options.localDeviceId, options.peerDeviceId]) {
 		// A local denial holds even while the cached membership still reads active.
-		if (getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { scopeId: options.scopeId, deviceId }))
+		if (isScopeDeviceAdmissionRefused(db, { scopeId: options.scopeId, deviceId }))
 			return "missing_scope";
 		const membership = db
 			.prepare(
