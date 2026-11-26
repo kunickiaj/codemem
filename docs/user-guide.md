@@ -476,9 +476,9 @@ codemem memory stats --attribution --json
 
 ### Retrieval history retention
 
-Each time codemem builds memory context, it records the attempt and every candidate memory it considered. These rows, and the outcome evidence linked to them, are kept for 90 days by default. While the Viewer runs, its maintenance worker deletes rows past their retention date in short batches: at most 5 seconds of work per pass, and another pass 30 seconds later while expired rows remain. Study rows pinned for an evaluation and rows without a retention date are never deleted. `codemem memory stats` shows how many attempts, candidates and evidence rows are stored and how many are past retention.
+Each time codemem builds memory context, it records the attempt and every candidate memory it considered. The attempt, the candidates it selected, and the outcome evidence linked to them are kept for 90 days by default. Candidates it considered but did not select (trimmed, dropped or deduplicated) are kept for 14 days. While the Viewer runs, its maintenance worker deletes rows past their retention in short batches: at most 5 seconds of work per pass, and another pass 30 seconds later while expired rows remain. Study rows pinned for an evaluation and rows without a retention date are never deleted, including the candidates they did not select. `codemem memory stats` shows how many attempts, candidates and evidence rows are stored, how many are past retention, and how many candidates were not selected and how many of those are older than 14 days. A cached memory context reused more than 14 days after it was built is not recorded again as a new attempt, because its unselected candidates are gone.
 
-To delete expired rows at once, run `codemem maintenance database prune-retrieval-ledger`. Add `--dry-run` to see the counts first, and `--json` for machine-readable output. Deleted space is reused for new data; the database file only shrinks after `codemem maintenance database vacuum`.
+To delete expired rows at once, run `codemem maintenance database prune-retrieval-ledger`. It applies both windows. Add `--dry-run` to see the counts for each first, and `--json` for machine-readable output. Deleted space is reused for new data; the database file only shrinks after `codemem maintenance database vacuum`.
 
 ## Semantic recall
 

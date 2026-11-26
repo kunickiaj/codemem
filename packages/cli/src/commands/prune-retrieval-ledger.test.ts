@@ -25,6 +25,12 @@ function seed(dbPath: string): void {
 		}
 		attempt.run("pinned", "2026-02-01T00:00:00.000Z", 1);
 		attempt.run("future", "2999-01-01T00:00:00.000Z", 0);
+		// The kept attempt is far older than 14 days: its selected candidate stays, the
+		// candidate it dropped goes.
+		db.prepare(
+			`INSERT INTO retrieval_exposures(attempt_id, rank, disposition, handoff_status)
+			 VALUES ('future', 1, 'selected', 'handed_off'), ('future', 2, 'dropped', 'not_attempted')`,
+		).run();
 	} finally {
 		db.close();
 	}
@@ -63,17 +69,44 @@ describe("maintenance database prune-retrieval-ledger", () => {
 		};
 		expect(result.dry_run).toBe(true);
 		expect(result.purged).toBeNull();
-		expect(result.before).toMatchObject({ retrieval_attempts: 7, expired_retrieval_attempts: 5 });
+		expect(result.before).toMatchObject({
+			retrieval_attempts: 7,
+			expired_retrieval_attempts: 5,
+			non_selected_retrieval_exposures: 6,
+			stale_non_selected_retrieval_exposures: 1,
+		});
+	});
+
+	it("shows both retention rules on a human dry run", async () => {
+		const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		try {
+			await createDatabasePruneRetrievalLedgerCommand().parseAsync(
+				["--db-path", dbPath, "--dry-run"],
+				{ from: "user" },
+			);
+			const text = out.mock.calls.map(([chunk]) => String(chunk)).join("");
+			expect(text).toContain("Retrieval attempts: 7 (5 past retention");
+			expect(text).toContain("Not selected: 6 (1 older than 14 days)");
+		} finally {
+			out.mockRestore();
+		}
 	});
 
 	it("deletes every expired attempt in small batches and keeps pinned and future ones", async () => {
 		const result = (await run(["--db-path", dbPath, "--batch-size", "2", "--json"])) as {
-			purged: { retrieval_attempts: number; batches: number };
+			purged: {
+				retrieval_attempts: number;
+				non_selected_retrieval_exposures: number;
+				batches: number;
+			};
 			after: { retrieval_attempts: number; retrieval_exposures: number };
 		};
-		expect(result.purged).toMatchObject({ retrieval_attempts: 5 });
+		expect(result.purged).toMatchObject({
+			retrieval_attempts: 5,
+			non_selected_retrieval_exposures: 1,
+		});
 		expect(result.purged.batches).toBeGreaterThanOrEqual(3);
-		expect(result.after).toMatchObject({ retrieval_attempts: 2, retrieval_exposures: 0 });
+		expect(result.after).toMatchObject({ retrieval_attempts: 2, retrieval_exposures: 1 });
 	});
 
 	it("rejects an invalid batch size with exit code 2", async () => {

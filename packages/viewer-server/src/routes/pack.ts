@@ -390,7 +390,7 @@ function validatePackRequest(value: unknown): ValidatedPackRequest | string {
 
 function ledgerFailureStatus(reason: RetrievalLedgerFailureReason): 400 | 409 | 422 | 503 {
 	if (reason === "idempotency_conflict") return 409;
-	if (reason === "attempt_not_found") return 422;
+	if (reason === "attempt_not_found" || reason === "attempt_incomplete") return 422;
 	if (reason === "storage_unavailable") return 503;
 	return 400;
 }

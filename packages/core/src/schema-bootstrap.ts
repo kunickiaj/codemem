@@ -176,6 +176,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_exposures_attempt_rank
 	ON retrieval_exposures(attempt_id, rank);
 CREATE INDEX IF NOT EXISTS idx_retrieval_exposures_memory
 	ON retrieval_exposures(memory_id);
+CREATE INDEX IF NOT EXISTS idx_retrieval_exposures_not_selected
+	ON retrieval_exposures(attempt_id) WHERE disposition <> 'selected';
 
 CREATE TABLE IF NOT EXISTS outcome_evidence (
 	evidence_id TEXT PRIMARY KEY NOT NULL,
@@ -315,6 +317,7 @@ const RETRIEVAL_LEDGER_SCHEMA_OBJECTS = [
 	"idx_retrieval_attempts_experiment_cell",
 	"idx_retrieval_exposures_attempt_rank",
 	"idx_retrieval_exposures_memory",
+	"idx_retrieval_exposures_not_selected",
 	"idx_outcome_evidence_observed_id",
 	"idx_outcome_evidence_session_observed",
 	"idx_outcome_evidence_source_stream_observed",

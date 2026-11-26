@@ -10,6 +10,11 @@ import type {
 
 export const RETRIEVAL_LEDGER_CONTRACT_VERSION = 1 as const;
 export const DEFAULT_RETRIEVAL_LEDGER_RETENTION_DAYS = 90;
+/**
+ * Candidates an attempt considered but did not select (trimmed, dropped or deduplicated) are
+ * kept this long. The attempt and its selected candidates stay for the attempt's retention.
+ */
+export const NON_SELECTED_EXPOSURE_RETENTION_DAYS = 14;
 export const MAX_RETRIEVAL_SELECTED_EXPOSURES = 50;
 export const MAX_RETRIEVAL_DIAGNOSTIC_EXPOSURES = 20;
 export const MAX_RETRIEVAL_JSON_BYTES = 16 * 1024;
@@ -146,6 +151,12 @@ export interface RetrievalAttemptRecord {
 	retentionUntil: string | null;
 	retentionPinned: boolean;
 	retentionFinalizedAt: string | null;
+	/**
+	 * True once retention has removed the candidates this attempt did not select, so
+	 * `exposures` holds only its selected candidates while `persistedCandidateCount` still
+	 * counts every candidate it recorded.
+	 */
+	nonSelectedExposuresRemoved: boolean;
 	exposures: RetrievalExposureRecord[];
 }
 
@@ -202,6 +213,8 @@ export type RetrievalLedgerFailureReason =
 	| "invalid_input"
 	| "idempotency_conflict"
 	| "attempt_not_found"
+	/** The attempt's non-selected candidates were removed by retention, so it cannot be copied whole. */
+	| "attempt_incomplete"
 	| "storage_unavailable";
 
 const FILTER_KEY_ORDER = [
@@ -1005,6 +1018,11 @@ function decodeEvaluationReplayMetadata(row: SqlRow): {
 	return { evaluationCheckoutId, evaluationFixtureId, evaluationSeed };
 }
 
+/** Exposures are only ever written as a whole set, so fewer rows means retention removed some. */
+function exposureFields(exposures: RetrievalExposureRecord[], persistedCount: number) {
+	return { nonSelectedExposuresRemoved: exposures.length < persistedCount, exposures };
+}
+
 function readAttempt(db: Database, attemptId: string): RetrievalAttemptRecord | null {
 	const row = db.prepare("SELECT * FROM retrieval_attempts WHERE attempt_id = ?").get(attemptId) as
 		| SqlRow
@@ -1083,7 +1101,7 @@ function readAttempt(db: Database, attemptId: string): RetrievalAttemptRecord | 
 		retentionUntil: row.retention_until as string | null,
 		retentionPinned: row.retention_pinned === 1,
 		retentionFinalizedAt: decodeIsoTimestamp(row.retention_finalized_at),
-		exposures: decodedExposures,
+		...exposureFields(decodedExposures, Number(row.persisted_candidate_count)),
 	};
 }
 
@@ -1671,6 +1689,74 @@ export function purgeExpiredRetrievalAttempts(
 		[RETRIEVAL_LEDGER_CONTRACT_VERSION, timestamp],
 		limit,
 	);
+}
+
+/** When non-selected candidates of attempts started before `now` become removable. */
+export function nonSelectedExposureCutoff(now: string): string {
+	return new Date(
+		Date.parse(now) - NON_SELECTED_EXPOSURE_RETENTION_DAYS * 86_400_000,
+	).toISOString();
+}
+
+/**
+ * Which exposures non-selected retention removes: rows an unpinned version 1 attempt did not
+ * select, once the attempt started before the cutoff. Like the attempt purge, it leaves pinned
+ * and undated attempts whole, and it skips attempts already past their own retention date,
+ * which the attempt purge removes whole. The disposition test matches the
+ * partial index over non-selected rows, so the read covers only those rows.
+ */
+const STALE_NON_SELECTED_EXPOSURES = `
+	FROM retrieval_exposures AS exposures
+	JOIN retrieval_attempts AS attempts ON attempts.attempt_id = exposures.attempt_id
+	WHERE exposures.disposition <> 'selected'
+	  AND attempts.contract_version = ? AND attempts.retention_pinned = 0
+	  AND attempts.retention_until > ? AND attempts.started_at < ?`;
+
+/** Non-selected exposures past their shorter retention, which a purge would remove. */
+export function countStaleNonSelectedExposures(db: Database, now: string): number {
+	return Number(
+		db
+			.prepare(`SELECT count(*) ${STALE_NON_SELECTED_EXPOSURES}`)
+			.pluck()
+			.get(RETRIEVAL_LEDGER_CONTRACT_VERSION, now, nonSelectedExposureCutoff(now)) ?? 0,
+	);
+}
+
+/**
+ * Deletes the non-selected exposures of attempts that started more than
+ * NON_SELECTED_EXPOSURE_RETENTION_DAYS before `now`, for at most `limit` attempts. The attempt
+ * rows and their selected exposures are untouched, and pinned attempts keep every exposure.
+ * Returns how many attempts it trimmed and how many exposure rows it deleted.
+ */
+export function purgeStaleNonSelectedExposures(
+	db: Database,
+	now: string,
+	options: { limit: number },
+): { attempts: number; exposures: number } {
+	const timestamp = isoTimestamp(now, "now");
+	if (timestamp == null) {
+		throw new RetrievalLedgerValidationError("now must be an ISO-8601 timestamp");
+	}
+	const limit = batchLimit(options.limit) as number;
+	return db
+		.transaction(() => {
+			const attemptIds = db
+				.prepare(`SELECT DISTINCT exposures.attempt_id ${STALE_NON_SELECTED_EXPOSURES} LIMIT ?`)
+				.pluck()
+				.all(
+					RETRIEVAL_LEDGER_CONTRACT_VERSION,
+					timestamp,
+					nonSelectedExposureCutoff(timestamp),
+					limit,
+				) as string[];
+			const remove = db.prepare(
+				"DELETE FROM retrieval_exposures WHERE attempt_id = ? AND disposition <> 'selected'",
+			);
+			let exposures = 0;
+			for (const attemptId of attemptIds) exposures += remove.run(attemptId).changes;
+			return { attempts: attemptIds.length, exposures };
+		})
+		.immediate();
 }
 
 export type RetrievalPrivacyPurgeSelector =

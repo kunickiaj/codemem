@@ -10,6 +10,7 @@ import {
 	MAX_RETRIEVAL_SELECTED_EXPOSURES,
 	type RecordRetrievalAttemptInput,
 	type RetrievalExposureInput,
+	type RetrievalLedgerFailureReason,
 	type RetrievalLedgerWriteOutcome,
 	tryRecordRetrievalAttempt,
 } from "./retrieval-ledger.js";
@@ -302,6 +303,30 @@ export function recordPromptPackTerminal(
 	});
 }
 
+function cloneFailure(reason: RetrievalLedgerFailureReason) {
+	return { ok: false as const, errorCode: "retrieval_ledger_write_failed" as const, reason };
+}
+
+/** The attempt a cache reuse copies, if it exists whole. */
+function cloneableAttempt(
+	db: Database,
+	attemptId: string,
+):
+	| { ok: true; attempt: NonNullable<ReturnType<typeof getRetrievalAttempt>> }
+	| ReturnType<typeof cloneFailure> {
+	let original: ReturnType<typeof getRetrievalAttempt>;
+	try {
+		original = getRetrievalAttempt(db, attemptId);
+	} catch {
+		return cloneFailure("invalid_input");
+	}
+	if (!original) return cloneFailure("attempt_not_found");
+	// A copy would carry only the selected candidates while counting all of them, and would
+	// look complete because its own rows match its own count. Record no copy instead.
+	if (original.nonSelectedExposuresRemoved) return cloneFailure("attempt_incomplete");
+	return { ok: true, attempt: original };
+}
+
 export function clonePromptPackAttempt(
 	db: Database,
 	originalAttemptId: string,
@@ -310,23 +335,9 @@ export function clonePromptPackAttempt(
 	const cacheRequestId = metadata.requestId
 		? `cache_reuse:${metadata.requestId.slice(0, 400)}:from:${originalAttemptId}`
 		: `cache_reuse:from:${originalAttemptId}`;
-	let original: ReturnType<typeof getRetrievalAttempt>;
-	try {
-		original = getRetrievalAttempt(db, originalAttemptId);
-	} catch {
-		return {
-			ok: false,
-			errorCode: "retrieval_ledger_write_failed",
-			reason: "invalid_input",
-		};
-	}
-	if (!original) {
-		return {
-			ok: false,
-			errorCode: "retrieval_ledger_write_failed",
-			reason: "attempt_not_found",
-		};
-	}
+	const found = cloneableAttempt(db, originalAttemptId);
+	if (!found.ok) return found;
+	const original = found.attempt;
 	const clonedExposures: RetrievalExposureInput[] = original.exposures.map((exposure) => ({
 		memoryId: exposure.memoryId,
 		memoryImportKey: exposure.memoryImportKey,
