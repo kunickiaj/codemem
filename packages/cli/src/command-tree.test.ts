@@ -138,7 +138,14 @@ describe("public command tree", () => {
 		},
 		{
 			path: ["maintenance", "database"],
-			children: ["init", "vacuum", "stats", "prune-events", "prune-history"],
+			children: [
+				"init",
+				"vacuum",
+				"stats",
+				"prune-events",
+				"prune-history",
+				"prune-retrieval-ledger",
+			],
 		},
 		{
 			path: ["maintenance", "memory"],

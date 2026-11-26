@@ -42,6 +42,7 @@ import {
 	createProjectRenameCommand,
 } from "./db.js";
 import { createEmbeddingsCommand } from "./embed.js";
+import { createDatabasePruneRetrievalLedgerCommand } from "./prune-retrieval-ledger.js";
 
 const maintenanceCmd = new Command("maintenance")
 	.configureHelp(helpStyle)
@@ -135,7 +136,8 @@ maintenanceCmd.addCommand(
 		.addCommand(createDatabaseVacuumCommand())
 		.addCommand(createDatabaseStatsCommand())
 		.addCommand(createDatabasePruneEventsCommand())
-		.addCommand(createDatabasePruneHistoryCommand()),
+		.addCommand(createDatabasePruneHistoryCommand())
+		.addCommand(createDatabasePruneRetrievalLedgerCommand()),
 );
 maintenanceCmd.addCommand(
 	new Command("memory")

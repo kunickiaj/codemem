@@ -1,5 +1,11 @@
 import * as p from "@clack/prompts";
-import { getAttributionDiagnostics, MemoryStore, resolveDbPath } from "@codemem/core";
+import {
+	getAttributionDiagnostics,
+	MemoryStore,
+	type RetrievalLedgerStats,
+	resolveDbPath,
+	retrievalLedgerStats,
+} from "@codemem/core";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
@@ -82,6 +88,16 @@ function renderAttributionDiagnostics(
 	].join("\n");
 }
 
+function renderRetrievalLedger(ledger: RetrievalLedgerStats): string {
+	const oldest = ledger.oldest_retrieval_attempt_started_at ?? "none";
+	return [
+		"Retrieval ledger",
+		`  Attempts:  ${ledger.retrieval_attempts.toLocaleString()} (${ledger.expired_retrieval_attempts.toLocaleString()} past retention), oldest ${oldest}`,
+		`  Exposures: ${ledger.retrieval_exposures.toLocaleString()}`,
+		`  Outcome evidence: ${ledger.outcome_evidence.toLocaleString()} (${ledger.expired_outcome_evidence.toLocaleString()} past retention)`,
+	].join("\n");
+}
+
 const statsAction = (opts: DbOpts & JsonOpts & { attribution?: boolean }) => {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
@@ -92,7 +108,7 @@ const statsAction = (opts: DbOpts & JsonOpts & { attribution?: boolean }) => {
 			);
 			return;
 		}
-		const result = store.stats();
+		const result = { ...store.stats(), retrieval_ledger: retrievalLedgerStats(store.db) };
 		if (opts.json) {
 			// lgtm[js/clear-text-logging] This is intentional CLI stdout for `--json`, not an application log.
 			console.log(JSON.stringify(result, null, 2));
@@ -116,6 +132,8 @@ const statsAction = (opts: DbOpts & JsonOpts & { attribution?: boolean }) => {
 				`Raw events:  ${db.raw_events.toLocaleString()}`,
 			].join("\n"),
 		);
+
+		p.log.step(renderRetrievalLedger(result.retrieval_ledger));
 
 		if (result.usage.events.length > 0) {
 			const provenanceByEvent = new Map(

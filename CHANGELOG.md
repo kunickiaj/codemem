@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Retrieval history and outcome evidence are now deleted 90 days after they are recorded, as their retention dates always said. Nothing removed them before, so stores grew without limit. After upgrading, the Viewer's maintenance worker removes an existing backlog gradually, a few seconds of work at a time, so capture and search stay responsive; `codemem maintenance database prune-retrieval-ledger` removes it at once. The database file keeps its size until it is vacuumed.
 - The Claude Code and Codex plugins on the default branch pin the latest stable release again. Preparing a prerelease had moved them onto the beta, and plugin installs failed where only stable versions are available.
 
 ## [0.50.0-beta.2] - 2026-11-25

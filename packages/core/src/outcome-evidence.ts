@@ -1381,16 +1381,33 @@ export function queryOutcomeEvidence(
 	return evidence;
 }
 
+/**
+ * Deletes unpinned version 1 evidence whose retention date has passed, with dependent
+ * assessments. With `limit`, it deletes at most that many rows, earliest expiry first.
+ */
 export function purgeExpiredOutcomeEvidence(
 	db: Database,
 	now: string = new Date().toISOString(),
+	options: { limit?: number } = {},
 ): number {
 	const canonicalNow = requiredTimestamp(now, "now");
 	// Contract v1 defines these retention fields; future versions own their expiry semantics.
+	const match =
+		"contract_version = ? AND retention_pinned = 0 AND retention_until IS NOT NULL AND retention_until <= ?";
+	const params: Array<string | number> = [OUTCOME_EVIDENCE_CONTRACT_VERSION, canonicalNow];
+	if (options.limit === undefined) return purgeOutcomeEvidenceWhere(db, match, params);
+	if (!Number.isSafeInteger(options.limit) || options.limit < 1) {
+		throw new Error("limit must be a positive integer");
+	}
+	// The selection is stable inside the purge's IMMEDIATE transaction, because
+	// outcome_evidence itself is deleted last.
 	return purgeOutcomeEvidenceWhere(
 		db,
-		"contract_version = ? AND retention_pinned = 0 AND retention_until IS NOT NULL AND retention_until <= ?",
-		[OUTCOME_EVIDENCE_CONTRACT_VERSION, canonicalNow],
+		`evidence_id IN (
+			SELECT evidence_id FROM outcome_evidence WHERE ${match}
+			ORDER BY retention_until LIMIT ?
+		)`,
+		[...params, options.limit],
 	);
 }
 
