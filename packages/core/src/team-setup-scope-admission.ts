@@ -40,9 +40,14 @@ const TEAM_DEVICE_SQL = `SELECT 1 WHERE EXISTS (
 const INCLUDED_SQL = `SELECT 1 FROM policy_team_device_decisions
 	WHERE team_id = ? AND device_id = ? AND decision = 'included'`;
 
-// The Team's Project identities, from its recipients and its setup.
+// The Team's Project identities, from its setup and its recipients. A recipient
+// counts while active, or revoked by quarantine, which keeps the setup provenance
+// and marks it as needing setup. A Project someone removed from the Team does not.
 const TEAM_PROJECTS_SQL = `SELECT canonical_project_identity AS identity FROM project_recipients
-	WHERE recipient_kind = 'team' AND recipient_id = ?
+	WHERE recipient_kind = 'team' AND recipient_id = ? AND (
+	  status = 'active'
+	  OR (status = 'revoked' AND provenance = 'reviewed_team_setup' AND migration_state = 'needs_setup')
+	)
 	UNION
 	SELECT project.resolved_project_identity FROM legacy_team_setup_draft_projects AS project
 	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
