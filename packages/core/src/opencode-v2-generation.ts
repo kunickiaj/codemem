@@ -196,13 +196,19 @@ async function selectVariant(
 		catalog?.byModel.get(key)?.find((variant) => variant.toLowerCase() === requested) ?? null;
 	const cached = cachedCatalog(target);
 	let catalog = cached ?? (await loadVariantCatalog(target));
+	// Whether this call's lookup used a catalog fetched just now.
+	let fresh = !cached && catalog !== null;
 	let variant = find(catalog);
 	const knownMiss = Date.now() < (unlistedVariants.get(missKey) ?? 0);
 	if (!variant && !knownMiss && (cached || !catalog?.byModel.has(key))) {
-		catalog = (await loadVariantCatalog(target)) ?? catalog;
+		const refreshed = await loadVariantCatalog(target);
+		// A failed refresh confirms nothing; the cached list stays for other lookups.
+		if (!refreshed) return { variant: null, reason: "variants_unavailable" };
+		catalog = refreshed;
+		fresh = true;
 		variant = find(catalog);
 	}
-	if (!variant) return missingVariant(catalog, key, missKey);
+	if (!variant) return missingVariant(catalog, key, missKey, { confirmed: fresh || knownMiss });
 	unlistedVariants.delete(missKey);
 	// A catalog can keep listing a variant the service rejects; skip it for a while.
 	const retryAt = rejectedVariants.get(rejectedVariantKey(target, provider, model, variant)) ?? 0;
@@ -211,13 +217,19 @@ async function selectVariant(
 		: { variant, reason: null };
 }
 
-/** Why no variant is sent: the catalog lists the model without it, or does not describe it. */
+/**
+ * Why no variant is sent: a fresh catalog, now or within the last minute, lists the
+ * model without it, or no usable catalog describes the model.
+ */
 function missingVariant(
 	catalog: VariantCatalog | null,
 	key: string,
 	missKey: string,
+	{ confirmed }: { confirmed: boolean },
 ): VariantSelection {
-	if (!catalog?.byModel.has(key)) return { variant: null, reason: "variants_unavailable" };
+	if (!confirmed || !catalog?.byModel.has(key)) {
+		return { variant: null, reason: "variants_unavailable" };
+	}
 	// Keep an earlier miss's deadline, so a miss is looked up again after a minute.
 	if (!(Date.now() < (unlistedVariants.get(missKey) ?? 0))) {
 		unlistedVariants.set(missKey, Date.now() + VARIANT_MISS_TTL_MS);

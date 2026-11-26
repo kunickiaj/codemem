@@ -333,6 +333,33 @@ describe("variant lookups against a stale or partial catalog", () => {
 		expect(catalogCalls(fetcher)).toBe(2);
 	});
 
+	it("does not remember a miss when the refresh fails", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		let failNext = false;
+		const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			if (new URL(String(input)).pathname !== "/api/model") {
+				return new Response(JSON.stringify({ data: { text: "OK" } }));
+			}
+			if (failNext) {
+				failNext = false;
+				return new Response("{}", { status: 503 });
+			}
+			return new Response(JSON.stringify({ data: [luna("low", "high")] }));
+		});
+		fetcher.mockImplementationOnce(
+			async () => new Response(JSON.stringify({ data: [luna("low")] })),
+		);
+		await generate("low");
+		vi.advanceTimersByTime(61_000);
+		failNext = true;
+
+		const during = await generate("high");
+		const after = await generate("high");
+
+		expect(during.effort?.fallbackReason).toBe("variants_unavailable");
+		expect(after.effort?.applied).toBe("high");
+	});
+
 	it("falls back once for a variant the model does not list and reports it", async () => {
 		const fetcher = serve([luna("low", "high")]);
 		await generate("low");
