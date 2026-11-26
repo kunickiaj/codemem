@@ -13,8 +13,8 @@ import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
 	MAX_SCOPE_IN_PARAMS,
-	resolveVisibleScopeIds,
 } from "./scope-resolution.js";
+import { resolveVisibleScopeIds } from "./scope-visibility.js";
 import type { MemoryFilters } from "./types.js";
 
 export interface OwnershipFilterContext {
@@ -31,7 +31,7 @@ export interface OwnershipFilterContext {
 	enforceScopeVisibility?: boolean;
 	/**
 	 * Pre-resolved set of scope_ids this device may read (see
-	 * `resolveVisibleScopeIds` in scope-resolution.ts). When present, scope visibility is
+	 * `resolveVisibleScopeIds` in scope-visibility.ts). When present, scope visibility is
 	 * enforced with an index-eligible `scope_id IN (...)` predicate instead of
 	 * the per-row EXISTS subqueries. Without this set, scopeVisibilityDb resolves
 	 * the same decisions. Without either, SQL can grant only unmanaged access.

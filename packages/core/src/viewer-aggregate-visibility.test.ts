@@ -9,7 +9,7 @@ import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
 import { scopeId, useLocalCaptureFixture } from "./memory-local-capture-test-fixtures.js";
 import { ensureVectorSchema } from "./schema-bootstrap.js";
-import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import { resolveVisibleScopeIds } from "./scope-visibility.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
 import type { MemoryFilters } from "./types.js";
 

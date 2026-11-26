@@ -24,7 +24,7 @@ import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import { findByConcept, findByFile, type RefQueryOptions } from "./ref-queries.js";
 import * as schema from "./schema.js";
-import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
+import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-visibility.js";
 import type { PackSemanticExecutor } from "./semantic/semantic-executor-seam.js";
 import { canonicalMemoryKind, summaryContinuityFilter } from "./summary-memory.js";
 import type {

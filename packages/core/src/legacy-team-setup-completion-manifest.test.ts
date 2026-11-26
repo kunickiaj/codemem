@@ -3167,6 +3167,22 @@ describe("legacy Team setup quarantine at scope admission", () => {
 			expect(servesScope(db, device, "scope-group-default"), device).toBe(true);
 	});
 
+	it.each([
+		["refuses", "https://git.example.invalid/acme/*", false],
+		["keeps", "https://git.example.invalid/other/*", true],
+	])("%s a Team device a scope mapped only by the pattern %s", async (_verb, pattern, served) => {
+		// Arrange: a mapping with no workspace identity routes Projects by pattern alone.
+		await quarantinedTeam(db);
+		db.prepare(
+			`INSERT INTO project_scope_mappings(workspace_identity, project_pattern, scope_id, source, created_at, updated_at)
+			 VALUES (NULL, ?, 'scope-group-default', 'user', ?, ?)`,
+		).run(pattern, NOW, NOW);
+
+		// Act and assert: only a pattern that matches a Team Project puts the scope off limits.
+		expect(servesScope(db, "device-a2", "scope-group-default")).toBe(served);
+		expect(servesScope(db, "device-c", "scope-group-default")).toBe(true);
+	});
+
 	it("serves a Team device no snapshot page of the Team's scope after quarantine", async () => {
 		// Arrange: a shared memory in the Team's scope.
 		await quarantinedTeam(db);
