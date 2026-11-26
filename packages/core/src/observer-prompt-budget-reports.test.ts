@@ -98,6 +98,69 @@ describe("replay of a batch fitted to its budget", () => {
 	});
 });
 
+describe("a structured retry of a batch fitted to its budget", () => {
+	it("reports both attempts as clipped with their length before fitting", async () => {
+		const dbPath = replayFixture(`${"Explain the queue invalidation. ".repeat(420)}DONE`);
+		let calls = 0;
+		const observer = Object.assign(Object.create(ObserverClient.prototype), {
+			provider: "openai",
+			model: "test-model",
+			requestedModel: "test-model",
+			runtime: "api_http",
+			openaiUseResponses: true,
+			outputMode: "auto",
+			hasCustomBaseUrl: false,
+			maxChars: 12_000,
+			async observeStructuredJson(this: ObserverClient, system: string, user: string) {
+				// Run the real budget step, as every observer call does.
+				(this as unknown as { _budgetPrompts: (s: string, u: string) => void })._budgetPrompts(
+					system,
+					user,
+				);
+				calls += 1;
+				const envelope = {
+					schema_version: 1,
+					status: "skipped",
+					observations: [],
+					summary: null,
+					skip_reason: "low-signal",
+				};
+				return {
+					raw: calls === 1 ? null : JSON.stringify(envelope),
+					parsed: null,
+					provider: "openai",
+					model: "test-model",
+					elapsedMs: 1,
+					usage: null,
+					usedStructuredOutputs: true,
+					failureReason: null,
+					transportFailureCode: calls === 1 ? "rate_limited" : null,
+				};
+			},
+			getStatus(this: { _lastPromptBudget: unknown }) {
+				return {
+					provider: "openai",
+					model: "test-model",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+					promptBudget: this._lastPromptBudget,
+				};
+			},
+		}) as ObserverClient;
+
+		const result = await replayBatchExtraction(dbPath, observer, {
+			batchId: 50001,
+			scenarioId: "simple-batch-shape",
+		});
+
+		expect(calls).toBe(2);
+		expect(result.observer.retryAttempted).toBe(true);
+		expect(result.observer.promptBudget).toMatchObject({ contentClipped: true });
+		expect(result.observer.promptBudget?.contentChars).toBeGreaterThan(13_000);
+		expect(observer.getStatus().promptBudget).toMatchObject({ contentClipped: true });
+	});
+});
+
 describe("minimum observer_max_chars", () => {
 	it.each([
 		["the config file", { observer_max_chars: 500 }, undefined],

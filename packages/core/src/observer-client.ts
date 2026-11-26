@@ -50,7 +50,7 @@ import {
 	DEFAULT_OBSERVER_MAX_CHARS,
 	MIN_OBSERVER_MAX_CHARS,
 	type ObserverPromptBudget,
-	type PreparedObserverContent,
+	type PreparedObserverPrompt,
 } from "./observer-prompt-budget.js";
 import { parseObserverSSE } from "./observer-sse.js";
 import { generateWithOpenCodeV2, type V2EffortReport } from "./opencode-v2-generation.js";
@@ -1673,7 +1673,7 @@ export class ObserverClient {
 	private _openCodeV2Effort: V2EffortReport | null = null;
 	private readonly _tierStatuses: Partial<Record<ObserverTier, TierRequestStatus>> = {};
 	private _lastPromptBudget: ObserverPromptBudget | null = null;
-	private _nextPreparedContent: PreparedObserverContent | null = null;
+	private _preparedPrompt: PreparedObserverPrompt | null = null;
 	private _reportedOverBudgetInstructionChars: number | null = null;
 
 	constructor(config?: ObserverConfig) {
@@ -2058,9 +2058,14 @@ export class ObserverClient {
 		return this._buildResponse(call, startedAt, authRetry);
 	}
 
-	/** Attach the section lengths of the content the next call sends, for status and replay. */
-	noteContentSections(prepared: PreparedObserverContent): void {
-		this._nextPreparedContent = {
+	/**
+	 * Attach the lengths a builder prepared for this content, for status and replay.
+	 * Every call that sends this exact content uses them, so a retry reports the same
+	 * pre-fit lengths; other content, such as a repair prompt, does not.
+	 */
+	noteContentSections(prepared: PreparedObserverPrompt): void {
+		this._preparedPrompt = {
+			user: prepared.user,
 			contentChars: prepared.contentChars,
 			sections: prepared.sections.map((section) => ({ ...section })),
 		};
@@ -2075,8 +2080,7 @@ export class ObserverClient {
 		systemPrompt: string,
 		userPrompt: string,
 	): { system: string; user: string } {
-		const prepared = this._nextPreparedContent;
-		this._nextPreparedContent = null;
+		const prepared = this._preparedPrompt?.user === userPrompt ? this._preparedPrompt : null;
 		const { system, user, budget } = budgetObserverPrompts(
 			systemPrompt,
 			userPrompt,

@@ -50,6 +50,11 @@ export interface PreparedObserverContent {
 	sections: ObserverContentSection[];
 }
 
+/** Prepared lengths and the exact content they describe. */
+export interface PreparedObserverPrompt extends PreparedObserverContent {
+	user: string;
+}
+
 /**
  * Send the instructions whole and clip only the content to the budget they leave.
  * Prepared content reports its length before the builder fitted it, so a fitted
