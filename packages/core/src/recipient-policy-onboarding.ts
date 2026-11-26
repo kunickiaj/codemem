@@ -29,6 +29,7 @@ import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl } from "./sync-http-client.js";
+import { isTeamMemberRemoved } from "./team-member-removal-policy.js";
 import {
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
@@ -1278,7 +1279,12 @@ function planRows(
 	options: { preserveInviteMembership?: boolean } = {},
 ): IntentRow[] {
 	const rows = [deviceRow(request, now)];
-	if (request.journey === "team" && !options.preserveInviteMembership) {
+	// A person removed from the Team stays removed: the invitation adds no membership.
+	if (
+		request.journey === "team" &&
+		!options.preserveInviteMembership &&
+		!isTeamMemberRemoved(db, request.teamId, request.binding.identityId)
+	) {
 		const reviewedTeam = teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist";
 		rows.push(membershipRow(request, now, reviewedTeam ? "reviewed_active" : "active"));
 	}
@@ -1340,7 +1346,9 @@ function applyInviteOwnedTeamMembershipTransition(
 		| undefined;
 	const reviewedTeam = teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist";
 	const targetStatus = reviewedTeam ? "reviewed_active" : "active";
-	const transition = planInviteMembershipTransition(existing, targetStatus);
+	const transition = planInviteMembershipTransition(existing, targetStatus, {
+		removed: isTeamMemberRemoved(db, request.teamId, request.binding.identityId),
+	});
 	if (!["adopt_setup", "reauthorize_setup", "normalize_invite"].includes(transition)) {
 		return {
 			preserveInviteMembership: transition === "preserve",

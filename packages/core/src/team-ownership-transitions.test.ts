@@ -3,6 +3,7 @@ import {
 	classifyTeamPolicyOwnership,
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
+	planRemovedMemberSetupTransition,
 	planSetupDeviceDecisionTransition,
 	planSetupMembershipTransition,
 } from "./team-ownership-transitions.js";
@@ -37,6 +38,19 @@ describe("team ownership transitions", () => {
 		});
 	});
 
+	describe("setup membership planning for a person removed from the Team", () => {
+		it.each([
+			[undefined, "preserve"],
+			[{ provenance: "reviewed_team_setup", status: "revoked" }, "preserve"],
+			[{ provenance: "reviewed_team_setup", status: "reviewed_active" }, "revoke_setup"],
+			[{ provenance: "team_invite", status: "active" }, "revoke_setup"],
+			[{ provenance: "coordinator_invite", status: "reviewed_active" }, "revoke_setup"],
+			[{ provenance: "future_writer", status: "active" }, "revoke_setup"],
+		] as const)("plans %#", (existing, expected) => {
+			expect(planRemovedMemberSetupTransition(existing)).toBe(expected);
+		});
+	});
+
 	describe("invite membership planning", () => {
 		it.each([
 			[undefined, "active", "insert_invite"],
@@ -58,6 +72,14 @@ describe("team ownership transitions", () => {
 			[{ provenance: "future_writer", status: "active" }, "active", "reject"],
 		] as const)("plans %#", (existing, targetStatus, expected) => {
 			expect(planInviteMembershipTransition(existing, targetStatus)).toBe(expected);
+		});
+
+		it.each([
+			[undefined],
+			[{ provenance: "reviewed_team_setup", status: "revoked" }],
+			[{ provenance: "team_invite", status: "active" }],
+		] as const)("rejects a person removed from the Team %#", (existing) => {
+			expect(planInviteMembershipTransition(existing, "active", { removed: true })).toBe("reject");
 		});
 	});
 

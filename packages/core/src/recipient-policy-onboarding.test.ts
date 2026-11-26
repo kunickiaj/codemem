@@ -16,6 +16,7 @@ import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-p
 import type { RecipientReviewedIntentV1 } from "./recipient-reviewed-intent.js";
 import { managedProjectScopeId } from "./share-operation.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -2652,6 +2653,64 @@ describe("recipient-policy onboarding repository inference", () => {
 
 	it("canonicalizes a stale cwd in direct-project onboarding", () => {
 		expectStaleCwdDirectOnboardingCanonicalized();
+	});
+});
+
+describe("recipient-policy onboarding for a person removed from the Team", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = seededOnboardingDatabase();
+	});
+
+	afterEach(() => db.close());
+
+	it("never restores a membership for a person removed from the Team", () => {
+		db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES ('team-a', 'identity-b', 'member', 'revoked', 'reviewed_team_setup',
+			 'setup-r1', 'completed', 'setup-owned-membership', ?, ?)`,
+		).run(NOW, NOW);
+		applyTeamMemberRemovals(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			removals: [
+				{
+					group_id: "group-a",
+					team_id: "team-a",
+					identity_id: "identity-b",
+					removal_seq: 1,
+					removed_at: NOW,
+					removed_by_device_id: null,
+				},
+			],
+			now: NOW,
+		});
+		const request = baseRequest({
+			journey: "team",
+			invitationId: "invite-removed-member",
+			identityId: "identity-b",
+			teamId: "team-a",
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+
+		expect(result).toMatchObject({ status: "applied" });
+		expect(
+			db
+				.prepare(
+					`SELECT status, provenance FROM policy_team_memberships
+					 WHERE team_id = 'team-a' AND identity_id = 'identity-b'`,
+				)
+				.get(),
+		).toEqual({ status: "revoked", provenance: "reviewed_team_setup" });
 	});
 });
 

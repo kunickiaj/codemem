@@ -922,6 +922,7 @@ export function bootstrapSchema(db: Database): void {
 		ensurePeerProjectFilterManagementSchema(db);
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerExplicitPairingColumns(db);
+		ensurePolicyTeamMemberRemovalsTable(db);
 		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
@@ -956,6 +957,22 @@ export function ensureSyncPeerExplicitPairingColumns(db: Database): void {
 			if (!columnExists(db, "sync_peers", name)) throw error;
 		}
 	}
+}
+
+/** Per-Team member removals, for databases created before the table existed. */
+export function ensurePolicyTeamMemberRemovalsTable(db: Database): void {
+	if (db.readonly) return;
+	db.exec(`CREATE TABLE IF NOT EXISTS policy_team_member_removals (
+		team_id TEXT NOT NULL,
+		identity_id TEXT NOT NULL,
+		coordinator_id TEXT NOT NULL,
+		group_id TEXT NOT NULL,
+		removal_seq INTEGER NOT NULL,
+		removed_at TEXT NOT NULL,
+		removed_by_device_id TEXT,
+		recorded_at TEXT NOT NULL,
+		PRIMARY KEY(team_id, identity_id)
+	)`);
 }
 
 function ensureSyncPeerLastSuccessAddressColumn(db: Database): void {

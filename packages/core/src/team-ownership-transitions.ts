@@ -52,6 +52,19 @@ export function classifyTeamPolicyOwnership(provenance: string): TeamPolicyOwner
 	return "other";
 }
 
+/**
+ * Setup planning for an identity removed from the Team. A removal is
+ * permanent: a setup never adds or restores the membership, and an active one,
+ * whoever owns it, is revoked.
+ */
+export function planRemovedMemberSetupTransition(
+	existing: ExistingTeamMembership | undefined,
+): SetupMembershipTransition {
+	return existing && ["active", "reviewed_active"].includes(existing.status)
+		? "revoke_setup"
+		: "preserve";
+}
+
 export function planSetupMembershipTransition(
 	existing: ExistingTeamMembership | undefined,
 	desired: boolean,
@@ -72,10 +85,13 @@ export function planSetupMembershipTransition(
 	return "preserve";
 }
 
+/** An invitation never adds or restores a membership whose identity was removed from the Team. */
 export function planInviteMembershipTransition(
 	existing: ExistingTeamMembership | undefined,
 	targetStatus: "active" | "reviewed_active",
+	options: { removed?: boolean } = {},
 ): InviteMembershipTransition {
+	if (options.removed) return "reject";
 	if (!existing) return "insert_invite";
 
 	const ownership = classifyTeamPolicyOwnership(existing.provenance);
