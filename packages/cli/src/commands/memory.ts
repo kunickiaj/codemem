@@ -909,7 +909,7 @@ function createMemoryExtractionReplayCommand(): Command {
 						`Observer: ${result.observer.provider}/${result.observer.model}`,
 						`Tier: ${result.observer.tier ?? "manual"}`,
 						`OpenAI Responses: ${result.observer.openaiUseResponses ? "yes" : "no"}`,
-						`Reasoning effort: ${result.observer.reasoningEffort ?? "none"}`,
+						`Reasoning effort: ${formatTransmittedReasoningEffort(result.observer)}`,
 						`Classification: ${result.classification.status}`,
 						`Pass: ${result.evaluation.pass ? "yes" : "no"}`,
 					].join("\n"),
@@ -1004,6 +1004,66 @@ export function reconcileExtractionBenchmarkStatus<T extends BenchmarkDispositio
 interface BenchmarkReasoningSettings {
 	reasoningEffort: string | null;
 	reasoningSummary: string | null;
+}
+
+/** Transports whose requests never carry a max output token limit. */
+const UNSENT_REQUEST_LIMIT_TRANSPORTS = new Set(["codex_consumer", "opencode_v2"]);
+
+/** The effort a replayed request sent, and the requested effort when it was not sent. */
+export function formatTransmittedReasoningEffort(observer: {
+	reasoningEffort: string | null;
+	requestedReasoningEffort: string | null;
+	reasoningEffortFallbackReason: string | null;
+}): string {
+	if (observer.reasoningEffort) return observer.reasoningEffort;
+	if (!observer.requestedReasoningEffort) return "not transmitted";
+	const reason = observer.reasoningEffortFallbackReason;
+	return `not transmitted (requested ${observer.requestedReasoningEffort}${reason ? `; ${reason}` : ""})`;
+}
+
+type BenchmarkEffortFields = Pick<
+	ExtractionReplayObserverIdentity,
+	| "reasoningEffort"
+	| "requestedReasoningEffort"
+	| "reasoningEffortFallbackApplied"
+	| "reasoningEffortFallbackReason"
+>;
+
+type BenchmarkOutputFailureFields = ExtractionBenchmarkReportingRun & BenchmarkEffortFields;
+
+function benchmarkEffortFields(observer: BenchmarkEffortFields): BenchmarkEffortFields {
+	return {
+		reasoningEffort: observer.reasoningEffort,
+		requestedReasoningEffort: observer.requestedReasoningEffort,
+		reasoningEffortFallbackApplied: observer.reasoningEffortFallbackApplied,
+		reasoningEffortFallbackReason: observer.reasoningEffortFallbackReason,
+	};
+}
+
+/** Applied reasoning settings across runs, plus what was requested and how often it fell back. */
+export function summarizeBenchmarkReasoningReport(
+	runs: readonly (BenchmarkReasoningSettings & BenchmarkEffortFields)[],
+	observer: BenchmarkReasoningSettings,
+) {
+	const requested = new Set(runs.map((run) => run.requestedReasoningEffort));
+	return {
+		...summarizeBenchmarkReasoning(runs, observer),
+		requestedReasoningEffort:
+			requested.size > 1
+				? "mixed"
+				: (runs[0]?.requestedReasoningEffort ?? observer.reasoningEffort),
+		reasoningEffortFallbackRuns: runs.filter((run) => run.reasoningEffortFallbackApplied).length,
+	};
+}
+
+export function formatBenchmarkReasoningEffort(summary: {
+	reasoningEffort: string | null;
+	requestedReasoningEffort: string | null;
+	reasoningEffortFallbackRuns: number;
+}): string {
+	const applied = summary.reasoningEffort ?? "not transmitted";
+	if (summary.reasoningEffortFallbackRuns === 0) return applied;
+	return `${applied} (requested ${summary.requestedReasoningEffort}; ${summary.reasoningEffortFallbackRuns} run(s) used the service default)`;
 }
 
 export function summarizeBenchmarkReasoning(
@@ -1441,7 +1501,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				};
 				const observer = new ObserverClient(observerConfigWithOverrides);
 				const outputFailures: Array<
-					ExtractionBenchmarkReportingRun & {
+					BenchmarkOutputFailureFields & {
 						iteration: number;
 						batchId: number;
 						purpose: "shape_quality" | "replay_robustness";
@@ -1502,6 +1562,9 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					outputValidation: "valid" | "invalid" | "not_applicable";
 					openaiUseResponses: boolean;
 					reasoningEffort: string | null;
+					requestedReasoningEffort: string | null;
+					reasoningEffortFallbackApplied: boolean;
+					reasoningEffortFallbackReason: string | null;
 					reasoningSummary: string | null;
 					maxOutputTokens: number | null;
 					temperature: number | null;
@@ -1752,7 +1815,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							actualOutputMode: result.observer.actualOutputMode,
 							outputValidation: result.observer.outputValidation,
 							openaiUseResponses: result.observer.openaiUseResponses,
-							reasoningEffort: result.observer.reasoningEffort,
+							...benchmarkEffortFields(result.observer),
 							reasoningSummary: result.observer.reasoningSummary,
 							maxOutputTokens: result.observer.maxOutputTokens,
 							temperature: result.observer.temperature,
@@ -1849,10 +1912,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					new Set(attempts.map((run) => `${run.provider}::${run.model}::${run.transport}`)),
 				);
 				const firstObserver = attempts[0];
-				const benchmarkReasoning = summarizeBenchmarkReasoning(attempts, {
-					reasoningEffort: observer.reasoningEffort,
-					reasoningSummary: observer.reasoningSummary,
-				});
+				const benchmarkReasoning = summarizeBenchmarkReasoningReport(attempts, observer);
 				const observerSummary =
 					opts.observerTierRouting === true
 						? {
@@ -1873,8 +1933,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 									uniqueObserverKeys.length === 1
 										? (firstObserver?.openaiUseResponses ?? observer.openaiUseResponses)
 										: null,
-								reasoningEffort: benchmarkReasoning.reasoningEffort,
-								reasoningSummary: benchmarkReasoning.reasoningSummary,
+								...benchmarkReasoning,
 								maxOutputTokens:
 									uniqueObserverKeys.length === 1 ? (firstObserver?.maxOutputTokens ?? null) : null,
 								temperature:
@@ -1888,8 +1947,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 								transport: firstObserver?.transport ?? observer.getStatus().runtime,
 								tierRouting: false,
 								openaiUseResponses: observer.openaiUseResponses,
-								reasoningEffort: benchmarkReasoning.reasoningEffort,
-								reasoningSummary: benchmarkReasoning.reasoningSummary,
+								...benchmarkReasoning,
 								maxOutputTokens: firstObserver?.maxOutputTokens ?? null,
 								temperature: firstObserver?.temperature ?? null,
 								transcriptBudget: transcriptBudget ?? null,
@@ -1920,9 +1978,9 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Transport: ${observerSummary.transport}`,
 						`Tier routing: ${opts.observerTierRouting === true ? "yes" : "no"}`,
 						`OpenAI Responses: ${observerSummary.openaiUseResponses === null ? "mixed" : observerSummary.openaiUseResponses ? "yes" : "no"}`,
-						`Reasoning effort: ${observerSummary.reasoningEffort ?? "not transmitted"}`,
+						`Reasoning effort: ${formatBenchmarkReasoningEffort(observerSummary)}`,
 						`Reasoning summary: ${observerSummary.reasoningSummary ?? "not transmitted"}`,
-						`Max output tokens: ${observerSummary.transport === "codex_consumer" ? "not transmitted" : (observerSummary.maxOutputTokens ?? "mixed")}`,
+						`Max output tokens: ${UNSENT_REQUEST_LIMIT_TRANSPORTS.has(observerSummary.transport) ? "not transmitted" : (observerSummary.maxOutputTokens ?? "mixed")}`,
 						`Temperature: ${observerSummary.transport === "mixed" ? "mixed" : (observerSummary.temperature ?? "not transmitted")}`,
 						`Transcript budget override: ${transcriptBudget ?? "default"}`,
 						`Repetitions: ${summary.repetitions}`,

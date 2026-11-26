@@ -6,6 +6,7 @@
 
 - The Devices tab no longer shows a **Service devices** section. Relay health probes and other devices the coordinator runs are listed in a collapsed **Coordinator services** list at the bottom of the tab. On the Advanced tab, they no longer appear under **Devices waiting for review** or trigger **Pairing needed**.
 - The Advanced tab titles the Project access row **Project access needs review** and counts every Project that needs review. The **Needs attention** label appears only above a list of attention items.
+- The observer sends its configured reasoning effort on the **OpenCode account** connection, as the model variant. Before, these requests always ran at the service's default effort. If you configured an effort, extraction now runs at it, which can change cost and latency. A model that does not offer the effort keeps the service default, and observer status, replay and benchmark output report the fallback. Replay and benchmark output also report temperature and output-token limits as not transmitted on this connection.
 
 ### Fixed
 

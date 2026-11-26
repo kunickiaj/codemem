@@ -46,7 +46,7 @@ import {
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
 import { parseObserverSSE } from "./observer-sse.js";
-import { generateWithOpenCodeV2 } from "./opencode-v2-generation.js";
+import { generateWithOpenCodeV2, listOpenCodeV2ModelVariants } from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
 
 // ---------------------------------------------------------------------------
@@ -202,6 +202,12 @@ export interface ObserverStatus {
 	actualModel?: string | null;
 	modelFallbackApplied?: boolean;
 	modelFallbackReason?: string | null;
+	/** OpenCode service only: the configured reasoning effort. */
+	requestedReasoningEffort?: string | null;
+	/** OpenCode service only: the variant the last request sent, or null for the service default. */
+	actualReasoningEffort?: string | null;
+	reasoningEffortFallbackApplied?: boolean;
+	reasoningEffortFallbackReason?: string | null;
 	lastError?: { code: string; message: string } | null;
 }
 
@@ -1606,6 +1612,8 @@ export class ObserverClient {
 	private _sidecarModelFallbackReason: string | null = null;
 	private _codexSidecarModelFallbackApplied = false;
 	private _codexSidecarModelFallbackReason: string | null = null;
+	private _openCodeV2Variant: string | null = null;
+	private _openCodeV2VariantFallbackReason: string | null = null;
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1879,15 +1887,7 @@ export class ObserverClient {
 				hasToken: !!this.auth.token,
 			},
 		};
-		if (this.runtime === "claude_sidecar") {
-			status.actualModel = this._lastResolvedModel;
-			status.modelFallbackApplied = this._sidecarModelFallbackApplied;
-			status.modelFallbackReason = this._sidecarModelFallbackReason;
-		} else if (this.runtime === "codex_sidecar") {
-			status.actualModel = this._lastResolvedModel;
-			status.modelFallbackApplied = this._codexSidecarModelFallbackApplied;
-			status.modelFallbackReason = this._codexSidecarModelFallbackReason;
-		}
+		Object.assign(status, this._requestedVersusActualStatus());
 		if (this._lastErrorMessage) {
 			status.lastError = {
 				code: this._lastErrorCode ?? "observer_error",
@@ -1895,6 +1895,31 @@ export class ObserverClient {
 			};
 		}
 		return status;
+	}
+
+	/** What the last request applied, for runtimes that can fall back from the configured value. */
+	private _requestedVersusActualStatus(): Partial<ObserverStatus> {
+		if (this.runtime === "claude_sidecar") {
+			return {
+				actualModel: this._lastResolvedModel,
+				modelFallbackApplied: this._sidecarModelFallbackApplied,
+				modelFallbackReason: this._sidecarModelFallbackReason,
+			};
+		}
+		if (this.runtime === "codex_sidecar") {
+			return {
+				actualModel: this._lastResolvedModel,
+				modelFallbackApplied: this._codexSidecarModelFallbackApplied,
+				modelFallbackReason: this._codexSidecarModelFallbackReason,
+			};
+		}
+		if (this.runtime !== "opencode_v2") return {};
+		return {
+			requestedReasoningEffort: this.reasoningEffort,
+			actualReasoningEffort: this._openCodeV2Variant,
+			reasoningEffortFallbackApplied: this._openCodeV2VariantFallbackReason != null,
+			reasoningEffortFallbackReason: this._openCodeV2VariantFallbackReason,
+		};
 	}
 
 	/** Force-refresh auth credentials. */
@@ -2383,10 +2408,12 @@ export class ObserverClient {
 		const model = this.model.toLowerCase().startsWith(prefix)
 			? this.model.slice(prefix.length)
 			: this.model;
+		const variant = await this._selectOpenCodeV2Variant(model);
 		const result = await generateWithOpenCodeV2({
 			provider: this.provider,
 			model,
 			prompt: `${systemPrompt}\n\n${userPrompt}`,
+			...(variant ? { variant } : {}),
 		});
 		if (result.error) {
 			const message = `OpenCode account request failed: ${result.error}. Check the OpenCode connection and selected model in Settings.`;
@@ -2395,7 +2422,29 @@ export class ObserverClient {
 			// service must not require replaying an already-advanced stream cursor.
 			throw new ObserverAuthError(message, { code: result.error, message });
 		}
+		// The service returns the text only, so these requests report no token usage.
 		return emptyCallResult(result.text);
+	}
+
+	/**
+	 * The service selects reasoning effort through a model variant. Send the configured
+	 * effort only when the model lists it, and otherwise use the service default and
+	 * record why, instead of sending a value the service would reject.
+	 */
+	private async _selectOpenCodeV2Variant(model: string): Promise<string | null> {
+		this._openCodeV2Variant = null;
+		this._openCodeV2VariantFallbackReason = null;
+		const requested = this.reasoningEffort?.toLowerCase();
+		if (!requested) return null;
+		const variants = await listOpenCodeV2ModelVariants(this.provider, model);
+		const listed = variants?.find((variant) => variant.toLowerCase() === requested) ?? null;
+		if (listed) {
+			this._openCodeV2Variant = listed;
+			return listed;
+		}
+		this._openCodeV2VariantFallbackReason =
+			variants == null ? "model variants unavailable" : "variant not listed for model";
+		return null;
 	}
 
 	// -----------------------------------------------------------------------

@@ -3,6 +3,8 @@ import { Service } from "@opencode/client/service";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
 const MODEL_READINESS_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
+/** How long a fetched model catalog answers variant lookups before it is fetched again. */
+const VARIANT_CACHE_TTL_MS = 10 * 60_000;
 
 class ResponseTooLargeError extends Error {}
 
@@ -44,42 +46,95 @@ function localServiceUrl(endpointUrl: string): URL | null {
 	return url;
 }
 
-export async function listOpenCodeV2Models(): Promise<OpenCodeV2ModelOption[]> {
+interface CatalogModel {
+	providerID: string;
+	id: string;
+	enabled?: boolean;
+	variants?: unknown;
+}
+
+/** The service's model catalog, or null when the service or catalog is unavailable. */
+async function fetchModelCatalog(): Promise<CatalogModel[] | null> {
 	let endpoint: Awaited<ReturnType<typeof Service.discover>>;
 	try {
 		endpoint = await Service.discover();
 	} catch {
-		return [];
+		return null;
 	}
-	if (!endpoint) return [];
+	if (!endpoint) return null;
 	const url = localServiceUrl(endpoint.url);
-	if (!url) return [];
+	if (!url) return null;
 	try {
 		const controller = new AbortController();
 		const response = await fetch(new URL("/api/model", url), {
 			headers: Service.headers(endpoint),
 			signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
 		});
-		if (!response.ok) return [];
+		if (!response.ok) return null;
 		const envelope = await readLimitedJson(response, controller);
 		const data =
 			envelope && typeof envelope === "object" && "data" in envelope
 				? (envelope as { data: unknown }).data
 				: envelope;
-		if (!Array.isArray(data)) return [];
-		return data
-			.filter(
-				(item): item is { providerID: string; id: string; enabled?: boolean } =>
-					item != null &&
-					typeof item === "object" &&
-					(item.providerID === "openai" || item.providerID === "anthropic") &&
-					typeof item.id === "string" &&
-					item.enabled !== false,
-			)
-			.map((item) => ({ provider: item.providerID as "openai" | "anthropic", model: item.id }));
+		if (!Array.isArray(data)) return null;
+		return data.filter(
+			(item): item is CatalogModel =>
+				item != null &&
+				typeof item === "object" &&
+				typeof item.providerID === "string" &&
+				typeof item.id === "string",
+		);
 	} catch {
-		return [];
+		return null;
 	}
+}
+
+export async function listOpenCodeV2Models(): Promise<OpenCodeV2ModelOption[]> {
+	const catalog = (await fetchModelCatalog()) ?? [];
+	return catalog
+		.filter(
+			(item) =>
+				(item.providerID === "openai" || item.providerID === "anthropic") && item.enabled !== false,
+		)
+		.map((item) => ({ provider: item.providerID as "openai" | "anthropic", model: item.id }));
+}
+
+function variantIds(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((variant) =>
+			variant && typeof variant === "object" ? (variant as { id?: unknown }).id : undefined,
+		)
+		.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+let variantCache: { fetchedAt: number; byModel: Map<string, string[]> } | null = null;
+
+/**
+ * The variant IDs the service lists for a model, which is how it selects reasoning effort.
+ * One catalog fetch answers every model for a while; a failed fetch is not cached.
+ * Returns null when the catalog is unavailable and an empty list for an unlisted model.
+ */
+export async function listOpenCodeV2ModelVariants(
+	provider: string,
+	model: string,
+): Promise<string[] | null> {
+	if (!variantCache || Date.now() - variantCache.fetchedAt > VARIANT_CACHE_TTL_MS) {
+		const catalog = await fetchModelCatalog();
+		if (!catalog) return null;
+		variantCache = {
+			fetchedAt: Date.now(),
+			byModel: new Map(
+				catalog.map((item) => [`${item.providerID}/${item.id}`, variantIds(item.variants)]),
+			),
+		};
+	}
+	return variantCache.byModel.get(`${provider}/${model}`) ?? [];
+}
+
+/** Forget the cached model variants, so the next lookup fetches the catalog again. */
+export function clearOpenCodeV2ModelVariantCache(): void {
+	variantCache = null;
 }
 
 export type V2GenerationResult =
@@ -138,14 +193,18 @@ async function isPreGenerationModelUnavailable(
 async function requestGeneration(
 	endpoint: NonNullable<Awaited<ReturnType<typeof Service.discover>>>,
 	url: URL,
-	input: { provider: string; model: string; prompt: string },
+	input: V2GenerationInput,
 	controller: AbortController,
 ): Promise<V2GenerationResult> {
 	const response = await fetch(new URL("/api/experimental/generate", url), {
 		method: "POST",
 		headers: { ...Service.headers(endpoint), "content-type": "application/json" },
 		body: JSON.stringify({
-			model: { providerID: input.provider, id: input.model },
+			model: {
+				providerID: input.provider,
+				id: input.model,
+				...(input.variant ? { variant: input.variant } : {}),
+			},
 			prompt: input.prompt,
 		}),
 		signal: controller.signal,
@@ -167,12 +226,21 @@ async function requestGeneration(
 	return readBoundedResponse(response, controller);
 }
 
-/** Use the service-owned provider connection; never read or export its credential. */
-export async function generateWithOpenCodeV2(input: {
+export interface V2GenerationInput {
 	provider: string;
 	model: string;
 	prompt: string;
-}): Promise<V2GenerationResult> {
+	/** A variant the model lists; it selects reasoning effort. Omitted uses the service default. */
+	variant?: string;
+}
+
+/**
+ * Use the service-owned provider connection; never read or export its credential.
+ * The service replies with the text only, without token usage.
+ */
+export async function generateWithOpenCodeV2(
+	input: V2GenerationInput,
+): Promise<V2GenerationResult> {
 	let endpoint: Awaited<ReturnType<typeof Service.discover>>;
 	try {
 		endpoint = await Service.discover();

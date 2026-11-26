@@ -1,6 +1,11 @@
 import { Service } from "@opencode/client/service";
-import { afterEach, expect, it, vi } from "vitest";
-import { generateWithOpenCodeV2, listOpenCodeV2Models } from "./opencode-v2-generation.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	clearOpenCodeV2ModelVariantCache,
+	generateWithOpenCodeV2,
+	listOpenCodeV2Models,
+	listOpenCodeV2ModelVariants,
+} from "./opencode-v2-generation.js";
 
 vi.mock("@opencode/client/service", () => ({
 	Service: {
@@ -146,6 +151,81 @@ it("requests the exact provider/model through the service without exporting cred
 		prompt: "Reply OK",
 	});
 	expect(options?.headers).toHaveProperty("authorization", "Bearer test");
+});
+
+it("sends a variant inside the model reference", async () => {
+	const fetcher = vi
+		.spyOn(globalThis, "fetch")
+		.mockResolvedValue(new Response(JSON.stringify({ data: { text: "OK" } }), { status: 200 }));
+
+	await generateWithOpenCodeV2({
+		provider: "openai",
+		model: "gpt-6-luna",
+		prompt: "Hi",
+		variant: "high",
+	});
+
+	const [, options] = fetcher.mock.calls[0] ?? [];
+	expect(JSON.parse(String(options?.body))).toEqual({
+		model: { providerID: "openai", id: "gpt-6-luna", variant: "high" },
+		prompt: "Hi",
+	});
+});
+
+describe("model variants", () => {
+	const catalog = () =>
+		new Response(
+			JSON.stringify({
+				data: [
+					{ providerID: "openai", id: "gpt-6-luna", variants: [{ id: "low" }, { id: "high" }] },
+					{ providerID: "anthropic", id: "claude-sonnet-4-6", variants: [{ id: "max" }] },
+					{ providerID: "openai", id: "plain" },
+				],
+			}),
+		);
+
+	beforeEach(() => {
+		clearOpenCodeV2ModelVariantCache();
+	});
+
+	it("answers every model from one catalog fetch", async () => {
+		const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => catalog());
+
+		const results = [
+			await listOpenCodeV2ModelVariants("openai", "gpt-6-luna"),
+			await listOpenCodeV2ModelVariants("anthropic", "claude-sonnet-4-6"),
+			await listOpenCodeV2ModelVariants("openai", "plain"),
+			await listOpenCodeV2ModelVariants("openai", "missing"),
+		];
+
+		expect(results).toEqual([["low", "high"], ["max"], [], []]);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(String(fetcher.mock.calls[0]?.[0])).toBe("http://127.0.0.1:9999/api/model");
+	});
+
+	it("fetches the catalog again after ten minutes", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => catalog());
+
+		await listOpenCodeV2ModelVariants("openai", "gpt-6-luna");
+		vi.advanceTimersByTime(10 * 60_000);
+		await listOpenCodeV2ModelVariants("openai", "gpt-6-luna");
+		vi.advanceTimersByTime(1);
+		await listOpenCodeV2ModelVariants("openai", "gpt-6-luna");
+
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not cache an unavailable catalog", async () => {
+		const fetcher = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response("{}", { status: 503 }))
+			.mockImplementation(async () => catalog());
+
+		expect(await listOpenCodeV2ModelVariants("openai", "gpt-6-luna")).toBeNull();
+		expect(await listOpenCodeV2ModelVariants("openai", "gpt-6-luna")).toEqual(["low", "high"]);
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
 });
 
 const unavailable = () =>

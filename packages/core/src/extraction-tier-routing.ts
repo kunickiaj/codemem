@@ -156,6 +156,22 @@ export function buildTieredObserverSelection(
 	baseConfig: ObserverConfig,
 	decision: ExtractionReplayTierRoutingDecision,
 ): TieredObserverConfigSelection {
+	const selection = buildProviderTierSelection(baseConfig, decision);
+	if (normalizeRuntime(baseConfig.observerRuntime) !== "opencode_v2") return selection;
+	// The OpenCode service applies effort as a model variant for any provider. Send only an
+	// effort the user configured, never a tier default, so an unset effort keeps the
+	// service default.
+	const observerReasoningEffort =
+		decision.tier === "rich"
+			? (baseConfig.observerRichReasoningEffort ?? baseConfig.observerReasoningEffort ?? null)
+			: (baseConfig.observerReasoningEffort ?? null);
+	return { ...selection, observer: { ...selection.observer, observerReasoningEffort } };
+}
+
+function buildProviderTierSelection(
+	baseConfig: ObserverConfig,
+	decision: ExtractionReplayTierRoutingDecision,
+): TieredObserverConfigSelection {
 	const modelOverride = tierModel(
 		decision.tier === "simple" ? baseConfig.observerSimpleModel : baseConfig.observerRichModel,
 	);
