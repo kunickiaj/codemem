@@ -162,3 +162,20 @@ it("says the last request failed instead of claiming an applied effort", () => {
 	expect(rich).toBe("openai · gpt-5.6 · Requested reasoning: max · Last request failed");
 	expect(document.body.textContent).not.toContain("Applied");
 });
+
+it("names the Claude CLI default when a Claude session falls back", () => {
+	const [, rich] = renderTiers(
+		{},
+		{
+			provider: "anthropic",
+			model: "claude-sonnet-4-6",
+			runtime: "claude_sidecar",
+			reasoningEffort: "max",
+			appliedReasoning: { effort: null, requestSucceeded: true, fallbackReason: "effort_rejected" },
+		},
+	);
+
+	expect(rich).toBe(
+		"anthropic · claude-sonnet-4-6 · Requested reasoning: max · Applied: Claude CLI default (Claude CLI rejected it)",
+	);
+});

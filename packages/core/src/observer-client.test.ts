@@ -1833,8 +1833,8 @@ describe("ObserverClient.observe()", () => {
 			observerAuthCacheTtlS: 300,
 		});
 		const command = (
-			client as unknown as { _buildSidecarCommand: (prompt: string, useModel: boolean) => string[] }
-		)._buildSidecarCommand("prompt", true);
+			client as unknown as { _buildSidecarCommand: (useModel: boolean) => string[] }
+		)._buildSidecarCommand(true);
 		expect(command).toContain("--model");
 		expect(command).toContain("claude-sonnet-4-6");
 	});

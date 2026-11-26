@@ -57,10 +57,24 @@ describe("observer subprocess options", () => {
 	});
 
 	it("hides Claude sidecars while preserving timeout and output capture", async () => {
-		childProcessMocks.execFileAsync.mockResolvedValue({
-			stdout: JSON.stringify({ type: "result", result: "sidecar output", is_error: false }),
-			stderr: "",
-		});
+		const stdinEnd = vi.fn();
+		childProcessMocks.execFile.mockImplementation(
+			(
+				_file: string,
+				_args: string[],
+				_options: unknown,
+				callback: (...args: unknown[]) => void,
+			) => {
+				queueMicrotask(() =>
+					callback(
+						null,
+						JSON.stringify({ type: "result", result: "sidecar output", is_error: false }),
+						"",
+					),
+				);
+				return { stdin: { on: vi.fn(), end: stdinEnd } };
+			},
+		);
 		const client = makeSidecarClient("claude_sidecar");
 		const invokeSidecar = (
 			client as unknown as {
@@ -71,13 +85,15 @@ describe("observer subprocess options", () => {
 		await expect(invokeSidecar("prompt", true)).resolves.toMatchObject({
 			output: "sidecar output",
 		});
-		expect(childProcessMocks.execFileAsync).toHaveBeenCalledOnce();
-		const call = childProcessMocks.execFileAsync.mock.calls[0];
+		expect(childProcessMocks.execFile).toHaveBeenCalledOnce();
+		const call = childProcessMocks.execFile.mock.calls[0];
 		expect(call).toBeDefined();
 		if (!call) return;
 		const [executable, args, options] = call;
 		expect(executable).toBe("claude");
-		expect(args).toEqual(expect.arrayContaining(["-p", "--output-format", "json", "prompt"]));
+		expect(args).toEqual(expect.arrayContaining(["-p", "--output-format", "json"]));
+		expect(args).not.toContain("prompt");
+		expect(stdinEnd).toHaveBeenCalledWith("prompt");
 		expect(options).toMatchObject({
 			timeout: 120_000,
 			maxBuffer: 10 * 1024 * 1024,

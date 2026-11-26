@@ -4,7 +4,14 @@ const FALLBACK_REASONS: Record<string, string> = {
 	variant_not_listed: "model doesn't offer it",
 	variants_unavailable: "model list unavailable",
 	variant_rejected: "OpenCode rejected it",
+	effort_not_supported: "Claude CLI doesn't offer it",
+	effort_rejected: "Claude CLI rejected it",
 };
+
+/** Who chose the effort when the requested one was not applied. */
+function defaultLabel(runtime: string): string {
+	return runtime === "claude_sidecar" ? "Claude CLI default" : "OpenCode default";
+}
 
 /** The configured effort, then what the last request applied, or that it failed, when the connection reports it. */
 function reasoningLabel(tier: ObserverTierPreview | undefined): string {
@@ -15,7 +22,7 @@ function reasoningLabel(tier: ObserverTierPreview | undefined): string {
 	if (!applied.requestSucceeded) return `${requested} · Last request failed`;
 	if (applied.effort) return `${requested} · Applied: ${applied.effort}`;
 	const reason = applied.fallbackReason ? FALLBACK_REASONS[applied.fallbackReason] : undefined;
-	return `${requested} · Applied: OpenCode default${reason ? ` (${reason})` : ""}`;
+	return `${requested} · Applied: ${defaultLabel(tier.runtime)}${reason ? ` (${reason})` : ""}`;
 }
 
 function tierLabel(tier: ObserverTierPreview | undefined): string {

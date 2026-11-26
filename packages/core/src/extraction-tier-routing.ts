@@ -157,10 +157,11 @@ export function buildTieredObserverSelection(
 	decision: ExtractionReplayTierRoutingDecision,
 ): TieredObserverConfigSelection {
 	const selection = buildProviderTierSelection(baseConfig, decision);
-	if (normalizeRuntime(baseConfig.observerRuntime) !== "opencode_v2") return selection;
-	// The OpenCode service applies effort as a model variant for any provider. Send only an
-	// effort the user configured, never a tier default, so an unset effort keeps the
-	// service default.
+	const runtime = normalizeRuntime(baseConfig.observerRuntime);
+	if (runtime !== "opencode_v2" && runtime !== "claude_sidecar") return selection;
+	// The OpenCode service applies effort as a model variant for any provider, and the
+	// Claude CLI takes it as --effort. Send only an effort the user configured, never a
+	// tier default, so an unset effort keeps the service or CLI default.
 	const observerReasoningEffort =
 		decision.tier === "rich"
 			? (baseConfig.observerRichReasoningEffort ?? baseConfig.observerReasoningEffort ?? null)
