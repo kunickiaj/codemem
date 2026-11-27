@@ -387,7 +387,11 @@ New function in `packages/core`, for example `removePairingState`.
 8. A lost commit reply is resolved from the removal listing before the local
    step runs.
 9. Remove of the device the Viewer runs on is refused.
-10. `DELETE /api/sync/peers/:peer_device_id` and the retire routes are gone.
+10. The retire routes are gone. `DELETE /api/sync/peers/:peer_device_id` stays,
+    because disconnecting a pairing on this device is a local action that
+    works without the admin secret (design section 3). Devices reaches it
+    through **Disconnect on this device…**, and it never changes the
+    coordinator or another device.
 
 ## J. Viewer UI
 
