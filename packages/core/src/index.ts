@@ -1384,6 +1384,7 @@ export { clearMemoryRefs, normalizeConcept, populateMemoryRefs } from "./ref-pop
 export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
 export * from "./release-discovery.js";
+export { localRemovedDeviceIds } from "./removed-device-local-ids.js";
 export {
 	ReplicationBackfillRunner,
 	runReplicationBackfillPass,

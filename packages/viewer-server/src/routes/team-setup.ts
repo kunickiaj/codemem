@@ -57,6 +57,7 @@ import {
 	legacyTeamSetupFailureCheck,
 	listProjectScopeCandidates,
 	loadRuntimeSigningPublicKey,
+	localRemovedDeviceIds,
 	normalizeHumanPresentationName,
 	previewLegacyTeamSetupActivation,
 	RemoteCoordinatorRequestError,
@@ -1071,12 +1072,16 @@ async function runSummaryReconciliation(
 			continue;
 		// Rediscovering a completion can restore setup recipients. Reconciliation
 		// reads removals only on some paths, so read them here for every completion.
+		let removals: Extract<RepairEvidence, { status: "read" }> | null = null;
 		if (hasRepairableSetupTeam(store, candidateRef)) {
 			const evidence = await dependencies.readRemovalsForRepair(group);
 			if (evidence.status === "failed") blockers.set(candidateRef, evidence.blocker);
 			if (evidence.status !== "read") continue;
+			removals = evidence;
 		}
-		await discoverAfterReconciliation(store, group, dependencies, { views, skipped });
+		await discoverAfterReconciliation(store, group, dependencies, { views, skipped }, () =>
+			removals ? applyRemovalsBeforeRepair(store, group, removals) : true,
+		);
 	}
 	return carrySkippedGroups({ groups, views, blockers, skipped }, previous);
 }
@@ -1111,7 +1116,11 @@ const TEAM_MEMBER_REMOVALS_UNREAD: CompletionBlocker = {
  * repaired and the group carries the blocker.
  */
 type RepairEvidence =
-	| { status: "read" }
+	| {
+			status: "read";
+			deviceRemovals: ReadonlyArray<{ group_id: string; device_id: string; fingerprint: string }>;
+			teamMemberRemovals: CoordinatorTeamMemberRemoval[];
+	  }
 	| { status: "unavailable" }
 	| { status: "failed"; blocker: CompletionBlocker };
 
@@ -1138,15 +1147,65 @@ async function readRemovalsForRepair(
 		timeoutS,
 		deadlineMs,
 	);
-	if ((await removalReads.listRemovals())?.status !== "read") {
-		return { status: "failed", blocker: DEVICE_REMOVALS_UNREAD };
-	}
+	const devices = await removalReads.listRemovals();
+	if (devices?.status !== "read") return { status: "failed", blocker: DEVICE_REMOVALS_UNREAD };
+	let teamMemberRemovals: CoordinatorTeamMemberRemoval[] | undefined;
 	try {
-		await removalReads.listTeamMemberRemovals(group.groupId);
+		teamMemberRemovals = await removalReads.listTeamMemberRemovals(group.groupId);
 	} catch {
 		return { status: "failed", blocker: TEAM_MEMBER_REMOVALS_UNREAD };
 	}
-	return { status: "read" };
+	if (!teamMemberRemovals) return { status: "unavailable" };
+	return { status: "read", deviceRemovals: devices.removals, teamMemberRemovals };
+}
+
+/**
+ * Applies the removals a check read, before rediscovery can restore recipients,
+ * and returns whether the repair may run.
+ *
+ * Team member removals are recorded with their enforcements, as the enrollment
+ * check does. They commit in their own transaction before rediscovery, under the
+ * same candidate claim, so any recipient the repair restores is refused to a
+ * removed person's devices.
+ *
+ * A device removal covers one group, and the device may still be enrolled in
+ * another, so this check does not end device-wide access: the sync daemon's
+ * removal check does that once the device is removed everywhere, and the Team
+ * then goes back to review. While this machine still pins or binds a device
+ * this group removed, under the removed key, the repair waits.
+ */
+function applyRemovalsBeforeRepair(
+	store: MemoryStore,
+	group: LegacyTeamCandidateGroupDescriptor,
+	evidence: Extract<RepairEvidence, { status: "read" }>,
+): boolean {
+	applyTeamMemberRemovals(store.db, {
+		coordinatorId: group.coordinatorId,
+		groupId: group.groupId,
+		removals: evidence.teamMemberRemovals,
+		now: new Date().toISOString(),
+	});
+	const removed = evidence.deviceRemovals.filter((removal) => removal.group_id === group.groupId);
+	if (removed.length === 0) return true;
+	// Read only: never create a signing identity here.
+	const localDeviceId =
+		(store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").pluck().get() as
+			| string
+			| undefined) ?? "";
+	// The local IDs whose pin and binding, if any, match a removed key.
+	const removedLocally = localRemovedDeviceIds(
+		store.db,
+		{
+			enrollments: removed.map(({ device_id, fingerprint }) => ({ device_id, fingerprint })),
+			keyId: null,
+		},
+		localDeviceId,
+	);
+	const stillServed = store.db.prepare(
+		`SELECT 1 FROM identity_devices WHERE device_id = ? AND status = 'active'
+		 UNION ALL SELECT 1 FROM sync_peers WHERE peer_device_id = ? LIMIT 1`,
+	);
+	return removedLocally.every((deviceId) => !stillServed.get(deviceId, deviceId));
 }
 
 /** No draft of any state and no completed Team: discovery here only creates a draft. */
@@ -1167,9 +1226,11 @@ async function discoverAfterReconciliation(
 	group: LegacyTeamConfiguredGroupSnapshot,
 	dependencies: SummaryReconciliationDependencies,
 	found: { views: Map<string, LegacyTeamCandidateView>; skipped: Set<string> },
+	mayRepair: () => boolean = () => true,
 ): Promise<void> {
 	const candidateRef = summaryCandidateRef(group);
 	const ran = await runCandidateMutation(store.db, candidateRef, async () => {
+		if (!mayRepair()) return;
 		const view = discoveredSummaryView(store, group, dependencies.mayRediscover);
 		if (view) found.views.set(candidateRef, view);
 	});
