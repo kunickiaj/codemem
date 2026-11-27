@@ -156,6 +156,8 @@ class PackWorkerClient {
 	private closed = false;
 	/** Packs that passed the limit and wait for the worker to be ready. */
 	private starting = 0;
+	/** Ends the wait of the start in progress, as started or not. */
+	private settleStart: ((started: boolean) => void) | null = null;
 
 	constructor(
 		private readonly options: {
@@ -217,6 +219,10 @@ class PackWorkerClient {
 		const transport = this.transport;
 		this.transport = null;
 		this.ready = null;
+		// Packs that wait for the worker to start go back to their callers now, while the
+		// store they were asked for is still open, and the start timer stops.
+		this.settleStart?.(false);
+		this.settleStart = null;
 		this.finishAll();
 		if (!transport) return;
 		try {
@@ -238,6 +244,7 @@ class PackWorkerClient {
 				clearTimeout(timer);
 				resolve(started);
 			};
+			this.settleStart = settle;
 			let transport: PackWorkerTransport | null = null;
 			try {
 				transport = this.options.createWorker({

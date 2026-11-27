@@ -585,6 +585,24 @@ describe("a worker that cannot do the work", () => {
 		expect(await assembler.assemble(request())).toEqual(real);
 	});
 
+	it("hands back packs that wait for the worker to start when it is closed", async () => {
+		// A worker that never says it is ready.
+		const createWorker = (): PackWorkerTransport => ({
+			postMessage() {},
+			terminate: async () => 0,
+		});
+		executor = createPackWorkerExecutor({ store, createWorker });
+		const waiting = executor.assemble(request());
+
+		await executor.close();
+		const outcome = await Promise.race([
+			waiting,
+			new Promise((resolve) => setTimeout(() => resolve("still waiting"), 250)),
+		]);
+
+		expect(outcome).toBeNull();
+	});
+
 	it("leaves the pack to the caller when the request is aborted", async () => {
 		const worker = fakeWorker(() => null);
 		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
