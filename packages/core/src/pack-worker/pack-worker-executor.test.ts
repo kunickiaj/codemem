@@ -564,6 +564,27 @@ describe("a worker that cannot do the work", () => {
 		expect(warn).toHaveBeenCalledTimes(1);
 	});
 
+	it("asks the worker for no more packs at once than its limit, however they arrive", async () => {
+		const real = assemblePackArtifacts(store, request());
+		const worker = fakeWorker((message) => ({ type: "result", id: message.id, artifacts: real }));
+		executor = createPackWorkerExecutor({
+			store,
+			createWorker: worker.createWorker,
+			maxPending: 8,
+		});
+		const assembler = executor;
+
+		// Twenty requests in one turn, before the worker has said it is ready.
+		const outcomes = await Promise.all(
+			Array.from({ length: 20 }, () => assembler.assemble(request())),
+		);
+
+		expect(worker.posted.filter((message) => message.type === "assemble")).toHaveLength(8);
+		expect(outcomes.filter((outcome) => outcome !== null)).toHaveLength(8);
+		// The limit is on packs waiting at once: later requests are taken again.
+		expect(await assembler.assemble(request())).toEqual(real);
+	});
+
 	it("leaves the pack to the caller when the request is aborted", async () => {
 		const worker = fakeWorker(() => null);
 		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });

@@ -154,6 +154,8 @@ class PackWorkerClient {
 	private nextId = 1;
 	private consecutiveFailures = 0;
 	private closed = false;
+	/** Packs that passed the limit and wait for the worker to be ready. */
+	private starting = 0;
 
 	constructor(
 		private readonly options: {
@@ -170,8 +172,20 @@ class PackWorkerClient {
 	}
 
 	async run(job: PackWorkerJob, signal?: AbortSignal): Promise<PackArtifacts | null> {
-		if (!this.usable || this.pending.size >= this.options.maxPending) return null;
-		if (!(await this.start()) || signal?.aborted) return null;
+		if (!this.usable || this.pending.size + this.starting >= this.options.maxPending) {
+			return null;
+		}
+		// Counted while it waits for the worker to be ready. Requests that arrive in the same
+		// turn would otherwise all pass the limit before any of them is waiting.
+		this.starting += 1;
+		let started = false;
+		try {
+			started = await this.start();
+		} finally {
+			// In the same turn as the code below, which moves this pack to the waiting ones.
+			this.starting -= 1;
+		}
+		if (!started || signal?.aborted) return null;
 		const transport = this.transport;
 		if (!transport) return null;
 		const id = this.nextId++;
