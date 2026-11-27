@@ -49,7 +49,9 @@ describe("people on a device that may not change them", () => {
 			{ actor_id: "person-local", display_name: "Adam", is_local: true },
 			{ actor_id: "person-b", display_name: "Brian", is_local: false },
 		] as typeof state.lastSyncActors;
-		state.lastCoordinatorAdminStatus = status as typeof state.lastCoordinatorAdminStatus;
+		state.lastSyncCoordinatorAdminStatus = status as typeof state.lastSyncCoordinatorAdminStatus;
+		// The Feed and Teams cache may be empty or stale when Sync opens first.
+		state.lastCoordinatorAdminStatus = null;
 		renderSyncActors();
 	}
 	const createButton = () => document.getElementById("syncActorCreateButton") as HTMLButtonElement;

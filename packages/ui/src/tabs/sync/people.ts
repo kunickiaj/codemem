@@ -48,7 +48,11 @@ export function renderSyncActors() {
 	if (!actorList) return;
 	hideSkeleton("syncActorsSkeleton");
 	const blockedReason = peopleChangeBlockedReason(
-		coordinatorAccessFromStatus({ status: "fulfilled", value: state.lastCoordinatorAdminStatus }),
+		// The status the Sync loader fetched for this surface just before rendering.
+		coordinatorAccessFromStatus({
+			status: "fulfilled",
+			value: state.lastSyncCoordinatorAdminStatus,
+		}),
 	);
 	setPeopleCreateControlsDisabled(blockedReason !== null);
 
