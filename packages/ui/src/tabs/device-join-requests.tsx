@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
+	loadCoordinatorAdminGroupsFiltered,
 	loadCoordinatorAdminJoinRequests,
 	loadCoordinatorAdminStatus,
 	reviewCoordinatorAdminJoinRequest,
@@ -35,6 +36,32 @@ function text(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
 }
 
+/**
+ * Every group this Viewer can administer. The coordinator knows groups that this device's
+ * sync settings do not name, so the coordinator's list comes first. When it cannot be read,
+ * the locally configured groups stand in and the caller reports the gap.
+ */
+async function administeredGroups(
+	configured: unknown,
+	signal: AbortSignal,
+): Promise<{ groups: string[]; listFailed: boolean }> {
+	try {
+		const payload = (await loadCoordinatorAdminGroupsFiltered(false, { signal })) as {
+			items?: unknown;
+		};
+		if (!Array.isArray(payload?.items)) throw new Error("groups_invalid");
+		const groups = (payload.items as { group_id?: unknown; archived_at?: unknown }[])
+			.filter((group) => !group?.archived_at)
+			.map((group) => text(group?.group_id))
+			.filter(Boolean);
+		return { groups: groups.slice(0, MAX_GROUPS), listFailed: false };
+	} catch {
+		if (signal.aborted) throw new DOMException("The request was aborted", "AbortError");
+		const groups = (Array.isArray(configured) ? configured : []).map(text).filter(Boolean);
+		return { groups: groups.slice(0, MAX_GROUPS), listFailed: true };
+	}
+}
+
 async function loadFromViewer(signal: AbortSignal) {
 	const status = (await loadCoordinatorAdminStatus({ signal })) as {
 		readiness?: string;
@@ -43,10 +70,7 @@ async function loadFromViewer(signal: AbortSignal) {
 	};
 	// Approving needs the admin secret, so a device without it has nothing to review here.
 	if (status.readiness !== "ready" || status.has_admin_secret !== true) return null;
-	const groups = (Array.isArray(status.groups) ? status.groups : [])
-		.map(text)
-		.filter(Boolean)
-		.slice(0, MAX_GROUPS);
+	const { groups, listFailed } = await administeredGroups(status.groups, signal);
 	const results = await Promise.allSettled(
 		groups.map(async (groupId) => {
 			const payload = (await loadCoordinatorAdminJoinRequests(groupId, { signal })) as {
@@ -70,9 +94,10 @@ async function loadFromViewer(signal: AbortSignal) {
 	);
 	if (signal.aborted) throw new DOMException("The request was aborted", "AbortError");
 	const requests = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-	const failedGroups = results.filter((result) => result.status === "rejected").length;
-	if (groups.length > 0 && failedGroups === groups.length)
+	const failedReads = results.filter((result) => result.status === "rejected").length;
+	if (groups.length > 0 && failedReads === groups.length)
 		throw new Error("join_requests_unavailable");
+	const failedGroups = failedReads + (listFailed ? 1 : 0);
 	return { requests, failedGroups };
 }
 

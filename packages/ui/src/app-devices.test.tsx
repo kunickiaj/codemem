@@ -1108,6 +1108,8 @@ describe("Devices app join requests", () => {
 			const request = new URL(String(input), "http://viewer.example.test");
 			if (request.pathname === "/api/coordinator/admin/status")
 				return Response.json({ readiness: "ready", has_admin_secret: true, groups: ["group-a"] });
+			if (request.pathname === "/api/coordinator/admin/groups")
+				return Response.json({ items: [{ group_id: "group-a" }] });
 			if (request.pathname === "/api/coordinator/admin/join-requests")
 				return Response.json({ items: waiting, group_id: request.searchParams.get("group_id") });
 			if (request.pathname === "/api/coordinator/admin/join-requests/request-a/approve") {

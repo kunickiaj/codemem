@@ -10,6 +10,7 @@ import {
 } from "./device-join-requests";
 
 const mocks = vi.hoisted(() => ({
+	loadCoordinatorAdminGroupsFiltered: vi.fn(),
 	loadCoordinatorAdminJoinRequests: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
 	reviewCoordinatorAdminJoinRequest: vi.fn(),
@@ -276,11 +277,19 @@ describe("default join request source", () => {
 		expect(mocks.loadCoordinatorAdminJoinRequests).not.toHaveBeenCalled();
 	});
 
-	it("asks for each configured group and counts the groups it could not read", async () => {
+	it("asks for each group the coordinator lists and counts the groups it could not read", async () => {
 		mocks.loadCoordinatorAdminStatus.mockResolvedValue({
 			readiness: "ready",
 			has_admin_secret: true,
-			groups: ["group-a", "group-b", "group-c"],
+			groups: ["group-a"],
+		});
+		mocks.loadCoordinatorAdminGroupsFiltered.mockResolvedValue({
+			items: [
+				{ group_id: "group-a" },
+				{ group_id: "group-b" },
+				{ group_id: "group-c" },
+				{ group_id: "group-old", archived_at: "2026-01-01T00:00:00Z" },
+			],
 		});
 		mocks.loadCoordinatorAdminJoinRequests.mockImplementation(async (groupId: string) => {
 			if (groupId === "group-b") throw new Error("coordinator down");
@@ -322,11 +331,31 @@ describe("default join request source", () => {
 		]);
 	});
 
+	it("falls back to the configured groups and reports the gap when the group list fails", async () => {
+		mocks.loadCoordinatorAdminStatus.mockResolvedValue({
+			readiness: "ready",
+			has_admin_secret: true,
+			groups: ["group-a"],
+		});
+		mocks.loadCoordinatorAdminGroupsFiltered.mockRejectedValue(new Error("coordinator down"));
+		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({ items: [] });
+
+		const loaded = await defaultDeviceJoinRequestsApi.load(signal);
+
+		expect(mocks.loadCoordinatorAdminJoinRequests.mock.calls.map(([groupId]) => groupId)).toEqual([
+			"group-a",
+		]);
+		expect(loaded).toEqual({ requests: [], failedGroups: 1 });
+	});
+
 	it("fails when no group can be read", async () => {
 		mocks.loadCoordinatorAdminStatus.mockResolvedValue({
 			readiness: "ready",
 			has_admin_secret: true,
 			groups: ["group-a"],
+		});
+		mocks.loadCoordinatorAdminGroupsFiltered.mockResolvedValue({
+			items: [{ group_id: "group-a" }],
 		});
 		mocks.loadCoordinatorAdminJoinRequests.mockRejectedValue(new Error("coordinator down"));
 
