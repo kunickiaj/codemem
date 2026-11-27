@@ -1440,7 +1440,7 @@ export async function runServeInvocation(
 	if (runtimeConflict) {
 		p.intro("codemem viewer");
 		p.log.error(
-			`Database runtime at ${dirname(dbPath)} is already managed by viewer ${runtimeConflict.host}:${runtimeConflict.port} (pid ${runtimeConflict.pid})`,
+			`Database runtime at ${viewerRuntimeDir(dbPath)} is already managed by viewer ${runtimeConflict.host}:${runtimeConflict.port} (pid ${runtimeConflict.pid})`,
 		);
 		p.log.info(
 			"Use the matching --host/--port, stop the existing viewer first, or use a separate db/runtime folder for another viewer.",
