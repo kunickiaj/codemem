@@ -1,8 +1,11 @@
+import {
+	type BoundaryFilterEvidence,
+	readBoundaryFilterEvidence,
+} from "./boundary-filter-evidence.js";
 import { buildBoundaryReadinessInventory } from "./boundary-readiness-inventory.js";
 import { readBoundaryMigrationMode, readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { type Database, tableExists } from "./db.js";
 import { columnExists } from "./schema-lookups.js";
-import { effectiveSyncProjectFilters } from "./sync-replication.js";
 
 /** These are observations on one store, never permission to migrate a Project. */
 type LocalInventory = {
@@ -10,49 +13,6 @@ type LocalInventory = {
 	multiple_sources: number;
 	own_source_rows: number;
 };
-
-type FilterEvidence = "none" | "present" | "unknown";
-
-function listEvidence(raw: string | null): FilterEvidence {
-	if (raw === null) return "none";
-	try {
-		const list: unknown = JSON.parse(raw);
-		if (!Array.isArray(list) || !list.every((item) => typeof item === "string")) return "unknown";
-		return list.some((item) => item.trim()) ? "present" : "none";
-	} catch {
-		return "unknown";
-	}
-}
-
-function storedFilters(db: Database, table: string, predicate: string): FilterEvidence {
-	if (!tableExists(db, table)) return "none";
-	const rows = db
-		.prepare(`SELECT projects_include_json, projects_exclude_json
-		FROM ${table} WHERE ${predicate}`)
-		.all() as Record<string, string | null>[];
-	let evidence: FilterEvidence = "none";
-	for (const row of rows) {
-		for (const raw of Object.values(row)) {
-			const state = listEvidence(raw);
-			if (state === "present") return state;
-			if (state === "unknown") evidence = state;
-		}
-	}
-	return evidence;
-}
-
-function localFilters(db: Database, config: Record<string, unknown>): FilterEvidence {
-	const global = effectiveSyncProjectFilters(db, null, config);
-	if (global.include.length || global.exclude.length) return "present";
-	const evidence = [
-		storedFilters(db, "sync_peers", "1"),
-		storedFilters(db, "peer_project_filter_retention", "1"),
-		storedFilters(db, "coordinator_group_preferences", "auto_seed_scope = 1"),
-	];
-	if (evidence.includes("present")) return "present";
-	if (evidence.includes("unknown")) return "unknown";
-	return "none";
-}
 
 function hasHistory(db: Database, table: string, predicate = "1"): boolean {
 	return (
@@ -117,10 +77,10 @@ export function readLocalProjectMigrationReport(db: Database, config: Record<str
 				if (!managed) return { mode, state: "not_applicable" } as const;
 				return { mode, state: "waiting_for_coordinator" } as const;
 			}
-			let filters: FilterEvidence = "unknown";
+			let filters: BoundaryFilterEvidence = "unknown";
 			let projects: LocalInventory | null = null;
 			try {
-				filters = localFilters(db, config);
+				filters = readBoundaryFilterEvidence(db, config);
 			} catch {
 				// A historical table can predate the columns read by current code.
 			}
