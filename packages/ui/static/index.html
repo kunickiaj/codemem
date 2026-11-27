@@ -2304,6 +2304,13 @@
         background: var(--surface-2);
       }
       .devices-pairing-panel p { margin: 0; color: var(--text-secondary); }
+      .devices-pairing-form { display: grid; gap: var(--sp-2); }
+      .devices-pairing-form textarea { width: 100%; }
+      .devices-pairing-review h4 { margin: 0; }
+      .devices-pairing-review dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-1) var(--sp-3); margin: var(--sp-2) 0 0; }
+      .devices-pairing-review dd { margin: 0; overflow-wrap: anywhere; }
+      .devices-pairing-addresses { white-space: pre-wrap; }
+      .devices-pairing-form-status:empty { display: none; }
       .devices-pairing-header,
       .devices-pairing-command { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
       .devices-pairing-header h3 { margin: 0; }

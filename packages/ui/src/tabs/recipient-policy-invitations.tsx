@@ -13,6 +13,7 @@ import type {
 } from "../lib/api/sync";
 import type { ImportInviteResult } from "../lib/api/types";
 import { humanPresentationLabel, isMachinePresentationLabel } from "../lib/identity-presentation";
+import { setPendingPairingCode } from "../lib/pairing-handoff";
 import { projectIdentityMemorySummaryGroups } from "../lib/project-identity-presentation";
 import { openProjectShareFlow } from "./project-sharing";
 
@@ -485,16 +486,9 @@ function request(kind: CreateKind, targetId: string): RecipientInvitePreviewRequ
 		: { kind, target_identity_id: targetId };
 }
 
-/**
- * Devices reviews pairing codes in the join form it shares with Advanced. Filling
- * that form and switching to Devices hands the code over without retyping it.
- */
+/** Devices reviews pairing codes. Handing the code over means nobody retypes it. */
 function openPairingReviewInDevices(code: string): void {
-	const field = document.getElementById("syncJoinInvite") as HTMLTextAreaElement | null;
-	if (field) {
-		field.value = code;
-		field.dispatchEvent(new Event("input", { bubbles: true }));
-	}
+	setPendingPairingCode(code);
 	window.location.hash = "devices";
 }
 
@@ -1077,8 +1071,8 @@ function InvitationDialogMessages({
 			{state.inspected?.kind === "pair" ? (
 				<div>
 					<p>
-						Devices shows the device this code belongs to so you can check it before trusting it. In
-						Devices, choose Pair a device. The code is already filled in.
+						Devices shows the device this code belongs to so you can check it before trusting it.
+						The code is already filled in.
 					</p>
 					<button
 						className="settings-button"

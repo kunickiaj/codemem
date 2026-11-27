@@ -54,6 +54,7 @@ vi.mock("./project-sharing", () => ({ openProjectShareFlow: openProjectShare }))
 
 import * as api from "../lib/api";
 import type { RecipientOnboardingPreviewV1, RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
+import { takePendingPairingCode } from "../lib/pairing-handoff";
 import {
 	RecipientPolicyInvitations,
 	requestInvitationCreate,
@@ -1284,9 +1285,6 @@ it("routes a pairing code to Devices without enabling invitation acceptance", as
 		fingerprint: "fingerprint",
 		addresses: ["http://peer.example.test"],
 	});
-	const joinField = document.createElement("textarea");
-	joinField.id = "syncJoinInvite";
-	document.body.appendChild(joinField);
 	const dialog = await reviewInvitationCode("pairing");
 
 	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
@@ -1299,7 +1297,7 @@ it("routes a pairing code to Devices without enabling invitation acceptance", as
 		),
 	).toBe(false);
 	act(() => button("Review in Devices", dialog).click());
-	expect(joinField.value).toBe("pairing");
+	expect(takePendingPairingCode()).toBe("pairing");
 	expect(window.location.hash).toBe("#devices");
 	expect(document.querySelector('[role="dialog"]')).toBeNull();
 	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();

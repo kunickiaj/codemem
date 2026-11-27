@@ -1,5 +1,5 @@
 import { type RefObject, render } from "preact";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { DeviceEnrollmentIssues } from "../components/device-enrollment-issues";
 import { LoadingCardList } from "../components/LoadingCardList";
 import { ActionMenu, type MenuAction } from "../components/primitives/action-menu";
@@ -33,10 +33,12 @@ import {
 	serviceDeviceItems,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
+import { hasPendingPairingCode } from "../lib/pairing-handoff";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
 import { DeviceJoinRequests, type DeviceJoinRequestsApi } from "./device-join-requests";
+import { type DevicePairingApi, DevicePairingForm } from "./device-pairing-form";
 import { DeviceRejoinHistory } from "./device-rejoin-history";
 import { DeviceRejoinNotice } from "./device-rejoin-notice";
 import {
@@ -108,6 +110,7 @@ export interface DevicesRendererOptions {
 	/** Set when a coordinator is configured. Changes each time Devices reloads. */
 	joinRequestsRevision?: number;
 	joinRequestsApi?: DeviceJoinRequestsApi;
+	pairingApi?: DevicePairingApi;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
@@ -2233,74 +2236,6 @@ type PairingEntryHandler = (
 	options?: { showExplanation?: boolean; deviceName?: string },
 ) => void;
 
-function restorePairingControls(
-	panel: HTMLElement,
-	restoreParent: HTMLElement | null,
-	movedFeedback: HTMLElement | null,
-	feedbackRestoreParent: HTMLElement | null,
-	visibility: { host: HTMLElement; wasHidden: HTMLElement["hidden"] },
-): void {
-	if (panel.parentElement === visibility.host) panel.hidden = visibility.wasHidden;
-	else if (panel.parentElement?.isConnected) restoreParent = panel.parentElement;
-	const liveParent = restoreParent?.isConnected
-		? restoreParent
-		: document.getElementById("syncJoinSection");
-	if (liveParent && panel.parentElement !== liveParent) liveParent.appendChild(panel);
-	const feedbackParent = feedbackRestoreParent?.isConnected ? feedbackRestoreParent : liveParent;
-	if (!movedFeedback || !feedbackParent) return;
-	if (movedFeedback.parentElement === feedbackParent) return;
-	feedbackParent.appendChild(movedFeedback);
-}
-
-function PairingAcceptancePanel() {
-	const hostRef = useRef<HTMLDivElement>(null);
-	useLayoutEffect(() => {
-		const host = hostRef.current;
-		const panel = document.getElementById("syncJoinPanel");
-		if (!host || !panel) return;
-		let restoreParent = panel.parentElement;
-		let wasHidden = panel.hidden;
-		let movedFeedback: HTMLElement | null = null;
-		let feedbackRestoreParent: HTMLElement | null = null;
-		const mountPairingControls = () => {
-			if (host.closest("[hidden]")) {
-				restorePairingControls(panel, restoreParent, movedFeedback, feedbackRestoreParent, {
-					host,
-					wasHidden,
-				});
-				return;
-			}
-			if (panel.parentElement !== host) {
-				restoreParent = panel.parentElement;
-				wasHidden = panel.hidden;
-				host.appendChild(panel);
-			}
-			panel.hidden = false;
-			const feedback = document.getElementById("syncJoinFeedback");
-			if (!feedback || feedback.parentElement === host) return;
-			if (movedFeedback !== feedback) feedbackRestoreParent = feedback.parentElement;
-			movedFeedback = feedback;
-			host.appendChild(feedback);
-		};
-		mountPairingControls();
-		const observer = new MutationObserver(mountPairingControls);
-		observer.observe(document.body, {
-			attributeFilter: ["hidden"],
-			attributes: true,
-			childList: true,
-			subtree: true,
-		});
-		return () => {
-			observer.disconnect();
-			restorePairingControls(panel, restoreParent, movedFeedback, feedbackRestoreParent, {
-				host,
-				wasHidden,
-			});
-		};
-	}, []);
-	return <div className="devices-pairing-accept" ref={hostRef} />;
-}
-
 function DevicesEmptyState({ onOpenPairing }: { onOpenPairing: PairingEntryHandler }) {
 	return (
 		<div className="devices-empty-state">
@@ -2327,10 +2262,12 @@ function DevicesEmptyState({ onOpenPairing }: { onOpenPairing: PairingEntryHandl
 
 function PairingPanel({
 	onClose,
+	options,
 	showExplanation,
 	deviceName,
 }: {
 	onClose: () => void;
+	options: DevicesRendererOptions;
 	showExplanation: boolean;
 	deviceName?: string;
 }) {
@@ -2378,7 +2315,7 @@ function PairingPanel({
 				<p className="small">
 					Paste a payload from a device you trust. Accepting it trusts that device.
 				</p>
-				<PairingAcceptancePanel />
+				<DevicePairingForm api={options.pairingApi} onPaired={options.onCommitted} />
 			</div>
 			<div className="devices-pairing-reciprocal">
 				<h4>Complete pairing on the other device</h4>
@@ -2641,7 +2578,7 @@ function DevicesSyncSummary({ options }: { options: DevicesRendererOptions }) {
 	);
 }
 
-function useDevicePairing() {
+function useDevicePairing(options: DevicesRendererOptions) {
 	const [pairingOpen, setPairingOpen] = useState(false);
 	const [showPairingExplanation, setShowPairingExplanation] = useState(false);
 	const [pairingDeviceName, setPairingDeviceName] = useState<string>();
@@ -2656,9 +2593,14 @@ function useDevicePairing() {
 		setPairingOpen(false);
 		queueMicrotask(() => pairingTrigger.current?.focus());
 	};
+	// Sharing hands a pairing code to Devices. Open the form that will take it.
+	useEffect(() => {
+		if (hasPendingPairingCode()) setPairingOpen(true);
+	});
 	const panel = pairingOpen ? (
 		<PairingPanel
 			onClose={closePairing}
+			options={options}
 			showExplanation={showPairingExplanation}
 			deviceName={pairingDeviceName}
 		/>
@@ -2693,7 +2635,7 @@ function DevicesRoot({
 		deviceIdentityAttentionItems(options.inventory).length +
 		configuredFallbackCount;
 	const showDeviceCount = !options.loading && !options.loadError;
-	const pairing = useDevicePairing();
+	const pairing = useDevicePairing(options);
 	return (
 		<section
 			aria-labelledby="devices-heading"
