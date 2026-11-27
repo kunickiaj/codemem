@@ -172,7 +172,7 @@ describe("removing a member from a Team", () => {
 	it.each([
 		["removal_preview_stale", "Something changed since you reviewed this removal."],
 		["team_link_conflict", "This Team's coordinator group is unclear, so removals are paused."],
-		["coordinator_unavailable", "The coordinator couldn't record the removal. Nothing changed."],
+		["member_already_removed", "This person was already removed from the Team."],
 	] as const)("explains a refused removal: %s", async (code, message) => {
 		const removal = actions({
 			commit: vi.fn().mockRejectedValue(new TeamMemberRemovalApiError(409, code)),
@@ -185,7 +185,9 @@ describe("removing a member from a Team", () => {
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(message);
 		expect(button("Remove Casey").disabled).toBe(false);
 	});
+});
 
+describe("removing a member when something goes wrong", () => {
 	it("does not promise nothing changed when the commit's answer is lost, and refreshes on close", async () => {
 		const removal = actions({
 			commit: vi
@@ -227,5 +229,45 @@ describe("removing a member from a Team", () => {
 			finish({ appliedHere: true, invitations: [] });
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
+	});
+
+	it("treats a coordinator that couldn't confirm the record as an unknown outcome", async () => {
+		const removal = actions({
+			commit: vi
+				.fn()
+				.mockRejectedValue(new TeamMemberRemovalApiError(503, "coordinator_unavailable")),
+		});
+		const onRemoved = mount(removal);
+		choose("Casey");
+		await press("Review removal");
+		await press("Remove Casey");
+
+		const alert = document.querySelector('[role="alert"]')?.textContent ?? "";
+		expect(alert).toContain("couldn't confirm whether the removal was recorded");
+		expect(alert).not.toContain("Nothing changed");
+		act(() => button("Back").click());
+		act(() => button("Cancel").click());
+		expect(onRemoved).toHaveBeenCalledOnce();
+	});
+
+	it("names an invitation that was accepted before it could be revoked", async () => {
+		const removal = actions({
+			commit: vi.fn().mockResolvedValue({
+				appliedHere: true,
+				invitations: [
+					{ inviteId: "invite-1", result: "revoked" },
+					{ inviteId: "invite-2", result: "accepted" },
+				],
+			}),
+		});
+		mount(removal);
+		choose("Casey");
+		await press("Review removal");
+		await press("Remove Casey");
+
+		expect(dialogText()).toContain(
+			"The invitation created 2026-11-02 was accepted before it could be revoked. Check the Team's members.",
+		);
+		expect(dialogText()).not.toContain("2026-11-01 was accepted");
 	});
 });

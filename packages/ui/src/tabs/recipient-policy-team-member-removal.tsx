@@ -52,9 +52,14 @@ function errorMessage(cause: unknown): string {
 	);
 }
 
-/** A commit with no known refusal code may have been recorded before its answer was lost. */
+/**
+ * A commit may have been recorded before its answer was lost: with no known
+ * refusal code, and with `coordinator_unavailable`, which core also returns
+ * when the coordinator's answer to the record call timed out or was unreadable.
+ */
 function commitOutcomeUnknown(cause: unknown): boolean {
-	return !ERRORS[errorCode(cause)];
+	const code = errorCode(cause);
+	return !ERRORS[code] || code === "coordinator_unavailable";
 }
 
 const STILL_OPEN: ReadonlySet<TeamInvitationRevokeResult> = new Set(["unknown"]);
@@ -62,7 +67,13 @@ const STILL_OPEN: ReadonlySet<TeamInvitationRevokeResult> = new Set(["unknown"])
 type Step =
 	| { kind: "choose" }
 	| { kind: "review"; preview: api.TeamMemberRemovalPreview; revoke: Set<string> }
-	| { kind: "done"; name: string; result: api.TeamMemberRemovalCommit };
+	| {
+			kind: "done";
+			name: string;
+			result: api.TeamMemberRemovalCommit;
+			/** The invitations the review listed, to name them in the result. */
+			reviewed: api.TeamMemberRemovalPreview["pendingInvitations"];
+	  };
 
 export interface RemovableMember {
 	identityId: string;
@@ -148,7 +159,12 @@ async function commitReviewed(
 		expectedDigest: current.preview.expectedDigest,
 		revokeInvitationIds: [...current.revoke],
 	});
-	return { kind: "done", name: current.preview.displayName, result };
+	return {
+		kind: "done",
+		name: current.preview.displayName,
+		result,
+		reviewed: current.preview.pendingInvitations,
+	};
 }
 
 async function retryFailedRevokes(
@@ -436,22 +452,48 @@ function InvitationChoices({
 						onChange={() => onToggle(invite.inviteId)}
 						type="checkbox"
 					/>
-					<span>
-						Created {invite.createdAt.slice(0, 10)}, expires {invite.expiresAt.slice(0, 10)}
-					</span>
+					<span>{invitationLabel(invite)}</span>
 				</label>
 			))}
 		</fieldset>
 	);
 }
 
-function DoneStep({
-	busy,
-	error,
-	onClose,
-	onRetry,
-	step,
-}: StepProps & { step: Extract<Step, { kind: "done" }> }) {
+type ReviewedInvitation = api.TeamMemberRemovalPreview["pendingInvitations"][number];
+
+function invitationLabel(invite: ReviewedInvitation): string {
+	return `Created ${invite.createdAt.slice(0, 10)}, expires ${invite.expiresAt.slice(0, 10)}`;
+}
+
+function failedRevokeText(count: number): string {
+	if (count === 1) return "1 invitation couldn't be revoked and can still be used.";
+	return `${count} invitations couldn't be revoked and can still be used.`;
+}
+
+function acceptedText(invite: ReviewedInvitation | undefined): string {
+	const name = invite ? `The invitation created ${invite.createdAt.slice(0, 10)}` : "An invitation";
+	return `${name} was accepted before it could be revoked. Check the Team's members.`;
+}
+
+/** Invitations someone accepted before they could be revoked. */
+function AcceptedInvitations({ step }: { step: DoneState }) {
+	const accepted = step.result.invitations
+		.filter((row) => row.result === "accepted")
+		.map((row) => ({
+			inviteId: row.inviteId,
+			text: acceptedText(step.reviewed.find((invite) => invite.inviteId === row.inviteId)),
+		}));
+	if (accepted.length === 0) return null;
+	return (
+		<ul className="small" role="alert">
+			{accepted.map((row) => (
+				<li key={row.inviteId}>{row.text}</li>
+			))}
+		</ul>
+	);
+}
+
+function DoneStep({ busy, error, onClose, onRetry, step }: StepProps & { step: DoneState }) {
 	const failed = step.result.invitations.filter((row) => STILL_OPEN.has(row.result)).length;
 	return (
 		<>
@@ -464,11 +506,10 @@ function DoneStep({
 						This device couldn't apply the removal yet. It applies it at its next coordinator check.
 					</p>
 				)}
+				<AcceptedInvitations step={step} />
 				{failed > 0 ? (
 					<p className="small" role="alert">
-						{failed === 1
-							? "1 invitation couldn't be revoked and can still be used."
-							: `${failed} invitations couldn't be revoked and can still be used.`}
+						{failedRevokeText(failed)}
 					</p>
 				) : null}
 				<Status busy={busy} busyText="Revoking invitations…" error={error} />
