@@ -209,6 +209,17 @@ describe("Team recovery device refusals", () => {
 		expect(plan()).toMatchObject({ reason: "device_disabled", deviceIds: ["device-b"] });
 	});
 
+	it("refuses a device that is enrolled and has a removal record for the same key in this group", () => {
+		// Arrange: the two reads cannot both be right.
+		const result = plan([LAPTOP, DESKTOP, TABLET], [LAPTOP_REMOVAL]);
+
+		expect(result).toEqual({
+			state: "refused",
+			reason: "device_evidence_contradictory",
+			deviceIds: ["device-a"],
+		});
+	});
+
 	it("refuses an excluded device whose decision is now included", () => {
 		run(
 			"UPDATE policy_team_device_decisions SET decision = 'included' WHERE device_id = 'device-x'",

@@ -4,18 +4,18 @@ import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-le
 import { applyLegacyTeamSetupCompletionManifest } from "./legacy-team-setup-completion-manifest.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
-import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
-import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { recordTeamRecoveryExclusions } from "./team-recovery-exclusions.js";
 import {
 	DESKTOP,
 	insertActor,
 	inviteMember,
+	keepScopeProof,
 	LAPTOP,
 	NOW,
 	PHONE,
 	PROJECT,
 	quarantinedTeam,
+	scopedRead,
 	TABLET,
 	TARGET,
 } from "./team-recovery-test-fixtures.js";
@@ -65,21 +65,6 @@ const shareDirectly = (identityId: string) =>
 		NOW,
 		NOW,
 	);
-
-/** A scope membership of the device, with the coordinator's proof of it, as a past refresh left them. */
-async function keepScopeProof(deviceId: string) {
-	run(
-		`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
-		 VALUES ('scope-engineering', ?, 'member', 'active', 1, ?)`,
-		deviceId,
-		NOW,
-	);
-	await refreshTestScopeRows(db);
-}
-
-/** What a sync read of the scope by the device is answered with, from the cache and the kept proof. */
-const scopedRead = (deviceId: string) =>
-	getEffectiveCachedScopeAuthorization(db, { deviceId, scopeId: "scope-engineering" });
 
 const includeAgain = (deviceId: string) =>
 	run(
@@ -239,18 +224,14 @@ describe("sync admission for a Project a recovery skipped", () => {
 
 	it("refuses an eligible device the scope that holds the Project, whatever proof it kept", async () => {
 		// Arrange: the Desktop kept its scope membership and the proof of it.
-		await keepScopeProof("device-b");
+		await keepScopeProof(db, "device-b");
 
-		expect(scopedRead("device-b")).toMatchObject({ authorized: false, state: "policy_denied" });
+		expect(scopedRead(db, "device-b")).toMatchObject({ authorized: false, state: "policy_denied" });
 		expect(refused("device-a")).toBe(true);
-	});
 
-	it("serves an eligible device once the Team shares the Project again", async () => {
-		await keepScopeProof("device-b");
-
+		// Once the Team shares the Project again, the same proof is enough.
 		run("UPDATE project_recipients SET status = 'active', migration_state = 'completed'");
-
-		expect(scopedRead("device-b")).toMatchObject({ authorized: true, state: "authorized" });
+		expect(scopedRead(db, "device-b")).toMatchObject({ authorized: true, state: "authorized" });
 	});
 
 	it("serves an eligible device whose person the Project is also shared with directly", () => {
@@ -279,16 +260,16 @@ describe("sync admission for a Project a recovery skipped", () => {
 
 describe("a Team recovery exclusion for a device that lost its tie to the Team", () => {
 	it.each([
-		["active", () => reactivate()],
-		["quarantined", () => undefined],
+		["an active", () => reactivate()],
+		["a disabled", () => undefined],
 	])(
-		"still refuses the device on an %s Team after it is bound to someone outside the Team",
+		"still refuses the device on %s Team after it is bound to someone outside the Team",
 		async (_case, arrange) => {
 			// Arrange: a Phone that joined by invitation, so no setup ever reviewed it,
 			// is left out by a recovery and then bound to a person outside the Team.
 			arrange();
 			inviteMember(db, manifest.team_id);
-			await keepScopeProof("device-d");
+			await keepScopeProof(db, "device-d");
 			recordTeamRecoveryExclusions(db, {
 				teamId: manifest.team_id,
 				devices: [
@@ -305,7 +286,10 @@ describe("a Team recovery exclusion for a device that lost its tie to the Team",
 			run("UPDATE identity_devices SET identity_id = 'identity-z' WHERE device_id = 'device-d'");
 
 			// Assert: refused from current state. Its cached scope membership was never refreshed.
-			expect(scopedRead("device-d")).toMatchObject({ authorized: false, state: "policy_denied" });
+			expect(scopedRead(db, "device-d")).toMatchObject({
+				authorized: false,
+				state: "policy_denied",
+			});
 		},
 	);
 });

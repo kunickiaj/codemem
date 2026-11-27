@@ -7,6 +7,7 @@ import {
 	areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible,
 	deriveCompletedLegacyTeamSetupDraftManifest,
 	LegacyTeamSetupCompletionManifestError,
+	quarantineLegacyTeamSetupPolicyInTransaction,
 	validateLegacyTeamSetupCompletionManifest,
 } from "./legacy-team-setup-completion-manifest.js";
 import { LEGACY_TEAM_SETUP_MAX_DEVICES } from "./legacy-team-setup-limits.js";
@@ -29,6 +30,8 @@ import {
 	type TeamRecoveryDeviceRefusal,
 	type TeamRecoveryDeviceRemoval,
 } from "./team-recovery-devices.js";
+import type { TeamRecoveryExclusion } from "./team-recovery-exclusions.js";
+import { isTeamRecoveryHoldAbandoned } from "./team-recovery-holds.js";
 import { planTeamRecoveryProjects, type TeamRecoveryProject } from "./team-recovery-projects.js";
 
 /*
@@ -170,9 +173,12 @@ interface CheckedEvidence {
 	deviceBlocks: readonly TeamRecoveryDeviceBlockCheck[];
 	manifest: CoordinatorLegacyTeamCompletionManifestV1;
 	removedIdentityIds: Set<string>;
+	memberRemovals: CoordinatorTeamMemberRemoval[];
 }
 
-const refuse = (reason: TeamRecoveryRefusal, deviceIds?: string[]): TeamRecoveryPreviewResult =>
+type Refused = Exclude<TeamRecoveryPreviewResult, TeamRecoveryPreview>;
+
+const refuse = (reason: TeamRecoveryRefusal, deviceIds?: string[]): Refused =>
 	deviceIds ? { state: "refused", reason, deviceIds } : { state: "refused", reason };
 
 /** The quarantined reviewed Team, or the reason this Team cannot be recovered. */
@@ -391,6 +397,8 @@ function checkEvidence(
 		deviceBlocks: deviceBlocks.checks,
 		manifest,
 		removedIdentityIds,
+		// Recovery writes for this Team only. Another Team's removals stay with reconciliation.
+		memberRemovals: memberRemovals.removals.filter((record) => record.team_id === subject.teamId),
 	};
 }
 
@@ -459,7 +467,80 @@ function planPeople(db: Database, subject: Subject, checked: CheckedEvidence) {
 	return { people, memberships };
 }
 
+/**
+ * The exact policy rows the plan was made on. A row that changes between the
+ * preview and the commit changes the digest, even when the outcome it leads to
+ * would read the same.
+ */
+function boundRows(db: Database, teamId: string): unknown[][] {
+	const members = "SELECT identity_id FROM policy_team_memberships WHERE team_id = ?";
+	const decided = "SELECT device_id FROM policy_team_device_decisions WHERE team_id = ?";
+	const rows = (sql: string, ...values: string[]) =>
+		db
+			.prepare(sql)
+			.raw()
+			.all(...values);
+	return [
+		rows(
+			`SELECT status, migration_state, provenance, revision, display_name
+			 FROM policy_teams WHERE team_id = ?`,
+			teamId,
+		),
+		rows(
+			`SELECT identity_id, status, provenance, revision FROM policy_team_memberships
+			 WHERE team_id = ? ORDER BY identity_id`,
+			teamId,
+		),
+		rows(
+			`SELECT device_id, decision, assignment_version, provenance, revision
+			 FROM policy_team_device_decisions WHERE team_id = ? ORDER BY device_id`,
+			teamId,
+		),
+		rows(
+			`SELECT device_id, identity_id, status, assignment_version, source_fingerprint
+			 FROM identity_devices WHERE identity_id IN (${members}) OR device_id IN (${decided})
+			 ORDER BY device_id`,
+			teamId,
+			teamId,
+		),
+		rows(
+			`SELECT canonical_project_identity, status, provenance, policy_revision, migration_state
+			 FROM project_recipients WHERE recipient_kind = 'team' AND recipient_id = ?
+			 ORDER BY canonical_project_identity`,
+			teamId,
+		),
+		rows(
+			`SELECT device_id, key_fingerprint, reason FROM policy_team_recovery_exclusions
+			 WHERE team_id = ? ORDER BY device_id`,
+			teamId,
+		),
+	];
+}
+
+/**
+ * The completed setup attempt and each newer attempt the recovery discards,
+ * with every device and Project row of theirs. An attempt edited in place
+ * after the preview is not the attempt the admin agreed to discard.
+ */
+function boundSetupAttempts(db: Database, attemptIds: readonly string[]): unknown[][] {
+	const ids = JSON.stringify(attemptIds);
+	const rows = (table: string, order: string) =>
+		db
+			.prepare(
+				`SELECT * FROM ${table} WHERE attempt_id IN (SELECT value FROM json_each(?))
+				 ORDER BY ${order}`,
+			)
+			.raw()
+			.all(ids);
+	return [
+		rows("legacy_team_setup_drafts", "attempt_id"),
+		rows("legacy_team_setup_draft_devices", "attempt_id, device_id"),
+		rows("legacy_team_setup_draft_projects", "attempt_id, project_ref"),
+	];
+}
+
 function previewDigest(
+	db: Database,
 	subject: Subject,
 	checked: CheckedEvidence,
 	plan: Pick<TeamRecoveryPreview, "people" | "projects"> & {
@@ -484,6 +565,9 @@ function previewDigest(
 			device.reason ?? null,
 		]),
 		deviceExclusions: plan.devices.exclusions,
+		survivingKeys: plan.devices.survivingKeys,
+		rows: boundRows(db, subject.teamId),
+		setupAttempts: boundSetupAttempts(db, [subject.attemptId, ...subject.newerAttemptIds]),
 		projects: plan.projects.map((project) => [
 			project.projectIdentity,
 			project.outcome,
@@ -494,17 +578,99 @@ function previewDigest(
 	});
 }
 
+/** Everything a commit needs to write a recovery: the preview and what it does not show. */
+export interface TeamRecoveryPlan {
+	state: "planned";
+	preview: TeamRecoveryPreview;
+	coordinatorId: string;
+	groupId: string;
+	/** The completed setup attempt, and the completion key that goes back on it. */
+	attemptId: string;
+	finishKey: string;
+	discardedAttemptIds: string[];
+	/** Devices to leave out, each with the key it was removed or blocked under. */
+	exclusions: TeamRecoveryExclusion[];
+	/** This Team's member removals as just read from its group, to record and apply. */
+	memberRemovals: CoordinatorTeamMemberRemoval[];
+}
+
 /**
- * Previews recovering the quarantined Team that the coordinator group set up.
- * Reads only. `evidence` is what the caller read from the coordinator for this
+ * Plans recovering the quarantined Team that the coordinator group set up,
+ * or one an abandoned recovery left active and held. Writes nothing. `evidence` is what the caller read from the coordinator for this
  * request: if any part is unavailable or does not fit, the result is a refusal
  * that names it, and nothing can be recovered from it.
  */
-export function previewTeamRecovery(
+export function planTeamRecovery(
 	db: Database,
 	input: { coordinatorId: string; groupId: string },
 	evidence: TeamRecoveryEvidence,
-): TeamRecoveryPreviewResult {
+	options: { nowMs?: number } = {},
+): TeamRecoveryPlan | Refused {
+	const nowMs = options.nowMs ?? Date.now();
+	if (db.readonly || !abandonedRecoveryTeam(db, input, nowMs))
+		return planDisabledTeamRecovery(db, input, evidence);
+	// Planned on the rows a takeover would leave, then undone: planning writes nothing.
+	const planned: { plan?: TeamRecoveryPlan | Refused } = {};
+	try {
+		db.transaction(() => {
+			disableAbandonedTeamRecovery(db, input, nowMs);
+			planned.plan = planDisabledTeamRecovery(db, input, evidence);
+			throw PLAN_ONLY;
+		})();
+	} catch (error) {
+		if (error !== PLAN_ONLY) throw error;
+	}
+	return planned.plan ?? refuse("team_not_quarantined");
+}
+
+const PLAN_ONLY = new Error("team recovery plan only");
+
+/**
+ * The Team when it is active and held by a recovery that was left behind. A
+ * recovery that stopped after its first transaction leaves the Team that way,
+ * serving nothing, and nothing but another recovery can settle it.
+ */
+function abandonedRecoveryTeam(
+	db: Database,
+	input: { coordinatorId: string; groupId: string },
+	nowMs: number,
+): { candidateRef: string; teamId: string } | null {
+	if (!input.coordinatorId || !isStrictRecipientPolicyId(input.groupId)) return null;
+	const candidateRef = legacyTeamCandidateId(input.coordinatorId, input.groupId);
+	const teamId = deterministicPolicyTeamId(candidateRef);
+	const active = db
+		.prepare(
+			`SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'active'
+			   AND provenance = 'reviewed_team_candidate'
+			   AND device_eligibility_mode = 'reviewed_allowlist'`,
+		)
+		.get(teamId);
+	if (!active || !isTeamRecoveryHoldAbandoned(db, teamId, nowMs)) return null;
+	return { candidateRef, teamId };
+}
+
+/**
+ * Lets an explicit recovery take over a Team an abandoned recovery left active
+ * and held. It disables the Team as quarantine does, in the caller's
+ * transaction, so the Team is planned and recovered like any disabled Team. The
+ * hold stays on throughout, so the Team serves nothing meanwhile. Returns
+ * whether there was such a Team.
+ */
+export function disableAbandonedTeamRecovery(
+	db: Database,
+	input: { coordinatorId: string; groupId: string },
+	nowMs: number,
+): boolean {
+	const team = abandonedRecoveryTeam(db, input, nowMs);
+	if (team) quarantineLegacyTeamSetupPolicyInTransaction(db, team);
+	return team !== null;
+}
+
+function planDisabledTeamRecovery(
+	db: Database,
+	input: { coordinatorId: string; groupId: string },
+	evidence: TeamRecoveryEvidence,
+): TeamRecoveryPlan | Refused {
 	const subject = readSubject(db, input);
 	if (typeof subject === "string") return refuse(subject);
 	const checked = checkEvidence(db, subject, evidence);
@@ -514,7 +680,7 @@ export function previewTeamRecovery(
 	if (devices.state === "refused") return refuse(devices.reason, devices.deviceIds);
 	if (devices.state === "blocked") return refuse("team_policy_blocked");
 	const projects = planTeamRecoveryProjects(db, subject);
-	return {
+	const preview: TeamRecoveryPreview = {
 		state: "ready",
 		teamId: subject.teamId,
 		teamName: subject.teamName,
@@ -523,6 +689,28 @@ export function previewTeamRecovery(
 		devices: devices.devices,
 		projects,
 		discardedSetupAttempts: subject.newerAttemptIds.length,
-		expectedDigest: previewDigest(subject, checked, { people, devices, projects }),
+		expectedDigest: previewDigest(db, subject, checked, { people, devices, projects }),
 	};
+	return {
+		state: "planned",
+		preview,
+		coordinatorId: subject.coordinatorId,
+		groupId: subject.groupId,
+		attemptId: subject.attemptId,
+		finishKey: subject.finishKey,
+		discardedAttemptIds: subject.newerAttemptIds,
+		exclusions: devices.exclusions,
+		memberRemovals: checked.memberRemovals,
+	};
+}
+
+/** The preview of a Team recovery: what `planTeamRecovery` would do, or why it cannot run. */
+export function previewTeamRecovery(
+	db: Database,
+	input: { coordinatorId: string; groupId: string },
+	evidence: TeamRecoveryEvidence,
+	options: { nowMs?: number } = {},
+): TeamRecoveryPreviewResult {
+	const plan = planTeamRecovery(db, input, evidence, options);
+	return plan.state === "planned" ? plan.preview : plan;
 }

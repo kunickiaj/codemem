@@ -69,6 +69,7 @@ export interface TeamRecoveryDeviceBlockCheck {
 
 export type TeamRecoveryDeviceRefusal =
 	| "device_blocked"
+	| "device_evidence_contradictory"
 	| "device_key_unverified"
 	| "device_key_changed"
 	| "device_disabled"
@@ -79,6 +80,7 @@ export type TeamRecoveryDeviceRefusal =
 // The order refusals are reported in when several apply.
 const REFUSAL_ORDER: readonly TeamRecoveryDeviceRefusal[] = [
 	"device_blocked",
+	"device_evidence_contradictory",
 	"device_key_unverified",
 	"device_key_changed",
 	"device_disabled",
@@ -123,6 +125,8 @@ export type TeamRecoveryDevicesResult =
 			devices: TeamRecoveryDevice[];
 			/** Devices this recovery leaves out, each with the key it was removed or blocked under. */
 			exclusions: TeamRecoveryExclusion[];
+			/** Devices that keep their decision, each with the enrolled key the checks were made for. */
+			survivingKeys: Array<{ deviceId: string; fingerprint: string }>;
 	  }
 	| { state: "refused"; reason: TeamRecoveryDeviceRefusal; deviceIds: string[] }
 	/** The Team's policy rows would block the whole Team once it is active. */
@@ -276,6 +280,14 @@ function enrolledVerdict(
 ): Verdict {
 	const { deviceId, fingerprint } = enrolled;
 	if (isReportedBlocked(input, deviceId, fingerprint)) return { refusal: "device_blocked" };
+	// Enrolled in the group and removed from it under the same key: one of the two reads is wrong.
+	const removedHere = input.deviceRemovals.some(
+		(record) =>
+			record.group_id === input.groupId &&
+			record.device_id === deviceId &&
+			record.fingerprint === fingerprint,
+	);
+	if (removedHere) return { refusal: "device_evidence_contradictory" };
 	if (prior.contradicts(fingerprint)) return { refusal: "device_key_changed" };
 	if (!prior.matches(fingerprint)) return { refusal: "device_key_unverified" };
 	if (!enrolled.enabled) return { refusal: "device_disabled" };
@@ -490,5 +502,10 @@ export function planTeamRecoveryDevices(
 		const reason = stayOutReason(fact, verdict, described.identityId, activeMembers);
 		return { ...described, outcome: "stays_out", reason };
 	});
-	return { state: "planned", devices, exclusions };
+	const survivingKeys = verdicts.flatMap(({ fact, verdict }) => {
+		const enrolled = "standing" in verdict && verdict.standing === "enrolled";
+		const fingerprint = input.roster.get(fact.deviceId)?.fingerprint;
+		return enrolled && fingerprint ? [{ deviceId: fact.deviceId, fingerprint }] : [];
+	});
+	return { state: "planned", devices, exclusions, survivingKeys };
 }
