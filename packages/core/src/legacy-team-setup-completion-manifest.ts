@@ -47,6 +47,7 @@ import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-r
 import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
 import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
 import { teamRecoveryExcludedDeviceIds } from "./team-recovery-exclusions.js";
+import { isTeamRecoveryHeld } from "./team-recovery-holds.js";
 
 export type LegacyTeamSetupCompletionManifestErrorCode =
 	| "team_setup_completion_invalid"
@@ -1260,6 +1261,20 @@ function endVerifiedRemovedDeviceAccess(
 	}
 }
 
+/**
+ * What an apply needs before it reads anything: the actor locks, and a Team
+ * with no unverified recovery. Such a Team is not this apply's to keep or
+ * reopen. The failure contains the Team like any other, and its hold stays.
+ */
+function requireApplicableCompletion(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	actorIds: readonly string[],
+): void {
+	requireCompletionActorLocks(db, manifest, actorIds);
+	if (isTeamRecoveryHeld(db, manifest.team_id)) fail("team_setup_completion_invalid");
+}
+
 function tryRemovalCompletionReplay(
 	db: Database,
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,
@@ -1269,7 +1284,7 @@ function tryRemovalCompletionReplay(
 	if (!input.deviceRemovals) return undefined;
 	return db
 		.transaction(() => {
-			requireCompletionActorLocks(db, manifest, actorIds);
+			requireApplicableCompletion(db, manifest, actorIds);
 			const result = replayAfterVerifiedRemoval(db, manifest, input);
 			if (result) return { manifest, result };
 		})
@@ -1428,6 +1443,17 @@ function quarantineDivergentCompletedPolicy(
 	}).immediate();
 }
 
+/**
+ * Quarantines the candidate's Team in the caller's transaction: the Team
+ * inactive, the recipients its setup created revoked, its setup mappings gone.
+ */
+export function quarantineLegacyTeamSetupPolicyInTransaction(
+	db: Database,
+	binding: { candidateRef: string; teamId: string },
+): void {
+	quarantineDivergentCompletedPolicy(db, binding);
+}
+
 export async function containLegacyTeamSetupCompletionConflict(
 	db: Database,
 	input: { coordinatorId: string; groupId: string },
@@ -1574,7 +1600,7 @@ async function applyCompletionManifest(
 			if (replay) return replay;
 			return db
 				.transaction(() => {
-					requireCompletionActorLocks(db, manifest, actorIds);
+					requireApplicableCompletion(db, manifest, actorIds);
 					const draft = loadDraft(db, manifest.candidate_ref);
 					requireExpectedDraftManifest(db, draft, input.expectedDraftManifest);
 					const hasCompletedDraft = draft.state === "completed";

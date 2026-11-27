@@ -3,6 +3,8 @@ import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-p
 import { projectsHeldInScope } from "./scope-project-mappings.js";
 import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
 import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
+import { isTeamRecoveryHeld } from "./team-recovery-holds.js";
+import { teamRecoverySkippedProjectIdentities } from "./team-recovery-skipped-projects.js";
 
 /**
  * Scope admission for devices tied to a reviewed Team setup, decided from the
@@ -17,8 +19,9 @@ import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
  * - the device is tied to that Team: bound to a Team member in any binding
  *   state, reviewed in the Team's setup, or left out of the Team by a Team
  *   recovery. This device is never refused;
- * - the Team is quarantined (inactive, needing setup), or it is active and the
- *   device is not eligible for it now.
+ * - the Team is quarantined (inactive, needing setup) or held by a recovery
+ *   that is not verified yet, or it is active and the device is not eligible
+ *   for it now.
  *
  * On an active Team, a device with no `included` decision, or one a Team
  * recovery left out, is refused outright. A recovery exclusion ties the device
@@ -31,9 +34,10 @@ import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
  *
  * An eligible device has the Team's Projects through the Team, so it is
  * checked only for a Project the Team no longer shares: one whose Team
- * recipient is still revoked as quarantine left it, which is how a recovery
- * that skips the Project keeps it. The scope still holds that Project's
- * memories, so the device needs the Project some other way too.
+ * recipient is still revoked as quarantine left it, and every Project the
+ * Team's last recovery skipped, whoever revoked its recipient. The scope still
+ * holds that Project's memories, so current policy has to give the device the
+ * Project, through the Team once it shares the Project again or some other way.
  *
  * Devices with no tie to the Team keep their access, and a Team device keeps
  * scopes that hold none of the Team's Projects. Nothing is stored, so the Team
@@ -87,9 +91,7 @@ const TEAM_PROJECTS_SQL = `SELECT canonical_project_identity AS identity,
 	WHERE draft.candidate_id = ?`;
 
 // Projects whose Team recipient is still as quarantine left it. On an active Team
-// that means whatever made the Team active again did not share them again. A
-// recipient a person revoked is the ordinary removal of a Project from a Team,
-// which recipient policy enforces the same way with or without a recovery.
+// that means whatever made the Team active again did not share them again.
 const UNSHARED_PROJECTS_SQL = `SELECT canonical_project_identity FROM project_recipients
 	WHERE recipient_kind = 'team' AND recipient_id = ? AND status = 'revoked'
 	  AND provenance = 'reviewed_team_setup' AND migration_state = 'needs_setup'`;
@@ -171,6 +173,14 @@ function policyAuthorizes(db: Database, projectIdentity: string, deviceId: strin
 	return derivation.devices.some((device) => device.deviceId === deviceId);
 }
 
+/** Projects the Team does not share now: left revoked by quarantine, or skipped by its last recovery. */
+function unsharedProjectIdentities(db: Database, teamId: string): Set<string> {
+	return new Set([
+		...(db.prepare(UNSHARED_PROJECTS_SQL).pluck().all(teamId) as string[]),
+		...teamRecoverySkippedProjectIdentities(db, teamId),
+	]);
+}
+
 /**
  * Whether an active Team refuses the scope to one of its devices. The cheap
  * rows are read first: most devices are eligible, on a Team that shares every
@@ -190,9 +200,7 @@ function activeTeamRefuses(
 	// An eligible device needs another path only to a Project the Team no longer shares.
 	// A device that is included, but whose person or binding no longer makes it a
 	// Team device, needs one to every Team Project.
-	const unshared = eligible
-		? new Set(db.prepare(UNSHARED_PROJECTS_SQL).pluck().all(team.team_id) as string[])
-		: null;
+	const unshared = eligible ? unsharedProjectIdentities(db, team.team_id) : null;
 	if (unshared?.size === 0) return false;
 	const held = projectsHeldInScope(db, scopeId);
 	return teamProjects(db, team)
@@ -251,7 +259,9 @@ function decideTeamSetupRefusal(
 		// A device a recovery left out stays tied to the Team whoever it is bound to now.
 		const leftOut = isTeamRecoveryExcluded(db, team.team_id, input.deviceId);
 		if (!leftOut && !isTeamDevice(db, team, input.deviceId)) return false;
-		if (team.status !== "active") return scopeHoldsTeamProject(db, team, input.scopeId);
+		// A Team whose recovery is not verified yet serves its devices nothing, as if quarantined.
+		if (team.status !== "active" || isTeamRecoveryHeld(db, team.team_id))
+			return scopeHoldsTeamProject(db, team, input.scopeId);
 		return activeTeamRefuses(db, team, { ...input, leftOut });
 	});
 }
