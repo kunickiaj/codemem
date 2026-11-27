@@ -222,6 +222,40 @@ describe("Devices join request review", () => {
 	});
 });
 
+describe("Devices join request reload failure", () => {
+	it("keeps the approval result and its access warning when the reload fails", async () => {
+		const requests = [joinRequest()];
+		const api = fakeApi(requests, {
+			load: vi
+				.fn()
+				.mockResolvedValueOnce({ requests, failedGroups: 0 })
+				.mockRejectedValueOnce(new Error("coordinator down"))
+				.mockResolvedValue({ requests: [], failedGroups: 0 }),
+			review: vi.fn(async () => ({ setupWarning: true })),
+		});
+		await show(api);
+
+		await act(async () => button("Approve join request from Travel laptop").click());
+		await act(async () => {});
+
+		const statuses = [...mount.querySelectorAll<HTMLElement>('[role="status"]')];
+		expect(statuses[0]?.textContent).toBe(
+			"Approved Travel laptop, but its default group access could not be set up. Check the coordinator connection.",
+		);
+		expect(statuses[0]?.dataset.tone).toBe("warning");
+		expect(statuses[1]?.textContent).toBe(
+			"Could not reload join requests after this review. Check the coordinator connection, then select Retry.",
+		);
+		await vi.waitFor(() => expect(document.activeElement).toBe(statuses[0]));
+
+		await act(async () => {
+			[...mount.querySelectorAll("button")].find((item) => item.textContent === "Retry")?.click();
+		});
+		await act(async () => {});
+		expect(mount.textContent).not.toContain("Could not reload join requests");
+	});
+});
+
 describe("Devices join request loading", () => {
 	it("offers a retry when the requests cannot be loaded", async () => {
 		const requests = [joinRequest()];

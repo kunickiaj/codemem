@@ -237,7 +237,8 @@ export function DeviceJoinRequests({
 	const { listing, reload } = useJoinRequestListing(api, refreshRevision);
 	const reviewing = useJoinRequestReview(api, reload, onReviewed);
 	if (listing.state === "hidden" || listing.state === "loading") return null;
-	if (listing.state === "error") return <JoinRequestsError onRetry={reload} />;
+	if (listing.state === "error")
+		return <JoinRequestsError onRetry={reload} reviewing={reviewing} />;
 	const { requests, failedGroups } = listing;
 	if (requests.length === 0 && failedGroups === 0 && !reviewing.message) return null;
 	return (
@@ -245,11 +246,35 @@ export function DeviceJoinRequests({
 	);
 }
 
-function JoinRequestsError({ onRetry }: { onRetry: () => void }) {
+function JoinRequestsError({
+	onRetry,
+	reviewing,
+}: {
+	onRetry: () => void;
+	reviewing: ReturnType<typeof useJoinRequestReview>;
+}) {
+	const { message, statusRef } = reviewing;
 	return (
 		<section aria-labelledby="devices-join-requests-heading" className="devices-join-requests">
 			<h3 id="devices-join-requests-heading">Join requests</h3>
-			<p role="status">Could not load join requests. Check the coordinator connection.</p>
+			{/* A review that already went through must stay visible when the reload fails. */}
+			{message ? (
+				<p
+					aria-live="polite"
+					className="devices-join-requests-status"
+					data-tone={message.tone}
+					ref={statusRef}
+					role="status"
+					tabIndex={-1}
+				>
+					{message.text}
+				</p>
+			) : null}
+			<p role="status">
+				{message
+					? "Could not reload join requests after this review. Check the coordinator connection, then select Retry."
+					: "Could not load join requests. Check the coordinator connection."}
+			</p>
 			<button className="settings-button" onClick={onRetry} type="button">
 				Retry
 			</button>
