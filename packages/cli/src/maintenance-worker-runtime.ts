@@ -22,6 +22,7 @@ import {
 	ScopeBackfillRunner,
 	SESSION_CONTEXT_BACKFILL_JOB,
 	SessionContextBackfillRunner,
+	SessionRepositoryIdentityRunner,
 	SUMMARY_DEDUP_BACKFILL_JOB,
 	SummaryDedupBackfillRunner,
 	SyncAttemptRetentionRunner,
@@ -247,6 +248,9 @@ function createRetentionRunners(
 	// history is local diagnostics, so both are trimmed whatever the sync settings are.
 	runners.push(new LedgerRetentionRunner({ dbPath, signal, logger }));
 	runners.push(new SyncAttemptRetentionRunner({ dbPath, signal, logger }));
+	// Session repository identities, so folder-to-repository reads use an index instead of
+	// parsing every session's metadata. Built here, never when a database is opened.
+	runners.push(new SessionRepositoryIdentityRunner({ dbPath, signal, logger }));
 	// Import keys and replication ops for rows written without them. The sync pass only
 	// spends a few milliseconds on this per tick; the first full check of a store runs here.
 	runners.push(new ReplicationBackfillRunner({ dbPath, signal, logger }));

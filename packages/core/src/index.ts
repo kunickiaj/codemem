@@ -1515,6 +1515,7 @@ export {
 	SESSION_CONTEXT_BACKFILL_JOB,
 	SessionContextBackfillRunner,
 } from "./session-context-backfill.js";
+export { SessionRepositoryIdentityRunner } from "./session-repository-identity.js";
 export type {
 	AcceptedProjectIntent,
 	PersistShareOperationInvite,

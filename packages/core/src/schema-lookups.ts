@@ -65,6 +65,18 @@ export function tableExists(db: Database, table: string): boolean {
 	);
 }
 
+/** Check if an index or trigger with this name exists. */
+export function schemaObjectExists(db: Database, type: "index" | "trigger", name: string): boolean {
+	return remembered(
+		db,
+		// Three parts, so a key never matches a table or column lookup.
+		JSON.stringify(["sqlite_master", type, name]),
+		() =>
+			db.prepare("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?").get(type, name) !==
+			undefined,
+	);
+}
+
 /** Check if a column exists in a table. */
 export function columnExists(db: Database, table: string, column: string): boolean {
 	if (!tableExists(db, table)) return false;

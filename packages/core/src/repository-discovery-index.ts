@@ -85,6 +85,39 @@ function repairRepositoryDiscoveryIndex(db: Database): void {
 	`);
 }
 
+/**
+ * Evidence written before session identities came from `repositoryIdentityFromMetadata`
+ * alone was built with SQLite's JSON functions as a filter, which drop some identities the
+ * JavaScript parser finds. It is not trusted; the next discovery rebuilds it, so stamping
+ * and the write check read identities the same way.
+ */
+const EVIDENCE_FORMAT = 2;
+
+function evidenceFormatCurrent(db: Database): boolean {
+	const table = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_discovery_format'",
+		)
+		.get();
+	if (!table) return false;
+	const version = db
+		.prepare("SELECT version FROM repository_discovery_format WHERE id = 1")
+		.pluck()
+		.get();
+	return version === EVIDENCE_FORMAT;
+}
+
+function recordEvidenceFormat(db: Database): void {
+	db.exec(`CREATE TABLE IF NOT EXISTS repository_discovery_format (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		version INTEGER NOT NULL
+	)`);
+	db.prepare(
+		`INSERT INTO repository_discovery_format(id, version) VALUES (1, ?)
+		 ON CONFLICT(id) DO UPDATE SET version = excluded.version`,
+	).run(EVIDENCE_FORMAT);
+}
+
 export function repositoryDiscoveryRevision(db: Database): number | null {
 	try {
 		if (discoveryTriggerCount(db) !== 3) return null;
@@ -108,6 +141,7 @@ export function loadRepositoryDiscoveryEvidence(
 				)
 				.get() as RepositoryDiscoveryState | undefined;
 			if (!state || state.source_revision !== state.indexed_revision) return null;
+			if (!evidenceFormatCurrent(db)) return null;
 			return db
 				.prepare(`SELECT cwd, recorded_identities_json AS recordedIdentitiesJson,
 				filesystem_identity AS filesystemIdentity, filesystem_anchor AS filesystemAnchor,
@@ -146,6 +180,7 @@ export function replaceRepositoryDiscoveryEvidence(
 			db.prepare("UPDATE repository_discovery_state SET indexed_revision = ? WHERE id = 1").run(
 				expectedRevision,
 			);
+			recordEvidenceFormat(db);
 			return true;
 		})
 		.immediate();
