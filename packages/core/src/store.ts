@@ -630,6 +630,11 @@ export class MemoryStore {
 	}
 
 	/** Read-only preflight; callers that mutate actors must keep it in their write transaction. */
+	/** Whether local capture still awaits adoption by this device's actor. */
+	hasPendingLocalCapture(): boolean {
+		return hasPendingLocalCapture(this.db);
+	}
+
 	assertPendingLocalCaptureAdoptionActors(): void {
 		if (!hasPendingLocalCapture(this.db)) return;
 		assertLocalCaptureAdoptionActors(this.db, this.deviceId, this.actorId);
