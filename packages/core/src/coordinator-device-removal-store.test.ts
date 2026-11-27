@@ -566,9 +566,16 @@ describe("SQLite schema initialization", () => {
 			);
 			insert.run("ed25519-device", key.publicKey);
 			insert.run("opaque-device", "pk1");
+			first.db.exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id='g1'");
 			await first.close();
 			// Act
 			const reopened = new BetterSqliteCoordinatorStore(path);
+			expect(
+				reopened.db
+					.prepare("SELECT readiness_generation FROM groups WHERE group_id='g1'")
+					.pluck()
+					.get(),
+			).toBeNull();
 			const rows = reopened.db
 				.prepare("SELECT device_id, key_id FROM enrolled_devices ORDER BY device_id")
 				.all();

@@ -63,6 +63,7 @@ export const COORDINATOR_D1_MIGRATION_NAMES: readonly string[] = Object.freeze([
 	"0053_add_team_group_bindings.sql",
 	"0054_add_coordinator_metadata.sql",
 	"0055_seal_invite_tokens.sql",
+	"0056_add_readiness_preparations.sql",
 ]);
 
 /** Every V2 table and column, including auth tables, required by every baseline stage. */

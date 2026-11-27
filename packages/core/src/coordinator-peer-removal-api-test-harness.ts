@@ -14,6 +14,7 @@ import {
 	deleteEnrollmentWithoutTombstone,
 	seedEnrollment,
 } from "./coordinator-enrollment-test-fixtures.js";
+import { INVALIDATE_FILLED_KEYS } from "./coordinator-readiness-invalidation.js";
 
 export interface PeerRemovalApiFixture {
 	store: Store;
@@ -418,7 +419,7 @@ function registerMixedReply(test: Test) {
 	});
 }
 function registerQueryBudget(test: Test) {
-	test("the whole signed HTTP request takes 8 or 10 statements, independent of 1 versus 25 entries", async ({
+	test("the whole signed HTTP request takes 8 statements, or 11 with a legacy key fill, independent of peer count", async ({
 		fixture: f,
 	}) => {
 		const c = await api(f);
@@ -439,7 +440,10 @@ async function measureRequest(
 	if (f.freshStore) c.factory.mockImplementationOnce(f.freshStore);
 	const { response, sql } = await f.measure(() => c.post(options.body));
 	expect(response.status).toBe(200);
-	expect(sql).toHaveLength(options.oldRows ? 10 : 8);
+	expect(sql).toHaveLength(options.oldRows ? 11 : 8);
+	expect(sql.filter((statement) => statement === INVALIDATE_FILLED_KEYS)).toHaveLength(
+		options.oldRows,
+	);
 	expect(Math.max(...sql.map((query) => query.match(/\?/gu)?.length ?? 0))).toBe(6);
 	if (options.oldRows)
 		await deleteEnrollmentWithoutTombstone(f.exec, "group_id = ?", `${f.prefix}-legacy`);

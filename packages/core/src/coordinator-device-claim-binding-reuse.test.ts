@@ -5,6 +5,7 @@ import {
 	readDeviceClaimBindingReceipt,
 	readFirstLinkDeviceClaimOwnershipComplete,
 } from "./coordinator-device-claim-binding.js";
+import { captureEnrollmentBatch } from "./coordinator-enrollment-receipt-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import {
 	LEGACY_SETUP,
@@ -54,7 +55,11 @@ for (const kind of ["SQLite", "D1"] as const) {
 			const plan = await prepareFirstLinkDeviceClaimBinding(db, input(), f.account.config, now);
 			if (!plan) throw new Error("expected first-link plan");
 			// Act
-			await db.batch(
+			f.coordinator.db
+				.prepare("UPDATE groups SET readiness_generation='prepared' WHERE group_id=?")
+				.run(input().signer.groupId);
+			const counts: number[] = [];
+			await captureEnrollmentBatch(db, counts).batch(
 				deviceClaimBindingStatements(plan, "unused-binding", "unused-audit", {
 					winning: { sql: "1", values: [] },
 				}),
@@ -68,6 +73,13 @@ for (const kind of ["SQLite", "D1"] as const) {
 			const receipt = await readDeviceClaimBindingReceipt(db, input(), f.account.config);
 			// Assert
 			expect(complete).toBe(true);
+			expect(counts).toEqual([state === "NULL" ? 1 : 0]);
+			expect(
+				f.coordinator.db
+					.prepare("SELECT readiness_generation FROM groups WHERE group_id=?")
+					.pluck()
+					.get(input().signer.groupId),
+			).toBe(state === "NULL" ? null : "prepared");
 			expect(receipt).toBeNull();
 			expect(
 				f.coordinator.db.prepare("SELECT * FROM coordinator_device_ownership_bindings").all(),

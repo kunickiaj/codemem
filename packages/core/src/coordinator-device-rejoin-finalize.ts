@@ -254,6 +254,11 @@ function finalizeEffects(
 		},
 		changedRows(receipt.group_ids.length),
 		{
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
+ (SELECT g.value FROM ${ATTEMPTS} a, json_each(a.final_receipt_json,'$.group_ids') g WHERE ${match})`,
+			values: winner,
+		},
+		{
 			sql: `INSERT INTO coordinator_device_rejoin_audit_log
  (coordinator_id, event_id, attempt_id, identity_id, device_id, binding_id, group_count, finalized_at_ms)
  SELECT a.coordinator_id, a.attempt_id, a.attempt_id, a.identity_id, a.device_id, a.binding_id,

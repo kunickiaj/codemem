@@ -327,6 +327,7 @@ function statements(
 		eventId: string;
 		keyProofHash: string;
 		nullCount: number;
+		enrollments: string;
 	},
 ): AuthLinkStatement[] {
 	const { now, bindingId, eventId, keyProofHash } = fields;
@@ -365,6 +366,13 @@ function statements(
 			values: [a.target_identity_id, a.device_id, ...winner],
 		},
 		assertWrite(winner, a.start_authority_json ? fields.nullCount : count),
+		{
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL
+ AND group_id IN (SELECT json_extract(value,'$.groupId') FROM json_each(?) WHERE json_extract(value,'$.deviceId') = ?
+ ${a.start_authority_json ? "AND json_extract(value,'$.identityId') IS NULL" : ""})
+ AND EXISTS (SELECT 1 FROM ${ATTEMPT} WHERE ${WINNER})`,
+			values: [fields.enrollments, a.device_id, ...winner],
+		},
 		{
 			sql: `INSERT INTO coordinator_device_rebind_audit_log
  (coordinator_id, event_id, attempt_id, action, binding_id, device_id, previous_identity_id,
@@ -468,6 +476,7 @@ export async function commitDeviceRebind(
 		bindingId,
 		eventId: globalThis.crypto.randomUUID(),
 		keyProofHash: proof.keyProofHash,
+		enrollments: scan.enrollments,
 		nullCount: (JSON.parse(scan.enrollments) as KeyRow[]).filter(
 			(e) => e.deviceId === row.device_id && e.identityId === null,
 		).length,

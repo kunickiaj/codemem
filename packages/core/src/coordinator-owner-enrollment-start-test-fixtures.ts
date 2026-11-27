@@ -85,9 +85,7 @@ export function nativeBackend(db: Database.Database, beforeBatch?: () => void): 
 		run: async (s) => db.transaction(() => run(s)).immediate(),
 		batch: async (statements) => {
 			beforeBatch?.();
-			db.transaction(() => {
-				for (const s of statements) run(s);
-			}).immediate();
+			return db.transaction(() => statements.map(run)).immediate();
 		},
 	};
 }

@@ -3,6 +3,7 @@ import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ENROLLMENT_REMOVAL_TRIGGER_NAMES } from "./coordinator-device-removal.js";
+import { captureEnrollmentBatch } from "./coordinator-enrollment-receipt-test-fixtures.js";
 import {
 	changeEnrollmentKey,
 	deleteEnrollmentWithoutTombstone,
@@ -36,6 +37,30 @@ const test = it.extend<{ writer: CommitWriterFixture }>({
 	},
 });
 
+it("one owner grant yields one enrollment receipt with a preparation", async () => {
+	const f = await commitWriterFixture({ groups: ["group-a"] });
+	try {
+		await f.exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-a'");
+		const input = f.input();
+		const counts: number[] = [];
+		expect(
+			await commitOwnerEnrollment({
+				...input,
+				backend: captureEnrollmentBatch(input.backend, counts),
+			}),
+		).toBe(true);
+		expect(counts).toEqual([1]);
+		expect(
+			f.db
+				.prepare("SELECT readiness_generation FROM groups WHERE group_id='group-a'")
+				.pluck()
+				.get(),
+		).toBeNull();
+	} finally {
+		f.close();
+	}
+});
+
 test("private confirmed writer commits ownership, every pinned group, audit and exact retained receipt", async ({
 	writer: f,
 }) => {
@@ -55,8 +80,22 @@ test("private confirmed writer commits ownership, every pinned group, audit and 
 			.get(f.row.link_id),
 	).toEqual({ attempt_state: "finalized", browser_state: "consumed", action: "link_created" });
 	const input = f.input();
+	const counts: number[] = [];
+	f.db.exec(
+		"UPDATE groups SET readiness_generation='prepared' WHERE group_id IN ('group-a','group-b')",
+	);
 	// Act
-	const committed = await commitOwnerEnrollment(input);
+	const committed = await commitOwnerEnrollment({
+		...input,
+		backend: captureEnrollmentBatch(input.backend, counts),
+	});
+	expect(counts).toEqual([2]);
+	expect(
+		f.db
+			.prepare("SELECT readiness_generation FROM groups WHERE group_id IN ('group-a','group-b')")
+			.pluck()
+			.all(),
+	).toEqual([null, null]);
 	const receipt = f.finalRow();
 	// Assert: a private writer receipt is not an SDK/browser verification claim.
 	expect(committed).toBe(true);

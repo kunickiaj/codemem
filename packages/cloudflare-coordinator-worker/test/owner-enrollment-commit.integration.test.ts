@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { captureEnrollmentBatch } from "../../core/src/coordinator-enrollment-receipt-test-fixtures.js";
 import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import type { AuthLinkBackend, AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
@@ -33,7 +34,7 @@ const backend: AuthLinkBackend = {
 	first: <T>(s: AuthLinkStatement) => prepare(s).first<T>(),
 	run: async (s) => (await prepare(s).run()).meta.changes,
 	batch: async (statements) => {
-		await env.COORDINATOR_DB.batch(statements.map(prepare));
+		return env.COORDINATOR_DB.batch(statements.map(prepare));
 	},
 };
 const exec = (sql: string, ...values: AuthLinkStatement["values"]) => backend.run({ sql, values });
@@ -53,7 +54,7 @@ async function resetFixture() {
 	await resetCeremony();
 }
 
-async function writerFixture() {
+async function writerFixture(groups: readonly string[] = ["group-a","group-b"]) {
 	// Self-contained fixture: no better-sqlite3 runtime or provider enters the worker.
 	await exec(COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL);
 	const keys = (await crypto.subtle.generateKey("Ed25519", true, [
@@ -74,7 +75,7 @@ async function writerFixture() {
 		public_key: publicKey,
 		key_id: (await ed25519KeyIdForRevocation(publicKey)) as string,
 		fingerprint: createHash("sha256").update(publicKey).digest("hex"),
-		grant_revisions_json: '[{"groupId":"group-a","revision":1},{"groupId":"group-b","revision":1}]',
+		grant_revisions_json: JSON.stringify(groups.map(groupId => ({groupId,revision:1}))),
 		completion_secret_hash: createHash("sha256").update(Buffer.alloc(32, 9)).digest("hex"),
 		state: "confirmed",
 		loopback_redirect: pendingOwner.loopback_redirect,
@@ -123,7 +124,7 @@ async function writerFixture() {
 		publicKey: "fixture-historical-controller-key", fingerprint: createHash("sha256").update("fixture-historical-controller-key").digest("hex"),
 		createdAtMs: row.created_at_ms,
 	});
-	for (const group of ["group-a", "group-b"]) {
+	for (const group of groups) {
 		await exec(
 			"INSERT INTO groups (group_id,created_at) VALUES (?,?)",
 			group,
@@ -169,6 +170,18 @@ const test = it.extend<{ writer: Awaited<ReturnType<typeof writerFixture>> }>({
 	},
 });
 
+it("one native D1 owner grant yields one enrollment receipt with a preparation", async () => {
+	await resetFixture();
+	try {
+		const {input} = await writerFixture(["group-a"]);
+		await exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-a'");
+		const counts: number[] = [];
+		expect(await commitOwnerEnrollment({...input,backend:captureEnrollmentBatch(input.backend,counts)})).toBe(true);
+		expect(counts).toEqual([1]);
+		expect(await env.COORDINATOR_DB.prepare("SELECT readiness_generation FROM groups WHERE group_id='group-a'").raw()).toEqual([[null]]);
+	} finally { await resetFixture(); }
+});
+
 test("native D1 commits all pinned groups, binding, audit and receipt atomically", async ({
 	writer: f,
 }) => {
@@ -177,8 +190,12 @@ test("native D1 commits all pinned groups, binding, audit and receipt atomically
 	const genesis = await rows("coordinator_auth_link_attempts");
 	const browsers = await rows("coordinator_auth_browser_transactions");
 	const births = await rows("coordinator_auth_link_audit_log");
+	const counts: number[] = [];
+	await exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id IN ('group-a','group-b')");
 	// Act
-	const committed = await commitOwnerEnrollment(input);
+	const committed = await commitOwnerEnrollment({...input, backend:captureEnrollmentBatch(input.backend, counts)});
+	expect(counts).toEqual([2]);
+	expect((await env.COORDINATOR_DB.prepare("SELECT readiness_generation FROM groups WHERE group_id IN ('group-a','group-b')").raw())).toEqual([[null],[null]]);
 	const receipt = await finalRow();
 	// Assert: actual D1 changes() counts drive the dependent writes.
 	expect(committed).toBe(true);

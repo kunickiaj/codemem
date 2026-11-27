@@ -220,3 +220,36 @@ Tables `coordinator_boundary_readiness` (one row per group and device) and
 `0050_add_boundary_readiness.sql` and by SQLite coordinator startup. The shared
 contract tests run on the SQLite store, on a better-sqlite3 D1 stand-in, and on
 native Worker D1.
+
+### Enrollment changes invalidate a group generation
+
+Migration `0056_add_readiness_preparations.sql` adds `groups.readiness_generation`.
+NULL means there is no active preparation. No runtime creates one in this release.
+Neither a generation nor a readiness report grants access.
+
+The SQLite coordinator clears the generation in the enrollment transaction. On
+D1 the Worker clears it with a separate statement in the same `batch()`. Writers
+read the receipt at the enrollment statement's own position. In particular, a
+key rewrite with a separate reset has two one-row receipts. A multi-group
+enrollment or removal checks the actual number of enrolled rows.
+
+| Enrollment writer | Groups invalidated |
+| --- | --- |
+| `POST /v1/admin/devices` and local admin enrollment | The named group, after insert, update, or key-ID reset and rewrite. |
+| Legacy auto-admit `POST /v1/join` | The same enrollment writer, with the invitation pinned. An already-enrolled reply and a pending join request do not write an enrollment. |
+| The `rename`, `disable` and `enable` routes under `/v1/admin/devices/` | The named group when an enrollment matches. This includes label edits and re-enabling a device. |
+| `/v1/admin/join-requests/approve` | The request's group in the same transaction as the approved enrollment. A failed confirmation rolls back the write. Denial does not write enrollment. |
+| Team, add-device and Project acceptance via `/v1/join` | The invitation's group on fresh insert or update, and on repair of a missing identity during retry. Grant-only recovery does not invalidate it. On D1 the fresh acceptance clears the one matching group even if its generation is already NULL, so the next bootstrap statement still sees the enrollment winner's `changes()` value. |
+| Owner enrollment (`/v1/auth/owner-attempts/finalize`) | Each grant group pinned by the finalized attempt, after the enrollment count matches the number of grants. |
+| Device claim completion, including first link (`/v1/auth/link-attempts/:attemptId/finalize`) | Groups whose pinned enrollment had no identity. This applies both to a new ownership binding and to reuse of an existing binding. |
+| Device rebind (`/v1/auth/rebind-attempts/:attemptId/finalize`) | The device's enrolled groups in the winning attempt. A self-bind invalidates only groups whose enrollment had no identity. |
+| Device rejoin (`/v1/auth/rejoin-attempts/:attemptId/finalize`) | The groups restored by the winning receipt. |
+| Legacy `/v1/admin/devices/remove` and local single removal | The removed enrollment's group, identified by this transaction's tombstone. |
+| `/v1/admin/devices/removal` and local expanded removal | Each group with a tombstone written by this removal, including groups reached through another enrollment of the same key. A preview does not invalidate anything. |
+| `/v1/admin/devices/key-id-fill`, peer removal lookup, and SQLite startup | Groups containing rows of the filled page that still match the captured row ID, public key and derived key ID. A page that writes nothing invalidates nothing. |
+| Group archive and unarchive (`/v1/admin/groups/archive`, `/v1/admin/groups/unarchive`) | The group whose archive state changed. A group name change has no effect. |
+
+Older admin clients call these same coordinator paths. An older **coordinator
+binary** that writes the database directly does not clear the column. A later
+release must exclude such writers before starting any preparation. Deleting a
+group deletes its generation with it.

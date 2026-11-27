@@ -251,6 +251,10 @@ import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-remov
 import { selectDeviceListingCapabilities } from "./coordinator-presence-capabilities.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
+	CLEAR_CHANGED_GROUP,
+	INVALIDATE_CHANGED_GROUP,
+} from "./coordinator-readiness-invalidation.js";
+import {
 	readRecipientOwnerConsistency,
 	validateRecipientOwnerInput,
 } from "./coordinator-recipient-owner-consistency.js";
@@ -665,6 +669,33 @@ async function runChanges(statement: D1PreparedStatementLike): Promise<number> {
 	return Number(result?.meta?.changes ?? 0);
 }
 
+/** Keep the original receipt positions. In particular, never add the invalidation's
+ * changes to a single-enrollment receipt. All SQL count assertions precede it.
+ */
+async function groupWriteBatch(
+	db: D1DatabaseLike,
+	groupId: string,
+	statements: D1PreparedStatementLike[],
+) {
+	if (!db.batch) throw new Error("device_ownership_authorization_unavailable");
+	const results = await db.batch([
+		...statements,
+		db.prepare(INVALIDATE_CHANGED_GROUP).bind(groupId),
+	]);
+	if (results.length !== statements.length + 1)
+		throw new Error("device_ownership_authorization_unavailable");
+	return results.slice(0, -1);
+}
+
+async function groupWriteChanges(
+	db: D1DatabaseLike,
+	groupId: string,
+	statement: D1PreparedStatementLike,
+) {
+	const [result] = await groupWriteBatch(db, groupId, [statement]);
+	return legacyDeviceWriteChanges(result);
+}
+
 const RECIPIENT_REVOCATION_SQL = `${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 	OR ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`;
 const RECIPIENT_OWNERSHIP_SQL = DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL;
@@ -1045,6 +1076,7 @@ async function repairBoundRecipientInviteIdentity(
 					opts.fingerprint,
 					...guard.values,
 				),
+			db.prepare(INVALIDATE_CHANGED_GROUP).bind(invite.group_id),
 		],
 		{ ...guard, guards: firstWriteGuards },
 	);
@@ -1466,7 +1498,13 @@ function prepareFreshRecipientInvite(
 		statements.push(
 			db.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('device_removed') END"),
 		);
-	return [...statements, ...prepareRecipientInviteBootstrap(db, write)];
+	// The invitation pins a live group. Matching that row even when its generation
+	// is already NULL preserves changes() (one or zero) for the bootstrap grant.
+	return [
+		...statements,
+		db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id),
+		...prepareRecipientInviteBootstrap(db, write),
+	];
 }
 
 async function consumeFreshRecipientInvite(
@@ -1708,11 +1746,12 @@ function prepareProjectInviteTokenAndEnrollment(
 			statements.push(
 				db.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('device_removed') END"),
 			);
-		return statements;
+		return [...statements, db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id)];
 	}
 	return [
 		prepareProjectInviteRetryConsume(db, write),
 		prepareBoundProjectInviteIdentityRepair(db, write),
+		db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id),
 	];
 }
 
@@ -2507,7 +2546,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async archiveGroup(_groupId: string, _archivedAt = nowISO()): Promise<boolean> {
 		return (
-			(await runChanges(
+			(await groupWriteChanges(
+				this.db,
+				_groupId,
 				this.db
 					.prepare("UPDATE groups SET archived_at = ? WHERE group_id = ? AND archived_at IS NULL")
 					.bind(_archivedAt, _groupId),
@@ -2517,7 +2558,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async unarchiveGroup(_groupId: string): Promise<boolean> {
 		return (
-			(await runChanges(
+			(await groupWriteChanges(
+				this.db,
+				_groupId,
 				this.db
 					.prepare(
 						"UPDATE groups SET archived_at = NULL WHERE group_id = ? AND archived_at IS NOT NULL",
@@ -2564,7 +2607,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				inviteId,
 			};
 			const writes = legacyEnrollmentWriteStatements(enrollment);
-			if (legacyEnrollmentWritten(await this.runLegacyEnrollmentWrites(writes))) return;
+			if (legacyEnrollmentWritten(await this.runLegacyEnrollmentWrites(_groupId, writes))) return;
 			const denial = legacyEnrollmentDenialStatement(enrollment);
 			throw new Error(
 				legacyDeviceDenial(
@@ -2577,17 +2620,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	/**
-	 * One statement runs alone. A key text change, with its key ID reset, its
+	 * A key text change, with its key ID reset, its
 	 * rewrite, and its completion assertion, runs as one atomic batch. The assertion
 	 * raises inside the batch, so a reset that the rewrite did not follow never commits.
 	 */
-	private async runLegacyEnrollmentWrites(writes: LegacyEnrollmentStatement[]): Promise<number[]> {
+	private async runLegacyEnrollmentWrites(
+		groupId: string,
+		writes: LegacyEnrollmentStatement[],
+	): Promise<number[]> {
 		const statements = writes.map(({ sql, values }) => this.db.prepare(sql).bind(...values));
-		if (statements.length === 1) return [legacyDeviceWriteChanges(await statements[0]?.run())];
-		if (!this.db.batch) throw new Error("device_ownership_authorization_unavailable");
-		const results = await this.db.batch(statements);
-		if (results.length !== statements.length)
-			throw new Error("device_ownership_authorization_unavailable");
+		const results = await groupWriteBatch(this.db, groupId, statements);
 		return results.filter((_, index) => !writes[index]?.assertion).map(legacyDeviceWriteChanges);
 	}
 
@@ -2630,7 +2672,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async renameDevice(_groupId: string, _deviceId: string, _displayName: string): Promise<boolean> {
 		return (
-			(await runChanges(
+			(await groupWriteChanges(
+				this.db,
+				_groupId,
 				this.db
 					.prepare(`UPDATE enrolled_devices SET display_name = ?
 					 WHERE group_id = ? AND device_id = ?`)
@@ -2662,11 +2706,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				};
 				if (publicKey !== null) {
 					const write = legacyEnableWriteStatement(input);
-					const result = await this.db
-						.prepare(write.sql)
-						.bind(...write.values)
-						.run();
-					if (legacyDeviceWriteChanges(result) === 1) return true;
+					if (
+						(await groupWriteChanges(
+							this.db,
+							_groupId,
+							this.db.prepare(write.sql).bind(...write.values),
+						)) === 1
+					)
+						return true;
 				} else if (!input.storeKeyId) return false;
 				const denial = legacyEnableDenialStatement(input);
 				return legacyEnableDenied(
@@ -2677,7 +2724,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			}
 		}
 		return (
-			(await runChanges(
+			(await groupWriteChanges(
+				this.db,
+				_groupId,
 				this.db
 					.prepare(`UPDATE enrolled_devices SET enabled = ?
 					 WHERE group_id = ? AND device_id = ?`)
@@ -3472,7 +3521,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				await this.storedKeyId(row.public_key),
 			),
 		);
-		if (!(await this.executeJoinApprovalBatch(statements, { requestId: _opts.requestId, guard })))
+		const approval = { groupId: row.group_id, requestId: _opts.requestId, guard };
+		if (!(await this.executeJoinApprovalBatch(statements, approval)))
 			return this.classifyJoinReviewFailure(_opts.requestId, guard);
 		return this.readCompletedJoinReview(_opts.requestId, bootstrapGrantId);
 	}
@@ -3579,6 +3629,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private async executeJoinApprovalBatch(
 		statements: D1PreparedStatementLike[],
 		options: {
+			groupId: string;
 			requestId: string;
 			guard: Awaited<ReturnType<D1CoordinatorStore["prepareJoinApproval"]>>["guard"];
 		},
@@ -3586,7 +3637,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (!this.db.batch) throw new Error("join_review_unavailable");
 		let results: unknown[];
 		try {
-			results = await this.db.batch(statements);
+			results = await groupWriteBatch(this.db, options.groupId, statements);
 		} catch (error) {
 			// A transport error may follow commit. Only a still-pending request permits denial diagnosis.
 			let latest: { status: unknown } | null;

@@ -342,6 +342,12 @@ function dependentWrites(
 		assertWrite(winner, 1),
 		enrollment,
 		assertWrite(winner, grantCount),
+		{
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
+ (SELECT json_extract(p.value,'$.groupId') FROM coordinator_owner_enrollment_attempts a,
+ json_each(a.grant_revisions_json) p WHERE ${WINNER})`,
+			values: winner,
+		},
 		audit,
 		assertWrite(winner, 1),
 	];

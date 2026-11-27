@@ -40,6 +40,7 @@ import {
 	peerRemovalSnapshotResult,
 	peerRemovalSnapshotStatements,
 } from "./coordinator-peer-removal-query.js";
+import { INVALIDATE_FILLED_KEYS } from "./coordinator-readiness-invalidation.js";
 
 /**
  * Removal tombstones. One row records each deleted enrollment and stays active
@@ -783,6 +784,10 @@ AND (requesting_device_id = ? OR requested_device_id = ?) AND ${OWN_TOMBSTONE_SQ
 		},
 		dependents.complete,
 		...singleRemovalReads(removalId, target),
+		{
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE group_id = ? AND ${OWN_TOMBSTONE_SQL}`,
+			values: [input.groupId, ...own],
+		},
 	];
 }
 
@@ -822,7 +827,7 @@ function committedRemovalResult(
 	target: DeviceRemovalTarget,
 	removalId: string,
 ): CoordinatorRemoveDeviceEnrollmentsResult {
-	if (results.length !== 12) return incompleteResult();
+	if (results.length !== 13) return incompleteResult();
 	const writes = results.slice(0, 9).map(resultChanges);
 	if (
 		writes[0] !== target.rows.length ||
@@ -926,9 +931,10 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 			.batch([
 				{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] },
 				{ sql: ENROLLMENT_KEY_ID_BLOCKED_SQL, values: [json], read: true },
+				{ sql: INVALIDATE_FILLED_KEYS, values: [json] },
 			])
 			.catch(removalBackendFailure);
-		if (results.length !== 2) return incompleteResult();
+		if (results.length !== 3) return incompleteResult();
 		const filled = resultChanges(results[0]);
 		const blocked = resultRows<{ blocked: number }>(results[1])[0]?.blocked;
 		if (!Number.isSafeInteger(blocked)) return incompleteResult();

@@ -40,7 +40,9 @@ export function ownerStartFixture(options: OwnerAccountHistoryOptions = {}) {
 /** Grants are independent historical controller receipts, including in device-claim exclusion tests. */
 export const seedOwnerCallbackAuthority = seedOwnerCallbackGroups;
 
-export async function commitWriterFixture(options: OwnerAccountHistoryOptions = {}) {
+export async function commitWriterFixture(
+	options: OwnerAccountHistoryOptions & { groups?: readonly string[] } = {},
+) {
 	const prepared = setupHistoricalStore("SQLite", {
 		history: {
 			authority: options.authority ?? "controller_attestation",
@@ -52,7 +54,7 @@ export async function commitWriterFixture(options: OwnerAccountHistoryOptions = 
 		authClock: () => NOW,
 	});
 	try {
-		return await bindCommitWriter(prepared);
+		return await bindCommitWriter(prepared, options.groups);
 	} catch (error) {
 		prepared.close();
 		throw error;

@@ -18,7 +18,11 @@ it("fill consumes a contiguous byte-bounded prefix, skips individually oversized
 		batch: async (statements) => {
 			const entries = JSON.parse(String(statements[0]?.values[0]));
 			written.push(entries);
-			return [{ meta: { changes: entries.length } }, { results: [{ blocked: 0 }] }];
+			return [
+				{ meta: { changes: entries.length } },
+				{ results: [{ blocked: 0 }] },
+				{ meta: { changes: 0 } },
+			];
 		},
 	});
 	const one = await store.fillEnrollmentKeyIds({ limit: 5 });
@@ -63,7 +67,7 @@ it("fill consumes a contiguous byte-bounded prefix, skips individually oversized
 		batch: async (statements) => {
 			sent++;
 			expect(new TextEncoder().encode(String(statements[0]?.values[0])).byteLength).toBe(1_000_000);
-			return [{ meta: { changes: 1 } }, { results: [{ blocked: 0 }] }];
+			return [{ meta: { changes: 1 } }, { results: [{ blocked: 0 }] }, { meta: { changes: 0 } }];
 		},
 	});
 	expect((await bounded.fillEnrollmentKeyIds()).filled).toBe(1);

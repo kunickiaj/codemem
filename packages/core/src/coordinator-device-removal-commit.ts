@@ -152,6 +152,11 @@ FROM coordinator_device_removals t WHERE ${OWN_SQL} ORDER BY t.group_id, t.devic
 			read: true,
 		},
 		{ sql: `SELECT (${available}) AS available`, values: [], read: true },
+		{
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
+ (SELECT t.group_id FROM coordinator_device_removals t WHERE ${OWN_SQL})`,
+			values: [],
+		},
 	];
 	return [
 		insertStatement(target, op, available),
