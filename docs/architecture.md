@@ -619,6 +619,17 @@ read only rows with work.
   one. Flush batches are read only for those sessions, so batches left in a
   retry status by idle sessions are not read on every tick. History recovery
   reads two partial indexes that hold only the batches it can act on.
+- **Repository identity of a workspace.** A workspace with a live Git
+  repository and no recorded identity is identified by its origin remote, which
+  `git config` reads in a child process. A synchronous child process blocks the
+  thread for its lifetime, about 8 ms each. `repositoryIdentitiesByWorkspace`
+  and the repository discovery snapshot both ask for every such workspace and
+  recheck the file system every 5 seconds. `originRemote` in `project.ts`
+  therefore keeps git's answer with the text of the config file it was given
+  for, and asks git again only when the file reads differently. A file that
+  mentions an include is asked about every time, because the answer then
+  depends on other files. Both callers still read the `sessions` table in full
+  on each rebuild.
 
 `GET /api/health` reports whether the process holds an open database
 connection. It runs no statement, so it cannot wait on the database.

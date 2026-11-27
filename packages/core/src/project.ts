@@ -177,24 +177,76 @@ function gitDirectoryLayout(gitDirectory: string): {
 	return { commonDirectory: gitDirectory, isLinkedWorktree: false };
 }
 
-function originRemote(commonDirectory: string, repositoryRoot: string): string | null {
+/** Config files larger than this are asked about every time; a repository's is a few hundred bytes. */
+const MAX_REMEMBERED_CONFIG_CHARS = 64 * 1024;
+const MAX_REMEMBERED_CONFIGS = 512;
+
+/** What git answered for a config file, with the text of the file it answered for. */
+const originUrlByConfigFile = new Map<string, { text: string; url: string | null }>();
+
+function readConfigText(configPath: string): string | null {
 	try {
-		const value = execFileSync(
-			"git",
-			[
-				"config",
-				"--file",
-				resolve(commonDirectory, "config"),
-				"--includes",
-				"--get",
-				"remote.origin.url",
-			],
-			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 },
-		).trim();
-		return normalizeRemoteIdentity(value, repositoryRoot);
+		return readFileSync(configPath, "utf8");
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Whether git's answer for this text can be reused. With an include, the answer also
+ * depends on other files. The check is loose on purpose: any mention of the word counts.
+ */
+function answerDependsOnTextAlone(text: string): boolean {
+	return text.length <= MAX_REMEMBERED_CONFIG_CHARS && !/include/iu.test(text);
+}
+
+/** `remote.origin.url` as git reads it, and whether git gave a definite answer. */
+function askGitForOriginUrl(configPath: string): { url: string | null; definite: boolean } {
+	try {
+		const url = execFileSync(
+			"git",
+			["config", "--file", configPath, "--includes", "--get", "remote.origin.url"],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 },
+		).trim();
+		return { url, definite: true };
+	} catch (error) {
+		// Status 1 is git saying the key is not set. Anything else says nothing about the file.
+		return { url: null, definite: (error as { status?: unknown }).status === 1 };
+	}
+}
+
+/**
+ * The origin remote git reads from a repository's config file.
+ *
+ * Asking git starts a child process, which blocks the thread for about 8 ms. Callers ask for
+ * every workspace of a store every few seconds, from a process that also serves requests.
+ * Without includes git's answer depends only on the text of the file, so the answer is kept
+ * with that text and reused for as long as the file reads the same. The file is read on
+ * every call, so an edited remote is seen at once.
+ */
+function originUrlFromConfigFile(configPath: string): string | null {
+	const text = readConfigText(configPath);
+	const reusable = text !== null && answerDependsOnTextAlone(text);
+	if (reusable) {
+		const remembered = originUrlByConfigFile.get(configPath);
+		if (remembered?.text === text) return remembered.url;
+	}
+	const answer = askGitForOriginUrl(configPath);
+	// Kept only when git read the text that was read here: the file may change in between.
+	if (reusable && answer.definite && readConfigText(configPath) === text) {
+		originUrlByConfigFile.delete(configPath);
+		if (originUrlByConfigFile.size >= MAX_REMEMBERED_CONFIGS) {
+			const oldest = originUrlByConfigFile.keys().next().value;
+			if (oldest !== undefined) originUrlByConfigFile.delete(oldest);
+		}
+		originUrlByConfigFile.set(configPath, { text, url: answer.url });
+	}
+	return answer.url;
+}
+
+function originRemote(commonDirectory: string, repositoryRoot: string): string | null {
+	const url = originUrlFromConfigFile(resolve(commonDirectory, "config"));
+	return url ? normalizeRemoteIdentity(url, repositoryRoot) : null;
 }
 
 /** Resolve a location-independent identity for a live Git repository or linked worktree. */
