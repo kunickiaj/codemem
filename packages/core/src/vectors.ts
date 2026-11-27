@@ -1141,6 +1141,8 @@ export function findActiveMemoriesMissingVectors(
 	db: Database,
 	model: string,
 	limit: number,
+	/** Memories to leave out before the limit applies, such as ones already queued. */
+	excludeMemoryIds: Iterable<number> = [],
 ): number[] {
 	if (isEmbeddingDisabled() || !vectorStoreExists(db)) return [];
 	const vectorRows = readyValidatedCatalog(db)
@@ -1153,11 +1155,16 @@ export function findActiveMemoriesMissingVectors(
 				 WHERE mi.active = 1
 				   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''
 				   AND NOT EXISTS (${vectorRows})
+				   AND mi.id NOT IN (SELECT value FROM json_each(?))
 				 ORDER BY mi.id
 				 LIMIT ?`,
 			)
 			.pluck()
-			.all(model, Math.max(1, Math.trunc(limit))) as number[];
+			.all(
+				model,
+				JSON.stringify([...excludeMemoryIds]),
+				Math.max(1, Math.trunc(limit)),
+			) as number[];
 	} catch (error) {
 		if (isVecModuleMissingError(error)) return [];
 		throw error;

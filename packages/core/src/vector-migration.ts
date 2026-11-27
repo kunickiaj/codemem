@@ -2112,19 +2112,30 @@ export class VectorModelMigrationRunner {
 			return false;
 		}
 		if (pendingQueuedSyncCount(meta) > 0 || meta.cleanup_pending) return false;
-		const memoryIds = findActiveMemoriesMissingVectors(db, targetModel, COVERAGE_GAP_BATCH).filter(
-			(memoryId) => !this.coverageGapQueued.has(memoryId),
+		const memoryIds = findActiveMemoriesMissingVectors(
+			db,
+			targetModel,
+			COVERAGE_GAP_BATCH,
+			this.coverageGapQueued,
 		);
 		if (memoryIds.length === 0) return false;
+		try {
+			queueVectorBackfill(
+				db,
+				{ upsertMemoryIds: memoryIds, deleteMemoryIds: [] },
+				{
+					resumeMigration: true,
+					message: `Queued vectors for ${memoryIds.length} memories that had none`,
+				},
+			);
+		} catch (error) {
+			// Nothing was queued, for example because another writer held the lock:
+			// check again on the next tick instead of after the interval.
+			this.lastCoverageGapCheckAtMs = null;
+			throw error;
+		}
+		// Only work that was recorded counts as tried.
 		for (const memoryId of memoryIds) this.coverageGapQueued.add(memoryId);
-		queueVectorBackfill(
-			db,
-			{ upsertMemoryIds: memoryIds, deleteMemoryIds: [] },
-			{
-				resumeMigration: true,
-				message: `Queued vectors for ${memoryIds.length} memories that had none`,
-			},
-		);
 		console.warn(
 			`[codemem] vector catch-up queued ${memoryIds.length} memories that had no vectors`,
 		);

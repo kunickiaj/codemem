@@ -42,6 +42,13 @@ function testClient(packageVersion: string) {
 	};
 }
 
+vi.mock("./vector-backfill-queue.js", async () => {
+	const actual = await vi.importActual<typeof import("./vector-backfill-queue.js")>(
+		"./vector-backfill-queue.js",
+	);
+	return { ...actual, queueVectorBackfill: vi.fn(actual.queueVectorBackfill) };
+});
+
 const GAP_CHECK_MS = 600_000;
 
 let directory: string;
@@ -155,6 +162,19 @@ describe("vector catch-up for memories without vectors", () => {
 		expect(indexedMemoryIds()).toEqual([1, 2, 3, 4]);
 		expect(vectorJob()).toMatchObject({ status: "completed" });
 		expect(withDb((db) => getSemanticIndexDiagnostics(db)).state).toBe("healthy");
+	});
+
+	it("retries on the next tick when the queue write finds the database locked", async () => {
+		await seedIndexedStore();
+		withDb((db) => insertMemories(db, [4]));
+		vi.mocked(queueVectorBackfill).mockImplementationOnce(() => {
+			throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+		});
+
+		startRunner();
+		await vi.advanceTimersByTimeAsync(120_000);
+
+		expect(indexedMemoryIds()).toEqual([1, 2, 3, 4]);
 	});
 
 	it("checks for missing vectors at most once per interval", async () => {
