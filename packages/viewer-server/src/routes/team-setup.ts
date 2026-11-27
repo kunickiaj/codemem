@@ -1416,29 +1416,32 @@ function summaryForDevice(
 	const store = options.getStore();
 	const summary = summaryResponse(store, read);
 	if ("error" in summary) return summary;
-	return withRecoverableTeams(store, summary, isCompletionAdmin(options));
+	return withRecoverableTeams(store, summary, currentCompletionAuthorization(options));
 }
 
-/** Whether this device holds what the coordinator's admin reads need, by its configuration now. */
-function isCompletionAdmin(options: TeamSetupRoutesOptions): boolean {
+/** What this device's configuration lets it read as a coordinator admin now, or null for nothing. */
+function currentCompletionAuthorization(
+	options: TeamSetupRoutesOptions,
+): CompletionAuthorization | null {
 	try {
-		return readCompletionAuthorization(options) !== null;
+		return readCompletionAuthorization(options);
 	} catch {
-		return false;
+		return null;
 	}
 }
 
 /**
  * Names, for an admin device, the Team each candidate's recovery would restore:
  * the Team its setup completed, while that Team is disabled or a recovery of it
- * was saved and never confirmed. Local reads only.
+ * was saved and never confirmed, and only while the setup's coordinator and
+ * group are the configured ones. Local reads only.
  */
 function withRecoverableTeams(
 	store: MemoryStore,
 	summary: LegacyTeamSetupSummaryResponseV1,
-	admin: boolean,
+	authorization: CompletionAuthorization | null,
 ): LegacyTeamSetupSummaryResponseV1 {
-	if (!admin) return summary;
+	if (!authorization) return summary;
 	const disabled = store.db
 		.prepare(
 			`SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'inactive'
@@ -1448,7 +1451,9 @@ function withRecoverableTeams(
 	const candidates = summary.candidates.map((candidate) => {
 		const teamId = deterministicPolicyTeamId(candidate.candidateRef);
 		const stopped = disabled.get(teamId) || isRecoveryUnconfirmed(store, candidate.candidateRef);
-		const recoverable = stopped && teamRecoveryTarget(store.db, teamId);
+		const target = stopped ? teamRecoveryTarget(store.db, teamId) : null;
+		// The recovery routes refuse a setup from another coordinator or group than the configured ones.
+		const recoverable = target !== null && authorizesGroup(authorization, target);
 		return recoverable ? { ...candidate, recoverableTeamId: teamId } : candidate;
 	});
 	return { ...summary, candidates };
