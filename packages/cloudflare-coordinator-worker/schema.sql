@@ -1988,3 +1988,25 @@ BEFORE DELETE ON coordinator_team_member_removals
 BEGIN
  SELECT RAISE(ABORT, 'team_member_removal_immutable');
 END;
+
+CREATE TABLE IF NOT EXISTS coordinator_team_group_bindings (
+ team_id TEXT PRIMARY KEY,
+ group_id TEXT NOT NULL,
+ bound_at TEXT NOT NULL,
+ source TEXT NOT NULL CHECK (source IN ('invitation', 'backfill', 'admin'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_coordinator_team_group_bindings_group
+ ON coordinator_team_group_bindings (group_id, team_id);
+
+CREATE TRIGGER IF NOT EXISTS coordinator_team_group_binding_no_update
+BEFORE UPDATE ON coordinator_team_group_bindings
+BEGIN
+ SELECT RAISE(ABORT, 'team_group_binding_immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS coordinator_team_group_binding_no_delete
+BEFORE DELETE ON coordinator_team_group_bindings
+BEGIN
+ SELECT RAISE(ABORT, 'team_group_binding_immutable');
+END;

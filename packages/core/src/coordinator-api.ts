@@ -105,6 +105,7 @@ import type {
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
 import { CoordinatorReciprocalApprovalRequestChangedError } from "./coordinator-store-contract.js";
+import { registerCoordinatorTeamGroupBindingRoutes } from "./coordinator-team-group-binding-routes.js";
 import { registerCoordinatorTeamMemberRemovalRoutes } from "./coordinator-team-member-removal-routes.js";
 import { PROJECT_INVITE_PENDING_STATUS } from "./project-invite-acceptance.js";
 import {
@@ -383,16 +384,14 @@ function registerCoordinatorRuntimeRoutes(
 		storeFactory: () => createStore({ existingOnly: true }),
 		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
 	});
-	registerCoordinatorInviteRevocationRoute(app, {
+	const existingStoreAdmin = {
 		...deps,
 		storeFactory: () => createStore({ existingOnly: true }),
-		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
-	});
-	registerCoordinatorTeamMemberRemovalRoutes(app, {
-		...deps,
-		storeFactory: () => createStore({ existingOnly: true }),
-		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
-	});
+		authorizeAdmin: (secret: string | undefined) => authorizeAdmin(secret, opts.runtime),
+	};
+	registerCoordinatorInviteRevocationRoute(app, existingStoreAdmin);
+	registerCoordinatorTeamMemberRemovalRoutes(app, existingStoreAdmin);
+	registerCoordinatorTeamGroupBindingRoutes(app, existingStoreAdmin);
 	registerCoordinatorBoundaryReadinessRoute(app, {
 		...deps,
 		storeFactory: () => createStore(),
@@ -1108,6 +1107,26 @@ async function adminDeviceListing(
 	const enrollments = await store.listEnrolledDevices(groupId, includeDisabled);
 	const listed = await withRevocationMarks(store, withServiceRoles(enrollments, relayHealthProbes));
 	return c.json({ items: await withDeviceRejoinDisplay(store, groupId, listed) });
+}
+
+/**
+ * Store refusals of an invitation create that the route answers. Team
+ * invitations are also refused because of the Team's coordinator group: the
+ * Team ID is bound to another group, it is unbound but Team invitations for it
+ * came from more than one group, or the binding storage is missing.
+ */
+const INVITE_CREATE_REFUSALS: Readonly<Record<string, 409 | 503>> = {
+	invite_operation_intent_conflict: 409,
+	invite_already_bound: 409,
+	team_bound_to_other_group: 409,
+	team_binding_conflict: 409,
+	team_group_binding_unavailable: 503,
+};
+
+function inviteCreateRefusal(error: unknown): { error: string; status: 409 | 503 } | null {
+	const code = error instanceof Error ? error.message : "";
+	const status = Object.hasOwn(INVITE_CREATE_REFUSALS, code) ? INVITE_CREATE_REFUSALS[code] : null;
+	return status ? { error: code, status } : null;
 }
 
 export function createCoordinatorApp(
@@ -2577,12 +2596,8 @@ export function createCoordinatorApp(
 				link: inviteLink(encoded),
 			});
 		} catch (error) {
-			if (error instanceof Error && error.message === "invite_operation_intent_conflict") {
-				return c.json({ error: "invite_operation_intent_conflict" }, 409);
-			}
-			if (error instanceof Error && error.message === "invite_already_bound") {
-				return c.json({ error: "invite_already_bound" }, 409);
-			}
+			const refusal = inviteCreateRefusal(error);
+			if (refusal) return c.json({ error: refusal.error }, refusal.status);
 			throw error;
 		} finally {
 			await store.close();

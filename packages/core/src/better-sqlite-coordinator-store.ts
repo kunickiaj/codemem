@@ -370,6 +370,11 @@ import {
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
 import {
+	TEAM_GROUP_BINDING_MIGRATION_SQL,
+	TEAM_GROUP_BINDING_STORAGE_PRESENT_SQL,
+	TeamGroupBindingOperations,
+} from "./coordinator-team-group-bindings.js";
+import {
 	type CoordinatorListTeamMemberRemovalsInput,
 	type CoordinatorRecordTeamMemberRemovalInput,
 	TEAM_MEMBER_REMOVAL_SCHEMA_SQL,
@@ -1163,6 +1168,8 @@ function initializePostStageStorage(db: DatabaseType): void {
 		db.transaction(() => db.exec(DEVICE_REJOIN_SCHEMA_SQL)).immediate();
 	if (db.prepare(TEAM_MEMBER_REMOVAL_STORAGE_PRESENT_SQL).pluck().get() !== 1)
 		db.transaction(() => db.exec(TEAM_MEMBER_REMOVAL_SCHEMA_SQL)).immediate();
+	if (db.prepare(TEAM_GROUP_BINDING_STORAGE_PRESENT_SQL).pluck().get() !== 1)
+		db.transaction(() => db.exec(TEAM_GROUP_BINDING_MIGRATION_SQL)).immediate();
 }
 
 export function connectCoordinator(
@@ -1226,6 +1233,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private removalSchemaSeen = false;
 	private readonly boundaryReadiness: BoundaryReadinessOperations;
 	private readonly teamMemberRemovals: TeamMemberRemovalOperations;
+	private readonly teamGroupBindings: TeamGroupBindingOperations;
 	private readonly inviteRevocations: InviteRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -1260,6 +1268,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		this.teamMemberRemovals = new TeamMemberRemovalOperations(ledgerBackend, options.authClock);
+		this.teamGroupBindings = new TeamGroupBindingOperations(ledgerBackend, options.authClock);
 		this.inviteRevocations = new InviteRevocationOperations(ledgerBackend, options.authClock);
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
@@ -2170,6 +2179,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.teamMemberRemovals.listTeamMemberRemovals(input);
 	}
 
+	async readTeamGroupBindings(teamIds: readonly string[]) {
+		return this.teamGroupBindings.readTeamGroupBindings(teamIds);
+	}
+
+	async bindTeamGroup(input: { teamId: string; groupId: string }) {
+		return this.teamGroupBindings.bindTeamGroup(input);
+	}
+
 	async revokeInvite(input: CoordinatorRevokeInviteInput) {
 		return this.inviteRevocations.revokeInvite(input);
 	}
@@ -2215,6 +2232,25 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async cleanupNonces(cutoff: string): Promise<void> {
 		this.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").run(cutoff);
+	}
+
+	/** Inserts an invitation. The first Team invitation for a Team ID also binds the ID to this group. */
+	private async insertInvite(
+		values: Array<string | number | null>,
+		metadata: { inviteKind: string; policyTeamId: string | null },
+		groupId: string,
+	): Promise<void> {
+		const insertSql = inviteInsertSql(this.hasRemovalSchema());
+		if (metadata.inviteKind !== "team_member" || !metadata.policyTeamId) {
+			this.db.prepare(insertSql).run(...values);
+			return;
+		}
+		await this.teamGroupBindings.insertTeamInvite({
+			insertSql,
+			values,
+			teamId: metadata.policyTeamId,
+			groupId,
+		});
 	}
 
 	async createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
@@ -2295,34 +2331,33 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (existing) return renewOperationInvite(existing);
 		}
 		try {
-			this.db
-				.prepare(inviteInsertSql(this.hasRemovalSchema()))
-				.run(
-					inviteId,
-					opts.groupId,
-					token,
-					opts.policy,
-					expiresAt,
-					now,
-					opts.createdBy ?? null,
-					group?.display_name ?? null,
-					operationId,
-					reviewedProjectSetDigest,
-					digest,
-					clean(opts.inviterActorId),
-					clean(opts.inviterDisplayName),
-					clean(opts.inviterDeviceId),
-					clean(opts.pendingPersonId),
-					opts.projectSummaries ? JSON.stringify(opts.projectSummaries) : null,
-					opts.projectIntent ? JSON.stringify(opts.projectIntent) : null,
-					operationId ? "pending" : null,
-					metadata.inviteKind,
-					metadata.policyTeamId,
-					metadata.targetIdentityId,
-					assignedIdentityId,
-					metadata.reviewedPreviewDigest,
-					metadata.reviewedIntentJson,
-				);
+			const values = [
+				inviteId,
+				opts.groupId,
+				token,
+				opts.policy,
+				expiresAt,
+				now,
+				opts.createdBy ?? null,
+				group?.display_name ?? null,
+				operationId,
+				reviewedProjectSetDigest,
+				digest,
+				clean(opts.inviterActorId),
+				clean(opts.inviterDisplayName),
+				clean(opts.inviterDeviceId),
+				clean(opts.pendingPersonId),
+				opts.projectSummaries ? JSON.stringify(opts.projectSummaries) : null,
+				opts.projectIntent ? JSON.stringify(opts.projectIntent) : null,
+				operationId ? "pending" : null,
+				metadata.inviteKind,
+				metadata.policyTeamId,
+				metadata.targetIdentityId,
+				assignedIdentityId,
+				metadata.reviewedPreviewDigest,
+				metadata.reviewedIntentJson,
+			];
+			await this.insertInvite(values, metadata, opts.groupId);
 		} catch (error) {
 			if (operationId) {
 				const existing = readOperationInvite();

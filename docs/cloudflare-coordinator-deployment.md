@@ -316,6 +316,43 @@ earlier ignore the list: they can still add a removed person back from an accept
 serving that person's devices until the coordinator drops them from the Team's scopes. Upgrade every admin device
 of the group before relying on Team member removal.
 
+### Team group bindings (0053)
+
+Each Team belongs to one coordinator group, and a Team member removal applies only in that group. Migration
+`0053_add_team_group_bindings.sql` adds a table that records each Team's group, with an index and two triggers
+that refuse any update or delete of its rows. The first Team invitation minted for a Team binds the Team to the
+minting group, in the same write as the invitation. A binding never changes, and no route removes one.
+
+Apply 0053 before deploying the Worker that uses it. A Worker from before 0053 keeps working with it applied.
+The new Worker refuses Team invitations with `503 team_group_binding_unavailable` until every object exists with
+exactly the shipped definition. Other invitations and every other route keep working. A SQLite coordinator
+installs the same storage, and runs the same backfill, when it opens its file.
+
+The migration also binds existing Teams. Each Team whose Team invitations all came from one group is bound to
+that group. A Team whose Team invitations came from more than one group stays unbound, and the migration changes
+no other row. Before applying it, you can count such Teams on a copy of the database:
+
+```sql
+SELECT COUNT(*) FROM (SELECT policy_team_id FROM coordinator_invites
+ WHERE invite_kind = 'team_member' AND policy_team_id IS NOT NULL
+ GROUP BY policy_team_id HAVING COUNT(DISTINCT group_id) > 1);
+```
+
+After 0053, the coordinator refuses a Team invitation with:
+
+- `409 team_bound_to_other_group` when the Team is bound to another group.
+- `409 team_binding_conflict` when the Team is unbound and another group already has Team invitations for it.
+
+Nothing is written in either case. An admin binds an unbound Team to one group with
+`POST /v1/admin/team-group-bindings` and the body `{ "team_id", "group_id" }`. A new binding answers `201`, the
+same binding again `200`, a Team bound to another group `409 team_bound_to_other_group`, and an unknown group
+`404 group_not_found`. Binding a Team does not revoke Team invitations that another group issued before 0053.
+Revoke those with `POST /v1/admin/invites/revoke`.
+
+`GET /v1/admin/team-group-bindings?team_id=...` only reads. It accepts up to 50 `team_id` values and answers each
+Team as `bound` with its `group_id`, `unbound`, or `conflict` when it is unbound and Team invitations for it came
+from more than one group. Both routes require the admin secret.
+
 ### Device rebind storage (0038)
 
 Migration `0038_add_device_rebind.sql` adds two tables for signing in on a device whose
@@ -792,8 +829,10 @@ every migration from `0001` and fail on the first change that already exists. Re
    `0046` for `prior_extension`, `0047` for `current`). For `current` it also records `0048` when the device removal
    storage that `0048` adds already exists, `0049` when its enrollment triggers already exist,
    `0050` when its readiness record storage already exists, `0051` when its rejoin storage already exists,
-   and `0052` when every object of its Team member removal storage exists with the shipped definition. Each is
-   checked on its own.
+   `0052` when every object of its Team member removal storage exists with the shipped definition, and `0053` when
+   every object of its Team group binding storage exists with the shipped definition. Each is checked on its own.
+   A baseline does not run the backfill of `0053`. A Team whose Team invitations all came from one group is then
+   read as `unbound` until its next Team invitation binds it.
    A migration whose objects are missing stays unrecorded and the next
    `migrations apply` runs it. The statement requires that stage's auth readiness checks to pass and
    checks table and column names for the remaining earlier tables, including controller attestations and sign-in

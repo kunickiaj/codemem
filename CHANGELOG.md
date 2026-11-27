@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Coordinators record each Team's group, so a Team member removal applies only in the group the Team belongs to. The first Team invitation for a Team binds it to the inviting group, and a Team invitation for the same Team from another group is refused with `409 team_bound_to_other_group`. Admin devices read bindings with `GET /v1/admin/team-group-bindings`. Cloudflare deployments need migration `0053` before the new Worker mints any Team invitation. It binds existing Teams whose invitations all came from one group. A Team that more than one group invited to stays unbound, and its Team invitations are refused with `409 team_binding_conflict` until an admin binds it with `POST /v1/admin/team-group-bindings`. A SQLite coordinator adds the storage when it starts.
+
 ### Fixed
 
 - The sync daemon no longer ends a paired device's access when the coordinator removed an older key of that device but still has the key this device pinned enabled under the same device ID. It uses the coordinator's per-key removal evidence for that. Without that evidence, as from an older coordinator, it removes the device as before.

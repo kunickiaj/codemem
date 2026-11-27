@@ -46,7 +46,11 @@ export async function recipientInvite(f: RevocationFixture, kind: "team_member" 
 			? {
 					version: 1,
 					journey: "team",
-					team: { teamId: "policy-team", displayName: "Team", futureProjectsInherit: true },
+					team: {
+						teamId: `${f.input.groupId}-team`,
+						displayName: "Team",
+						futureProjectsInherit: true,
+					},
 					projects: [],
 					excludedProjects: [],
 				}
@@ -64,7 +68,7 @@ export async function recipientInvite(f: RevocationFixture, kind: "team_member" 
 		inviteKind: kind,
 		inviterDeviceId: seed.deviceId,
 		...(kind === "team_member"
-			? { policyTeamId: "policy-team" }
+			? { policyTeamId: `${f.input.groupId}-team` }
 			: { targetIdentityId: seed.identityId }),
 		reviewedIntent,
 		reviewedPreviewDigest: await recipientReviewedIntentDigest(reviewedIntent),

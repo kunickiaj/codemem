@@ -109,7 +109,7 @@ async function issueLiftInvitation(
 	const reviewedIntent = {
 		version: 1,
 		journey: "team",
-		team: { teamId: "policy-team", displayName: "Team", futureProjectsInherit: true },
+		team: { teamId: `${f.input.groupId}-team`, displayName: "Team", futureProjectsInherit: true },
 		projects: [],
 		excludedProjects: [],
 	};
@@ -117,7 +117,7 @@ async function issueLiftInvitation(
 		group_id: f.input.groupId,
 		expires_at: "2099-01-01T00:00:00Z",
 		invite_kind: "team_member",
-		policy_team_id: "policy-team",
+		policy_team_id: `${f.input.groupId}-team`,
 		reviewed_preview_digest: await recipientReviewedIntentDigest(reviewedIntent),
 		reviewed_intent: reviewedIntent,
 	});

@@ -8,6 +8,7 @@ import {
 import { revocationInput } from "../../core/src/coordinator-device-revocation-test-harness.js";
 import { projectInvite } from "../../core/src/coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
+import { TEAM_GROUP_BINDING_MIGRATION_NAME } from "../../core/src/coordinator-team-group-bindings.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { resetNativeAuthStage } from "./native-auth-stage.js";
 
@@ -16,8 +17,12 @@ beforeAll(async () => {
 	await resetNativeAuthStage("prior_extension");
 	await applyD1Migrations(
 		env.COORDINATOR_DB,
-		// Neither the storage migration nor a later one that builds on it.
-		env.TEST_MIGRATIONS.filter(({ name }) => name < DEVICE_REMOVAL_MIGRATION_NAME),
+		// Neither the storage migration nor a later one that builds on it. Team
+		// invitations need the Team group bindings of 0053, which do not depend on 0048.
+		env.TEST_MIGRATIONS.filter(
+			({ name }) =>
+				name < DEVICE_REMOVAL_MIGRATION_NAME || name === TEAM_GROUP_BINDING_MIGRATION_NAME,
+		),
 	);
 });
 

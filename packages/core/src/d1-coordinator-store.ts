@@ -311,6 +311,7 @@ import {
 	normalizeCoordinatorUpdateScopeInput,
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
+import { TeamGroupBindingOperations } from "./coordinator-team-group-bindings.js";
 import {
 	type CoordinatorListTeamMemberRemovalsInput,
 	type CoordinatorRecordTeamMemberRemovalInput,
@@ -1788,6 +1789,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private removalSchemaSeen = false;
 	private readonly boundaryReadiness: BoundaryReadinessOperations;
 	private readonly teamMemberRemovals: TeamMemberRemovalOperations;
+	private readonly teamGroupBindings: TeamGroupBindingOperations;
 	private readonly inviteRevocations: InviteRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -1816,6 +1818,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		this.teamMemberRemovals = new TeamMemberRemovalOperations(ledgerBackend, options.authClock);
+		this.teamGroupBindings = new TeamGroupBindingOperations(ledgerBackend, options.authClock);
 		this.inviteRevocations = new InviteRevocationOperations(ledgerBackend, options.authClock);
 		const authBackend = createD1AuthLinkBackend(db);
 		this.controllerBackend = authBackend;
@@ -2704,6 +2707,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return this.teamMemberRemovals.listTeamMemberRemovals(input);
 	}
 
+	async readTeamGroupBindings(teamIds: readonly string[]) {
+		return this.teamGroupBindings.readTeamGroupBindings(teamIds);
+	}
+
+	async bindTeamGroup(input: { teamId: string; groupId: string }) {
+		return this.teamGroupBindings.bindTeamGroup(input);
+	}
+
 	async revokeInvite(input: CoordinatorRevokeInviteInput) {
 		return this.inviteRevocations.revokeInvite(input);
 	}
@@ -2750,6 +2761,28 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async recordAuthorizedNonce(input: CoordinatorRecordAuthorizedNonceInput) {
 		return this.deviceRevocations.recordAuthorizedNonce(input);
+	}
+
+	/** Inserts an invitation. The first Team invitation for a Team ID also binds the ID to this group. */
+	private async insertInvite(
+		values: Array<string | number | null>,
+		metadata: { inviteKind: string; policyTeamId: string | null },
+		groupId: string,
+	): Promise<void> {
+		const insertSql = inviteInsertSql(await this.hasRemovalSchema());
+		if (metadata.inviteKind !== "team_member" || !metadata.policyTeamId) {
+			await this.db
+				.prepare(insertSql)
+				.bind(...values)
+				.run();
+			return;
+		}
+		await this.teamGroupBindings.insertTeamInvite({
+			insertSql,
+			values,
+			teamId: metadata.policyTeamId,
+			groupId,
+		});
 	}
 
 	async createInvite(_opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
@@ -2833,35 +2866,33 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			if (existing) return await renewOperationInvite(existing);
 		}
 		try {
-			await this.db
-				.prepare(inviteInsertSql(await this.hasRemovalSchema()))
-				.bind(
-					inviteId,
-					_opts.groupId,
-					token,
-					_opts.policy,
-					expiresAt,
-					now,
-					_opts.createdBy ?? null,
-					group?.display_name ?? null,
-					operationId,
-					reviewedProjectSetDigest,
-					digest,
-					String(_opts.inviterActorId ?? "").trim() || null,
-					String(_opts.inviterDisplayName ?? "").trim() || null,
-					String(_opts.inviterDeviceId ?? "").trim() || null,
-					String(_opts.pendingPersonId ?? "").trim() || null,
-					_opts.projectSummaries ? JSON.stringify(_opts.projectSummaries) : null,
-					_opts.projectIntent ? JSON.stringify(_opts.projectIntent) : null,
-					operationId ? "pending" : null,
-					metadata.inviteKind,
-					metadata.policyTeamId,
-					metadata.targetIdentityId,
-					assignedIdentityId,
-					metadata.reviewedPreviewDigest,
-					metadata.reviewedIntentJson,
-				)
-				.run();
+			const values = [
+				inviteId,
+				_opts.groupId,
+				token,
+				_opts.policy,
+				expiresAt,
+				now,
+				_opts.createdBy ?? null,
+				group?.display_name ?? null,
+				operationId,
+				reviewedProjectSetDigest,
+				digest,
+				String(_opts.inviterActorId ?? "").trim() || null,
+				String(_opts.inviterDisplayName ?? "").trim() || null,
+				String(_opts.inviterDeviceId ?? "").trim() || null,
+				String(_opts.pendingPersonId ?? "").trim() || null,
+				_opts.projectSummaries ? JSON.stringify(_opts.projectSummaries) : null,
+				_opts.projectIntent ? JSON.stringify(_opts.projectIntent) : null,
+				operationId ? "pending" : null,
+				metadata.inviteKind,
+				metadata.policyTeamId,
+				metadata.targetIdentityId,
+				assignedIdentityId,
+				metadata.reviewedPreviewDigest,
+				metadata.reviewedIntentJson,
+			];
+			await this.insertInvite(values, metadata, _opts.groupId);
 		} catch (error) {
 			if (operationId) {
 				const existing = await readOperationInvite();
