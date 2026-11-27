@@ -240,6 +240,14 @@ import {
 import { readPeerSyncHealth } from "../application/sync-health.js";
 import { buildSyncStatusResponse, type SyncRuntimeStatus } from "../application/sync-status.js";
 import { snapshotErrorStatus, snapshotPageRequest } from "../snapshot-source.js";
+import {
+	type ChannelBinding,
+	channelBinding,
+	channelRouteAllowed,
+	PLAIN_DIRECT_MODE,
+	requiresScope,
+	type SyncServerMode,
+} from "../sync-server-mode.js";
 
 export type {
 	AdvancePendingProjectSharesResult,
@@ -407,7 +415,7 @@ function safeSkippedSyncDetail(
 }
 
 interface SyncProtocolRouteOptions {
-	syncChannelPeerPin?: (request: Request) => string | null;
+	mode?: SyncServerMode;
 	routeRateLimit?: {
 		limiter: InMemoryRequestRateLimiter;
 		readLimit: number;
@@ -3299,21 +3307,6 @@ function recordDirectPeerSignatureVersion(
 	}
 }
 
-function matchesSyncChannelPeer(
-	request: Request | undefined,
-	publicKey: string,
-	readPin: (request: Request) => string | null,
-): boolean {
-	if (!request || request.signal.aborted) return false;
-	try {
-		const [algorithm, blob] = publicKey.split(/\s+/);
-		const pin = readPin(request);
-		return algorithm === "ssh-ed25519" && !!blob && !!pin && pin === `${algorithm} ${blob}`;
-	} catch {
-		return false;
-	}
-}
-
 function checkedCurrentPeerKey(
 	store: MemoryStore,
 	deviceId: string,
@@ -3358,7 +3351,7 @@ function authorizeSyncRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; raw?: Request; header(name: string): string | undefined },
 	body: Buffer,
-	syncChannelPeerPin?: (request: Request) => string | null,
+	binding?: ChannelBinding,
 ): SyncAuthResult {
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
 	const signature = request.header("X-Opencode-Signature") ?? "";
@@ -3370,10 +3363,7 @@ function authorizeSyncRequest(
 	const peer = checkedCurrentPeerKey(store, deviceId);
 	if (!peer.ok) return peer;
 	const { publicKey } = peer;
-	if (
-		syncChannelPeerPin !== undefined &&
-		!matchesSyncChannelPeer(request.raw, publicKey, syncChannelPeerPin)
-	) {
+	if (binding !== undefined && !binding(request.raw, deviceId, publicKey)) {
 		return { ok: false, reason: "channel_binding_mismatch", deviceId };
 	}
 
@@ -3385,7 +3375,7 @@ function authorizeSyncRequest(
 			publicKey,
 			expectedRecipientId: localDeviceId,
 			highestObservedVersion: peer.highestObservedVersion,
-			requireDirectSignature: syncChannelPeerPin !== undefined,
+			requireDirectSignature: binding !== undefined,
 		});
 	} catch {
 		return { ok: false, reason: "signature_verification_error", deviceId };
@@ -5547,12 +5537,12 @@ function parseInboundScopeRequest(
 	context: ReturnType<typeof syncScopeAuthorizationContext>,
 	options: {
 		negotiated: ReturnType<typeof negotiateSyncCapability>;
-		syncChannelPeerPin?: SyncProtocolRouteOptions["syncChannelPeerPin"];
+		requireScope?: boolean;
 	},
 ) {
 	return parseSyncScopeRequest(
 		body.scope_id,
-		syncScopeProvided(Object.hasOwn(body, "scope_id"), options.syncChannelPeerPin),
+		syncScopeProvided(Object.hasOwn(body, "scope_id"), options.requireScope),
 		{ ...context, negotiatedCapability: options.negotiated },
 	);
 }
@@ -5566,7 +5556,7 @@ function serveAuthorizedSnapshot(
 	c: Context,
 	store: MemoryStore,
 	auth: AuthenticatedSyncPeer,
-	options: { syncChannelPeerPin?: SyncProtocolRouteOptions["syncChannelPeerPin"] } = {},
+	options: { requireScope?: boolean } = {},
 ) {
 	const peerDeviceId = auth.deviceId;
 	try {
@@ -5574,7 +5564,7 @@ function serveAuthorizedSnapshot(
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeRequest = parseSyncScopeRequest(
 			rawScopeId,
-			syncScopeProvided(rawScopeId !== undefined, options.syncChannelPeerPin),
+			syncScopeProvided(rawScopeId !== undefined, options.requireScope),
 			{
 				...syncScopeAuthorizationContext(store, auth, localDeviceId),
 				negotiatedCapability: negotiatedSyncCapability(c),
@@ -5608,31 +5598,32 @@ function serveAuthorizedSnapshot(
 }
 
 interface SyncChannelReadOptions {
-	syncChannelPeerPin: SyncProtocolRouteOptions["syncChannelPeerPin"];
+	mode: SyncServerMode;
+	binding: ChannelBinding | undefined;
 	getStore: StoreFactory;
 	rateLimitedResponse: (c: Context, key: string, authenticated: boolean) => Response | null;
 }
 
+/**
+ * Channel requests never reach the bootstrap-grant fallback in the plain read
+ * handlers: their reads are answered here, after the channel binding check.
+ */
 function registerSyncChannelRestriction(app: Hono, options: SyncChannelReadOptions): void {
-	const { syncChannelPeerPin } = options;
-	if (syncChannelPeerPin !== undefined) {
-		app.use("*", async (c, next) => {
-			const isOps = c.req.path === "/v1/ops" && ["GET", "POST"].includes(c.req.method);
-			const isRead = c.req.method === "GET" && ["/v1/status", "/v1/snapshot"].includes(c.req.path);
-			if (!isOps && !isRead) {
-				return c.json({ error: "not found" }, 404);
-			}
-			if (c.req.raw.signal.aborted) return c.json(unauthorizedPayload(), 401);
-			if (isRead) return serveChannelRead(c, options);
-			await next();
-		});
-	}
+	if (options.mode.kind === "plain-direct") return;
+	app.use("*", async (c, next) => {
+		if (!channelRouteAllowed(options.mode, c.req.method, c.req.path)) {
+			return c.json({ error: "not found" }, 404);
+		}
+		if (c.req.raw.signal.aborted) return c.json(unauthorizedPayload(), 401);
+		if (c.req.method === "GET" && c.req.path !== "/v1/ops") return serveChannelRead(c, options);
+		await next();
+	});
 }
 
-function serveChannelRead(c: Context, options: SyncChannelReadOptions): Response {
-	const { syncChannelPeerPin, rateLimitedResponse } = options;
+async function serveChannelRead(c: Context, options: SyncChannelReadOptions): Promise<Response> {
+	const { mode, binding, rateLimitedResponse } = options;
 	const store = options.getStore();
-	const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), syncChannelPeerPin);
+	const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), binding);
 	if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 	if (!auth.ok) {
 		logDirectPeerAuthDiagnostic(auth.reason);
@@ -5640,15 +5631,14 @@ function serveChannelRead(c: Context, options: SyncChannelReadOptions): Response
 	}
 	const limited = rateLimitedResponse(c, auth.deviceId, true);
 	if (limited) return limited;
-	if (c.req.path === "/v1/status") return serveScopedStatus(c, store, auth);
-	return serveAuthorizedSnapshot(c, store, auth, { syncChannelPeerPin });
+	const requireScope = requiresScope(mode);
+	if (c.req.path !== "/v1/status") return serveAuthorizedSnapshot(c, store, auth, { requireScope });
+	if (requireScope) return serveScopedStatus(c, store, auth);
+	return serveAuthenticatedStatus(c, store, auth);
 }
 
-function syncScopeProvided(
-	provided: boolean,
-	syncChannelPeerPin: SyncProtocolRouteOptions["syncChannelPeerPin"],
-): boolean {
-	return syncChannelPeerPin !== undefined || provided;
+function syncScopeProvided(provided: boolean, requireScope: boolean | undefined): boolean {
+	return requireScope === true || provided;
 }
 
 /**
@@ -5699,6 +5689,35 @@ function serveScopedStatus(c: Context, store: MemoryStore, auth: AuthenticatedSy
 	}
 }
 
+/** Status for an authenticated direct request, with or without a named scope. */
+async function serveAuthenticatedStatus(
+	c: Context,
+	store: MemoryStore,
+	auth: AuthenticatedSyncPeer,
+): Promise<Response> {
+	try {
+		if (
+			c.req.header(SYNC_AUTHORIZATION_REFRESH_HEADER) === "1" &&
+			supportsSyncFeature(c.req.header(SYNC_FEATURES_HEADER), "reassign_scope")
+		) {
+			// Project-first provisioning grants at the coordinator immediately before
+			// this status probe. Refresh now so the managed scope can participate in
+			// the same initial sync pass instead of waiting for the daemon interval.
+			await refreshConfiguredScopeMembershipCache(store.db, undefined, {
+				keysDir: syncKeysDir(),
+				dbPath: store.dbPath,
+			});
+		}
+		// Naming a scope asks for that scope's status, never the default stream's.
+		if (c.req.query(SYNC_SCOPE_QUERY_PARAM) !== undefined) {
+			return serveScopedStatus(c, store, auth);
+		}
+		return serveDefaultStatus(c, store, auth);
+	} catch {
+		return c.json({ error: "internal_error" }, 500);
+	}
+}
+
 /** Status for a direct request that names no scope: the default stream and every authorized scope. */
 function serveDefaultStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
 	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
@@ -5727,8 +5746,9 @@ function serveDefaultStatus(c: Context, store: MemoryStore, auth: AuthenticatedS
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
 	const app = new Hono();
 	const routeRateLimit = opts.routeRateLimit ?? null;
-	const syncChannelPeerPin = opts.syncChannelPeerPin;
-	registerSyncChannelRestriction(app, { syncChannelPeerPin, getStore, rateLimitedResponse });
+	const mode = opts.mode ?? PLAIN_DIRECT_MODE;
+	const binding = channelBinding(mode);
+	registerSyncChannelRestriction(app, { mode, binding, getStore, rateLimitedResponse });
 
 	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
 		if (!routeRateLimit) return null;
@@ -5797,35 +5817,14 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
 			if (limited) return limited;
-
-			try {
-				if (
-					c.req.header(SYNC_AUTHORIZATION_REFRESH_HEADER) === "1" &&
-					supportsSyncFeature(c.req.header(SYNC_FEATURES_HEADER), "reassign_scope")
-				) {
-					// Project-first provisioning grants at the coordinator immediately before
-					// this status probe. Refresh now so the managed scope can participate in
-					// the same initial sync pass instead of waiting for the daemon interval.
-					await refreshConfiguredScopeMembershipCache(store.db, undefined, {
-						keysDir: syncKeysDir(),
-						dbPath: store.dbPath,
-					});
-				}
-				// Naming a scope asks for that scope's status, never the default stream's.
-				if (c.req.query(SYNC_SCOPE_QUERY_PARAM) !== undefined) {
-					return serveScopedStatus(c, store, auth);
-				}
-				return serveDefaultStatus(c, store, auth);
-			} catch {
-				return c.json({ error: "internal_error" }, 500);
-			}
+			return serveAuthenticatedStatus(c, store, auth);
 		})();
 	});
 
 	// GET /v1/ops (peer sync protocol)
 	app.get("/v1/ops", (c) => {
 		const store = getStore();
-		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), syncChannelPeerPin);
+		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), binding);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok) {
 			logDirectPeerAuthDiagnostic(auth.reason);
@@ -5841,7 +5840,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const scopeRequest = parseSyncScopeRequest(
 				rawScopeId,
-				syncScopeProvided(rawScopeId !== undefined, syncChannelPeerPin),
+				syncScopeProvided(rawScopeId !== undefined, requiresScope(mode)),
 				{
 					...syncScopeAuthorizationContext(store, auth, localDeviceId),
 					negotiatedCapability: negotiated,
@@ -5965,7 +5964,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			return c.json({ error: "payload_too_large" }, 413);
 		}
 
-		const auth = authorizeSyncRequest(store, c.req, raw, syncChannelPeerPin);
+		const auth = authorizeSyncRequest(store, c.req, raw, binding);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok) {
 			logDirectPeerAuthDiagnostic(auth.reason);
@@ -5994,7 +5993,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const scopeContext = syncScopeAuthorizationContext(store, auth, localDeviceId);
 		const scopeRequest = parseInboundScopeRequest(body, scopeContext, {
 			negotiated,
-			syncChannelPeerPin,
+			requireScope: requiresScope(mode),
 		});
 		if (!scopeRequest.ok) {
 			recordInboundScopeFailure(scopeContext);
