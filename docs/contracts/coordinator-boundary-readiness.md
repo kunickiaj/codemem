@@ -244,13 +244,14 @@ enrollment or removal checks the actual number of enrolled rows.
 | Device claim completion, including first link (`/v1/auth/link-attempts/:attemptId/finalize`) | A new ownership binding invalidates every enrolled group for that device. Reusing a binding invalidates only groups where the claim filled a missing enrollment identity. |
 | Device rebind and self-bind (`/v1/auth/rebind-attempts/:attemptId/finalize`) | Every enrolled group for the device in the winning attempt, even when every enrollment already names the identity. |
 | Device rejoin (`/v1/auth/rejoin-attempts/:attemptId/finalize`) | The groups restored by the winning receipt. |
-| Legacy `/v1/admin/devices/remove` and local single removal | The removed enrollment's group, identified by this transaction's tombstone. |
-| `/v1/admin/devices/removal` and local expanded removal | Each group with a tombstone written by this removal, including groups reached through another enrollment of the same key. A preview does not invalidate anything. |
+| Legacy `/v1/admin/devices/remove` and local single removal | The removed enrollment's group and the current group of each scope whose membership this removal revoked. |
+| `/v1/admin/devices/removal` and local expanded removal | Each group with a tombstone written by this removal and the current scope groups of its revoked memberships. A preview does not invalidate anything. |
 | `/v1/admin/devices/key-id-fill`, peer removal lookup, and SQLite startup | Groups containing rows of the filled page that still match the captured row ID, public key and derived key ID. A page that writes nothing invalidates nothing. |
 | Group archive and unarchive (`/v1/admin/groups/archive`, `/v1/admin/groups/unarchive`) | The group whose archive state changed. A group name change has no effect. |
 | Team member removal and Team-to-group binding | The named group when the removal or binding is inserted. This includes the first binding created while minting a Team invitation. A replay or conflicting binding does not clear a new preparation. |
 | Scope membership grant and revoke | The scope's current group when the mutation writes an audit row. Legacy memberships may inherit that group. A replay or a revoke with no matching membership does not clear a preparation. |
 | Scope policy update | The old and new groups when a policy field changes. A label edit, an unchanged policy, or an update that loses to a concurrent change preserves the generation. |
+| Scope creation | The destination group when the insert succeeds. A duplicate scope does not invalidate a fresh preparation. |
 | Coordinator-wide device revocation, from enrollment or removal evidence | A newly revoked device ID invalidates every group containing that ID. A newly revoked canonical key invalidates groups containing that key under any ID, and groups with unfilled key IDs where a match cannot be excluded. Existing revocation subjects do not invalidate a fresh preparation on retry. |
 
 Older admin clients call these same coordinator paths. An older **coordinator

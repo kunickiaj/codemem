@@ -22,10 +22,99 @@ async function groups(f: PolicyFixture, ids: string[]) {
 }
 
 export function registerPolicyInvalidation(run: Run) {
+	registerScopeCreation(run);
+	registerCrossGroupRemoval(run);
 	registerScopeMove(run);
 	registerPolicyFields(run);
 	registerRevocation(run);
 	registerRollback(run);
+}
+
+function registerScopeCreation(run: Run) {
+	it("boundary collision: creating a scope clears only its destination", () =>
+		run(async (f) => {
+			const groupId = f.input.groupId,
+				scopeId = `${groupId}-boundary`;
+			const { prepare, generations } = await groups(f, [groupId, `${groupId}-other`]);
+			await prepare();
+			expect(await f.store.createScope({ scopeId, groupId, label: "Boundary" })).toMatchObject({
+				scope_id: scopeId,
+				group_id: groupId,
+			});
+			expect(await generations()).toEqual([null, "prepared"]);
+			await prepare();
+			await expect(f.store.createScope({ scopeId, groupId, label: "Duplicate" })).rejects.toThrow();
+			expect(await generations()).toEqual(["prepared", "prepared"]);
+		}));
+	it("boundary collision: failing to clear the generation rolls back scope creation", () =>
+		run(async (f) => {
+			const groupId = f.input.groupId,
+				scopeId = `${groupId}-boundary`;
+			const { prepare, generations } = await groups(f, [groupId]);
+			await prepare();
+			await f.exec(
+				"CREATE TRIGGER reject_generation_clear BEFORE UPDATE OF readiness_generation ON groups BEGIN SELECT RAISE(ABORT,'injected_failure'); END",
+			);
+			try {
+				await expect(
+					f.store.createScope({ scopeId, groupId, label: "Boundary" }),
+				).rejects.toThrow();
+				expect(await f.rows("coordinator_scopes")).not.toContainEqual(
+					expect.objectContaining({ scope_id: scopeId }),
+				);
+				expect(await generations()).toEqual(["prepared"]);
+			} finally {
+				await f.exec("DROP TRIGGER reject_generation_clear");
+			}
+		}));
+}
+
+function registerCrossGroupRemoval(run: Run) {
+	for (const method of ["single", "expanded"] as const)
+		it(`leftover membership: ${method} removal clears the live scope group`, () =>
+			run(async (f) => {
+				const { groupId, deviceId } = f.input;
+				const scopeId = `${groupId}-scope`,
+					destination = `${groupId}-destination`;
+				const { prepare, generations } = await groups(f, [
+					groupId,
+					destination,
+					`${groupId}-other`,
+				]);
+				await f.store.enrollDevice(groupId, f.input);
+				await f.store.createScope({ scopeId, label: "Moved scope", groupId });
+				await f.store.grantScopeMembership({ scopeId, deviceId, effectId: `${scopeId}-grant` });
+				// The grant still names the old group after a scope move.
+				await f.store.updateScope({ scopeId, groupId: destination });
+				await prepare();
+				if (method === "single")
+					expect(await f.store.removeEnrollment({ groupId, deviceId })).toMatchObject({
+						kind: "removed",
+					});
+				else {
+					const target = await f.store.previewDeviceRemoval({ deviceIds: [deviceId] });
+					if (target.kind !== "ready") throw new Error("removal preview unavailable");
+					expect(
+						await f.store.removeDeviceEnrollments({
+							deviceIds: [deviceId],
+							expectedDigest: target.expected_digest,
+						}),
+					).toMatchObject({ kind: "removed" });
+				}
+				expect(await f.rows("coordinator_scope_membership_effect_receipts")).toContainEqual(
+					expect.objectContaining({
+						scope_id: scopeId,
+						device_id: deviceId,
+						action: "revoke",
+						outcome_applied: 1,
+						group_id: groupId,
+					}),
+				);
+				expect(await f.rows("coordinator_scope_memberships")).toContainEqual(
+					expect.objectContaining({ scope_id: scopeId, device_id: deviceId, status: "revoked" }),
+				);
+				expect(await generations()).toEqual([null, null, "prepared"]);
+			}));
 }
 
 function registerPolicyFields(run: Run) {

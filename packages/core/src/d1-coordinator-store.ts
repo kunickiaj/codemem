@@ -4122,7 +4122,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const normalized = normalizeCoordinatorCreateScopeInput(opts);
 		if (await this.getScope(normalized.scopeId)) throw new Error("scopeId already exists.");
 		const now = nowISO();
-		await this.db
+		if (!this.db.batch) throw new Error("scope_create_atomic_batch_required");
+		const insert = this.db
 			.prepare(`INSERT INTO coordinator_scopes(
 					scope_id, label, kind, authority_type, coordinator_id, group_id,
 					manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
@@ -4140,8 +4141,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				normalized.status,
 				now,
 				now,
-			)
-			.run();
+			);
+		const [receipt] = await this.db.batch([
+			insert,
+			this.db.prepare(INVALIDATE_CHANGED_GROUP).bind(normalized.groupId),
+		]);
+		if (batchResultChanges(receipt) !== 1) throw new Error("scope insert returned no row");
 		const scope = await this.getScope(normalized.scopeId);
 		if (!scope) throw new Error("scope insert returned no row");
 		return scope;

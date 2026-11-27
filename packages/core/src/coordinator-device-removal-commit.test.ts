@@ -31,13 +31,13 @@ function target(count: number, publicKey = "opaque"): DeviceRemovalTarget {
 	};
 }
 
-it("the 50-enrollment batch has 12 statements, at most five parameters each, and binds full tuples only once", () => {
+it("the 50-enrollment batch has 13 statements, at most five parameters each, and binds full tuples only once", () => {
 	const captured = target(50, "é".repeat(9_000));
 	const statements = removalCommitStatements(captured, OP, "1");
 	const tuples = JSON.stringify(captured.tuples);
-	expect(statements).toHaveLength(12);
+	expect(statements).toHaveLength(13);
 	expect(statements.map((statement) => statement.values.length)).toEqual([
-		5, 2, 2, 2, 5, 3, 3, 3, 4, 3, 2, 2,
+		5, 2, 2, 2, 5, 3, 3, 3, 4, 3, 2, 2, 2,
 	]);
 	for (const [i, statement] of statements.entries()) {
 		expect(statement.sql.match(/\?/gu)?.length).toBe(statement.values.length);
@@ -59,7 +59,7 @@ it("every own-tombstone read uses pair index lookups followed by primary-key see
 	const f = setupStore("SQLite");
 	try {
 		const statements = removalCommitStatements(target(50), OP, "1");
-		for (const statement of statements.slice(1, 11)) {
+		for (const statement of [...statements.slice(1, 11), ...statements.slice(12)]) {
 			const plans = f.db
 				.prepare(`EXPLAIN QUERY PLAN ${statement.sql}`)
 				.all(...statement.values) as { detail: string }[];
@@ -96,6 +96,7 @@ function successfulResults() {
 		{ results: [{ complete: 1 }] },
 		{ results: [{ group_id: "g00", device_id: "d1", removal_seq: 1 }] },
 		{ results: [{ available: 1 }] },
+		write(0),
 	];
 }
 
@@ -127,7 +128,7 @@ it("A6 malformed commit receipts and backend failures report device_removal_inco
 		const operations = new DeviceRemovalOperations({
 			all: async () => ({ results: [] }),
 			batch: async (statements) => {
-				if (statements.length === 12) return results();
+				if (statements.length === 13) return results();
 				return [
 					{
 						results: [

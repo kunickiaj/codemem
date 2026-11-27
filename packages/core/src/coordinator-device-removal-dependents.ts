@@ -159,6 +159,7 @@ export interface RemovalDependents {
 	/** Receipts, audit rows, memberships, bootstrap grants and join requests, in that order. */
 	writes: RemovalDependentStatement[];
 	complete: RemovalDependentStatement;
+	invalidate: RemovalDependentStatement;
 }
 
 export function removalDependentStatements(
@@ -175,6 +176,19 @@ export function removalDependentStatements(
 			joinRequestStatement(own, actorId, now),
 		],
 		complete: completeStatement(own),
+		// A last enrollment can revoke memberships outside its tombstone group.
+		// The receipt identifies the scope, whose group may have changed since the grant.
+		invalidate: {
+			sql: `UPDATE groups SET readiness_generation=NULL WHERE readiness_generation IS NOT NULL AND group_id IN (
+ SELECT t.group_id FROM coordinator_device_removals t WHERE ${own.sql}
+ UNION ALL
+ SELECT s.group_id FROM coordinator_device_removals t
+ JOIN coordinator_scope_memberships m ON m.device_id=t.device_id
+ ${OWN_RECEIPT_JOIN_SQL}
+ JOIN coordinator_scopes s ON s.scope_id=r.scope_id
+ WHERE ${own.sql})`,
+			values: [...own.values, ...own.values],
+		},
 	};
 }
 

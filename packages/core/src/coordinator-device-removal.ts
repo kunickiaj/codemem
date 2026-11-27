@@ -784,10 +784,7 @@ AND (requesting_device_id = ? OR requested_device_id = ?) AND ${OWN_TOMBSTONE_SQ
 		},
 		dependents.complete,
 		...singleRemovalReads(removalId, target),
-		{
-			sql: `UPDATE groups SET readiness_generation = NULL WHERE group_id = ? AND ${OWN_TOMBSTONE_SQL}`,
-			values: [input.groupId, ...own],
-		},
+		dependents.invalidate,
 	];
 }
 

@@ -3794,6 +3794,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope> {
+		return this.db.transaction(() => this.createScopeSync(opts)).immediate();
+	}
+
+	private createScopeSync(opts: CoordinatorCreateScopeInput): CoordinatorScope {
 		const normalized = normalizeCoordinatorCreateScopeInput(opts);
 		if (this.getScopeSync(normalized.scopeId)) throw new Error("scopeId already exists.");
 		const now = nowISO();
@@ -3816,6 +3820,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				now,
 				now,
 			);
+		this.db.prepare(INVALIDATE_CHANGED_GROUP).run(normalized.groupId);
 		const scope = this.getScopeSync(normalized.scopeId);
 		if (!scope) throw new Error("scope insert returned no row");
 		return scope;
