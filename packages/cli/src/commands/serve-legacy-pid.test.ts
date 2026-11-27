@@ -84,6 +84,31 @@ async function beta3Viewer(): Promise<{ viewer: ChildProcess; port: number }> {
 
 const allowNativeRuntime = async () => true;
 
+/**
+ * Records what this process would send to a waiting background parent. The
+ * stub never calls the send callback, so nothing disconnects the test worker.
+ */
+function captureStartupReports(): { reports: unknown[]; restore(): void } {
+	const reports: unknown[] = [];
+	const send = process.send;
+	const connected = Object.getOwnPropertyDescriptor(process, "connected");
+	vi.stubEnv("CODEMEM_VIEWER_STARTUP_REPORT", "1");
+	process.send = ((message: unknown) => {
+		reports.push(message);
+		return true;
+	}) as typeof process.send;
+	Object.defineProperty(process, "connected", { value: true, configurable: true });
+	return {
+		reports,
+		restore() {
+			process.send = send;
+			if (connected) Object.defineProperty(process, "connected", connected);
+			else Reflect.deleteProperty(process, "connected");
+			vi.unstubAllEnvs();
+		},
+	};
+}
+
 describe("a running Viewer from before the database lock", () => {
 	it("refuses a start on another port instead of running beside it", async () => {
 		const { viewer, port } = await beta3Viewer();
@@ -123,6 +148,35 @@ describe("a running Viewer from before the database lock", () => {
 		expect(stopped).toBe(true);
 		expect(worker.signalCode).toBe("SIGTERM");
 		expect(existsSync(workerPidPath)).toBe(false);
+	});
+
+	it("tells a waiting background parent why the start was refused", async () => {
+		const { viewer, port } = await beta3Viewer();
+		const otherPort = String(await freePort());
+		const capture = captureStartupReports();
+		try {
+			await runServeInvocation(
+				resolveServeInvocation("start", {
+					dbPath: linkedDbPath,
+					host: "127.0.0.1",
+					port: otherPort,
+					foreground: true,
+				}),
+				{ nativeRuntimeAllowsServeStart: allowNativeRuntime, stopExistingViewer },
+			);
+		} finally {
+			capture.restore();
+		}
+
+		expect(capture.reports).toEqual([
+			{
+				type: "codemem-viewer-startup",
+				state: "failed",
+				message: expect.stringContaining(
+					`is already managed by viewer 127.0.0.1:${port} (pid ${viewer.pid})`,
+				),
+			},
+		]);
 	});
 
 	it("is stopped by `serve stop` on its port, which also removes its old record", async () => {

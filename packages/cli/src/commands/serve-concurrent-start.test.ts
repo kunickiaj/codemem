@@ -142,7 +142,11 @@ describe("concurrent Viewer starts on one database", () => {
 		expect(results.map((result) => result.code).sort(), transcript).toEqual([0, 1]);
 		const winner = results.find((result) => result.code === 0);
 		const loser = results.find((result) => result.code === 1);
-		expect(loser?.output).toMatch(/Another codemem viewer is already using|is not answering/);
+		// The losing start refuses at the lock, or, if the winner already serves,
+		// at the PID record check before it; either way it reports why.
+		expect(loser?.output).toMatch(
+			/Another codemem viewer is already using|Another process holds the viewer lock|is already managed by viewer/,
+		);
 		expect(owner?.port).toBe(winner?.port);
 		// The Viewer writes its record once it serves; the losing start writes none.
 		expect(await waitFor(() => viewerPidRecord() !== null, 30_000), transcript).toBe(true);

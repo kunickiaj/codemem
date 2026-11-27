@@ -656,7 +656,9 @@ async function nativeRuntimeAllowsServeStart(
 
 	const preflight = await preflightServeNativeRuntime(invocation);
 	if (preflight.state === "already_running") {
-		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
+		const message = `Viewer already running at http://${invocation.host}:${invocation.port}`;
+		p.log.warn(message);
+		reportViewerStartup({ state: "failed", message });
 		if (!invocation.background) process.exitCode = 1;
 		return false;
 	}
@@ -664,6 +666,7 @@ async function nativeRuntimeAllowsServeStart(
 
 	p.intro("codemem viewer");
 	for (const line of preflight.diagnostics) p.log.error(line);
+	reportViewerStartup({ state: "failed", message: preflight.diagnostics.join(" ") });
 	process.exitCode = 1;
 	return false;
 }
@@ -1465,13 +1468,14 @@ export async function runServeInvocation(
 		port: invocation.port,
 	});
 	if (runtimeConflict) {
+		const message = `Database runtime at ${viewerRuntimeDir(dbPath)} is already managed by viewer ${runtimeConflict.host}:${runtimeConflict.port} (pid ${runtimeConflict.pid})`;
 		p.intro("codemem viewer");
-		p.log.error(
-			`Database runtime at ${viewerRuntimeDir(dbPath)} is already managed by viewer ${runtimeConflict.host}:${runtimeConflict.port} (pid ${runtimeConflict.pid})`,
-		);
+		p.log.error(message);
 		p.log.info(
 			"Use the matching --host/--port, stop the existing viewer first, or use a separate db/runtime folder for another viewer.",
 		);
+		// A background start's parent waits for this Viewer's result.
+		reportViewerStartup({ state: "failed", message });
 		process.exitCode = 1;
 		return;
 	}
@@ -1614,7 +1618,9 @@ export const serveCommand = serveCmd.action(
 			}
 			await runServeInvocation(resolveServeInvocation(normalizedAction, opts));
 		} catch (err) {
-			p.log.error(err instanceof Error ? err.message : String(err));
+			const message = err instanceof Error ? err.message : String(err);
+			p.log.error(message);
+			reportViewerStartup({ state: "failed", message });
 			process.exitCode = 1;
 		}
 	},
