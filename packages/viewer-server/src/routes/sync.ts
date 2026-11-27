@@ -207,7 +207,6 @@ import {
 	setPeerProjectFilterChecked,
 	summarizeInboundScopeRejections,
 	supportsSyncFeature,
-	syncScopeResetRequiredPayload,
 	teamIdsForBindingRead,
 	teamInvitationGroup,
 	updatePeerAddresses,
@@ -5490,8 +5489,7 @@ function serveAuthorizedSnapshot(
 				negotiatedCapability: negotiatedSyncCapability(c),
 			},
 		);
-		if (!scopeRequest.ok)
-			return syncScopeResetResponse(c, store, scopeRequest.reason, options.syncChannelPeerPin);
+		if (!scopeRequest.ok) return syncScopeResetResponse(c, scopeRequest.reason);
 		const pageRequest = snapshotPageRequest((name) => c.req.query(name), localDeviceId);
 		const result = loadMemorySnapshotPageForPeer(store.db, {
 			...pageRequest,
@@ -5551,7 +5549,7 @@ function serveChannelRead(c: Context, options: SyncChannelReadOptions): Response
 	}
 	const limited = rateLimitedResponse(c, auth.deviceId, true);
 	if (limited) return limited;
-	if (c.req.path === "/v1/status") return serveChannelStatus(c, store, auth, syncChannelPeerPin);
+	if (c.req.path === "/v1/status") return serveChannelStatus(c, store, auth);
 	return serveAuthorizedSnapshot(c, store, auth, { syncChannelPeerPin });
 }
 
@@ -5562,31 +5560,19 @@ function syncScopeProvided(
 	return syncChannelPeerPin !== undefined || provided;
 }
 
-function syncScopeResetResponse(
-	c: Context,
-	store: MemoryStore,
-	preciseReason: SyncScopeResetReason,
-	syncChannelPeerPin?: SyncProtocolRouteOptions["syncChannelPeerPin"],
-): Response {
+/**
+ * Refuses a request whose scope this peer may not use. The answer names no
+ * boundary: the default stream's is not the peer's to see, and a refused scope has
+ * none it may use. Resets after authorization carry their own scope's boundary.
+ */
+function syncScopeResetResponse(c: Context, preciseReason: SyncScopeResetReason): Response {
 	const reason = peerFacingScopeResetReason(preciseReason);
 	if (reason !== preciseReason)
 		logWithheldScopeDenial(preciseReason, c.req.query(SYNC_SCOPE_QUERY_PARAM) ?? null);
-	if (syncChannelPeerPin !== undefined) {
-		// An unauthorized scope must not disclose the legacy default boundary.
-		return c.json(peerFacingScopeReset(reason, null), 409);
-	}
-	return c.json(
-		syncScopeResetRequiredPayload(getSyncResetState(store.db), reason, LOCAL_SYNC_CAPABILITY, null),
-		409,
-	);
+	return c.json(peerFacingScopeReset(reason, null), 409);
 }
 
-function serveChannelStatus(
-	c: Context,
-	store: MemoryStore,
-	auth: AuthenticatedSyncPeer,
-	syncChannelPeerPin: SyncProtocolRouteOptions["syncChannelPeerPin"],
-) {
+function serveChannelStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
 	try {
 		const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const authorization = syncScopeAuthorizationContext(store, auth, deviceId);
@@ -5594,17 +5580,15 @@ function serveChannelStatus(
 			...authorization,
 			negotiatedCapability: negotiatedSyncCapability(c),
 		});
-		if (!scopeRequest.ok)
-			return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
+		if (!scopeRequest.ok) return syncScopeResetResponse(c, scopeRequest.reason);
 		if (scopeRequest.mode !== "scoped" || !scopeRequest.scope_id)
-			return syncScopeResetResponse(c, store, "missing_scope", syncChannelPeerPin);
+			return syncScopeResetResponse(c, "missing_scope");
 		const scopes = listAuthorizedScopesForPeer(store.db, {
 			...authorization,
 			scopeId: scopeRequest.scope_id,
 		});
 		const selectedScope = scopes[0];
-		if (!selectedScope || scopes.length !== 1)
-			return syncScopeResetResponse(c, store, "missing_scope", syncChannelPeerPin);
+		if (!selectedScope || scopes.length !== 1) return syncScopeResetResponse(c, "missing_scope");
 		return c.json({
 			device_id: deviceId,
 			protocol_version: SYNC_PROTOCOL_VERSION,
@@ -5762,7 +5746,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				},
 			);
 			if (!scopeRequest.ok) {
-				return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
+				return syncScopeResetResponse(c, scopeRequest.reason);
 			}
 			const since = c.req.query("since") ?? null;
 			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
@@ -5912,7 +5896,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		});
 		if (!scopeRequest.ok) {
 			recordInboundScopeFailure(scopeContext);
-			return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
+			return syncScopeResetResponse(c, scopeRequest.reason);
 		}
 		if (!Array.isArray(body.ops)) {
 			return c.json({ error: "invalid_ops" }, 400);

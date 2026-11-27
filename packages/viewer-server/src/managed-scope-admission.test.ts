@@ -434,6 +434,38 @@ describe("origin cleanup after managed membership revocation", () => {
 	});
 });
 
+describe("direct requests for a scope the peer may not use", () => {
+	const refusal = {
+		error: "reset_required",
+		reset_required: true,
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		reason: "missing_scope",
+		scope_id: null,
+	};
+	it.each([
+		[
+			"a push",
+			"/v1/ops",
+			{
+				method: "POST" as const,
+				body: { scope_id: "not-granted", sync_capability: "scoped", ops: [] },
+			},
+		],
+		["an ops read", "/v1/ops?scope_id=not-granted", {}],
+		["a snapshot read", "/v1/snapshot?scope_id=not-granted", {}],
+	])("refuses %s without the default stream's reset boundary", async (_label, path, options) => {
+		// Arrange: the default stream has a boundary the refusal could disclose.
+		getSyncResetState(root.store.db);
+		const contentBefore = contentState();
+		// Act
+		const response = await root.request(path, root.peer.keysDir, options);
+		// Assert
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual(refusal);
+		expect(contentState()).toEqual(contentBefore);
+	});
+});
+
 describe("unknown scope rejection does not allocate caller-selected reset boundaries", () => {
 	it.each(["legacy", "unsupported"])(
 		"rejects repeated authenticated %s pushes without disclosing the default reset boundary",
