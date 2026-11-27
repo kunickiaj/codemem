@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
 	initTestSchema,
 	MemoryStore,
 	readCoordinatorSyncConfig,
+	serializeRecipientPolicyTeamMutation,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
@@ -15,19 +16,26 @@ const NOW = "2026-11-27T12:00:00.000Z";
 const REFUSAL = { error: "access_change_needs_admin_device" };
 
 let directory: string;
+let keysDir: string;
 let store: MemoryStore;
 let adminSecret: string;
 let app: ReturnType<typeof createApp>;
 
-beforeEach(() => {
+/**
+ * Opens a store for this test. Without a device identity the store runs as the
+ * placeholder device, and its next identity write would create keys, a device row
+ * and adopt captures, so a refusal must not reach one.
+ */
+function openStore(options: { withDeviceIdentity: boolean }) {
 	directory = mkdtempSync(join(tmpdir(), "access-decision-recheck-"));
-	const keysDir = join(directory, "keys");
+	keysDir = join(directory, "keys");
 	vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
 	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+	vi.stubEnv("CODEMEM_DEVICE_ID", undefined);
 	const dbPath = join(directory, "mem.sqlite");
 	const db = connect(dbPath);
 	initTestSchema(db);
-	ensureDeviceIdentity(db, { keysDir });
+	if (options.withDeviceIdentity) ensureDeviceIdentity(db, { keysDir });
 	db.close();
 	store = new MemoryStore(dbPath);
 	adminSecret = "fixture-admin-secret";
@@ -41,7 +49,9 @@ beforeEach(() => {
 				sync_coordinator_admin_secret: adminSecret,
 			}),
 	});
-});
+}
+
+beforeEach(() => openStore({ withDeviceIdentity: true }));
 
 afterEach(() => {
 	store.close();
@@ -70,13 +80,18 @@ function sendWhileSecretIsRemoved(method: string, path: string, body: unknown) {
 	} as RequestInit);
 }
 
-/** Everything these routes can change. */
+/** Everything these routes can change, including this device's own identity. */
 function accessState() {
 	return {
 		recipients: store.db.prepare("SELECT * FROM project_recipients").all(),
 		resolutions: store.db.prepare("SELECT * FROM recipient_policy_review_resolutions").all(),
 		mappings: store.db.prepare("SELECT * FROM project_scope_mappings ORDER BY id").all(),
-		memories: store.db.prepare("SELECT id, scope_id FROM memory_items ORDER BY id").all(),
+		memories: store.db
+			.prepare("SELECT id, scope_id, origin_device_id, actor_id FROM memory_items ORDER BY id")
+			.all(),
+		actors: store.db.prepare("SELECT * FROM actors ORDER BY actor_id").all(),
+		devices: store.db.prepare("SELECT * FROM sync_device").all(),
+		keys: existsSync(keysDir) ? readdirSync(keysDir).sort() : [],
 	};
 }
 
@@ -184,6 +199,161 @@ describe("access decisions when the admin secret goes while the body arrives", (
 
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual(REFUSAL);
+		expect(accessState()).toEqual(before);
+	});
+});
+
+const EDGE_TO_TEAM = {
+	version: 1,
+	changes: [
+		{
+			canonicalProjectIdentity: "project",
+			recipient: { recipientKind: "team", teamId: "team-a" },
+			action: "add",
+		},
+	],
+	reviewedPolicyDigest: `edge-preview-v1:${"0".repeat(64)}`,
+};
+
+it("refuses an edge commit for a Team when the admin secret goes while it waits on the Team queue", async () => {
+	const before = accessState();
+	let release = () => {};
+	let entered = () => {};
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const queue = serializeRecipientPolicyTeamMutation(store.db, "team-a", async () => {
+		entered();
+		await held;
+	});
+	await started;
+	// The body is read at once; only the Team queue stands between the gate and the write.
+	const pending = app.request("/api/sync/recipient-policy/v1/edges/commit", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(EDGE_TO_TEAM),
+	});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	adminSecret = "";
+	release();
+	await queue;
+
+	const response = await pending;
+
+	expect(response.status).toBe(403);
+	expect(await response.json()).toEqual(REFUSAL);
+	expect(accessState()).toEqual(before);
+});
+
+describe("on a store whose device identity and local person do not exist yet", () => {
+	beforeEach(() => {
+		store.close();
+		vi.unstubAllEnvs();
+		rmSync(directory, { recursive: true, force: true });
+		openStore({ withDeviceIdentity: false });
+		store.db.prepare("DELETE FROM actors").run();
+		// A memory captured before this device had an identity, which adoption would restamp.
+		const session = Number(
+			store.db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, user, tool_version) VALUES (?, '/tmp/p', 'p', 'u', 't')",
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		store.db
+			.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+			 scope_id, visibility, active, origin_device_id, actor_id)
+			 VALUES (?, 'discovery', 'Pending', 'Pending', ?, ?, 'local-default', 'shared', 1, 'local', 'local:local')`)
+			.run(session, NOW, NOW);
+		expect(store.deviceId).toBe("local");
+	});
+
+	it.each([
+		[
+			"a review decision",
+			"/api/sync/recipient-policy/v1/review/resolve",
+			{ reviewItemId: "review", sourceFingerprint: "fingerprint", decision: "keep_project_local" },
+		],
+		[
+			"several review decisions",
+			"/api/sync/recipient-policy/v1/review/resolve-bulk",
+			{
+				requests: [
+					{
+						reviewItemId: "review",
+						sourceFingerprint: "fingerprint",
+						decision: "keep_project_local",
+					},
+				],
+			},
+		],
+	])("refuses %s without creating the local person", async (_label, path, body) => {
+		const before = accessState();
+
+		const response = await sendWhileSecretIsRemoved("POST", path, body);
+
+		expect(response.status).toBe(403);
+		expect(accessState()).toEqual(before);
+	});
+
+	it.each([
+		["one mapping", "/api/sync/sharing-domains/project-mappings", false],
+		["several mappings", "/api/sync/sharing-domains/project-mappings/bulk", true],
+	])(
+		"refuses a widening save of %s without creating this device's identity",
+		async (_label, path, bulk) => {
+			const id = insertLocalMapping("git:x");
+			const mapping = {
+				id,
+				workspace_identity: "git:x",
+				project_pattern: "git:other",
+				scope_id: "local-default",
+				priority: 10,
+			};
+			const before = accessState();
+
+			const response = await sendWhileSecretIsRemoved(
+				"PUT",
+				path,
+				bulk ? { mappings: [mapping] } : mapping,
+			);
+
+			expect(response.status).toBe(403);
+			expect(accessState()).toEqual(before);
+		},
+	);
+
+	it("refuses removing a mapping without creating this device's identity", async () => {
+		const id = insertLocalMapping("git:x");
+		const before = accessState();
+
+		const response = await sendWhileSecretIsRemoved(
+			"DELETE",
+			`/api/sync/sharing-domains/project-mappings/${id}`,
+			{},
+		);
+
+		expect(response.status).toBe(403);
+		expect(accessState()).toEqual(before);
+	});
+
+	it("previews a bulk mapping save without creating this device's identity", async () => {
+		const before = accessState();
+
+		const response = await app.request("/api/sync/sharing-domains/project-mappings/bulk/check", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				mappings: [
+					{ workspace_identity: "git:new", project_pattern: "git:new", scope_id: "local-default" },
+				],
+			}),
+		});
+
+		expect(response.status).toBe(200);
 		expect(accessState()).toEqual(before);
 	});
 });
