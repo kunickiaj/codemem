@@ -30,7 +30,7 @@ function removalReview(value: Record<string, unknown>, deviceId: string) {
 	return { group_id: groupId, key_id: keyId, coordinator_origin: origin, expected_digest: digest };
 }
 
-/** No fallback to Retire, local-only Remove, or a second mutation after an unknown reply. */
+/** No fallback to local-only Remove, or a second mutation after an unknown reply. */
 export async function confirmAndBlockEnrolledDevice(
 	device: { deviceId: string; displayName: string },
 	confirm = openSyncConfirmDialog,
