@@ -62,6 +62,8 @@ beforeEach(() => {
 		(document.getElementById("projectsPanel") as HTMLElement).hidden = false;
 	});
 	request = deferred();
+	// Tests that never start a sync leave this unobserved until afterEach settles it.
+	request.promise.catch(() => undefined);
 	vi.mocked(api.triggerSync).mockReturnValue(request.promise);
 	act(() => {
 		disposeHost = mountOperationStatusHost(host);
@@ -177,6 +179,21 @@ describe("Sync all devices header status", () => {
 			/unknown|could not confirm|couldn.t confirm|unable to confirm/i,
 		);
 		expect(host.textContent).not.toMatch(/cancelled|canceled|completed|done|failed to start/i);
+	});
+});
+
+describe("Sync all devices before the person is known", () => {
+	it("explains the wait and starts nothing", async () => {
+		state.viewerActorId = null;
+
+		await act(async () => syncButton.click());
+
+		expect(api.triggerSync).not.toHaveBeenCalled();
+		expect(showGlobalNotice).toHaveBeenCalledExactlyOnceWith(
+			"Still checking who is signed in. Try again in a moment.",
+			"warning",
+		);
+		expect(syncButton.disabled).toBe(false);
 	});
 });
 

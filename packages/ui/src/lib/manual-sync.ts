@@ -18,7 +18,11 @@ export function isManualSyncPending(): boolean {
  */
 export async function runManualSync(refresh: () => void): Promise<boolean> {
 	const actorId = state.viewerActorId;
-	if (syncPending || actorId === null) return false;
+	if (syncPending) return false;
+	if (actorId === null) {
+		showGlobalNotice("Still checking who is signed in. Try again in a moment.", "warning");
+		return false;
+	}
 	syncPending = true;
 	const operation = startOperationStatus("Syncing devices…", "You can keep browsing.");
 	const finish = (message: string, tone: "warning" | "success") => {

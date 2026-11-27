@@ -3427,13 +3427,13 @@ describe("Devices header actions", () => {
 		expect(onSyncAll).toHaveBeenCalledOnce();
 	});
 
-	it("keeps Sync all devices off until the person is known", () => {
+	it("keeps Sync all devices clickable before the person is known, since Devices is not redrawn when they load", () => {
 		state.viewerActorId = null;
 		mount(intent(), reconciliation(), { onSyncAll: vi.fn(async () => true) });
 
 		const button = document.querySelector<HTMLButtonElement>(".devices-header-actions button");
 		expect(button?.textContent).toBe("Sync all devices");
-		expect(button?.disabled).toBe(true);
+		expect(button?.disabled).toBe(false);
 	});
 
 	it("lists older device history from the host and refreshes Devices after attaching", async () => {

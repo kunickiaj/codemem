@@ -17,4 +17,13 @@ describe("Advanced recovery layout", () => {
 		expect(main).not.toContain('id="syncNowButton"');
 		expect(diagnostics).not.toContain('id="syncNowButton"');
 	});
+
+	it("keeps the Sync panel's markup balanced so each sub-view stays inside its parent", () => {
+		const main = html.slice(
+			html.indexOf('id="syncMainView"'),
+			html.indexOf('id="syncDiagnosticsView"'),
+		);
+
+		expect(main.match(/<div\b/g)?.length).toBe(main.match(/<\/div>/g)?.length);
+	});
 });

@@ -58,7 +58,7 @@ vi.mock("./components/diagnostics", () => ({
 	mountDiagnosticsDrawer: vi.fn(),
 	recordViewerConnectionEvent: vi.fn(),
 }));
-vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
+vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn(), pushToast: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	loadDeviceIdentityInventory: vi.fn(async () => ({ version: 1, items: [] })),
 	loadProjectScopeInventory: vi.fn(async () => ({
@@ -263,7 +263,7 @@ describe("manual sync app lifecycle", () => {
 		expect(state.viewerActorId).toBeNull();
 		expect(mocks.triggerSync).not.toHaveBeenCalled();
 		expect(document.getElementById("operationStatusRoot")?.textContent).toBe("");
-	});
+	}, 20_000); // The first test in the file pays for importing the whole app.
 
 	it("starts Sync all devices only on request, after the initial status completes", async () => {
 		// Arrange: initialization must know the person through the real status load path.
