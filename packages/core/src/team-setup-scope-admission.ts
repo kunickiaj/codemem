@@ -2,7 +2,7 @@ import type { Database } from "./db.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { mappingsHoldProject, readScopeMappings } from "./scope-project-mappings.js";
 import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
-import { teamRecoveryExcludedDeviceIds } from "./team-recovery-exclusions.js";
+import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
 
 /**
  * Scope admission for devices tied to a reviewed Team setup, decided from the
@@ -13,18 +13,25 @@ import { teamRecoveryExcludedDeviceIds } from "./team-recovery-exclusions.js";
  *   current mapping of any provenance (an exact one, or a pattern-only one that
  *   matches the Project), or stored memories from that Project;
  * - the device is tied to that Team: bound to a Team member in any binding
- *   state, or reviewed in the Team's setup. This device is never refused;
+ *   state, reviewed in the Team's setup, or left out of the Team by a Team
+ *   recovery. This device is never refused;
  * - the Team is quarantined (inactive, needing setup), or it is active and the
  *   device is not eligible for it now.
  *
  * On an active Team, a device with no `included` decision, or one a Team
- * recovery left out, is refused outright. An `included` decision alone does not
- * admit a device either: its person must still be an active member with an
- * active identity, and its binding must be active at the decided version. A
- * device that fails that is refused unless current policy gives it every Team
- * Project the scope holds some other way, such as a direct share. A Project
- * whose Team recipient quarantine revoked and recovery skipped still counts as
- * a Team Project here.
+ * recovery left out, is refused outright. A recovery exclusion ties the device
+ * to the Team on its own, so rebinding the device to someone outside the Team
+ * does not end it. An `included` decision alone does not admit a device
+ * either: its person must still be an active member with an active identity,
+ * and its binding must be active at the decided version. A device that fails
+ * that is refused unless current policy gives it every Team Project the scope
+ * holds some other way, such as a direct share.
+ *
+ * An eligible device has the Team's Projects through the Team, so it is
+ * checked only for a Project the Team no longer shares: one whose Team
+ * recipient is still revoked as quarantine left it, which is how a recovery
+ * that skips the Project keeps it. The scope still holds that Project's
+ * memories, so the device needs the Project some other way too.
  *
  * Devices with no tie to the Team keep their access, and a Team device keeps
  * scopes that hold none of the Team's Projects. Nothing is stored, so the Team
@@ -54,22 +61,36 @@ const TEAM_DEVICE_SQL = `SELECT 1 WHERE EXISTS (
 const INCLUDED_SQL = `SELECT 1 FROM policy_team_device_decisions
 	WHERE team_id = ? AND device_id = ? AND decision = 'included'`;
 
-// The Team's Project identities, from its setup and its recipients. A recipient
-// counts while active, or revoked by quarantine, which keeps the setup provenance
-// and marks it as needing setup. A Project someone removed from the Team does not.
-const TEAM_PROJECTS_SQL = `SELECT canonical_project_identity AS identity FROM project_recipients
+// The Team's Projects, from its setup and its recipients, each as the identity
+// recipient policy knows it by and one identity its memories may carry. A
+// recipient counts while active, or revoked by quarantine, which keeps the setup
+// provenance and marks it as needing setup. A Project someone removed from the
+// Team does not.
+const TEAM_PROJECTS_SQL = `SELECT canonical_project_identity AS identity,
+	canonical_project_identity AS alias FROM project_recipients
 	WHERE recipient_kind = 'team' AND recipient_id = ? AND (
 	  status = 'active'
 	  OR (status = 'revoked' AND provenance = 'reviewed_team_setup' AND migration_state = 'needs_setup')
 	)
 	UNION
-	SELECT project.resolved_project_identity FROM legacy_team_setup_draft_projects AS project
+	SELECT project.resolved_project_identity, project.resolved_project_identity
+	FROM legacy_team_setup_draft_projects AS project
 	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
 	WHERE draft.candidate_id = ? AND project.resolved_project_identity IS NOT NULL
 	UNION
-	SELECT project.source_project_identity FROM legacy_team_setup_draft_projects AS project
+	SELECT COALESCE(project.resolved_project_identity, project.source_project_identity),
+	project.source_project_identity
+	FROM legacy_team_setup_draft_projects AS project
 	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
 	WHERE draft.candidate_id = ?`;
+
+// Projects whose Team recipient is still as quarantine left it. On an active Team
+// that means whatever made the Team active again did not share them again. A
+// recipient a person revoked is the ordinary removal of a Project from a Team,
+// which recipient policy enforces the same way with or without a recovery.
+const UNSHARED_PROJECTS_SQL = `SELECT canonical_project_identity FROM project_recipients
+	WHERE recipient_kind = 'team' AND recipient_id = ? AND status = 'revoked'
+	  AND provenance = 'reviewed_team_setup' AND migration_state = 'needs_setup'`;
 
 const SETUP_TARGET_SQL = `SELECT 1 FROM legacy_team_setup_draft_projects AS project
 	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
@@ -108,26 +129,45 @@ function isTeamDevice(db: Database, team: SetupTeam, deviceId: string): boolean 
 	return hasRow(db, TEAM_DEVICE_SQL, deviceId, team.team_id, deviceId, team.candidate_id ?? "");
 }
 
-function teamProjectIdentities(db: Database, team: SetupTeam): string[] {
-	const candidate = team.candidate_id ?? "";
-	return db.prepare(TEAM_PROJECTS_SQL).pluck().all(team.team_id, candidate, candidate) as string[];
+interface TeamProject {
+	/** The identity recipient policy knows the Project by. */
+	identity: string;
+	/** Every identity its memories may carry: that one, and each source identity a setup resolved to it. */
+	aliases: string[];
 }
 
-/** The Team's Project identities that the scope holds: a setup target, a mapping, or stored memories. */
-function teamProjectsInScope(db: Database, team: SetupTeam, scopeId: string): string[] {
-	const mappings = readScopeMappings(db, scopeId);
-	return teamProjectIdentities(db, team).filter((identity) => {
-		if (hasRow(db, SETUP_TARGET_PROJECT_SQL, team.candidate_id ?? "", scopeId, identity, identity))
-			return true;
-		if (mappingsHoldProject(mappings, [identity])) return true;
-		const json = JSON.stringify([identity]);
-		return hasRow(db, STORED_SQL, scopeId, json, json);
-	});
+function teamProjects(db: Database, team: SetupTeam): TeamProject[] {
+	const candidate = team.candidate_id ?? "";
+	const rows = db.prepare(TEAM_PROJECTS_SQL).all(team.team_id, candidate, candidate) as Array<{
+		identity: string;
+		alias: string;
+	}>;
+	const aliases = new Map<string, string[]>();
+	for (const row of rows)
+		aliases.set(row.identity, [...(aliases.get(row.identity) ?? []), row.alias]);
+	return [...aliases].map(([identity, names]) => ({ identity, aliases: names }));
+}
+
+/** Whether the scope holds the Project: as a setup target, by a mapping, or as stored memories. */
+function scopeHoldsProject(
+	db: Database,
+	team: SetupTeam,
+	scopeId: string,
+	project: TeamProject,
+	mappings: ReturnType<typeof readScopeMappings>,
+): boolean {
+	const candidate = team.candidate_id ?? "";
+	const target = project.aliases.some((alias) =>
+		hasRow(db, SETUP_TARGET_PROJECT_SQL, candidate, scopeId, alias, alias),
+	);
+	if (target || mappingsHoldProject(mappings, project.aliases)) return true;
+	const json = JSON.stringify(project.aliases);
+	return hasRow(db, STORED_SQL, scopeId, json, json);
 }
 
 function scopeHoldsTeamProject(db: Database, team: SetupTeam, scopeId: string): boolean {
 	if (hasRow(db, SETUP_TARGET_SQL, team.candidate_id ?? "", scopeId)) return true;
-	const identities = teamProjectIdentities(db, team);
+	const identities = teamProjects(db, team).flatMap((project) => project.aliases);
 	if (identities.length === 0) return false;
 	if (mappingsHoldProject(readScopeMappings(db, scopeId), identities)) return true;
 	const json = JSON.stringify(identities);
@@ -143,24 +183,32 @@ function policyAuthorizes(db: Database, projectIdentity: string, deviceId: strin
 
 /**
  * Whether an active Team refuses the scope to one of its devices. The cheap
- * rows are read first: most devices are eligible and never reach the Projects.
+ * rows are read first: most devices are eligible, on a Team that shares every
+ * one of its Projects, and never reach the Projects.
  */
 function activeTeamRefuses(
 	db: Database,
 	team: SetupTeam,
-	input: { scopeId: string; deviceId: string },
+	input: { scopeId: string; deviceId: string; leftOut: boolean },
 ): boolean {
 	const { scopeId, deviceId } = input;
-	const leftOut = teamRecoveryExcludedDeviceIds(db, team.team_id).has(deviceId);
-	if (leftOut || !hasRow(db, INCLUDED_SQL, team.team_id, deviceId))
+	if (input.leftOut || !hasRow(db, INCLUDED_SQL, team.team_id, deviceId))
 		return scopeHoldsTeamProject(db, team, scopeId);
 	const eligibility = readTeamDeviceEligibility(db, team.team_id);
-	if (eligibility?.status === "eligible" && eligibility.eligibleDeviceIds.includes(deviceId))
-		return false;
-	// Included, but its person or binding no longer makes it a Team device.
-	return teamProjectsInScope(db, team, scopeId).some(
-		(identity) => !policyAuthorizes(db, identity, deviceId),
-	);
+	const eligible =
+		eligibility?.status === "eligible" && eligibility.eligibleDeviceIds.includes(deviceId);
+	// An eligible device needs another path only to a Project the Team no longer shares.
+	// A device that is included, but whose person or binding no longer makes it a
+	// Team device, needs one to every Team Project.
+	const unshared = eligible
+		? new Set(db.prepare(UNSHARED_PROJECTS_SQL).pluck().all(team.team_id) as string[])
+		: null;
+	if (unshared?.size === 0) return false;
+	const mappings = readScopeMappings(db, scopeId);
+	return teamProjects(db, team)
+		.filter((project) => !unshared || unshared.has(project.identity))
+		.filter((project) => scopeHoldsProject(db, team, scopeId, project, mappings))
+		.some((project) => !policyAuthorizes(db, project.identity, deviceId));
 }
 
 // Answers are reused until any connection commits or this one writes, so a sync
@@ -210,8 +258,10 @@ function decideTeamSetupRefusal(
 	}
 	if (teams.length === 0 || input.deviceId === localDeviceId(db)) return false;
 	return teams.some((team) => {
-		if (!isTeamDevice(db, team, input.deviceId)) return false;
+		// A device a recovery left out stays tied to the Team whoever it is bound to now.
+		const leftOut = isTeamRecoveryExcluded(db, team.team_id, input.deviceId);
+		if (!leftOut && !isTeamDevice(db, team, input.deviceId)) return false;
 		if (team.status !== "active") return scopeHoldsTeamProject(db, team, input.scopeId);
-		return activeTeamRefuses(db, team, input);
+		return activeTeamRefuses(db, team, { ...input, leftOut });
 	});
 }

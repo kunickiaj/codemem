@@ -4,11 +4,16 @@ import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-le
 import { applyLegacyTeamSetupCompletionManifest } from "./legacy-team-setup-completion-manifest.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { recordTeamRecoveryExclusions } from "./team-recovery-exclusions.js";
 import {
 	DESKTOP,
+	insertActor,
+	inviteMember,
 	LAPTOP,
 	NOW,
+	PHONE,
 	PROJECT,
 	quarantinedTeam,
 	TABLET,
@@ -48,6 +53,33 @@ const leaveOutLaptop = () =>
 
 const refused = (deviceId: string) =>
 	isScopeDeviceAdmissionRefused(db, { scopeId: "scope-engineering", deviceId });
+
+const shareDirectly = (identityId: string) =>
+	run(
+		`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
+		 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
+		 VALUES (?, 'identity', ?, 'active', 'user', 'r1', 'user_managed', ?, ?, ?)`,
+		PROJECT,
+		identityId,
+		`direct-${identityId}`,
+		NOW,
+		NOW,
+	);
+
+/** A scope membership of the device, with the coordinator's proof of it, as a past refresh left them. */
+async function keepScopeProof(deviceId: string) {
+	run(
+		`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+		 VALUES ('scope-engineering', ?, 'member', 'active', 1, ?)`,
+		deviceId,
+		NOW,
+	);
+	await refreshTestScopeRows(db);
+}
+
+/** What a sync read of the scope by the device is answered with, from the cache and the kept proof. */
+const scopedRead = (deviceId: string) =>
+	getEffectiveCachedScopeAuthorization(db, { deviceId, scopeId: "scope-engineering" });
 
 const includeAgain = (deviceId: string) =>
 	run(
@@ -195,26 +227,85 @@ describe("sync admission for an active reviewed Team", () => {
 		run("UPDATE policy_team_memberships SET status = 'revoked' WHERE identity_id = 'identity-b'");
 		expect(refused("device-b")).toBe(true);
 
-		run(
-			`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
-			 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
-			 VALUES (?, 'identity', 'identity-b', 'active', 'user', 'r1', 'user_managed', 'direct-b', ?, ?)`,
-			PROJECT,
-			NOW,
-			NOW,
-		);
+		shareDirectly("identity-b");
 
 		expect(refused("device-b")).toBe(false);
 	});
 });
 
 describe("sync admission for a Project a recovery skipped", () => {
-	it("refuses a revoked member's device and serves an eligible one", () => {
-		// Arrange: the Team is active again, but its recipient for the Project stays revoked.
-		reactivate({ recipients: false });
-		run("UPDATE policy_team_memberships SET status = 'revoked' WHERE identity_id = 'identity-b'");
+	// The Team is active again, but its recipient for the Project stays revoked.
+	beforeEach(() => reactivate({ recipients: false }));
 
-		expect(refused("device-b")).toBe(true);
-		expect(refused("device-a")).toBe(false);
+	it("refuses an eligible device the scope that holds the Project, whatever proof it kept", async () => {
+		// Arrange: the Desktop kept its scope membership and the proof of it.
+		await keepScopeProof("device-b");
+
+		expect(scopedRead("device-b")).toMatchObject({ authorized: false, state: "policy_denied" });
+		expect(refused("device-a")).toBe(true);
 	});
+
+	it("serves an eligible device once the Team shares the Project again", async () => {
+		await keepScopeProof("device-b");
+
+		run("UPDATE project_recipients SET status = 'active', migration_state = 'completed'");
+
+		expect(scopedRead("device-b")).toMatchObject({ authorized: true, state: "authorized" });
+	});
+
+	it("serves an eligible device whose person the Project is also shared with directly", () => {
+		shareDirectly("identity-b");
+
+		expect(refused("device-b")).toBe(false);
+		expect(refused("device-a")).toBe(true);
+	});
+
+	it("checks the direct share once for a Project the setup knew by another identity", () => {
+		// Arrange: the setup resolved a second source identity to the same Project.
+		run(
+			`INSERT INTO legacy_team_setup_draft_projects(attempt_id, project_ref, source_project_identity,
+			 display_name, source_fingerprint, resolution_kind, resolved_project_identity,
+			 target_scope_id, updated_at)
+			 SELECT attempt_id, 'project-mirror', 'https://mirror.example.invalid/acme/api.git', 'API',
+			 'source-mirror', resolution_kind, resolved_project_identity, target_scope_id, updated_at
+			 FROM legacy_team_setup_draft_projects`,
+		);
+		run("UPDATE policy_team_memberships SET status = 'revoked' WHERE identity_id = 'identity-b'");
+		shareDirectly("identity-b");
+
+		expect(refused("device-b")).toBe(false);
+	});
+});
+
+describe("a Team recovery exclusion for a device that lost its tie to the Team", () => {
+	it.each([
+		["active", () => reactivate()],
+		["quarantined", () => undefined],
+	])(
+		"still refuses the device on an %s Team after it is bound to someone outside the Team",
+		async (_case, arrange) => {
+			// Arrange: a Phone that joined by invitation, so no setup ever reviewed it,
+			// is left out by a recovery and then bound to a person outside the Team.
+			arrange();
+			inviteMember(db, manifest.team_id);
+			await keepScopeProof("device-d");
+			recordTeamRecoveryExclusions(db, {
+				teamId: manifest.team_id,
+				devices: [
+					{
+						deviceId: "device-d",
+						fingerprint: PHONE.fingerprint,
+						reason: "blocked_by_coordinator",
+					},
+				],
+				now: NOW,
+			});
+			insertActor(db, "identity-z");
+
+			run("UPDATE identity_devices SET identity_id = 'identity-z' WHERE device_id = 'device-d'");
+
+			// Assert: refused from current state. Its cached scope membership was never refreshed.
+			expect(scopedRead("device-d")).toMatchObject({ authorized: false, state: "policy_denied" });
+		},
+	);
 });

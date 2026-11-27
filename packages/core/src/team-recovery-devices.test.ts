@@ -114,6 +114,7 @@ describe("Team recovery device plan", () => {
 		// Arrange: the Team made active again with no exclusion, as a plain reactivation would.
 		const laptop = { scopeId: "scope-engineering", deviceId: "device-a" };
 		run("UPDATE policy_teams SET status = 'active', migration_state = 'completed'");
+		run("UPDATE project_recipients SET status = 'active', migration_state = 'completed'");
 		expect(isScopeDeviceAdmissionRefused(db, laptop)).toBe(false);
 
 		// Act: the exclusion recovery plans for a device it leaves out.

@@ -18,17 +18,24 @@ export interface TeamRecoveryExclusion {
 	reason: TeamRecoveryExclusionReason;
 }
 
-/** Every exclusion as a `team\0device` key. A store from before the table has none. */
-function exclusionKeys(db: Database): Set<string> {
+/** A store from before the table has no exclusions. */
+function readExclusions<T>(read: () => T, none: T): T {
 	try {
-		const rows = db
-			.prepare("SELECT team_id, device_id FROM policy_team_recovery_exclusions")
-			.all() as Array<{ team_id: string; device_id: string }>;
-		return new Set(rows.map((row) => `${row.team_id}\u0000${row.device_id}`));
+		return read();
 	} catch (error) {
-		if (error instanceof Error && /no such table/u.test(error.message)) return new Set();
+		if (error instanceof Error && /no such table/u.test(error.message)) return none;
 		throw error;
 	}
+}
+
+/** Every exclusion as a `team\0device` key. */
+function exclusionKeys(db: Database): Set<string> {
+	const sql = "SELECT team_id, device_id FROM policy_team_recovery_exclusions";
+	const rows = readExclusions(
+		() => db.prepare(sql).all() as Array<{ team_id: string; device_id: string }>,
+		[],
+	);
+	return new Set(rows.map((row) => `${row.team_id}\u0000${row.device_id}`));
 }
 
 /** Records the devices a recovery leaves out. An existing exclusion is kept as it is. */
@@ -46,12 +53,14 @@ export function recordTeamRecoveryExclusions(
 
 /** The devices a recovery left out of the Team. */
 export function teamRecoveryExcludedDeviceIds(db: Database, teamId: string): Set<string> {
-	const prefix = `${teamId}\u0000`;
-	return new Set(
-		[...exclusionKeys(db)]
-			.filter((key) => key.startsWith(prefix))
-			.map((key) => key.slice(prefix.length)),
-	);
+	const sql = "SELECT device_id FROM policy_team_recovery_exclusions WHERE team_id = ?";
+	return new Set(readExclusions(() => db.prepare(sql).pluck().all(teamId) as string[], []));
+}
+
+/** Whether a recovery left the device out of the Team. */
+export function isTeamRecoveryExcluded(db: Database, teamId: string, deviceId: string): boolean {
+	const sql = "SELECT 1 FROM policy_team_recovery_exclusions WHERE team_id = ? AND device_id = ?";
+	return readExclusions(() => db.prepare(sql).get(teamId, deviceId) !== undefined, false);
 }
 
 /**

@@ -2342,7 +2342,7 @@ describe("legacy Team setup completion manifests", () => {
 		);
 		await expect(applyCanonical()).resolves.toEqual(canonicalManifest);
 		// The reviewed activation includes the device again.
-		expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
+		expectServedOnceScopeDropsProject(db, "device-a", "project-private");
 		expect(
 			db
 				.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
@@ -2982,6 +2982,30 @@ function servesScope(db: InstanceType<typeof Database>, deviceId: string, scopeI
 	}).ok;
 }
 
+/**
+ * The setup that lost shared a Project the Team no longer shares. While the
+ * scope is still mapped to that Project, an included device is refused it.
+ */
+function expectServedOnceScopeDropsProject(
+	db: InstanceType<typeof Database>,
+	deviceId: string,
+	projectIdentity: string,
+) {
+	expect(servesScope(db, deviceId, "scope-engineering")).toBe(false);
+	db.prepare("DELETE FROM project_scope_mappings WHERE workspace_identity = ?").run(
+		projectIdentity,
+	);
+	expect(servesScope(db, deviceId, "scope-engineering")).toBe(true);
+}
+
+/** Makes the Team active with the Projects its setup shared, as leaving quarantine does. */
+function activateAsSetupLeftIt(db: InstanceType<typeof Database>) {
+	db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+	db.prepare(
+		"UPDATE project_recipients SET status = 'active', migration_state = 'completed'",
+	).run();
+}
+
 /** The Team's eligible devices, derived from this machine's policy rows. */
 function teamEligibleDevices(db: InstanceType<typeof Database>, teamId: string) {
 	const rows = (sql: string) => db.prepare(sql).all(teamId) as Array<Record<string, never>>;
@@ -3227,7 +3251,7 @@ describe("legacy Team setup quarantine at scope admission", () => {
 		// Arrange
 		await quarantinedTeam(db);
 		const activateThenRollBack = db.transaction(() => {
-			db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+			activateAsSetupLeftIt(db);
 			// Act: an admission check inside the transaction sees the Team active.
 			expect(servesScope(db, "device-b", "scope-engineering")).toBe(true);
 			throw new Error("roll back");
@@ -3304,9 +3328,9 @@ describe("legacy Team setup quarantine at scope admission", () => {
 	});
 
 	it("serves included devices once the Team is active again and refuses a left-out device only its Projects", async () => {
-		// Arrange: the Team leaves quarantine with the devices its setup included.
+		// Arrange: the Team leaves quarantine with the devices and Projects its setup included.
 		await quarantinedTeam(db);
-		db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+		activateAsSetupLeftIt(db);
 
 		// Assert: Person A's second device was never included.
 		expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
