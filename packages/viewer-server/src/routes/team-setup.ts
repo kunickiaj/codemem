@@ -180,9 +180,9 @@ const ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-access-delta:[0-9a-f]{64}$/u;
 const VIEWER_ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-viewer-access-delta-v1:[0-9a-f]{64}$/u;
 const activeCandidateMutations = new WeakMap<MemoryStore["db"], Map<string, Promise<void>>>();
 /**
- * How many times each candidate's claim has been taken or released. A background
- * pass compares it with the count it began with, to tell whether another
- * operation ran on the candidate since.
+ * How many operations on each candidate have finished and released its claim. A
+ * background pass compares it with the count it began with, to tell whether
+ * another operation ran on the candidate since.
  */
 const candidateMutationRevisions = new WeakMap<MemoryStore["db"], Map<string, number>>();
 
@@ -216,7 +216,6 @@ export function claimCandidateMutation(
 		settle = resolve;
 	});
 	active.set(candidateRef, settled);
-	advanceCandidateMutationRevision(db, candidateRef);
 	let released = false;
 	return () => {
 		if (released) return;
@@ -234,10 +233,10 @@ function candidateMutationSettled(db: MemoryStore["db"], candidateRef: string): 
 
 /**
  * One background pass over the candidates. `skipped` are the ones it leaves for
- * the next pass instead of reporting a failure. `revisions` holds the claim
- * revision each candidate must still have for the pass to act on it: the one it
- * had before the pass first read the coordinator, moved on only by the pass's
- * own claims.
+ * the next pass instead of reporting a failure. `revisions` holds the revision
+ * each candidate must still have for the pass to act on it: the one it had
+ * before the pass first read the coordinator, moved on only by the pass's own
+ * operations.
  */
 interface CandidatePass {
 	skipped: Set<string>;
@@ -279,7 +278,7 @@ function claimForCandidatePass(
 	}
 	return () => {
 		release();
-		// The pass's own claim and release are not another operation's.
+		// The pass's own operation is not another operation.
 		pass.revisions.set(candidateRef, candidateMutationRevision(db, candidateRef));
 	};
 }
@@ -1149,7 +1148,8 @@ async function reconcileSummaryGroups(
 	await dependencies.reconcile(store, groups, summaryReconciliationOptions(blockers));
 	for (const group of groups) {
 		const candidateRef = summaryCandidateRef(group);
-		if (isDoneForPass(store, pass, { blockers, views }, candidateRef)) continue;
+		if (blockers.has(candidateRef) || skipped.has(candidateRef) || views.has(candidateRef))
+			continue;
 		// Rediscovering a completion can restore setup recipients. Reconciliation
 		// reads removals only on some paths, so read them here for every completion.
 		let removals: Extract<RepairEvidence, { status: "read" }> | null = null;
@@ -1164,19 +1164,6 @@ async function reconcileSummaryGroups(
 		);
 	}
 	return carrySkippedGroups({ groups: configured, views, blockers, skipped }, previous);
-}
-
-/** Whether the pass has nothing more to do for the group: it failed, was discovered or is skipped. */
-function isDoneForPass(
-	store: MemoryStore,
-	pass: CandidatePass,
-	found: { blockers: Map<string, CompletionBlocker>; views: Map<string, LegacyTeamCandidateView> },
-	candidateRef: string,
-): boolean {
-	if (found.blockers.has(candidateRef) || found.views.has(candidateRef)) return true;
-	// Another operation took the group up since the pass began: read nothing more for it.
-	if (!isUntouchedSince(store.db, pass, candidateRef)) pass.skipped.add(candidateRef);
-	return pass.skipped.has(candidateRef);
 }
 
 /** The groups a pass goes on with. One another operation holds or ran on is marked skipped. */

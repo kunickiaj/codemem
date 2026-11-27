@@ -4491,8 +4491,15 @@ describe("Team setup background check while another operation holds a group", ()
 });
 
 describe("Team setup background check and a setup that finishes while it reads", () => {
-	/** A completed Team this device set up, and a check whose list of completions `list` answers. */
-	async function completedTeamCheck(store: MemoryStore, list: () => Promise<[]>) {
+	/**
+	 * A completed Team this device set up, and a check whose list of completions
+	 * `list` answers. `duringRosterRead` runs while the check's roster read is out.
+	 */
+	async function completedTeamCheck(
+		store: MemoryStore,
+		list: () => Promise<[]>,
+		duringRosterRead: () => void = () => undefined,
+	) {
 		const setupApp = teamSetupRoutes({
 			getStore: () => store,
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
@@ -4518,7 +4525,10 @@ describe("Team setup background check and a setup that finishes while it reads",
 			throw new Error("completion_conflict");
 		});
 		const background = backgroundApp(store, {
-			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => {
+				duringRosterRead();
+				return SNAPSHOTS;
+			},
 			snapshotLoaderDependencies: completionConfig(),
 			completionDependencies: { create, get: async () => null, list },
 		});
@@ -4544,6 +4554,28 @@ describe("Team setup background check and a setup that finishes while it reads",
 			await check().refresh();
 
 			// Assert: the list predates what the setup did, so the pass leaves the group for the next one.
+			expect(create).not.toHaveBeenCalled();
+			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+			expect(await skippedGroups()).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not act on a roster read while a setup held the group, once the setup lets go", async () => {
+		const store = new MemoryStore(":memory:");
+		const list = vi.fn(async (): Promise<[]> => []);
+		let releaseSetup: (() => void) | null = null;
+		try {
+			// Arrange: the setup holds the group when the check starts, and lets go during its first read.
+			const { check, create, skippedGroups } = await completedTeamCheck(store, list, () =>
+				releaseSetup?.(),
+			);
+			releaseSetup = __teamSetupTestHooks.claimCandidateMutation(store.db, CANDIDATE_REF);
+
+			await check().refresh();
+
+			expect(list).not.toHaveBeenCalled();
 			expect(create).not.toHaveBeenCalled();
 			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
 			expect(await skippedGroups()).toBe(1);
