@@ -119,7 +119,7 @@ function evidenceActions(store: ReturnType<StoreFactory>, config: Config) {
 	);
 	if (identity) return actions;
 	const unsigned = () => Promise.reject(new Error("signing_identity_unavailable"));
-	return { ...actions, blockedDeviceIds: unsigned };
+	return { ...actions, deviceBlocksAndRemovals: unsigned };
 }
 
 /**

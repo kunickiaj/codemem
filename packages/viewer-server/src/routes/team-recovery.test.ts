@@ -56,7 +56,7 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 	const actions: TeamRecoveryEvidenceActions = {
 		listDevices: async () => listed,
 		listDeviceRemovals: async () => [LAPTOP_REMOVAL],
-		blockedDeviceIds: async () => ({ blocked: [], removed: [] }),
+		deviceBlocksAndRemovals: async () => NOTHING_REPORTED,
 		getCompletion: async () => manifest,
 		listMemberRemovals: async () => [],
 		readGroupBinding: async (teamId) => ({ team_id: teamId, state: "unbound" }),
@@ -111,6 +111,7 @@ function app(options: AppOptions = {}) {
 }
 
 const failing = () => Promise.reject(new Error("coordinator_unavailable"));
+const NOTHING_REPORTED = { blocked: [], keyRemoved: [], removedUnattributed: [] };
 
 describe("Team recovery routes", () => {
 	it("previews, then commits the reviewed recovery", async () => {
@@ -168,7 +169,7 @@ describe("Team recovery route statuses", () => {
 	it.each([
 		["listDevices", "roster_unavailable"],
 		["listDeviceRemovals", "device_removals_unavailable"],
-		["blockedDeviceIds", "device_blocks_unavailable"],
+		["deviceBlocksAndRemovals", "device_blocks_unavailable"],
 		["getCompletion", "completion_unavailable"],
 		["listMemberRemovals", "member_removals_unavailable"],
 		["readGroupBinding", "team_group_unavailable"],
@@ -181,6 +182,26 @@ describe("Team recovery route statuses", () => {
 			503,
 			{ error },
 		]);
+		expect(teamState()).toBe("inactive:needs_setup");
+	});
+
+	it.each([
+		[
+			"409 when the block check reports the key it sent for an enrolled device removed",
+			{ keyRemoved: ["device-b"] },
+			[409, { error: "device_evidence_contradictory", deviceIds: ["device-b"] }],
+		],
+		[
+			"503, to be tried again, when the block check reports a removal without saying which key",
+			{ removedUnattributed: ["device-b"] },
+			[503, { error: "device_block_unchecked", deviceIds: ["device-b"] }],
+		],
+	] as const)("answers %s", async (_case, reported, expected) => {
+		const actions = coordinator({
+			deviceBlocksAndRemovals: async () => ({ ...NOTHING_REPORTED, ...reported }),
+		});
+
+		expect(await app({ actions }).post("preview", {})).toEqual(expected);
 		expect(teamState()).toBe("inactive:needs_setup");
 	});
 
@@ -231,7 +252,8 @@ describe("Team recovery commit route after its first transaction", () => {
 				rosterReads += 1;
 				return pick().listDevices(groupId);
 			},
-			blockedDeviceIds: (groupId, peers) => pick().blockedDeviceIds(groupId, peers),
+			deviceBlocksAndRemovals: (groupId, peers, deadlineMs) =>
+				pick().deviceBlocksAndRemovals(groupId, peers, deadlineMs),
 			listMemberRemovals: (groupId) => pick().listMemberRemovals(groupId),
 		});
 	}
@@ -239,17 +261,27 @@ describe("Team recovery commit route after its first transaction", () => {
 	it.each([
 		[
 			"409 when the read after the commit shows a newly blocked device",
-			{ blockedDeviceIds: async () => ({ blocked: ["device-b"], removed: [] }) },
+			{ deviceBlocksAndRemovals: async () => ({ ...NOTHING_REPORTED, blocked: ["device-b"] }) },
 			[409, { error: "recovery_quarantined_again", reason: "evidence_changed" }],
 		],
 		[
-			"409 when the block check after the commit reports a device removed since the roster was read",
-			{ blockedDeviceIds: async () => ({ blocked: [], removed: ["device-b"] }) },
+			"409 when the block check after the commit reports a device's key removed since the roster was read",
+			{ deviceBlocksAndRemovals: async () => ({ ...NOTHING_REPORTED, keyRemoved: ["device-b"] }) },
+			[409, { error: "recovery_quarantined_again", reason: "evidence_changed" }],
+		],
+		[
+			"409 when the block check after the commit reports a removal without saying which key",
+			{
+				deviceBlocksAndRemovals: async () => ({
+					...NOTHING_REPORTED,
+					removedUnattributed: ["device-b"],
+				}),
+			},
 			[409, { error: "recovery_quarantined_again", reason: "evidence_changed" }],
 		],
 		[
 			"503 when the read after the commit fails",
-			{ blockedDeviceIds: failing },
+			{ deviceBlocksAndRemovals: failing },
 			[503, { error: "recovery_quarantined_again", reason: "evidence_unavailable" }],
 		],
 	] as const)(
