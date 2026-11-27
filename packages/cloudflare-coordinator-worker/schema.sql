@@ -636,6 +636,10 @@ CREATE TABLE IF NOT EXISTS coordinator_readiness_bindings (
   sequence INTEGER NOT NULL, refresh_revision INTEGER NOT NULL, filter_evidence TEXT NOT NULL,
   PRIMARY KEY (group_id, device_id)
 );
+CREATE TABLE IF NOT EXISTS coordinator_readiness_discards (
+  group_id TEXT NOT NULL, device_id TEXT NOT NULL, generation TEXT NOT NULL,
+  PRIMARY KEY (group_id, device_id)
+);
 
 CREATE TABLE IF NOT EXISTS coordinator_reciprocal_approvals (
   request_id TEXT PRIMARY KEY,

@@ -2,6 +2,7 @@ import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
 import {
 	bindAcceptedRecord,
 	currentBinding,
+	MARK_READINESS_DISCARDED,
 	type ReadinessBinding,
 	type ReadinessPreparation,
 	signerCondition,
@@ -656,16 +657,12 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 		const device = [input.groupId, input.deviceId];
 		return this.whenStoragePresent(async () => {
 			const results = await this.backend.batch([
+				{ sql: MARK_READINESS_DISCARDED, values: [input.deviceId, input.groupId] },
 				{ sql: DISCARD_PROJECTS_SQL, values: device },
 				{ sql: DISCARD_HEADER_SQL, values: device },
-				// A signed report may still be in flight even if this device has no header yet.
-				{
-					sql: "UPDATE groups SET readiness_generation=NULL WHERE group_id=? AND readiness_generation IS NOT NULL",
-					values: [input.groupId],
-				},
 			]);
 			if (results.length !== 3) throw new Error("boundary_readiness_incomplete");
-			return resultChanges(results[1]) > 0;
+			return resultChanges(results[2]) > 0;
 		}, false);
 	}
 }

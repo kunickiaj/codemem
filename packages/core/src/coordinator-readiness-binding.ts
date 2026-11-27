@@ -39,12 +39,25 @@ CREATE TABLE IF NOT EXISTS coordinator_readiness_bindings (
   sequence INTEGER NOT NULL, refresh_revision INTEGER NOT NULL, filter_evidence TEXT NOT NULL,
   PRIMARY KEY (group_id, device_id)
 );
+CREATE TABLE IF NOT EXISTS coordinator_readiness_discards (
+  group_id TEXT NOT NULL, device_id TEXT NOT NULL, generation TEXT NOT NULL,
+  PRIMARY KEY (group_id, device_id)
+);
 `;
 
 export const READINESS_BINDING_PRESENT = `SELECT (
 	EXISTS(SELECT 1 FROM pragma_table_info('groups') WHERE name='readiness_coordinator_id')
 	AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordinator_readiness_bindings')
+	AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordinator_readiness_discards')
 	) AS present`;
+
+// Read the active generation inside the discard transaction, even for a device
+// with no inventory yet. Only its most recent discard needs to be retained:
+// each new preparation gets a fresh generation.
+export const MARK_READINESS_DISCARDED = `INSERT INTO coordinator_readiness_discards(group_id,device_id,generation)
+	SELECT group_id,?,readiness_generation FROM groups WHERE group_id=? AND readiness_generation IS NOT NULL
+	ON CONFLICT(group_id,device_id) DO UPDATE SET generation=excluded.generation
+	WHERE coordinator_readiness_discards.generation!=excluded.generation`;
 
 // Both the write and the decision read check the live enrollment, not merely
 // the enrollment returned when the request signature was verified.
@@ -52,6 +65,8 @@ const ACTIVE_SIGNER = `FROM groups g
 	JOIN enrolled_devices e ON e.group_id=g.group_id AND e.enabled=1
 	WHERE g.readiness_coordinator_id=? AND g.readiness_generation=? AND g.group_id=? AND e.device_id=?
 	AND g.archived_at IS NULL
+	AND NOT EXISTS (SELECT 1 FROM coordinator_readiness_discards d WHERE
+		d.group_id=g.group_id AND d.device_id=e.device_id AND d.generation=g.readiness_generation)
 	AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r WHERE
 		(r.subject_kind='device_id' AND r.subject_value=e.device_id) OR
 		(r.subject_kind='ed25519_key' AND r.subject_value=e.key_id))`;

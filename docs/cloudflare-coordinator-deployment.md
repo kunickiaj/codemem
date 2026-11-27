@@ -953,8 +953,8 @@ SQLite adds the column on startup. It starts NULL for every group. This
 migration does not start a preparation or change access.
 
 Apply `0057_bind_boundary_readiness.sql` before deploying the Worker that verifies
-v2 readiness reports. It adds a nullable coordinator ID and an empty table for
-verified records. Existing v1 records do not count as verified evidence. SQLite
+v2 readiness reports. It adds a nullable coordinator ID and tables for verified
+records and per-device discard markers. Existing v1 records do not count as verified evidence. SQLite
 installs the same storage on startup.
 
 Before resuming writers on D1, fill the key IDs of enrollments that predate `0048`.

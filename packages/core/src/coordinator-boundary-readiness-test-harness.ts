@@ -7,6 +7,7 @@ import {
 	fitBoundaryReadinessProjects,
 	type PutBoundaryReadinessInput,
 } from "./coordinator-boundary-readiness.js";
+import { discardReadinessWithoutFeature } from "./coordinator-boundary-readiness-route.js";
 import {
 	CANONICAL_PUBLIC_KEY,
 	EXPECTED_KEY_ID,
@@ -596,11 +597,65 @@ async function preparation(w: World) {
 }
 
 function registerVerifiedRecords(test: BoundaryReadinessTest) {
+	registerLegacyHeartbeat(test);
 	registerSignerChanges(test);
 	registerSequenceFloor(test);
 	registerDowngradeOrdering(test);
 	registerInventoryRollback(test);
 	registerPreparationChanges(test);
+}
+
+async function enrollPeer(w: World) {
+	const peer = { ...w, deviceId: `${w.deviceId}-peer` };
+	await enroll(w.store, w.groupId, peer.deviceId);
+	return peer;
+}
+
+function registerLegacyHeartbeat(test: BoundaryReadinessTest) {
+	test("the verified read checks the device discard marker even with a retained header", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+		// Keep an otherwise valid empty inventory to isolate the read predicate from deletion.
+		await w.exec(
+			"CREATE TRIGGER retain_header BEFORE DELETE ON coordinator_boundary_readiness BEGIN SELECT RAISE(IGNORE); END",
+		);
+		try {
+			await discardReadinessWithoutFeature(w.store, w);
+			expect(await stored(w)).toMatchObject({ sequence: 1, complete: true });
+			expect(await verified()).toBeNull();
+			expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+		} finally {
+			await w.exec("DROP TRIGGER retain_header");
+		}
+	});
+	test("an unrelated legacy heartbeat preserves the prepared generation and verified inventory", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding })).toMatchObject({ kind: "stored" });
+		const presence = {
+			groupId: peer.groupId,
+			deviceId: peer.deviceId,
+			capabilities: {},
+			addresses: [],
+			ttlS: 180,
+		};
+		for (let i = 0; i < 2; i++) {
+			await discardReadinessWithoutFeature(w.store, presence);
+			await w.store.upsertPresence(presence);
+		}
+		expect(await verified()).toMatchObject({ sequence: 1, group_generation: binding.generation });
+		expect(await put(w, { binding, sequence: 2 })).toMatchObject({ kind: "stored" });
+		expect(await put(peer, { binding, sequence: 8, projects: [] })).toEqual({
+			kind: "binding_mismatch",
+		});
+	});
 }
 
 function registerSignerChanges(test: BoundaryReadinessTest) {
@@ -672,6 +727,7 @@ function registerSequenceFloor(test: BoundaryReadinessTest) {
 		fixture,
 	}) => {
 		const w = await world(fixture);
+		const peer = await enrollPeer(w);
 		const { binding, verified } = await preparation(w);
 		expect(await put(w, { binding, sequence: 4 })).toMatchObject({ kind: "stored" });
 		expect(await put(w, { binding: { ...binding, revision: 5 }, sequence: 5 })).toEqual({
@@ -682,6 +738,7 @@ function registerSequenceFloor(test: BoundaryReadinessTest) {
 		await w.store.discardBoundaryReadiness(w);
 		expect(await verified()).toBeNull();
 		expect(await put(w, { binding, sequence: 6 })).toEqual({ kind: "binding_mismatch" });
+		expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
 		const next = await preparation(w);
 		expect(await put(w, { binding: next.binding, sequence: 6 })).toMatchObject({ kind: "stored" });
 		expect(await verified()).toBeNull();
@@ -693,6 +750,7 @@ function registerDowngradeOrdering(test: BoundaryReadinessTest) {
 		fixture,
 	}) => {
 		const w = await world(fixture);
+		const peer = await enrollPeer(w);
 		const { binding, verified } = await preparation(w);
 		const access = w.store.listDeviceScopeMemberships.bind(w.store);
 		const discard = vi
@@ -706,16 +764,20 @@ function registerDowngradeOrdering(test: BoundaryReadinessTest) {
 			expect(await put(w, { binding, sequence: 8 })).toEqual({ kind: "binding_mismatch" });
 			expect(await verified()).toBeNull();
 			expect(await stored(w)).toBeNull();
+			expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
 		} finally {
 			discard.mockRestore();
 		}
 	});
-	test("a failed downgrade fence rolls back deletion of the inventory", async ({ fixture }) => {
+	test("a failed inventory delete rolls back the device marker and a retry fences only that device", async ({
+		fixture,
+	}) => {
 		const w = await world(fixture);
+		const peer = await enrollPeer(w);
 		const { binding, verified } = await preparation(w);
 		await put(w, { binding });
 		await w.exec(
-			"CREATE TRIGGER reject_discard BEFORE UPDATE OF readiness_generation ON groups BEGIN SELECT RAISE(ABORT,'injected_failure'); END",
+			"CREATE TRIGGER reject_discard BEFORE DELETE ON coordinator_boundary_readiness BEGIN SELECT RAISE(ABORT,'injected_failure'); END",
 		);
 		try {
 			await expect(w.store.discardBoundaryReadiness(w)).rejects.toThrow();
@@ -723,6 +785,9 @@ function registerDowngradeOrdering(test: BoundaryReadinessTest) {
 		} finally {
 			await w.exec("DROP TRIGGER reject_discard");
 		}
+		expect(await put(w, { binding, sequence: 2 })).toMatchObject({ kind: "stored" });
+		expect(await w.store.discardBoundaryReadiness(w)).toBe(true);
+		expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
 	});
 }
 

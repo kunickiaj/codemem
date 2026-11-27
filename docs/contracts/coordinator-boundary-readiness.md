@@ -166,10 +166,11 @@ the removal fails, the request fails and no presence is stored, so the device
 tries again and an older build is never left with a record that says it is ready.
 
 After a discard the coordinator accepts a first legacy sequence again. In the
-same transaction as the discard it clears the group's active generation, even
-if the device had no inventory. No v2 report for that generation can be
-written or used after that point. All affected devices must report for a new
-preparation.
+same transaction as the deletion it records the group's active generation for
+that device, even if the device had no inventory. The coordinator rejects v2
+writes and verified reads from that device for the marked generation. Other
+devices continue to use the existing preparation. A fresh generation lets
+the discarded device report again.
 
 ## What a reader of the records must do
 
