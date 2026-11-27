@@ -4453,3 +4453,151 @@ describe("Team setup background check status", () => {
 		}
 	});
 });
+
+describe("Team setup background check while another operation holds a group", () => {
+	it("checks the other groups without waiting for the held one, and reports it skipped", async () => {
+		// Arrange: a Team recovery that is still reading the coordinator holds the first group.
+		const store = new MemoryStore(":memory:");
+		const second = { ...SNAPSHOTS[0], groupId: "group-beta", displayName: "Second Team" };
+		const secondRef = legacyTeamCandidateId(COORDINATOR_ID, "group-beta");
+		const releaseHeld = __teamSetupTestHooks.claimCandidateMutation(store.db, CANDIDATE_REF);
+		try {
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () =>
+					[SNAPSHOTS[0], second] as LegacyTeamConfiguredGroupSnapshot[],
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: { create: vi.fn(), get: async () => null, list: async () => [] },
+			});
+
+			const finished = await Promise.race([
+				check()
+					.refresh()
+					.then(() => "finished"),
+				new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1_000)),
+			]);
+			const summary = (await (await app.request("/api/sync/team-setup/v1")).json()) as {
+				candidates: Array<{ candidateRef: string }>;
+				reconciliation: { skipped_groups: number };
+			};
+
+			expect(finished).toBe("finished");
+			expect(summary.reconciliation.skipped_groups).toBe(1);
+			expect(summary.candidates.map((candidate) => candidate.candidateRef)).toContain(secondRef);
+		} finally {
+			releaseHeld?.();
+			store.close();
+		}
+	});
+});
+
+describe("Team setup background check and a setup that finishes while it reads", () => {
+	/**
+	 * A completed Team this device set up, and a check whose list of completions
+	 * `list` answers. `duringRosterRead` runs while the check's roster read is out.
+	 */
+	async function completedTeamCheck(
+		store: MemoryStore,
+		list: () => Promise<[]>,
+		duringRosterRead: () => void = () => undefined,
+	) {
+		const setupApp = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			completionDependencies: null,
+		});
+		const draft = await readyDraftThroughSummary(store, setupApp);
+		const review = inspectLegacyTeamSetupActivation(store.db, {
+			candidateRef: CANDIDATE_REF,
+			attemptId: draft.attemptId,
+		});
+		await finishLegacyTeamSetupActivation(store.db, {
+			candidateRef: CANDIDATE_REF,
+			attemptId: draft.attemptId,
+			finishDigest: review.finishDigest,
+			confirmedAccessDeltaDigest: review.accessDeltaDigest,
+			loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+			loadProjectInventory: () => [],
+			validateLockedPreview: () => true,
+			now: NOW,
+		});
+		// The coordinator refuses the publication, which switches the Team off when acted on.
+		const create = vi.fn(async () => {
+			throw new Error("completion_conflict");
+		});
+		const background = backgroundApp(store, {
+			loadLegacyTeamConfiguredGroupSnapshots: async () => {
+				duringRosterRead();
+				return SNAPSHOTS;
+			},
+			snapshotLoaderDependencies: completionConfig(),
+			completionDependencies: { create, get: async () => null, list },
+		});
+		const skippedGroups = async () => {
+			const summary = await background.app.request("/api/sync/team-setup/v1");
+			const body = (await summary.json()) as { reconciliation: { skipped_groups: number } };
+			return body.reconciliation.skipped_groups;
+		};
+		return { ...background, create, skippedGroups };
+	}
+
+	it("does not act on a list of completions taken while a setup held the group, once the setup lets go", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			// Arrange: a setup takes the group and lets it go while the list is out.
+			let lists = 0;
+			const { check, create, skippedGroups } = await completedTeamCheck(store, async () => {
+				lists += 1;
+				if (lists === 1) __teamSetupTestHooks.claimCandidateMutation(store.db, CANDIDATE_REF)?.();
+				return [];
+			});
+
+			await check().refresh();
+
+			// Assert: the list predates what the setup did, so the pass leaves the group for the next one.
+			expect(create).not.toHaveBeenCalled();
+			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+			expect(await skippedGroups()).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not act on a roster read while a setup held the group, once the setup lets go", async () => {
+		const store = new MemoryStore(":memory:");
+		const list = vi.fn(async (): Promise<[]> => []);
+		let releaseSetup: (() => void) | null = null;
+		try {
+			// Arrange: the setup holds the group when the check starts, and lets go during its first read.
+			const { check, create, skippedGroups } = await completedTeamCheck(store, list, () =>
+				releaseSetup?.(),
+			);
+			releaseSetup = __teamSetupTestHooks.claimCandidateMutation(store.db, CANDIDATE_REF);
+
+			await check().refresh();
+
+			expect(list).not.toHaveBeenCalled();
+			expect(create).not.toHaveBeenCalled();
+			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+			expect(await skippedGroups()).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("reads nothing more from the coordinator for a group another operation holds", async () => {
+		const store = new MemoryStore(":memory:");
+		const list = vi.fn(async (): Promise<[]> => []);
+		try {
+			const { check, skippedGroups } = await completedTeamCheck(store, list);
+			const releaseHeld = __teamSetupTestHooks.claimCandidateMutation(store.db, CANDIDATE_REF);
+
+			await check().refresh();
+			releaseHeld?.();
+
+			expect(list).not.toHaveBeenCalled();
+			expect(await skippedGroups()).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+});

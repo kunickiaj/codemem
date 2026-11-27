@@ -179,8 +179,32 @@ const FINISH_DIGEST_PATTERN = /^legacy-team-activation-finish-v1:[0-9a-f]{64}$/u
 const ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-access-delta:[0-9a-f]{64}$/u;
 const VIEWER_ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-viewer-access-delta-v1:[0-9a-f]{64}$/u;
 const activeCandidateMutations = new WeakMap<MemoryStore["db"], Map<string, Promise<void>>>();
+/**
+ * How many operations on each candidate have finished and released its claim. A
+ * background pass compares it with the count it began with, to tell whether
+ * another operation ran on the candidate since.
+ */
+const candidateMutationRevisions = new WeakMap<MemoryStore["db"], Map<string, number>>();
 
-function claimCandidateMutation(db: MemoryStore["db"], candidateRef: string): (() => void) | null {
+function candidateMutationRevision(db: MemoryStore["db"], candidateRef: string): number {
+	return candidateMutationRevisions.get(db)?.get(candidateRef) ?? 0;
+}
+
+function advanceCandidateMutationRevision(db: MemoryStore["db"], candidateRef: string): void {
+	const revisions = candidateMutationRevisions.get(db) ?? new Map<string, number>();
+	candidateMutationRevisions.set(db, revisions);
+	revisions.set(candidateRef, (revisions.get(candidateRef) ?? 0) + 1);
+}
+
+/**
+ * Claims the candidate for one access-changing operation, or returns null when
+ * another holds it. Draft and finish routes, Team recovery and each background
+ * reconciliation pass take it, so none of them runs across another.
+ */
+export function claimCandidateMutation(
+	db: MemoryStore["db"],
+	candidateRef: string,
+): (() => void) | null {
 	let active = activeCandidateMutations.get(db);
 	if (!active) {
 		active = new Map();
@@ -197,6 +221,7 @@ function claimCandidateMutation(db: MemoryStore["db"], candidateRef: string): ((
 		if (released) return;
 		released = true;
 		active?.delete(candidateRef);
+		advanceCandidateMutationRevision(db, candidateRef);
 		settle();
 	};
 }
@@ -207,19 +232,68 @@ function candidateMutationSettled(db: MemoryStore["db"], candidateRef: string): 
 }
 
 /**
- * Candidates whose mutation a background pass skipped because a draft or finish
- * route held the claim. The pass retries them instead of reporting a failure.
+ * One background pass over the candidates. `skipped` are the ones it leaves for
+ * the next pass instead of reporting a failure. `revisions` holds the revision
+ * each candidate must still have for the pass to act on it: the one it had
+ * before the pass first read the coordinator, moved on only by the pass's own
+ * operations.
  */
-const skippedCandidateMutations = new AsyncLocalStorage<Set<string>>();
+interface CandidatePass {
+	skipped: Set<string>;
+	revisions: Map<string, number>;
+}
+
+const candidatePass = new AsyncLocalStorage<CandidatePass>();
+
+function beginCandidatePass(db: MemoryStore["db"]): CandidatePass {
+	return { skipped: new Set(), revisions: new Map(candidateMutationRevisions.get(db)) };
+}
+
+/** Whether no other operation holds the candidate or has run on it since the pass began. */
+function isUntouchedSince(db: MemoryStore["db"], pass: CandidatePass, candidateRef: string) {
+	return (
+		!activeCandidateMutations.get(db)?.has(candidateRef) &&
+		candidateMutationRevision(db, candidateRef) === (pass.revisions.get(candidateRef) ?? 0)
+	);
+}
+
+/**
+ * Claims the candidate for a write of a background pass, or returns null when
+ * another operation holds it or has run on it since the pass began. What the
+ * pass read from the coordinator may be older than that operation, for example
+ * a list of completions taken while a setup was finishing, so the pass must not
+ * act on it once the setup lets go.
+ */
+function claimForCandidatePass(
+	db: MemoryStore["db"],
+	pass: CandidatePass,
+	candidateRef: string,
+): (() => void) | null {
+	const untouched = isUntouchedSince(db, pass, candidateRef);
+	const release = claimCandidateMutation(db, candidateRef);
+	if (!release) return null;
+	if (!untouched) {
+		release();
+		return null;
+	}
+	return () => {
+		release();
+		// The pass's own operation is not another operation.
+		pass.revisions.set(candidateRef, candidateMutationRevision(db, candidateRef));
+	};
+}
 
 async function runCandidateMutation<T>(
 	db: MemoryStore["db"],
 	candidateRef: string,
 	operation: () => Promise<T>,
 ): Promise<boolean> {
-	const release = claimCandidateMutation(db, candidateRef);
+	const pass = candidatePass.getStore();
+	const release = pass
+		? claimForCandidatePass(db, pass, candidateRef)
+		: claimCandidateMutation(db, candidateRef);
 	if (!release) {
-		skippedCandidateMutations.getStore()?.add(candidateRef);
+		pass?.skipped.add(candidateRef);
 		return false;
 	}
 	try {
@@ -395,15 +469,26 @@ export async function lookupPeerRemovalsAsDaemon(
 	store: MemoryStore,
 	config: ReturnType<typeof readCoordinatorSyncConfig>,
 ) {
+	const identity = daemonSigningIdentity(store);
+	if (!identity) return unavailablePeerRemovalLookup();
+	return fetchPeerRemovalLookup(store, config, identity);
+}
+
+/**
+ * The identity the sync daemon signs coordinator requests with: this store's
+ * one device, and its keys in the directory `CODEMEM_KEYS_DIR` names or the
+ * default one. Null when the store has no single device or its key is not
+ * usable. Nothing here creates or repairs a key.
+ */
+export function daemonSigningIdentity(
+	store: Pick<MemoryStore, "db">,
+): { localDeviceId: string; keysDir: string | undefined } | null {
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 	const rows = store.db.prepare("SELECT device_id FROM sync_device LIMIT 2").pluck().all();
 	const localDeviceId = rows.length === 1 && typeof rows[0] === "string" ? rows[0] : null;
-	if (
-		!localDeviceId ||
-		!loadRuntimeSigningPublicKey(store.db, { deviceId: localDeviceId, keysDir })
-	)
-		return unavailablePeerRemovalLookup();
-	return fetchPeerRemovalLookup(store, config, { localDeviceId, keysDir });
+	if (!localDeviceId) return null;
+	if (!loadRuntimeSigningPublicKey(store.db, { deviceId: localDeviceId, keysDir })) return null;
+	return { localDeviceId, keysDir };
 }
 
 function unavailablePeerRemovalLookup(): Awaited<ReturnType<typeof fetchPeerRemovalLookup>> {
@@ -1024,20 +1109,34 @@ interface SummaryReconciliationDependencies {
  * under the candidate claim, and none runs on a cached roster or after a failed
  * removal read.
  */
-async function runSummaryReconciliation(
+function runSummaryReconciliation(
 	store: MemoryStore,
 	dependencies: SummaryReconciliationDependencies,
 	previous: SummaryReconciliationResult | null,
 ): Promise<SummaryReconciliationResult> {
+	// The pass begins before its first coordinator read, so it can tell afterwards
+	// which candidates another operation held or ran on while it was reading.
+	const pass = beginCandidatePass(store.db);
+	return candidatePass.run(pass, () => reconcileSummaryGroups(store, dependencies, previous, pass));
+}
+
+async function reconcileSummaryGroups(
+	store: MemoryStore,
+	dependencies: SummaryReconciliationDependencies,
+	previous: SummaryReconciliationResult | null,
+	pass: CandidatePass,
+): Promise<SummaryReconciliationResult> {
+	const { skipped } = pass;
 	dependencies.loadSnapshots.invalidate();
-	const groups = await dependencies.loadSnapshots();
+	const configured = await dependencies.loadSnapshots();
 	// Discovery below runs one group at a time, so bound the whole roster here.
-	requireBoundedSnapshots(groups);
-	await Promise.all(
-		groups.map((group) => candidateMutationSettled(store.db, summaryCandidateRef(group))),
-	);
+	requireBoundedSnapshots(configured);
+	// A group another operation holds is not waited for. One slow holder, such as a
+	// Team recovery reading the coordinator, would stall the check of every other
+	// group. Nothing more is read from the coordinator for such a group: it is
+	// skipped here, and the pass retries it soon.
+	const groups = openSummaryGroups(store, configured, pass);
 	const blockers = new Map<string, CompletionBlocker>();
-	const skipped = new Set<string>();
 	const views = new Map<string, LegacyTeamCandidateView>();
 	// Applying a coordinator completion needs the group's draft. Creating it reads
 	// only the fresh roster and changes no access: a group without any local setup
@@ -1046,9 +1145,7 @@ async function runSummaryReconciliation(
 		if (!hasNoLocalSetup(store, summaryCandidateRef(group))) continue;
 		await discoverAfterReconciliation(store, group, dependencies, { views, skipped });
 	}
-	await skippedCandidateMutations.run(skipped, () =>
-		dependencies.reconcile(store, groups, summaryReconciliationOptions(blockers)),
-	);
+	await dependencies.reconcile(store, groups, summaryReconciliationOptions(blockers));
 	for (const group of groups) {
 		const candidateRef = summaryCandidateRef(group);
 		if (blockers.has(candidateRef) || skipped.has(candidateRef) || views.has(candidateRef))
@@ -1066,7 +1163,21 @@ async function runSummaryReconciliation(
 			removals ? applyRemovalsBeforeRepair(store, group, removals) : true,
 		);
 	}
-	return carrySkippedGroups({ groups, views, blockers, skipped }, previous);
+	return carrySkippedGroups({ groups: configured, views, blockers, skipped }, previous);
+}
+
+/** The groups a pass goes on with. One another operation holds or ran on is marked skipped. */
+function openSummaryGroups(
+	store: MemoryStore,
+	groups: LegacyTeamConfiguredGroupSnapshot[],
+	pass: CandidatePass,
+): LegacyTeamConfiguredGroupSnapshot[] {
+	return groups.filter((group) => {
+		const candidateRef = summaryCandidateRef(group);
+		if (isUntouchedSince(store.db, pass, candidateRef)) return true;
+		pass.skipped.add(candidateRef);
+		return false;
+	});
 }
 
 /**

@@ -68,12 +68,17 @@ export const LAPTOP_REMOVAL = {
 	fingerprint: LAPTOP.fingerprint,
 };
 
-export function insertScope(db: Database, scopeId: string, groupId: string): void {
+export function insertScope(
+	db: Database,
+	scopeId: string,
+	groupId: string,
+	coordinatorId = COORDINATOR_ID,
+): void {
 	db.prepare(
 		`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id,
 		 group_id, membership_epoch, status, created_at, updated_at)
 		 VALUES (?, 'Scope', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
-	).run(scopeId, COORDINATOR_ID, groupId, NOW, NOW);
+	).run(scopeId, coordinatorId, groupId, NOW, NOW);
 }
 
 export function insertActor(db: Database, identityId: string): void {
@@ -127,15 +132,16 @@ export function insertCheckout(db: Database, cwd: string, gitRemote: string): vo
 }
 
 /** Reviews the roster: the Laptop for Person A, the Desktop for Person B, the Tablet excluded. */
-function reviewedDraft(db: Database) {
+function reviewedDraft(db: Database, target: typeof TARGET) {
+	const candidate = legacyTeamCandidateId(target.coordinatorId, target.groupId);
 	let draft = refreshLegacyTeamSetupDraft(db, {
-		candidateId: CANDIDATE,
-		...TARGET,
+		candidateId: candidate,
+		...target,
 		displayName: "Engineering",
 		devices: [LAPTOP, DESKTOP, TABLET],
 		projects: [
 			{
-				projectRef: legacyTeamProjectRef(CANDIDATE, PROJECT),
+				projectRef: legacyTeamProjectRef(candidate, PROJECT),
 				sourceProjectIdentity: PROJECT,
 				displayName: "API",
 				sourceFingerprint: "source-api",
@@ -168,26 +174,29 @@ function reviewedDraft(db: Database) {
  * A Team set up from one coordinator group and then quarantined. The review
  * included Person A's Laptop and Person B's Desktop, excluded a Tablet, and
  * shared one Project through the group's scope. Returns the coordinator's copy
- * of the completed setup.
+ * of the completed setup. `coordinatorId` is the coordinator URL as the setup
+ * spelled it.
  */
 export async function quarantinedTeam(
 	db: Database,
+	{ coordinatorId = COORDINATOR_ID }: { coordinatorId?: string } = {},
 ): Promise<CoordinatorLegacyTeamCompletionManifestV1> {
+	const target = { coordinatorId, groupId: GROUP_ID };
 	initTestSchema(db);
 	for (const identityId of ["identity-a", "identity-b"]) insertActor(db, identityId);
-	insertScope(db, "scope-engineering", GROUP_ID);
+	insertScope(db, "scope-engineering", GROUP_ID, coordinatorId);
 	db.prepare(
 		"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
 	).run("device-local", CANONICAL_PUBLIC_KEY, fingerprintPublicKey(CANONICAL_PUBLIC_KEY), NOW);
-	const draft = reviewedDraft(db);
+	const draft = reviewedDraft(db, target);
 	const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
 		candidateRef: draft.candidateRef,
 		attemptId: draft.attemptId,
 		completedAt: NOW,
 	});
 	const freshRoster = [LAPTOP, DESKTOP, TABLET];
-	await applyLegacyTeamSetupCompletionManifest(db, { ...TARGET, manifest, freshRoster });
-	await containLegacyTeamSetupCompletionConflict(db, TARGET);
+	await applyLegacyTeamSetupCompletionManifest(db, { ...target, manifest, freshRoster });
+	await containLegacyTeamSetupCompletionConflict(db, target);
 	return manifest;
 }
 

@@ -60,6 +60,7 @@ import {
 import { type ViewerTargetStore, viewerTargetQueryGuard } from "./routes/target-validation.js";
 import { teamCreateRoutes } from "./routes/team-create.js";
 import { teamMemberRemovalRoutes } from "./routes/team-member-removal.js";
+import { teamRecoveryRoutes } from "./routes/team-recovery.js";
 import {
 	type LegacyTeamCompletionDependencies,
 	type LegacyTeamConfiguredGroupSnapshotLoader,
@@ -348,6 +349,13 @@ function registerViewerSyncRoutes(
 	);
 }
 
+/** Routes only an admin device may use on a Team: removing a member, and recovering a disabled Team. */
+function registerTeamAdminRoutes(app: Hono, storeFactory: () => MemoryStore, opts?: AppOptions) {
+	const options = { readCoordinatorConfig: opts?.readCoordinatorConfig };
+	app.route("/", teamMemberRemovalRoutes(storeFactory, options));
+	app.route("/", teamRecoveryRoutes(storeFactory, options));
+}
+
 function registerViewerDeviceRemoval(
 	app: Hono,
 	storeFactory: () => MemoryStore,
@@ -431,10 +439,7 @@ export function createApp(opts?: AppOptions) {
 	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());
 	registerViewerDeviceRemoval(app, storeFactory, opts);
 	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
-	app.route(
-		"/",
-		teamMemberRemovalRoutes(storeFactory, { readCoordinatorConfig: opts?.readCoordinatorConfig }),
-	);
+	registerTeamAdminRoutes(app, storeFactory, opts);
 	app.route("/", projectWithdrawalRoutes(storeFactory));
 	app.route(
 		"/",

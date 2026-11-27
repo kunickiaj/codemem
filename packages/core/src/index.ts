@@ -1800,6 +1800,7 @@ export {
 } from "./team-member-removal-review.js";
 export {
 	commitTeamRecovery,
+	isTeamRecoveryEvidenceStale,
 	TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS,
 	type TeamRecoveryCommitContext,
 	type TeamRecoveryCommitRefusal,
