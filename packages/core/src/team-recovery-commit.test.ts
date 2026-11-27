@@ -441,6 +441,48 @@ describe("Team recovery check after the commit", () => {
 		expect(refused("device-b")).toBe(true);
 	});
 
+	it("quarantines the Team again and keeps its hold when a device is removed between the second roster read and its block check", async () => {
+		// Arrange: the second roster still lists the Desktop, and the block check asked after it reports it removed.
+		const checks = blockChecks([DESKTOP, TABLET], [], { "device-b": "of_this_key" });
+		const second = evidence(undefined, {
+			deviceBlocks: { status: "read", source: GROUP, checks },
+		});
+
+		const result = await commit(reviewedDigest(), reader(evidence(), second));
+
+		expect(result).toEqual({ state: "quarantined_again", reason: "evidence_changed" });
+		expect(teamState()).toBe("inactive:needs_setup");
+		expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+		expect(refused("device-b")).toBe(true);
+	});
+
+	it("refuses the recovery when a device is removed between the first roster read and its block check", async () => {
+		const digest = reviewedDigest();
+		const before = snapshot();
+		const checks = blockChecks([DESKTOP, TABLET], [], { "device-b": "of_this_key" });
+		const first = evidence(undefined, { deviceBlocks: { status: "read", source: GROUP, checks } });
+
+		const result = await commit(digest, reader(first));
+
+		expect(result).toMatchObject({ state: "refused", reason: "device_evidence_contradictory" });
+		expect(snapshot()).toEqual(before);
+	});
+
+	it("quarantines the Team again and keeps its hold when a device its first read listed is off the roster in the read after the commit", async () => {
+		// Arrange: the Desktop left the group during the first read, which its block check could not see.
+		const removal = { group_id: GROUP_ID, device_id: "device-b", fingerprint: DESKTOP.fingerprint };
+		const second = evidence([TABLET], {
+			deviceRemovals: { status: "read", source: HERE, removals: [LAPTOP_REMOVAL, removal] },
+		});
+
+		const result = await commit(reviewedDigest(), reader(evidence(), second));
+
+		expect(result).toEqual({ state: "quarantined_again", reason: "evidence_changed" });
+		expect(teamState()).toBe("inactive:needs_setup");
+		expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+		expect(refused("device-b")).toBe(true);
+	});
+
 	it("quarantines the Team again when the evidence cannot be read again", async () => {
 		const unreadable = evidence(undefined, { roster: { status: "unavailable" } });
 

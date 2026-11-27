@@ -31,6 +31,18 @@ export interface CoordinatorListTeamMemberRemovalsActionOptions {
 	remoteUrl: string;
 	adminSecret: string;
 	timeoutS?: number;
+	/** When the whole list must be read, on this machine's clock. Each page gets what is left. */
+	deadlineMs?: number;
+}
+
+/** The options for one page: the timeout cut to what the deadline leaves. */
+function pageOptions(
+	opts: CoordinatorListTeamMemberRemovalsActionOptions,
+): CoordinatorListTeamMemberRemovalsActionOptions {
+	if (opts.deadlineMs === undefined) return opts;
+	const leftS = (opts.deadlineMs - Date.now()) / 1000;
+	if (leftS <= 0) throw new Error("team_member_removal_unavailable");
+	return { ...opts, timeoutS: Math.min(opts.timeoutS ?? 3, leftS) };
 }
 
 function invalid(): never {
@@ -123,7 +135,7 @@ export async function coordinatorListTeamMemberRemovalsAction(
 	const removals: CoordinatorTeamMemberRemoval[] = [];
 	let afterSeq = 0;
 	for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
-		const page = parsePage(await readPage(opts, afterSeq), opts.groupId, afterSeq);
+		const page = parsePage(await readPage(pageOptions(opts), afterSeq), opts.groupId, afterSeq);
 		removals.push(...page.items);
 		if (page.next === null) return removals;
 		afterSeq = page.next;

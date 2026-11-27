@@ -220,6 +220,40 @@ describe("Team recovery device refusals", () => {
 		});
 	});
 
+	it("refuses a device the roster lists as enrolled when the block check reports the key it sent removed", () => {
+		// Arrange: the Desktop was removed after the roster was read and before the check was asked.
+		const checks = blockChecks([DESKTOP, TABLET], [], { "device-b": "of_this_key" });
+
+		const result = plan([DESKTOP, TABLET], [LAPTOP_REMOVAL], checks);
+
+		expect(result).toEqual({
+			state: "refused",
+			reason: "device_evidence_contradictory",
+			deviceIds: ["device-b"],
+		});
+	});
+
+	it("asks again, and does not call it a contradiction, when the block check reports a removal without saying which key", () => {
+		// Arrange: the coordinator matched a removal by device ID or by key and sent no key evidence.
+		const checks = blockChecks([DESKTOP, TABLET], [], { "device-b": "unattributed" });
+
+		const result = plan([DESKTOP, TABLET], [LAPTOP_REMOVAL], checks);
+
+		expect(result).toEqual({
+			state: "refused",
+			reason: "device_block_unchecked",
+			deviceIds: ["device-b"],
+		});
+	});
+
+	it("does not clear a device whose block check says nothing about a removal", () => {
+		const checks = blockChecks([DESKTOP, TABLET]).map(({ removal: _removal, ...check }) => check);
+
+		const result = plan([DESKTOP, TABLET], [LAPTOP_REMOVAL], checks as never);
+
+		expect(result).toMatchObject({ state: "refused", reason: "device_block_unchecked" });
+	});
+
 	it("refuses an excluded device whose decision is now included", () => {
 		run(
 			"UPDATE policy_team_device_decisions SET decision = 'included' WHERE device_id = 'device-x'",

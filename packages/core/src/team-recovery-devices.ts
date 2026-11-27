@@ -24,8 +24,8 @@ import {
  * or failing a pin, the key its coordinator enrollment binding was recorded
  * for. Without one, recovery stops, because nothing ties the roster's key to
  * the device.
- * - enrolled, enabled, holding that key, and reported not blocked by a block
- *   check made for that device and key: it keeps its decision;
+ * - enrolled, enabled, holding that key, and reported not blocked and with no
+ *   removal by a block check made for that device and key: it keeps its decision;
  * - not enrolled, with a removal record for that device and key in this group:
  *   recovery leaves it out;
  * - anything else stops recovery. A changed key is not a removal.
@@ -60,11 +60,24 @@ export interface TeamRecoveryDeviceRemoval {
  * reader fills `deviceId` and `publicKey` from the request it sent, never from
  * the reply: `publicKey` is the exact key string the question was asked with.
  * An answer without it says nothing about the key.
+ *
+ * `removal` is what the same answer says about a removal. The check is asked
+ * after the roster is read, so a device removed in between is listed as
+ * enrolled by the roster and as removed here.
+ * - `of_this_key`: the coordinator reports the exact key sent removed under
+ *   this device. With the device on the roster, the two reads contradict.
+ * - `unattributed`: it reports a removal by device ID or by key and does not
+ *   say that the key sent was removed or is still enrolled. That clears
+ *   nothing and refuses nothing for good: the check can be asked again.
+ * - `none`: it reports no removal, or reports the key sent still enrolled. A
+ *   device removed from another group under an older key reads so.
+ * Only `none` clears the device.
  */
 export interface TeamRecoveryDeviceBlockCheck {
 	deviceId: string;
 	publicKey: string;
 	blocked: boolean;
+	removal: "none" | "of_this_key" | "unattributed";
 }
 
 export type TeamRecoveryDeviceRefusal =
@@ -287,7 +300,11 @@ function enrolledVerdict(
 			record.device_id === deviceId &&
 			record.fingerprint === fingerprint,
 	);
-	if (removedHere) return { refusal: "device_evidence_contradictory" };
+	// The block check is asked after the roster, and reports a removal made in between.
+	const removedSince = input.deviceBlocks.some(
+		(check) => check.deviceId === deviceId && check.removal === "of_this_key",
+	);
+	if (removedHere || removedSince) return { refusal: "device_evidence_contradictory" };
 	if (prior.contradicts(fingerprint)) return { refusal: "device_key_changed" };
 	if (!prior.matches(fingerprint)) return { refusal: "device_key_unverified" };
 	if (!enrolled.enabled) return { refusal: "device_disabled" };
@@ -296,6 +313,7 @@ function enrolledVerdict(
 		(check) =>
 			check.deviceId === deviceId &&
 			check.blocked === false &&
+			check.removal === "none" &&
 			provesKeyChecked(check, fingerprint),
 	);
 	return cleared ? { standing: "enrolled" } : { refusal: "device_block_unchecked" };

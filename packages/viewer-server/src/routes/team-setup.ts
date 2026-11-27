@@ -58,6 +58,7 @@ import {
 	listProjectScopeCandidates,
 	loadRuntimeSigningPublicKey,
 	localRemovedDeviceIds,
+	normalizedCoordinatorId,
 	normalizeHumanPresentationName,
 	previewLegacyTeamSetupActivation,
 	RemoteCoordinatorRequestError,
@@ -643,25 +644,7 @@ function configuredGroupIds(groups: string[]): string[] {
 	return unique;
 }
 
-export function normalizedCoordinatorId(value: string): string | null {
-	try {
-		const normalized = buildBaseUrl(value);
-		if (!normalized) return null;
-		const parsed = new URL(normalized);
-		if (
-			(parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-			!parsed.host ||
-			parsed.username ||
-			parsed.password
-		) {
-			return null;
-		}
-		const path = parsed.pathname === "/" ? "" : parsed.pathname;
-		return `${parsed.protocol}//${parsed.host}${path}${parsed.search}`;
-	} catch {
-		return null;
-	}
-}
+export { normalizedCoordinatorId };
 
 export function legacyTeamCandidateGroupDescriptors(
 	store: MemoryStore | undefined,

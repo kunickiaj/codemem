@@ -1,4 +1,8 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import {
+	isCompletePeerKeyEvidence,
+	isCompletePeerRevocationSnapshot,
+} from "./coordinator-peer-revocation-route.js";
 import type { CoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
@@ -59,6 +63,8 @@ interface PeerRemovalReply {
 	enrolled: string[];
 	removalSeq: number;
 	keyEnrolled: string[];
+	/** IDs whose sent key the coordinator reports removed. Filled only for a complete reply. */
+	keyRemoved: string[];
 }
 
 type StoreLike = Pick<MemoryStore, "db" | "dbPath">;
@@ -67,6 +73,12 @@ type SignedRequest = {
 	groupId: string;
 	keysDir?: string;
 	removedFromGroups?: string[];
+	/** Fail on a redirect, so the answer comes from the coordinator and group that were asked. */
+	redirect?: "error";
+	/** Accept only a reply that keeps the coordinator's whole contract and answers every device. */
+	completeReply?: true;
+	/** When the whole check must be over, on this machine's clock. */
+	deadlineMs?: number;
 };
 
 /** The stored key when the coordinator would accept it. Otherwise the device is asked about by ID only. */
@@ -144,6 +156,63 @@ function keyEnrolledIds(
 	return evidence.enrolled;
 }
 
+/**
+ * The reply for a caller that must not act on a partial answer. A reply that
+ * breaks the coordinator's contract anywhere is refused as a whole: an entry
+ * that is malformed, repeated or was never asked about is not dropped. So is a
+ * reply that says nothing about a device that was asked about. Only then does a
+ * device that is not listed as blocked count as not blocked.
+ */
+function parseCompleteReply(
+	response: Record<string, unknown> | null,
+	entries: PeerRemovalLookupEntry[],
+): PeerRemovalReply {
+	const sent = entries.map((entry) => entry.device_id);
+	if (response?.version !== 1 || !isCompletePeerRevocationSnapshot(response, new Set(sent)))
+		throw new Error("peer_revocation_response_invalid");
+	const { revoked, removed, enrolled } = response as {
+		revoked: string[];
+		removed: string[];
+		enrolled: string[];
+	};
+	const answered = new Set([...revoked, ...removed, ...enrolled]);
+	if (sent.some((deviceId) => !answered.has(deviceId)))
+		throw new Error("peer_revocation_response_incomplete");
+	const keys = completeKeyEvidence(response.key_evidence, new Set(sent), enrolled);
+	return {
+		revoked,
+		removed,
+		enrolled,
+		removalSeq: response.removal_seq as number,
+		keyEnrolled: keys.enrolled,
+		keyRemoved: keys.removed,
+	};
+}
+
+/**
+ * The key evidence of a complete reply. A coordinator from before key evidence
+ * sends none, which reads as none. Evidence that is sent must keep its contract
+ * and must not report one key both removed and enrolled, or the reply is refused.
+ */
+function completeKeyEvidence(value: unknown, sent: Set<string>, enrolled: readonly string[]) {
+	if (value === undefined) return { removed: [], enrolled: [] };
+	if (
+		!isCompletePeerKeyEvidence(value, sent, enrolled) ||
+		value.removed.some((id) => value.enrolled.includes(id))
+	)
+		throw new Error("peer_revocation_response_invalid");
+	return value;
+}
+
+/** The timeout for one request: the configured one, cut to what the deadline leaves. */
+function batchTimeoutS(config: CoordinatorSyncConfig, deadlineMs?: number): number {
+	const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+	if (deadlineMs === undefined) return timeoutS;
+	const leftS = (deadlineMs - Date.now()) / 1000;
+	if (leftS <= 0) throw new Error("peer_revocation_deadline_passed");
+	return Math.min(timeoutS, leftS);
+}
+
 /** A reply without all three arrays and the integer is invalid, and the caller keeps every pairing. */
 function parseReply(
 	response: Record<string, unknown> | null,
@@ -169,6 +238,7 @@ function parseReply(
 		enrolled: enrolledIds,
 		removalSeq: removalSeq as number,
 		keyEnrolled: keyEnrolledIds(response?.key_evidence, entries, enrolledIds),
+		keyRemoved: [],
 	};
 }
 
@@ -193,12 +263,15 @@ async function checkBatch(
 		headers,
 		body,
 		bodyBytes,
-		timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		timeoutS: batchTimeoutS(config, request.deadlineMs),
+		redirect: request.redirect,
 	});
 	if (status === 403 && response?.error === "device_removed")
 		request.removedFromGroups?.push(request.groupId);
 	if (status !== 200) throw new CheckStatusError(status);
-	return parseReply(response, entries);
+	return request.completeReply
+		? parseCompleteReply(response, entries)
+		: parseReply(response, entries);
 }
 
 type FirstAnswer =
@@ -342,4 +415,57 @@ export async function queryPeerRemoval(
 	} catch {
 		return { answered: false };
 	}
+}
+
+/** What the coordinator's signed check says about the devices it was asked about. */
+export interface DeviceBlocksAndRemovals {
+	/** The IDs it blocks, by ID or by key. */
+	blocked: string[];
+	/**
+	 * The IDs whose key, the exact one sent, it reports removed under that ID in
+	 * this group, with no enrollment of that key left anywhere.
+	 */
+	keyRemoved: string[];
+	/**
+	 * The IDs it reports removed by ID or by key, without saying that the key sent
+	 * was removed or is still enrolled. Every removal reads like this when the
+	 * coordinator sends no key evidence.
+	 */
+	removedUnattributed: string[];
+}
+
+/**
+ * Asks the coordinator, as a member of exactly this group, which of these
+ * devices it blocks and which it reports removed. A device can be removed
+ * after the caller listed it as enrolled, and then this answer is the only read
+ * that shows it. Unlike the lookups above it does not try another group and
+ * does not follow a redirect, and it throws unless every batch came back,
+ * before the deadline, as a complete answer about every device sent: the caller
+ * records the coordinator and group it asked, and treats a device in none of
+ * the lists as enrolled and not blocked.
+ */
+export async function fetchDeviceBlocksAndRemovalsForGroup(
+	store: StoreLike,
+	config: CoordinatorSyncConfig,
+	request: { localDeviceId: string; keysDir?: string; groupId: string; deadlineMs?: number },
+	peers: readonly PeerRemovalLookupEntry[],
+): Promise<DeviceBlocksAndRemovals> {
+	const entries = peers.map((peer) => {
+		const key = usableKey(peer.public_key);
+		// A device that cannot be asked about by ID and key cannot be cleared.
+		if (!isAuthControllerId(peer.device_id) || key === undefined)
+			throw new Error("peer_block_check_unaskable");
+		return { device_id: peer.device_id, public_key: key };
+	});
+	const answer: DeviceBlocksAndRemovals = { blocked: [], keyRemoved: [], removedUnattributed: [] };
+	for (const batch of batchesOf(entries)) {
+		const strict = { ...request, redirect: "error", completeReply: true } as const;
+		const reply = await checkBatch(store, config, strict, batch);
+		const attributed = new Set([...reply.keyRemoved, ...reply.keyEnrolled]);
+		answer.blocked.push(...reply.revoked);
+		answer.keyRemoved.push(...reply.keyRemoved);
+		// The legacy list matches by ID or by key, so it alone does not say which key was removed.
+		answer.removedUnattributed.push(...reply.removed.filter((id) => !attributed.has(id)));
+	}
+	return answer;
 }
