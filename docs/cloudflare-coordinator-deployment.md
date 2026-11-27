@@ -301,7 +301,9 @@ again. From the moment the removal is recorded, the device's sync admission refu
 scope that holds one of the Team's Projects, through a mapping of any kind or through memories already stored
 there. A scope that holds only Projects the person still has another way, such as a direct share or another
 Team, stays open to them. A removal applies only to a Team that its coordinator group set up on that device. A
-record for any other Team is kept without effect and reported.
+record for any other Team is kept without effect and reported. The Viewer also reads the list before it applies a
+Team setup that another admin device completed. If that read fails, it applies nothing in that pass and leaves the
+Team as it is.
 
 If the removal list cannot be read, for any reason, the Viewer still reconciles enrolled devices but grants no
 Team access from an accepted invitation in that check, and reports each invitation it held back. A not-found

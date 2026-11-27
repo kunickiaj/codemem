@@ -1292,7 +1292,8 @@ export type LegacyTeamSetupErrorReason =
 	| "coordinator_unreachable"
 	| "local_candidate_scan_budget_exceeded"
 	| "coordinator_roster_unavailable"
-	| "device_removals_unavailable";
+	| "device_removals_unavailable"
+	| "team_member_removals_unavailable";
 
 const LEGACY_TEAM_SETUP_VERSION = 1;
 const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
@@ -1316,6 +1317,7 @@ export const LEGACY_TEAM_SETUP_ERROR_REASONS = new Set<LegacyTeamSetupErrorReaso
 	"local_candidate_scan_budget_exceeded",
 	"coordinator_roster_unavailable",
 	"device_removals_unavailable",
+	"team_member_removals_unavailable",
 ]);
 const LEGACY_TEAM_SETUP_STATUSES = new Set<LegacyTeamSetupStatusV1>([
 	"needs_setup",

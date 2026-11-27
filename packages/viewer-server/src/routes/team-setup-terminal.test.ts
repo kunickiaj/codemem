@@ -3971,3 +3971,82 @@ describe("Completed Team recipient repair when the admin secret goes away mid-re
 		}
 	});
 });
+
+describe("Team setup finish recovery and Team member removals", () => {
+	it.each([
+		["a removal recorded on another admin device", "recorded"],
+		["a removal list that cannot be read", "unreadable"],
+	] as const)(
+		"recovers a lost create response only after reading Team member removals: %s",
+		async (_label, removalRead) => {
+			const store = new MemoryStore(":memory:");
+			let published: ReturnType<typeof deriveLegacyTeamSetupCompletionManifest> | null = null;
+			const create = vi.fn(async ({ manifest }) => {
+				published = { ...manifest, completed_at: NOW };
+				throw new Error("completion_conflict");
+			});
+			const listTeamMemberRemovals = vi.fn(async () => {
+				if (removalRead === "unreadable")
+					throw new Error("Remote coordinator request failed (503)");
+				return [
+					{
+						removal_seq: 1,
+						group_id: GROUP_ID,
+						team_id: deterministicPolicyTeamId(CANDIDATE_REF),
+						identity_id: "identity-a",
+						removed_by_device_id: null,
+						removed_at: NOW,
+					},
+				];
+			});
+			const app = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: {
+					create,
+					get: vi.fn(async () => published),
+					list: async () => [],
+					listTeamMemberRemovals,
+				},
+			});
+			try {
+				const draft = await readyDraftThroughSummary(store, app);
+				const detail = (await (
+					await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`)
+				).json()) as {
+					finishDigest: string;
+					accessDeltaDigest: string;
+					viewerAccessDeltaDigest: string;
+				};
+				const response = await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}/finish`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						attemptId: draft.attemptId,
+						finishDigest: detail.finishDigest,
+						confirmedAccessDeltaDigest: detail.accessDeltaDigest,
+						confirmedViewerAccessDeltaDigest: detail.viewerAccessDeltaDigest,
+					}),
+				});
+
+				expect(listTeamMemberRemovals).toHaveBeenCalledWith(
+					expect.objectContaining({ groupId: GROUP_ID }),
+				);
+				const active = store.db
+					.prepare(
+						"SELECT COUNT(*) FROM policy_team_memberships WHERE identity_id = 'identity-a' AND status IN ('active', 'reviewed_active')",
+					)
+					.pluck()
+					.get();
+				expect(active).toBe(0);
+				if (removalRead === "unreadable") {
+					expect(response.status).toBe(503);
+					expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).not.toBe("completed");
+				}
+			} finally {
+				store.close();
+			}
+		},
+	);
+});

@@ -99,6 +99,8 @@ const COMPLETION_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team setup could not be confirmed, and no local changes were applied. Retry to check whether setup completed.";
 const DEVICE_REMOVALS_UNAVAILABLE_ERROR =
 	"Device removal records could not be read from the coordinator. Nothing changed. Retry to check again.";
+const TEAM_MEMBER_REMOVALS_UNAVAILABLE_ERROR =
+	"Team member removals could not be read from the coordinator. Nothing changed here. Retry to check again.";
 const COMPLETION_CONFLICT_ERROR =
 	"Another device completed this Team with different reviewed details. Retry to load the completed setup.";
 const COMPLETION_INVALID_ERROR =
@@ -887,6 +889,11 @@ function finishCompletionMessage(
 function completionUnavailableMessage(cause: unknown): string {
 	if (cause instanceof LegacyTeamSetupApiError && cause.reason === "device_removals_unavailable")
 		return DEVICE_REMOVALS_UNAVAILABLE_ERROR;
+	if (
+		cause instanceof LegacyTeamSetupApiError &&
+		cause.reason === "team_member_removals_unavailable"
+	)
+		return TEAM_MEMBER_REMOVALS_UNAVAILABLE_ERROR;
 	return COMPLETION_UNAVAILABLE_ERROR;
 }
 

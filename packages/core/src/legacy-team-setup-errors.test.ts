@@ -11,6 +11,7 @@ describe("legacy Team setup diagnostic reasons", () => {
 			"local_candidate_scan_budget_exceeded",
 			"coordinator_roster_unavailable",
 			"device_removals_unavailable",
+			"team_member_removals_unavailable",
 		]);
 	});
 
