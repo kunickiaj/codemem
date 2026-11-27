@@ -663,3 +663,87 @@ describe("Team recovery after one that stopped", () => {
 		expect(scopedRead(db, "device-b").state).toBe("policy_denied");
 	});
 });
+
+describe("Team recovery and a former scope that only stores a skipped Project's memories", () => {
+	/** A memory in the scope whose session ran elsewhere, so only this says which Project it is of. */
+	function storeMemory(stored: { memoryProject?: string; recordedRepository?: string }) {
+		const metadata = stored.recordedRepository
+			? JSON.stringify({ codemem_repository_identity: stored.recordedRepository })
+			: null;
+		const session = run(
+			`INSERT INTO sessions(started_at, cwd, project, tool_version, metadata_json)
+			 VALUES (?, '/work/elsewhere', 'elsewhere', 'test', ?)`,
+			NOW,
+			metadata,
+		);
+		run(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, active, created_at, updated_at,
+			 scope_id, project) VALUES (?, 'discovery', 'Stored', 'Stored', 1, ?, ?, 'scope-former', ?)`,
+			session.lastInsertRowid,
+			NOW,
+			NOW,
+			stored.memoryProject ?? null,
+		);
+	}
+
+	it.each([
+		["the memory's own Project", { memoryProject: PROJECT }],
+		["the repository its session recorded", { recordedRepository: PROJECT }],
+	])(
+		"refuses a kept-proof read of it, while the Team is held and after, when only %s names the Project",
+		async (_case, stored) => {
+			// Arrange: no mapping points the Project to the former scope and no setup put it
+			// there. The Desktop kept its proof for it. A person unshared the Project.
+			insertScope(db, "scope-former", GROUP_ID);
+			storeMemory(stored);
+			await keepScopeProof(db, "device-b", "scope-former");
+			run("UPDATE project_recipients SET provenance = 'user', migration_state = 'user_managed'");
+			const read = () => scopedRead(db, "device-b", "scope-former").state;
+			const during: unknown[] = [];
+
+			const result = await commit(
+				reviewedDigest(),
+				readerAfter(() => during.push(read())),
+			);
+
+			expect(result).toMatchObject({
+				state: "recovered",
+				preview: { projects: [{ outcome: "skipped" }] },
+			});
+			expect(during).toEqual(["policy_denied"]);
+			expect(read()).toBe("policy_denied");
+		},
+	);
+});
+
+describe("Team recovery whose read after the commit is too old to act on", () => {
+	it("keeps the hold when the read finished in time but waited past the limit for the write lock", async () => {
+		// Arrange: the second read starts at once and comes back in time. Only inside
+		// the transaction that acts on it, once the write lock is held, is it past the limit.
+		await keepScopeProof(db, "device-b");
+		const LATER_MS = CLOCK_MS + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS + 1;
+		let reads = 0;
+		const context = {
+			nowMs: () => (reads === 2 && db.inTransaction ? LATER_MS : CLOCK_MS),
+			readEvidence: (): Promise<TeamRecoveryEvidenceReading> => {
+				reads += 1;
+				return Promise.resolve({ evidence: evidence(), startedAtMs: CLOCK_MS });
+			},
+		};
+
+		const result = await commit(reviewedDigest(), context);
+
+		expect(result).toEqual({ state: "unverified", reason: "evidence_stale" });
+		expect(teamState()).toBe("active:completed");
+		expect(value("SELECT reason FROM policy_team_recovery_holds")).toBe("awaiting_verification");
+		expect(scopedRead(db, "device-b").state).toBe("policy_denied");
+
+		// The recovery can be tried again: it takes the hold over, and this time verifies in time.
+		const retry = await commit(reviewedDigest(), {
+			nowMs: () => LATER_MS,
+			readEvidence: () => Promise.resolve({ evidence: evidence(), startedAtMs: LATER_MS }),
+		});
+		expect(retry.state).toBe("recovered");
+		expect(scopedRead(db, "device-b").state).toBe("authorized");
+	});
+});

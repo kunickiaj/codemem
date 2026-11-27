@@ -100,6 +100,12 @@ export type TeamRecoveryCommitResult =
 			state: "quarantined_again";
 			reason: "evidence_changed" | "evidence_unavailable" | "disabled_before_verification";
 	  }
+	/**
+	 * The recovery was written and the Team is still held, serving nothing: the
+	 * read after it was too old by the time this machine could act on it. The
+	 * recovery can be tried again, and takes this hold over.
+	 */
+	| { state: "unverified"; reason: "evidence_stale" }
 	/** The recovery was written, and a later recovery took the Team over before this one was verified. */
 	| { state: "superseded" };
 
@@ -248,9 +254,7 @@ function applyRecovery(
 	reading: TeamRecoveryEvidenceReading,
 	nowMs: number,
 ): Applied {
-	const age = nowMs - reading.startedAtMs;
-	// A reading stamped in the future says nothing about its age.
-	if (!Number.isFinite(age) || age < 0 || age > TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS)
+	if (isEvidenceStale(reading.startedAtMs, nowMs))
 		return { state: "refused", reason: "evidence_stale" };
 	// A Team an abandoned recovery left active and held is disabled first, hold and all,
 	// and then recovered like any disabled Team. A refusal undoes that with the rest.
@@ -375,31 +379,40 @@ function decidingEvidence(evidence: TeamRecoveryEvidence, plan: TeamRecoveryPlan
 
 type Reread = "verified" | "evidence_changed" | "evidence_unavailable";
 
+/** A read that started too long before `nowMs`, or after it, says nothing that can be acted on now. */
+function isEvidenceStale(startedAtMs: number, nowMs: number): boolean {
+	const age = nowMs - startedAtMs;
+	return !Number.isFinite(age) || age < 0 || age > TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS;
+}
+
 /**
  * Acts on the second read, in one transaction, and only for the recovery it
- * verified: its hold must still be the Team's. A verified read lifts the hold.
- * Any other quarantines the Team and leaves the hold on it, so that only
+ * verified: its hold must still be the Team's. A verified read lifts the hold,
+ * unless it is older than the evidence limit by now: waiting for the write
+ * lock counts, and then the hold stays for a retry. A read that failed or
+ * showed a change quarantines the Team and leaves the hold on it, so that only
  * another recovery makes the Team active again.
  */
 function settleRecovery(
 	db: Database,
-	plan: TeamRecoveryPlan,
-	recoveryId: string,
-	reread: Reread,
+	written: Written,
+	second: { reread: Reread; stale: boolean },
 ): TeamRecoveryCommitResult {
+	const { plan, recoveryId } = written;
 	const { teamId, candidateRef } = plan.preview;
 	const hold = { teamId, recoveryId };
 	if (!isTeamRecoveryHeldBy(db, hold)) return { state: "superseded" };
-	if (reread !== "verified") {
-		recordTeamRecoveryHoldReason(db, { ...hold, reason: reread });
+	if (second.reread !== "verified") {
+		recordTeamRecoveryHoldReason(db, { ...hold, reason: second.reread });
 		quarantineLegacyTeamSetupPolicyInTransaction(db, { candidateRef, teamId });
-		return { state: "quarantined_again", reason: reread };
+		return { state: "quarantined_again", reason: second.reread };
 	}
 	const active = db
 		.prepare("SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'active'")
 		.get(teamId);
 	// Something else disabled the Team meanwhile. Its hold stays, so only a recovery reopens it.
 	if (!active) return { state: "quarantined_again", reason: "disabled_before_verification" };
+	if (second.stale) return { state: "unverified", reason: "evidence_stale" };
 	liftTeamRecoveryHold(db, hold);
 	// Verified: from here recipient policy reads the Team as active, so its Projects reconcile.
 	wakeRecipientPoliciesForProjectIdentities(
@@ -421,18 +434,25 @@ async function verifyAfterCommit(
 	written: Written,
 	committedOn: TeamRecoveryEvidence,
 ): Promise<TeamRecoveryCommitResult> {
-	const { plan, recoveryId } = written;
+	const { plan } = written;
+	const nowMs = context.nowMs ?? Date.now;
 	const before = decidingEvidence(committedOn, plan);
 	let after: string | null = null;
+	let startedAtMs = Number.NaN;
 	try {
-		after = decidingEvidence((await context.readEvidence()).evidence, plan);
+		const second = await context.readEvidence();
+		after = decidingEvidence(second.evidence, plan);
+		startedAtMs = second.startedAtMs;
 	} catch {
 		after = null;
 	}
 	let reread: Reread = after === null ? "evidence_unavailable" : "evidence_changed";
 	if (before !== null && after === before) reread = "verified";
+	// The age is taken inside the transaction, once the write lock is held.
+	const settle = () =>
+		settleRecovery(db, written, { reread, stale: isEvidenceStale(startedAtMs, nowMs()) });
 	return serializeRecovery(db, { teamId: plan.preview.teamId, groupId: plan.groupId }, () =>
-		Promise.resolve(db.transaction(() => settleRecovery(db, plan, recoveryId, reread)).immediate()),
+		Promise.resolve(db.transaction(settle).immediate()),
 	);
 }
 
