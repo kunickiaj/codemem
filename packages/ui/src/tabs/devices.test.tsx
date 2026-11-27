@@ -3533,6 +3533,39 @@ describe("Device disconnect menu", () => {
 	});
 });
 
+describe("Disconnect on every paired device card", () => {
+	it.each([
+		["configured, in the policy graph", "device-address-fingerprint-secret", "configured"],
+		["configured, missing from the policy graph", "fallback-device", "configured"],
+		["setup required", "setup-device", "setup_required"],
+		["conflicted", "conflict-device", "conflicted"],
+	] as const)("offers Disconnect on a paired device card that is %s", async (_label, id, state) => {
+		const disconnect = vi.fn(async () => ({ binding: "kept" }));
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(id, "Paired Device", state, {
+					sources: ["identity_binding", "sync_peer"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			disconnect: { confirm: vi.fn(async () => true), disconnect },
+		});
+
+		const card = document.getElementById(`device-identity-card-${id}`);
+		const inCard = [...(card?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+		const action =
+			inCard.find((button) => button.textContent === "Disconnect on this device…") ??
+			[
+				...openActionMenu(card ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+			].find((button) => button.textContent === "Disconnect on this device…");
+		expect(action?.textContent).toBe("Disconnect on this device…");
+		await act(async () => action?.click());
+		await act(async () => {});
+
+		expect(disconnect).toHaveBeenCalledExactlyOnceWith(id);
+	});
+});
+
 function watchDeviceCommitStatus() {
 	const status = document.getElementById("devices-commit-status");
 	if (!status) throw new Error("Missing device commit status");

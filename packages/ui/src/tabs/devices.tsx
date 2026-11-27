@@ -636,6 +636,20 @@ function SetupRecoveryAction({
 }
 
 /** Lets a person remove an unused device without pairing or setting it up first. */
+/** A card that has no Identity projection still needs the paired ID to disconnect by. */
+function inventoryItemTarget(
+	item: DeviceIdentityInventoryItemV1,
+	options: DevicesRendererOptions,
+): DeviceTarget {
+	return {
+		deviceId: item.deviceId,
+		displayName: item.displayName,
+		syncPeer: options.peerSyncMetadata
+			? deviceSyncPeer(item.deviceId, options.inventory, syncPeerLookup(options.peerSyncMetadata))
+			: undefined,
+	};
+}
+
 function SetupCardRemoval({
 	item,
 	options,
@@ -643,8 +657,7 @@ function SetupCardRemoval({
 	item: DeviceIdentityInventoryItemV1;
 	options: DevicesRendererOptions;
 }) {
-	const device = { deviceId: item.deviceId, displayName: item.displayName };
-	const actions = deviceRemovalMenuActions(device, item, options);
+	const actions = deviceRemovalMenuActions(inventoryItemTarget(item, options), item, options);
 	if (actions.length === 0) return null;
 	return (
 		<div className="device-identity-card-actions">
@@ -2401,6 +2414,7 @@ function ConfiguredFallbackInventory({
 								options={options}
 								previousIdentityName={previousIdentityName}
 							/>
+							<SetupCardRemoval item={item} options={options} />
 						</article>
 					</li>
 				);
