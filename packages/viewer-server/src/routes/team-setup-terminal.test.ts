@@ -4603,11 +4603,17 @@ describe("Team setup background check and a setup that finishes while it reads",
 });
 
 describe("Team setup summary for a Team that was disabled", () => {
-	/**
-	 * A Team this device set up, disabled by a background check, and the summary
-	 * read with this admin secret configured by then.
-	 */
-	async function disabledTeamSummary(store: MemoryStore, adminSecret: string) {
+	type Summary = {
+		candidates: Array<{
+			candidateRef: string;
+			blockingError?: string;
+			blockingReason?: string;
+			recoverableTeamId?: string;
+		}>;
+	};
+
+	/** A Team this device finished setting up. */
+	async function finishedTeam(store: MemoryStore) {
 		const setupApp = teamSetupRoutes({
 			getStore: () => store,
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
@@ -4628,6 +4634,14 @@ describe("Team setup summary for a Team that was disabled", () => {
 			validateLockedPreview: () => true,
 			now: NOW,
 		});
+	}
+
+	/**
+	 * A Team this device set up, disabled by a background check, and the summary
+	 * read with this admin secret configured by then.
+	 */
+	async function disabledTeamSummary(store: MemoryStore, adminSecret: string) {
+		await finishedTeam(store);
 		const conflict = async () => {
 			throw new Error("completion_conflict");
 		};
@@ -4641,9 +4655,7 @@ describe("Team setup summary for a Team that was disabled", () => {
 		await check().refresh();
 		secret = adminSecret;
 		const summary = await app.request("/api/sync/team-setup/v1");
-		return (await summary.json()) as {
-			candidates: Array<{ candidateRef: string; recoverableTeamId?: string }>;
-		};
+		return (await summary.json()) as Summary;
 	}
 
 	it("names the Team to recover on an admin device", async () => {
@@ -4658,6 +4670,44 @@ describe("Team setup summary for a Team that was disabled", () => {
 					recoverableTeamId: deterministicPolicyTeamId(CANDIDATE_REF),
 				},
 			]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("lists a Team whose recovery was saved and never confirmed, and names it for another recovery", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			// Arrange: the Team is active and on hold, and no recovery is confirming it any more.
+			await finishedTeam(store);
+			const teamId = deterministicPolicyTeamId(CANDIDATE_REF);
+			store.db
+				.prepare(
+					`INSERT INTO policy_team_recovery_holds(team_id, recovery_id, reason, held_at)
+					 VALUES (?, 'recovery-stopped', 'unverified', ?)`,
+				)
+				.run(teamId, NOW);
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: removalReadingCompletion(),
+			});
+			await check().refresh();
+
+			const held = (await (await app.request("/api/sync/team-setup/v1")).json()) as Summary;
+			store.db.prepare("DELETE FROM policy_team_recovery_holds").run();
+			const lifted = (await (await app.request("/api/sync/team-setup/v1")).json()) as Summary;
+
+			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+			expect(held.candidates).toMatchObject([
+				{
+					candidateRef: CANDIDATE_REF,
+					blockingError: "team_setup_completion_unavailable",
+					blockingReason: "team_recovery_unconfirmed",
+					recoverableTeamId: teamId,
+				},
+			]);
+			expect(lifted.candidates).toEqual([]);
 		} finally {
 			store.close();
 		}

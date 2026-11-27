@@ -12,6 +12,7 @@ describe("legacy Team setup diagnostic reasons", () => {
 			"coordinator_roster_unavailable",
 			"device_removals_unavailable",
 			"team_member_removals_unavailable",
+			"team_recovery_unconfirmed",
 		]);
 	});
 
