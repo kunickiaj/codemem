@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The Viewer keeps answering while it builds a prompt pack. It assembled each pack on its event loop, which stopped every other request for about 200 ms per pack on a 12 GB store. The Viewer now assembles packs in a worker thread that opens the store read-only and reads as the Identity the request names. Before a pack is delivered, the Viewer checks that its Identity has not changed and that every memory in the pack is visible to it. If the worker fails, the pack is assembled as before.
+
 ## [0.50.0-beta.4] - 2026-11-27
 
 ### Added

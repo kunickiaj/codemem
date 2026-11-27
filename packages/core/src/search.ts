@@ -51,6 +51,14 @@ function getDrizzle(db: Database) {
 /** Structural type for the store parameter (avoids circular import). */
 export interface StoreHandle {
 	semanticSearchAsync?: PackSemanticExecutor["search"];
+	/**
+	 * Assemble a pack away from this thread and check that it may be delivered. Resolves to
+	 * null when the store does not do that or could not, and the caller assembles it itself.
+	 */
+	assemblePackOffThread?(
+		request: import("./pack.js").PackAssemblyRequest,
+		options?: { signal?: AbortSignal },
+	): Promise<import("./pack.js").PackArtifacts | null>;
 	readonly db: import("better-sqlite3").Database;
 	readonly actorId: string;
 	readonly deviceId: string;

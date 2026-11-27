@@ -187,6 +187,23 @@ export function getMemory(
 	return parseMetadata(row);
 }
 
+/** Which of `memoryIds` the reader may see, by the rule {@link getMemory} applies to one. */
+export function visibleMemoryIds(
+	reader: FilteredQuerySource,
+	memoryIds: readonly number[],
+): Set<number> {
+	if (memoryIds.length === 0) return new Set();
+	const filterResult = buildFilterClausesWithContext(null, reader.ownershipFilterContext());
+	const whereSql = buildWhereSql(
+		["memory_items.id IN (SELECT value FROM json_each(?))", ...filterResult.clauses],
+		[JSON.stringify(memoryIds), ...filterResult.params],
+	);
+	const rows = queries(reader.db).all<{ id: number }>(
+		sql`SELECT memory_items.id FROM memory_items WHERE ${whereSql}`,
+	);
+	return new Set(rows.map((row) => row.id));
+}
+
 export interface RecentMemoriesQuery {
 	limit: number;
 	filters: MemoryFilters | null | undefined;

@@ -11,6 +11,7 @@ type RecoveryOptions = {
 };
 const mocks = vi.hoisted(() => ({
 	store: {
+		enablePackWorker: vi.fn(),
 		dbPath: "/fixture/recovery/running.sqlite",
 		deviceId: "fixture-device",
 		actorId: "fixture-actor",

@@ -1213,6 +1213,36 @@ async function takeOverViewerRuntime(
 	return true;
 }
 
+/**
+ * Open the Viewer's store. When sqlite-vec cannot load, the Viewer starts with embeddings
+ * disabled. The Viewer answers requests while packs are built, so its store assembles
+ * packs in a worker thread.
+ */
+async function openViewerStore(
+	dbPath: string,
+	server: { getStore: () => MemoryStore; closeStoreAsync: () => Promise<void> },
+): Promise<MemoryStore> {
+	let store: MemoryStore;
+	try {
+		store = server.getStore();
+	} catch (err) {
+		if (isEmbeddingDisabled() || !isSqliteVecLoadFailure(err)) {
+			throw err;
+		}
+
+		p.log.warn("sqlite-vec failed to load; retrying viewer startup with embeddings disabled");
+		for (const line of sqliteVecFailureDiagnostics(err, dbPath)) {
+			p.log.warn(`sqlite-vec diagnostic: ${line}`);
+		}
+		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
+		await server.closeStoreAsync();
+		store = server.getStore();
+		p.log.warn("Embeddings disabled for this viewer process; raw-event ingestion remains active.");
+	}
+	store.enablePackWorker();
+	return store;
+}
+
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
@@ -1230,26 +1260,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
-	let store: MemoryStore;
-	try {
-		store = getStore();
-	} catch (err) {
-		if (isEmbeddingDisabled() || !isSqliteVecLoadFailure(err)) {
-			throw err;
-		}
-
-		p.log.warn("sqlite-vec failed to load; retrying viewer startup with embeddings disabled");
-		for (const line of sqliteVecFailureDiagnostics(
-			err,
-			resolveDbPath(invocation.dbPath ?? undefined),
-		)) {
-			p.log.warn(`sqlite-vec diagnostic: ${line}`);
-		}
-		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
-		await closeStoreAsync();
-		store = getStore();
-		p.log.warn("Embeddings disabled for this viewer process; raw-event ingestion remains active.");
-	}
+	const store = await openViewerStore(dbPath, { getStore, closeStoreAsync });
 
 	const rawEventProcessing = startRawEventProcessing(dbPath, store, observer, createRawEventInbox);
 

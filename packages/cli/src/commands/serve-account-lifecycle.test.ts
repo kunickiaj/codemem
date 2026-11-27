@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
 		calls,
 		config: {},
 		store: {
+			enablePackWorker: vi.fn(),
 			dbPath: "",
 			deviceId: "fixture-device",
 			actorId: "fixture-actor",

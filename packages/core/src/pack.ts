@@ -129,7 +129,7 @@ function parseFacts(raw: string | null): string[] | null {
  * available. Falls back to the original single-line format when neither
  * structured field exists.
  */
-type PackCompressionMode = "off" | "compact" | "ids";
+export type PackCompressionMode = "off" | "compact" | "ids";
 
 const PACK_COMPRESSION_MODE_ENV = "CODEMEM_PACK_COMPRESSION";
 const DEFAULT_PACK_COMPRESSION_MODE: PackCompressionMode = "compact";
@@ -1298,7 +1298,8 @@ function workSource(item: MemoryResult): "usage" | "estimate" {
 	return metadata.discovery_source === "usage" ? "usage" : "estimate";
 }
 
-function recordPackUsage(store: StoreHandle, metrics: Record<string, unknown>): void {
+/** Record one delivered pack in `usage_events`. The only write a pack build makes. */
+export function recordPackUsage(store: StoreHandle, metrics: Record<string, unknown>): void {
 	const now = new Date().toISOString();
 	const tokensRead = parseNonNegativeInt(metrics.pack_tokens) ?? 0;
 	const tokensSaved = parseNonNegativeInt(metrics.tokens_saved) ?? 0;
@@ -2786,6 +2787,99 @@ function buildPackArtifacts(
 	);
 }
 
+/**
+ * Everything the synchronous half of a pack build reads besides the store: the request and
+ * the semantic candidates already retrieved. It is plain data, so it can cross to a worker
+ * thread. The compression mode is resolved by the caller, because a worker does not see
+ * the caller's environment.
+ */
+export interface PackAssemblyRequest {
+	context: string;
+	limit: number;
+	tokenBudget: number | null;
+	filters: MemoryFilters | undefined;
+	semanticResults: MemoryResult[];
+	compact: boolean | undefined;
+	compactDetailCount: number | undefined;
+	compressionMode: PackCompressionMode;
+	automaticContext: AutomaticContext | null | undefined;
+}
+
+function assemblyRequest(
+	input: {
+		context: string;
+		limit: number;
+		tokenBudget: number | null;
+		filters: MemoryFilters | undefined;
+		renderOptions: PackRenderOptions | undefined;
+		automaticContext: AutomaticContext | null | undefined;
+	},
+	semanticResults: MemoryResult[],
+): PackAssemblyRequest {
+	return {
+		context: input.context,
+		limit: input.limit,
+		tokenBudget: input.tokenBudget,
+		filters: input.filters,
+		semanticResults,
+		compact: input.renderOptions?.compact,
+		compactDetailCount: input.renderOptions?.compactDetailCount,
+		compressionMode: resolvePackCompressionMode(input.renderOptions?.compressionMode),
+		automaticContext: input.automaticContext,
+	};
+}
+
+/**
+ * Assemble a pack from candidates already retrieved, reading only. Usage is not recorded:
+ * the caller that delivers the pack records it with {@link recordPackUsage}.
+ */
+export function assemblePackArtifacts(
+	store: StoreHandle,
+	request: PackAssemblyRequest,
+): PackArtifacts {
+	return assembleOnThisThread(store, request, { recordUsage: false });
+}
+
+function assembleOnThisThread(
+	store: StoreHandle,
+	request: PackAssemblyRequest,
+	options: { recordUsage: boolean },
+): PackArtifacts {
+	return buildPackArtifacts(
+		store,
+		request.context,
+		request.limit,
+		request.tokenBudget,
+		request.filters,
+		request.semanticResults,
+		{
+			recordUsage: options.recordUsage,
+			compact: request.compact,
+			compactDetailCount: request.compactDetailCount,
+			compressionMode: request.compressionMode,
+			automaticContext: request.automaticContext,
+		},
+	);
+}
+
+/**
+ * The synchronous half of an async pack build. A store that assembles packs off its own
+ * thread does so here. It has then already checked that the pack may be delivered, and
+ * usage is recorded on this thread. Otherwise, or when it declines, the pack is assembled
+ * here as before.
+ */
+async function assembleRetrievedPack(
+	store: StoreHandle,
+	request: PackAssemblyRequest,
+	options: { recordUsage: boolean; signal?: AbortSignal },
+): Promise<PackArtifacts> {
+	const offThread = await store.assemblePackOffThread?.(request, { signal: options.signal });
+	options.signal?.throwIfAborted();
+	if (!offThread) return assembleOnThisThread(store, request, options);
+	if (options.recordUsage) recordPackUsage(store, offThread.response.metrics);
+	return offThread;
+}
+
 export function buildMemoryPack(
 	store: StoreHandle,
 	context: string,
@@ -2889,13 +2983,15 @@ export async function buildMemoryPackAsync(
 	}
 
 	executionOptions?.signal?.throwIfAborted();
-	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
-		recordUsage: true,
-		compact: renderOptions?.compact,
-		compactDetailCount: renderOptions?.compactDetailCount,
-		compressionMode: renderOptions?.compressionMode,
-		automaticContext,
-	}).response;
+	const artifacts = await assembleRetrievedPack(
+		store,
+		assemblyRequest(
+			{ context, limit, tokenBudget, filters, renderOptions, automaticContext },
+			semResults,
+		),
+		{ recordUsage: true, signal: executionOptions?.signal },
+	);
+	return artifacts.response;
 }
 
 export async function buildMemoryPackWithTraceAsync(
@@ -2928,13 +3024,14 @@ export async function buildMemoryPackWithTraceAsync(
 	}
 
 	executionOptions?.signal?.throwIfAborted();
-	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
-		recordUsage: true,
-		compact: renderOptions?.compact,
-		compactDetailCount: renderOptions?.compactDetailCount,
-		compressionMode: renderOptions?.compressionMode,
-		automaticContext,
-	});
+	return assembleRetrievedPack(
+		store,
+		assemblyRequest(
+			{ context, limit, tokenBudget, filters, renderOptions, automaticContext },
+			semResults,
+		),
+		{ recordUsage: true, signal: executionOptions?.signal },
+	);
 }
 
 export async function buildMemoryPackTraceAsync(
@@ -2967,13 +3064,15 @@ export async function buildMemoryPackTraceAsync(
 	}
 
 	executionOptions?.signal?.throwIfAborted();
-	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
-		recordUsage: false,
-		compact: renderOptions?.compact,
-		compactDetailCount: renderOptions?.compactDetailCount,
-		compressionMode: renderOptions?.compressionMode,
-		automaticContext,
-	}).trace;
+	const artifacts = await assembleRetrievedPack(
+		store,
+		assemblyRequest(
+			{ context, limit, tokenBudget, filters, renderOptions, automaticContext },
+			semResults,
+		),
+		{ recordUsage: false, signal: executionOptions?.signal },
+	);
+	return artifacts.trace;
 }
 
 function packSemanticSearch(

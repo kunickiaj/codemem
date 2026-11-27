@@ -11,7 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeCaptureContext } from "./capture-context.js";
@@ -51,10 +51,11 @@ import {
 	recentMemoriesByKinds,
 	resolveOwnershipFilterContext,
 	snapshotOwnershipPredicate,
+	visibleMemoryIds,
 } from "./memory-reads.js";
 import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
-import type { PackArtifacts } from "./pack.js";
+import type { PackArtifacts, PackAssemblyRequest } from "./pack.js";
 import {
 	buildMemoryPack,
 	buildMemoryPackAsync,
@@ -63,6 +64,10 @@ import {
 	buildMemoryPackWithTrace,
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
+import {
+	createPackWorkerExecutor,
+	type PackWorkerExecutor,
+} from "./pack-worker/pack-worker-executor.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY, resolveGitRepositoryIdentity } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { hydrateRawEvent, loadPriorDelegatedBriefEvents } from "./raw-event-context.js";
@@ -406,6 +411,8 @@ export class MemoryStore {
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
 	private readonly vectorWriteAbort = new AbortController();
 	private semanticExecutor: PackSemanticExecutor | undefined;
+	private packWorkerEnabled = false;
+	private packWorker: PackWorkerExecutor | undefined;
 	private vectorIndexMaintenance: VectorIndexMaintenance | undefined;
 	private readonly pendingSemanticSearches = new Set<Promise<SemanticSearchResult[]>>();
 	private semanticClosing = false;
@@ -3462,6 +3469,33 @@ export class MemoryStore {
 		return resolveSameActorPeerIds(this.db, this.actorId);
 	}
 
+	/** Which of these memories the current Identity may see, by the rule `get` applies. */
+	visibleMemoryIds(memoryIds: readonly number[]): Set<number> {
+		return visibleMemoryIds(this, memoryIds);
+	}
+
+	/**
+	 * Assemble prompt packs in a worker thread from now on. For a process that answers
+	 * requests while packs are built. Its owner must close the store with `closeAsync()`.
+	 */
+	enablePackWorker(): void {
+		this.packWorkerEnabled = true;
+	}
+
+	/** See {@link StoreHandle.assemblePackOffThread}. */
+	async assemblePackOffThread(
+		request: PackAssemblyRequest,
+		options?: { signal?: AbortSignal },
+	): Promise<PackArtifacts | null> {
+		if (!this.packWorkerEnabled || this.semanticClosing || this.closed) return null;
+		if (!this.packWorker) {
+			// A store that is not a file on disk has nothing a second connection could open.
+			if (!isAbsolute(this.db.name)) return null;
+			this.packWorker = createPackWorkerExecutor({ store: this });
+		}
+		return this.packWorker.assemble(request, options);
+	}
+
 	claimedSameActorLegacyActorIds(): string[] {
 		return this.sameActorPeerIds().map((peerId) => `legacy-sync:${peerId}`);
 	}
@@ -3654,6 +3688,7 @@ export class MemoryStore {
 		if (this.closed) return;
 		if (
 			this.semanticExecutor ||
+			this.packWorker ||
 			this.pendingSemanticSearches.size ||
 			this.vectorIndexMaintenance?.requiresAsyncClose ||
 			this.closePromise
@@ -3675,6 +3710,7 @@ export class MemoryStore {
 
 	private async finishAsyncClose(): Promise<void> {
 		await this.semanticExecutor?.close();
+		await this.packWorker?.close();
 		await Promise.allSettled([...this.pendingSemanticSearches]);
 		const maintenance = await Promise.allSettled([this.vectorIndexMaintenance?.close()]);
 		await this.flushPendingVectorWrites();

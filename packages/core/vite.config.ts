@@ -13,6 +13,7 @@ export default defineConfig({
 					import.meta.dirname,
 					"src/semantic/semantic-worker-entry.ts",
 				),
+				"pack-worker-entry": resolve(import.meta.dirname, "src/pack-worker/pack-worker-entry.ts"),
 				"recipient-policy-contract": resolve(
 					import.meta.dirname,
 					"src/recipient-policy-contract.ts",

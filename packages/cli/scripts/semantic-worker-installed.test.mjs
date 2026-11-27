@@ -92,7 +92,7 @@ function stage(source, destination, temp, env) {
 		const path = join(source, "packages", directory);
 		const manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
 		const extra = {
-			core: ["dist/semantic-worker-entry.js"],
+			core: ["dist/semantic-worker-entry.js", "dist/pack-worker-entry.js"],
 			"viewer-server": ["static/index.html"],
 			"mcp-server": ["dist/http.js"],
 		};
@@ -110,6 +110,7 @@ function stage(source, destination, temp, env) {
 		assert(listing.includes("package/dist/index.js"), `${manifest.name} pack omitted its entrypoint`);
 		if (manifest.name === "@codemem/core") {
 			assert(listing.includes("package/dist/semantic-worker-entry.js"), "Core pack omitted semantic worker");
+			assert(listing.includes("package/dist/pack-worker-entry.js"), "Core pack omitted pack worker");
 		}
 		run("tar", ["-xf", packed, "--strip-components=1", "-C", target], source, env);
 	}
@@ -235,6 +236,20 @@ async function installedAcceptance() {
 			if (selected === project) semantic(result, id);
 			else assert.deepEqual(result.item_ids, []);
 		}
+
+		// Arrange/Act/Assert: the relocated pack worker assembles a pack; this thread records usage once.
+		store.enablePackWorker();
+		const assemble = store.assemblePackOffThread.bind(store);
+		let assembledOffThread = 0;
+		store.assemblePackOffThread = async (...args) => {
+			const artifacts = await assemble(...args);
+			if (artifacts) assembledOffThread += 1;
+			return artifacts;
+		};
+		const beforeWorkerPack = counts();
+		semantic((await store.buildMemoryPackWithTraceAsync(query, 10, null, { project })).response, id);
+		assert.equal(assembledOffThread, 1, "Installed pack worker did not assemble the pack");
+		assert.equal(counts()[0], beforeWorkerPack[0] + 1);
 	} finally {
 		if (viewer) await new Promise((resolveClose, reject) => viewer.close((error) => error ? reject(error) : resolveClose()));
 		await mcp?.close();
