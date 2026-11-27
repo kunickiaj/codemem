@@ -30,7 +30,10 @@ import {
 	type TeamRecoveryDeviceRefusal,
 	type TeamRecoveryDeviceRemoval,
 } from "./team-recovery-devices.js";
-import type { TeamRecoveryExclusion } from "./team-recovery-exclusions.js";
+import {
+	type TeamRecoveryExclusion,
+	teamRecoveryExclusionRows,
+} from "./team-recovery-exclusions.js";
 import { isTeamRecoveryHoldAbandoned } from "./team-recovery-holds.js";
 import { planTeamRecoveryProjects, type TeamRecoveryProject } from "./team-recovery-projects.js";
 
@@ -509,11 +512,7 @@ function boundRows(db: Database, teamId: string): unknown[][] {
 			 ORDER BY canonical_project_identity`,
 			teamId,
 		),
-		rows(
-			`SELECT device_id, key_fingerprint, reason FROM policy_team_recovery_exclusions
-			 WHERE team_id = ? ORDER BY device_id`,
-			teamId,
-		),
+		teamRecoveryExclusionRows(db, teamId),
 	];
 }
 

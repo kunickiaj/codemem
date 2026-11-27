@@ -474,3 +474,13 @@ describe("Team recovery preview refusals from the Team and its group", () => {
 		expect(invalid).toEqual({ state: "refused", reason: "invalid_input" });
 	});
 });
+
+describe("Team recovery preview of a store from before recovery exclusions", () => {
+	it("previews the Team as it does with no exclusions", () => {
+		// Arrange: a read-only connection to an older store adds no tables.
+		const expected = ready();
+		db.exec("DROP TABLE policy_team_recovery_exclusions");
+
+		expect(ready()).toEqual(expected);
+	});
+});
