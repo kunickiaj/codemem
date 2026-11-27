@@ -6,6 +6,7 @@ import {
 	hasDeviceRemovalSchema,
 } from "../../core/src/coordinator-device-removal.js";
 import { revocationInput } from "../../core/src/coordinator-device-revocation-test-harness.js";
+import { INVITE_TOKEN_SEAL_MIGRATION_NAME } from "../../core/src/coordinator-invite-token-seal.js";
 import { projectInvite } from "../../core/src/coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { TEAM_GROUP_BINDING_MIGRATION_NAME } from "../../core/src/coordinator-team-group-bindings.js";
@@ -18,10 +19,13 @@ beforeAll(async () => {
 	await applyD1Migrations(
 		env.COORDINATOR_DB,
 		// Neither the storage migration nor a later one that builds on it. Team
-		// invitations need the Team group bindings of 0053, which do not depend on 0048.
+		// invitations need the Team group bindings of 0053, and every invitation the
+		// sealed token columns of 0054. Neither depends on 0048.
 		env.TEST_MIGRATIONS.filter(
 			({ name }) =>
-				name < DEVICE_REMOVAL_MIGRATION_NAME || name === TEAM_GROUP_BINDING_MIGRATION_NAME,
+				name < DEVICE_REMOVAL_MIGRATION_NAME ||
+				name === TEAM_GROUP_BINDING_MIGRATION_NAME ||
+				name === INVITE_TOKEN_SEAL_MIGRATION_NAME,
 		),
 	);
 });

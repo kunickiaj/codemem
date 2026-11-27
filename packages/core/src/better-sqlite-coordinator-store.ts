@@ -230,9 +230,14 @@ import {
 	LOOKUP_VERSION_SEEN,
 	RAISE_METADATA_SQL,
 } from "./coordinator-invite-token-fence.js";
+import { readOrCreateInviteTokenKeyFile } from "./coordinator-invite-token-key-file.js";
 import {
-	bearerInvite,
+	CONSUMED_INVITE_TOKEN_CLEAR_SQL,
 	INVITE_TOKEN_LOOKUP_VERSION,
+	INVITE_TOKEN_SEAL_COLUMNS,
+	INVITE_TOKEN_SEAL_STORAGE_PRESENT_SQL,
+	type InviteTokenKeyInput,
+	inviteTokenKeysFromEnv,
 	joinRequestStoredDigest,
 	joinRequestStoredToken,
 	PLAINTEXT_TOKEN_SQL,
@@ -242,7 +247,9 @@ import {
 	HASH_JOIN_REQUESTS_SQL,
 	INVITES_WITHOUT_DIGEST_SQL,
 	type InviteTokenDigestProgress,
+	type InviteTokenSealProgress,
 	InviteTokenStorage,
+	inviteRenewal,
 } from "./coordinator-invite-token-storage.js";
 import { joinReviewGuardEvidence } from "./coordinator-join-review-guards.js";
 import {
@@ -402,6 +409,7 @@ import {
 	TEAM_MEMBER_REMOVAL_STORAGE_PRESENT_SQL,
 	TeamMemberRemovalOperations,
 } from "./coordinator-team-member-removals.js";
+import { readCodememConfigFile } from "./observer-config.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
@@ -1159,6 +1167,7 @@ export function initializeBaseSchema(db: DatabaseType): void {
 		"assigned_identity_id",
 		"reviewed_preview_digest",
 		"reviewed_intent_json",
+		...INVITE_TOKEN_SEAL_COLUMNS,
 	]) {
 		try {
 			db.prepare(`ALTER TABLE coordinator_invites ADD COLUMN ${column} TEXT`).run();
@@ -1239,6 +1248,28 @@ function fillInviteTokenDigestsSync(db: DatabaseType): void {
 	}).immediate();
 }
 
+/**
+ * Invitation token keys from the environment, else from the codemem config file.
+ * A configured key always wins. Without one, the database's own key file, which
+ * is created on first use when `create` is set. An in-memory database has none.
+ */
+function sqliteInviteTokenKeys(
+	databasePath: string,
+	options: { create: boolean },
+): InviteTokenKeyInput {
+	const env = inviteTokenKeysFromEnv(process.env);
+	if (env.current || env.previous) return env;
+	const config = readCodememConfigFile();
+	const read = (key: string) => (typeof config[key] === "string" ? (config[key] as string) : null);
+	const configured = {
+		current: read("sync_coordinator_invite_token_key"),
+		previous: read("sync_coordinator_invite_token_key_previous"),
+	};
+	if (configured.current || configured.previous) return configured;
+	if (databasePath === ":memory:" || databasePath.startsWith("file::memory:")) return {};
+	return { current: readOrCreateInviteTokenKeyFile(databasePath, options) };
+}
+
 export function connectCoordinator(
 	path?: string,
 	options: { existingOnly?: boolean } = {},
@@ -1306,10 +1337,22 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 	private readonly inviteTokens: InviteTokenStorage;
+	private sealStorageSeen = false;
 
+	/**
+	 * `inviteTokenKeys` are the invitation token keys. Without them the store reads
+	 * `CODEMEM_INVITE_TOKEN_KEY` and `CODEMEM_INVITE_TOKEN_KEY_PREVIOUS` from the
+	 * environment, then `sync_coordinator_invite_token_key` and
+	 * `sync_coordinator_invite_token_key_previous` from the codemem config file.
+	 * With none of them, it uses the key in the file next to the database, which
+	 * it creates on first use unless the store opens an existing file only.
+	 */
 	constructor(
 		path?: string,
-		options: CoordinatorAuthLinkOptions & { existingOnly?: boolean } = {},
+		options: CoordinatorAuthLinkOptions & {
+			existingOnly?: boolean;
+			inviteTokenKeys?: InviteTokenKeyInput;
+		} = {},
 	) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
 		this.db = connectCoordinator(this.path, options);
@@ -1341,7 +1384,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
-		this.inviteTokens = new InviteTokenStorage(rawAuthBackend, tokenDigest);
+		const inviteTokenKeys = options.inviteTokenKeys;
+		this.inviteTokens = new InviteTokenStorage(
+			rawAuthBackend,
+			() => inviteTokenKeys ?? sqliteInviteTokenKeys(this.path, { create: !options.existingOnly }),
+			tokenDigest,
+		);
 		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
 		this.accountChangeBackend = withCoordinatorAuthSchema(rawAuthBackend, { connections: true });
 		this.accountChangesCapability = new AccountChangeOperations(
@@ -2330,6 +2378,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
 		const digest = tokenDigest(token);
+		// Refuses before any write when there is no key or no sealed token storage.
+		const sealed = await this.inviteTokens.seal(token, inviteId);
 		const group = await this.getGroup(opts.groupId);
 		const operationId = clean(opts.operationId);
 		const reviewedProjectSetDigest = clean(opts.reviewedProjectSetDigest);
@@ -2371,31 +2421,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			}
 			return existing;
 		};
-		const renewOperationInvite = (existing: CoordinatorInvite): CoordinatorInvite => {
-			// A create retry hands out the stored token, so a row holding a placeholder is refused.
-			if (!existing.revoked_at && existing.expires_at > now) return bearerInvite(existing);
-			// A renewal keeps issued_after_removal_seq: it does not move the invitation past a later removal.
-			this.db
-				.prepare(`UPDATE coordinator_invites
-					SET token = ?, token_digest = ?, expires_at = ?, created_at = ?, created_by = ?,
-						team_name_snapshot = ?, revoked_at = NULL
-					WHERE operation_id = ? AND token = ?
-					  AND (revoked_at IS NOT NULL OR expires_at <= ?)`)
-				.run(
-					token,
-					digest,
-					expiresAt,
-					now,
-					opts.createdBy ?? null,
-					group?.display_name ?? null,
-					operationId,
-					existing.token,
-					now,
-				);
-			const renewed = readOperationInvite();
-			if (!renewed) throw new Error("invite_operation_reissue_failed");
-			return bearerInvite(renewed);
-		};
+		const renewal = inviteRenewal(
+			{ token, digest, expiresAt, now },
+			opts.createdBy,
+			group?.display_name,
+		);
+		// Returns the invitation's bearer token, renewing it first when it is revoked or expired.
+		const renewOperationInvite = (existing: CoordinatorInvite) =>
+			this.inviteTokens.renewOperationInvite(existing, renewal, async () => readOperationInvite());
 		if (operationId) {
 			const existing = readOperationInvite();
 			if (existing) return renewOperationInvite(existing);
@@ -2404,7 +2437,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			const values = [
 				inviteId,
 				opts.groupId,
-				token,
+				sealed.stored,
 				opts.policy,
 				expiresAt,
 				now,
@@ -2426,6 +2459,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				assignedIdentityId,
 				metadata.reviewedPreviewDigest,
 				metadata.reviewedIntentJson,
+				sealed.ciphertext,
+				sealed.keyId,
 			];
 			await this.insertInvite(values, metadata, opts.groupId);
 		} catch (error) {
@@ -2438,7 +2473,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const row = this.db
 			.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
 			.get(inviteId);
-		return rowToRecord<CoordinatorInvite>(row);
+		return { ...rowToRecord<CoordinatorInvite>(row), token };
 	}
 
 	async getInviteByOperationId(
@@ -2497,6 +2532,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async raiseInviteTokenLookupFloor(version: number): Promise<InviteTokenLookupFence> {
 		return this.inviteTokens.raiseLookupFloor(version, new Date().toISOString());
+	}
+
+	/**
+	 * Checks, before an operator records the lookup floor, that this coordinator
+	 * can seal: its configured key is valid, or its key file exists or can be
+	 * created. Throws the refusal that sealing would otherwise hit later.
+	 */
+	async prepareInviteTokenKey(): Promise<void> {
+		await this.inviteTokens.prepareSealingKey();
+	}
+
+	async inviteLinkToken(invite: CoordinatorInvite): Promise<string | null> {
+		return this.inviteTokens.linkToken(invite);
+	}
+
+	async sealStoredInviteTokens(limit: number): Promise<InviteTokenSealProgress> {
+		return this.inviteTokens.sealStoredTokens(limit);
 	}
 
 	async inspectRecipientInvite(
@@ -2941,6 +2993,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 	}
 
+	/**
+	 * The assignments of a consume statement that drop the ciphertext of the token
+	 * it spends, once sealed token storage exists, so no later cleanup is needed.
+	 */
+	private spentTokenSql(): string {
+		this.sealStorageSeen ||=
+			this.db.prepare(INVITE_TOKEN_SEAL_STORAGE_PRESENT_SQL).pluck().get() === 1;
+		return this.sealStorageSeen ? CONSUMED_INVITE_TOKEN_CLEAR_SQL : "";
+	}
+
 	private consumeRecipientOwnerToken(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeRecipientInviteInput,
@@ -2951,7 +3013,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.db
 			.prepare(
 				`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
- bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?, recipient_display_name = ?, recipient_device_display_name = ?
+ bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?, recipient_display_name = ?, recipient_device_display_name = ?${this.spentTokenSql()}
  WHERE invite_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
  AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id AND g.archived_at IS NULL)
  AND ${authorization.sql}`,
@@ -3138,7 +3200,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
 						bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
 						recipient_display_name = ?, recipient_device_display_name = ?,
-						trust_state = 'pending_inviter_device'
+						trust_state = 'pending_inviter_device'${this.spentTokenSql()}
 						WHERE invite_id = ? AND consumed_at IS NULL
 						AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
 							AND g.archived_at IS NULL)

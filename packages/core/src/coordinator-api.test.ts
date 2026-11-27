@@ -151,6 +151,16 @@ function createInviteLookupMocks() {
 			remaining_invites_without_digest: 0,
 			remaining_plaintext_join_requests: 0,
 		})),
+		inviteLinkToken: vi.fn(async (invite: CoordinatorInvite) =>
+			invite.consumed_at || invite.token.startsWith("consumed:") ? null : invite.token,
+		),
+		sealStoredInviteTokens: vi.fn(async () => ({
+			sealed_invites: 0,
+			cleared_spent_invites: 0,
+			hashed_join_requests: 0,
+			remaining_plaintext_invites: 0,
+			remaining_plaintext_join_requests: 0,
+		})),
 	};
 }
 

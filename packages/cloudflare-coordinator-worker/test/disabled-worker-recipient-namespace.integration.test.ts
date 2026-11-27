@@ -25,14 +25,11 @@ afterEach(() => {
 type Kind = "team_member" | "add_device";
 async function invitation(kind: Kind) {
 	const p = await producer(kind);
-	const invite = await db
-		.prepare("SELECT token FROM coordinator_invites")
-		.first<{ token: string }>();
-	if (!invite) throw new Error("native invitation missing");
+	if (!p.inviteToken) throw new Error("native invitation missing");
 	return {
 		p,
 		body: {
-			token: invite.token,
+			token: p.inviteToken,
 			invite_kind: kind,
 			identity_id: p.subject.ownerIdentityId,
 			device_id: p.subject.deviceId,

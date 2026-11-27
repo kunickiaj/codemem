@@ -385,7 +385,9 @@ CREATE TABLE IF NOT EXISTS coordinator_invites (
   assigned_identity_id TEXT,
   reviewed_preview_digest TEXT,
   reviewed_intent_json TEXT,
-  issued_after_removal_seq INTEGER
+  issued_after_removal_seq INTEGER,
+  token_ciphertext TEXT,
+  token_key_id TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_invites_operation_id

@@ -1,4 +1,4 @@
-import { createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import path from "node:path";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { configDefaults, defineConfig } from "vitest/config";
@@ -49,6 +49,8 @@ export default defineConfig(async () => {
 					},
 					bindings: {
 						CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+						// A disposable invitation token key generated per run, like the relay key.
+						CODEMEM_INVITE_TOKEN_KEY: randomBytes(32).toString("hex"),
 						TEST_MIGRATIONS: migrations,
 						// Relay settings for the test realm object only. Production sets none of these.
 						CODEMEM_RELAY_AUTHORITY_URL: "https://coordinator.example.test",

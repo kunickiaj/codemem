@@ -251,6 +251,12 @@ export {
 	type CoordinatorInviteReviewOptions,
 	coordinatorReviewInviteAction,
 } from "./coordinator-invite-review.js";
+export type { InviteTokenLookupFence } from "./coordinator-invite-token-fence.js";
+export {
+	INVITE_TOKEN_LOOKUP_VERSION,
+	InviteTokenRefusal,
+} from "./coordinator-invite-token-seal.js";
+export type { InviteTokenSealProgress } from "./coordinator-invite-token-storage.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,

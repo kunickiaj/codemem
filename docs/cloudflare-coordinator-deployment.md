@@ -47,7 +47,8 @@ terminals, agent transcripts, CI logs, support requests and chat, because none o
   be revoked. Use the form in [Back up the database](#back-up-the-database), which writes the export and everything
   the command prints to files with mode 600 and prints nothing.
 - `wrangler secret put` reads the value from its prompt. Type or paste it there; do not pass it with `echo`, a pipe or
-  an argument, and do not print it afterwards.
+  an argument, and do not print it afterwards. The one exception is the
+  [invitation token key](#invitation-token-key-0055), which nobody types: pipe it straight from the generator.
 - Admin requests with `curl` read the admin secret from `CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET`. Do not type the
   secret into the command, save it in a request file, or add `-v`, `--verbose` or `--trace`, which print request
   headers.
@@ -107,6 +108,9 @@ wrangler secret put CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET --config examples/clou
 
 This secret is required for admin routes such as invite creation and join-request review. Enter the value at
 Wrangler's prompt; see [Commands that print secrets or signed URLs](#commands-that-print-secrets-or-signed-urls).
+
+The Worker also needs `CODEMEM_INVITE_TOKEN_KEY` before it can create invitations. Set it as described in
+[Invitation token key (0055)](#invitation-token-key-0055).
 
 ## 4. Optional Google owner authentication
 
@@ -458,6 +462,101 @@ later Workers store. It would also approve the join requests this one stored wit
 inviter was removed, so if you roll back below this Worker at any point, pause join approvals until this Worker
 serves the database again. A SQLite coordinator fills the digests and records its lookup version when it opens its file; record
 its floor the same way once no earlier codemem release opens that file.
+
+### Invitation token key (0055)
+
+The coordinator keeps each invitation's bearer token only as its SHA-256 digest, which acceptance looks up, and as
+AES-GCM ciphertext, which it decrypts when an admin copies the invitation link again or retries its creation. The
+stored `token` column then holds `sealed:` followed by 32 random bytes. The ciphertext is bound to its invitation's
+ID and records the ID of the key that sealed it. Accepting an invitation drops its ciphertext in the same write.
+
+This Worker encrypts nothing until the database records the [rollback floor](#invitation-token-digests-rollback-floor):
+until then it stores bearer tokens exactly as the digest-only Worker does, and the sealing backfill answers
+`409 invite_token_lookup_floor_unset`. Record the floor only once no Worker below it serves the database. A Worker
+below the floor compares a presented token with the stored `token` column and builds **Copy invite** links from
+it, so it would accept and hand out the placeholders this Worker stores. The placeholder is random, so nobody can
+derive it from public values such as the invite ID. After a rollback to the digest-only Worker, invitations
+sealed here stay acceptable, and **Copy invite** for them answers `409 invite_link_unavailable` until this Worker
+is back.
+
+Migration `0055_seal_invite_tokens.sql` only adds the `token_ciphertext` and `token_key_id` columns. A Worker from
+before 0055 keeps working with it applied.
+
+Once the floor is recorded, without the key, or with a value that is not a key, the Worker refuses to create
+invitations, and to rebuild a link with **Copy invite**, with `503 invite_token_key_unavailable` or
+`503 invite_token_key_invalid`. Accepting an invitation needs only the digest, so it keeps working. A key is 32
+random bytes, as 64 hexadecimal characters or as base64 or base64url.
+
+Upgrade in this order:
+
+1. Finish [the digest-only upgrade](#invitation-token-digests-rollback-floor), including its digest backfill and
+   the recorded floor. `GET /v1/admin/invite-tokens/lookup-floor` must report `min_serving_lookup_version: 1`.
+2. [Back up the database](#back-up-the-database) and apply the migrations, which include 0055.
+3. Set the key. The value comes from the generator and goes straight to Wrangler, so it is never shown, logged or
+   written to a file:
+
+   ```fish
+   openssl rand -hex 32 | pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler secret put CODEMEM_INVITE_TOKEN_KEY --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+4. Deploy the Worker.
+5. Seal the tokens that existing rows still hold. Lookups write nothing; the Worker also seals a row when an admin
+   copies its link. This admin request seals up to `limit` rows, at most 100, per call, with one read and one write
+   per table, so it stays within D1's per-request query limit:
+
+   ```fish
+   curl --fail-with-body --request POST \
+     --header "X-Codemem-Coordinator-Admin: $CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET" \
+     --header 'Content-Type: application/json' \
+     --data '{"limit":100}' \
+     "$CODEMEM_SYNC_COORDINATOR_URL/v1/admin/invite-tokens/seal"
+   ```
+
+   The response is `{ version: 1, sealed_invites, cleared_spent_invites, hashed_join_requests,
+   remaining_plaintext_invites, remaining_plaintext_join_requests, remaining_spent_ciphertext }`. Repeat the request
+   until all three `remaining` counts are `0`. `remaining_spent_ciphertext` counts consumed invitations that still
+   keep ciphertext, which happens when an earlier Worker accepted them during a rollback. Requests are safe to
+   repeat. Without the key the route answers `503 invite_token_key_unavailable` and changes nothing.
+6. Confirm that no row still holds a token or spent ciphertext. All three counts must be `0`:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 execute codemem-coordinator --remote --config ../../examples/cloudflare-coordinator/wrangler.toml --command "SELECT (SELECT COUNT(*) FROM coordinator_invites WHERE instr(token, ':') = 0) AS plaintext_invites, (SELECT COUNT(*) FROM coordinator_join_requests WHERE instr(token, ':') = 0) AS plaintext_join_requests, (SELECT COUNT(*) FROM coordinator_invites WHERE token GLOB 'consumed:*' AND token_ciphertext IS NOT NULL) AS spent_ciphertext"
+   ```
+
+After any rollback to the digest-only Worker, run steps 5 and 6 again once this Worker is back.
+
+Invitation links do not change, so clients from 0.50.0-beta.3 and earlier keep creating, copying and accepting
+them as before. A SQLite coordinator adds the columns when it opens its file and follows the same floor rule: it
+encrypts nothing until `codemem coordinator invitation record-floor 1` records the floor, which also encrypts the
+tokens it stored before. Run it only while no process has the database open, and only once its key works: the
+command checks the key, or creates the key file, before it records the floor, and records nothing when it cannot.
+[The self-hosting guide](coordinator-deployment.md) lists the steps. It reads the key from `CODEMEM_INVITE_TOKEN_KEY`, or from
+`sync_coordinator_invite_token_key` in the codemem config file. Without either, it creates a key on first use in a
+file next to the database's real path, `<database>.invite-token-key`, readable only by its user, and logs
+`created invite token key at <path>`, never the key. It refuses an existing key file that is not a regular file,
+that other users can read, or that holds no 32-byte key. A configured key always wins over the file.
+
+#### Rotate the key
+
+The Worker seals with `CODEMEM_INVITE_TOKEN_KEY` and also opens ciphertext of
+`CODEMEM_INVITE_TOKEN_KEY_PREVIOUS`. To rotate, you need the current value:
+
+1. Set `CODEMEM_INVITE_TOKEN_KEY_PREVIOUS` to the current value, at Wrangler's prompt.
+2. Set `CODEMEM_INVITE_TOKEN_KEY` to a new key with the command above, and deploy.
+3. Keep the previous key until no open invitation uses it. This count of open invitations per key ID tells you
+   when; key IDs are not secret:
+
+   ```sql
+   SELECT token_key_id, COUNT(*) FROM coordinator_invites
+    WHERE token_ciphertext IS NOT NULL AND consumed_at IS NULL AND revoked_at IS NULL
+      AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    GROUP BY token_key_id;
+   ```
+
+4. Delete `CODEMEM_INVITE_TOKEN_KEY_PREVIOUS` with `wrangler secret delete` once only the new key ID remains.
+
+If the current value was never kept, set a new key without a previous one. Open invitations stay acceptable, but
+their links can no longer be copied (`503 invite_token_key_unavailable`). Revoke and re-create those you still need.
 
 ### Device rebind storage (0038)
 

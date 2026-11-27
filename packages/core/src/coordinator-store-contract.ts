@@ -4,7 +4,10 @@ import type { CoordinatorDeviceRemovalStore } from "./coordinator-device-removal
 import type { CoordinatorDeviceRevocationStore } from "./coordinator-device-revocation.js";
 import type { CoordinatorInviteRevocationStore } from "./coordinator-invite-revocation.js";
 import type { InviteTokenLookupFence } from "./coordinator-invite-token-fence.js";
-import type { InviteTokenDigestProgress } from "./coordinator-invite-token-storage.js";
+import type {
+	InviteTokenDigestProgress,
+	InviteTokenSealProgress,
+} from "./coordinator-invite-token-storage.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -578,6 +581,7 @@ export interface CoordinatorStore
 	removeDevice(groupId: string, deviceId: string): Promise<boolean>;
 	recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean>;
 	cleanupNonces(cutoff: string): Promise<void>;
+	/** The returned record carries the bearer token in `token`; stored rows keep a placeholder. */
 	createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite>;
 	getInviteByOperationId(groupId: string, operationId: string): Promise<CoordinatorInvite | null>;
 	/** Looks an invitation up by the digest of a presented token only. A lookup writes nothing. */
@@ -594,6 +598,14 @@ export interface CoordinatorStore
 	inviteTokenLookupFence(): Promise<InviteTokenLookupFence>;
 	/** Records an operator's confirmation of the minimum lookup version of every serving build. */
 	raiseInviteTokenLookupFloor(version: number): Promise<InviteTokenLookupFence>;
+	/**
+	 * The bearer token of a stored invitation, decrypted for its link, or null once
+	 * consumed. Throws `InviteTokenSealError` without a key or sealed token storage,
+	 * and `invite_link_unavailable` for a row it cannot rebuild a link from.
+	 */
+	inviteLinkToken(invite: CoordinatorInvite): Promise<string | null>;
+	/** One backfill batch that seals stored plaintext tokens. */
+	sealStoredInviteTokens(limit: number): Promise<InviteTokenSealProgress>;
 	inspectRecipientInvite(
 		opts: CoordinatorInspectRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteInspection | null>;

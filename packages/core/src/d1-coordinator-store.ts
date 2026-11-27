@@ -159,10 +159,17 @@ import {
 	InviteRevocationOperations,
 } from "./coordinator-invite-revocation.js";
 import type { InviteTokenLookupFence } from "./coordinator-invite-token-fence.js";
-import { bearerInvite, joinRequestStoredToken } from "./coordinator-invite-token-seal.js";
+import {
+	CONSUMED_INVITE_TOKEN_CLEAR_SQL,
+	type InviteTokenKeyInput,
+	inviteTokenKeysFromEnv,
+	joinRequestStoredToken,
+} from "./coordinator-invite-token-seal.js";
 import {
 	type InviteTokenDigestProgress,
+	type InviteTokenSealProgress,
 	InviteTokenStorage,
+	inviteRenewal,
 } from "./coordinator-invite-token-storage.js";
 import {
 	assertJoinReviewConfirmation,
@@ -1395,6 +1402,8 @@ interface RecipientInviteConsume {
 	invite: CoordinatorInvite;
 	opts: CoordinatorConsumeRecipientInviteInput;
 	digest: string;
+	/** Set once sealed token storage exists: the consume also drops the ciphertext. */
+	clearsCiphertext: boolean;
 	consumedAt: string;
 	identityId: string;
 	/** Null on a schema without the key ID column. */
@@ -1496,7 +1505,7 @@ function prepareRecipientInviteConsume(
 		consume: {
 			sql: `token = ?, consumed_at = ?, bound_device_id = ?,
 			bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
-			recipient_display_name = ?, recipient_device_display_name = ?`,
+			recipient_display_name = ?, recipient_device_display_name = ?${spentTokenSql(write)}`,
 			values: [
 				`consumed:${invite.invite_id}`,
 				consumedAt,
@@ -1607,6 +1616,8 @@ interface ProjectInviteConsume {
 	invite: CoordinatorInvite;
 	opts: CoordinatorConsumeProjectInviteInput;
 	digest: string;
+	/** Set once sealed token storage exists: the consume also drops the ciphertext. */
+	clearsCiphertext: boolean;
 	consumedAt: string;
 	/** Null on a schema without the key ID column. */
 	keyId: string | null;
@@ -1626,6 +1637,11 @@ const PROJECT_INVITE_OPEN_SQL = `consumed_at IS NULL
 	AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
 		AND g.archived_at IS NULL)
 	AND revoked_at IS NULL AND expires_at > ?`;
+
+/** The assignments of a consume statement that drop the ciphertext of the token it spends. */
+function spentTokenSql(write: { clearsCiphertext: boolean }): string {
+	return write.clearsCiphertext ? CONSUMED_INVITE_TOKEN_CLEAR_SQL : "";
+}
 
 function projectInviteConsumeValues(write: ProjectInviteConsume): unknown[] {
 	const { invite, opts, consumedAt } = write;
@@ -1649,7 +1665,10 @@ function prepareProjectInviteConsume(
 	const { opts, digest, consumedAt, guard } = write;
 	return prepareInviteConsumeAndEnroll(db, {
 		deviceId: opts.deviceId,
-		consume: { sql: PROJECT_INVITE_CONSUME_SQL, values: projectInviteConsumeValues(write) },
+		consume: {
+			sql: `${PROJECT_INVITE_CONSUME_SQL}${spentTokenSql(write)}`,
+			values: projectInviteConsumeValues(write),
+		},
 		invite: { sql: "token_digest = ?", values: [digest] },
 		open: {
 			sql: `${PROJECT_INVITE_OPEN_SQL} AND ${guard.eligibilitySql}`,
@@ -1706,7 +1725,7 @@ function prepareProjectInviteRetryConsume(
 	write: ProjectInviteConsume,
 ): D1PreparedStatementLike {
 	return db
-		.prepare(`UPDATE coordinator_invites SET ${PROJECT_INVITE_CONSUME_SQL}
+		.prepare(`UPDATE coordinator_invites SET ${PROJECT_INVITE_CONSUME_SQL}${spentTokenSql(write)}
 			WHERE token_digest = ? AND ${PROJECT_INVITE_OPEN_SQL}
 			AND ${write.guard.eligibilitySql}`)
 		.bind(
@@ -1790,9 +1809,22 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 	private readonly inviteTokens: InviteTokenStorage;
 
-	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
+	/**
+	 * `inviteTokenKeys` are the invitation token keys. Without them the store reads
+	 * `CODEMEM_INVITE_TOKEN_KEY` and `CODEMEM_INVITE_TOKEN_KEY_PREVIOUS` from
+	 * `process.env` where one exists; the Worker always passes its bindings.
+	 */
+	constructor(
+		db: D1DatabaseLike,
+		options: CoordinatorAuthLinkOptions & { inviteTokenKeys?: InviteTokenKeyInput } = {},
+	) {
 		this.db = db;
-		this.inviteTokens = new InviteTokenStorage(createRawD1AuthLinkBackend(db), tokenDigest);
+		const inviteTokenKeys = options.inviteTokenKeys;
+		this.inviteTokens = new InviteTokenStorage(
+			createRawD1AuthLinkBackend(db),
+			() => inviteTokenKeys ?? inviteTokenKeysFromEnv(globalThis.process?.env),
+			tokenDigest,
+		);
 		const ledgerBackend: DeviceRemovalBackend = {
 			all: (statement) =>
 				db
@@ -1847,6 +1879,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return this.removalSchemaSeen;
 	}
 	/** The `key_id` value an enrollment writer stores, or null before migration 0048. */
+	/** The key ID a consume stores, and whether it also drops the token's ciphertext. */
+	private async consumeColumns(publicKey: string) {
+		return {
+			keyId: await this.storedKeyId(publicKey),
+			clearsCiphertext: await this.inviteTokens.schemaReady(),
+		};
+	}
+
 	private async storedKeyId(publicKey: string): Promise<string | null> {
 		if (!(await this.hasRemovalSchema())) return null;
 		return enrollmentKeyIdColumn(await ed25519KeyIdForRevocation(publicKey));
@@ -2781,11 +2821,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		});
 	}
 
+	/**
+	 * Creates an invitation, or returns or renews the one an operation already has.
+	 * The stored row keeps only the token's digest and ciphertext; the returned
+	 * record carries the bearer token itself in `token`.
+	 */
 	async createInvite(_opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
 		const now = nowISO();
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
 		const digest = await tokenDigest(token);
+		// Refuses before any write when there is no key or no sealed token storage.
+		const sealed = await this.inviteTokens.seal(token, inviteId);
 		const expiresAt = normalizeInviteExpiresAt(_opts.expiresAt);
 		const group = await this.getGroup(_opts.groupId);
 		const operationId = String(_opts.operationId ?? "").trim() || null;
@@ -2829,35 +2876,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			}
 			return rowToRecord<CoordinatorInvite>(existing);
 		};
-		const renewOperationInvite = async (
-			existing: CoordinatorInvite,
-		): Promise<CoordinatorInvite> => {
-			// A create retry hands out the stored token, so a row holding a placeholder is refused.
-			if (!existing.revoked_at && existing.expires_at > now) return bearerInvite(existing);
-			// A renewal keeps issued_after_removal_seq: it does not move the invitation past a later removal.
-			await runChanges(
-				this.db
-					.prepare(`UPDATE coordinator_invites
-						SET token = ?, token_digest = ?, expires_at = ?, created_at = ?, created_by = ?,
-							team_name_snapshot = ?, revoked_at = NULL
-						WHERE operation_id = ? AND token = ?
-						  AND (revoked_at IS NOT NULL OR expires_at <= ?)`)
-					.bind(
-						token,
-						digest,
-						expiresAt,
-						now,
-						_opts.createdBy ?? null,
-						group?.display_name ?? null,
-						operationId,
-						existing.token,
-						now,
-					),
-			);
-			const renewed = await readOperationInvite();
-			if (!renewed) throw new Error("invite_operation_reissue_failed");
-			return bearerInvite(renewed);
-		};
+		const renewal = inviteRenewal(
+			{ token, digest, expiresAt, now },
+			_opts.createdBy,
+			group?.display_name,
+		);
+		// Returns the invitation's bearer token, renewing it first when it is revoked or expired.
+		const renewOperationInvite = (existing: CoordinatorInvite) =>
+			this.inviteTokens.renewOperationInvite(existing, renewal, readOperationInvite);
 		if (operationId) {
 			const existing = await readOperationInvite();
 			if (existing) return await renewOperationInvite(existing);
@@ -2866,7 +2892,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			const values = [
 				inviteId,
 				_opts.groupId,
-				token,
+				sealed.stored,
 				_opts.policy,
 				expiresAt,
 				now,
@@ -2888,6 +2914,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				assignedIdentityId,
 				metadata.reviewedPreviewDigest,
 				metadata.reviewedIntentJson,
+				sealed.ciphertext,
+				sealed.keyId,
 			];
 			await this.insertInvite(values, metadata, _opts.groupId);
 		} catch (error) {
@@ -2902,7 +2930,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
 				.bind(inviteId),
 		);
-		return rowToRecord<CoordinatorInvite>(row);
+		return { ...rowToRecord<CoordinatorInvite>(row), token };
 	}
 
 	async getInviteByOperationId(
@@ -2963,6 +2991,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async raiseInviteTokenLookupFloor(version: number): Promise<InviteTokenLookupFence> {
 		return this.inviteTokens.raiseLookupFloor(version, nowISO());
+	}
+
+	async inviteLinkToken(invite: CoordinatorInvite): Promise<string | null> {
+		return this.inviteTokens.linkToken(invite);
+	}
+
+	async sealStoredInviteTokens(limit: number): Promise<InviteTokenSealProgress> {
+		return this.inviteTokens.sealStoredTokens(limit);
 	}
 
 	async inspectRecipientInvite(
@@ -3104,7 +3140,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				digest,
 				consumedAt,
 				identityId: authoritativeIdentityId,
-				keyId: await this.storedKeyId(_opts.publicKey),
+				...(await this.consumeColumns(_opts.publicKey)),
 				eligibilitySql,
 				eligibilityValues,
 				boundEligibilitySql,
@@ -3210,7 +3246,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			opts: _opts,
 			digest,
 			consumedAt,
-			keyId: await this.storedKeyId(_opts.publicKey),
+			...(await this.consumeColumns(_opts.publicKey)),
 			guard,
 		};
 		const statements = [

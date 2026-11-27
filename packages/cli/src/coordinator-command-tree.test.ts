@@ -32,7 +32,7 @@ describe("coordinator resource discovery", () => {
 		},
 		{ group: "domain", children: ["list", "create", "update", "members", "grant", "revoke"] },
 		{ group: "grant", children: ["list", "revoke"] },
-		{ group: "invitation", children: ["create", "accept"] },
+		{ group: "invitation", children: ["create", "accept", "record-floor"] },
 		{ group: "request", children: ["list", "approve", "deny"] },
 	])("discovers coordinator $group routes without flat legacy names", ({ group, children }) => {
 		// Arrange

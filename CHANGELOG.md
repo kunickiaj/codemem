@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Coordinators can encrypt invitation tokens at rest. Once an operator records that no earlier Worker or codemem release serves the database, each new token is kept as its SHA-256 digest, which acceptance looks up, and as AES-GCM ciphertext under `CODEMEM_INVITE_TOKEN_KEY`, which **Copy invite** and create retries decrypt to rebuild the same link. The stored token becomes a random placeholder, and accepting an invitation drops its ciphertext in the same write. Until the floor is recorded, the coordinator stores tokens as before. Once it is, creating an invitation or copying its link without the key answers `503 invite_token_key_unavailable`, and accepting an invitation keeps working. Links are unchanged, so 0.50.0-beta.3 clients keep working. Cloudflare deployments apply migration `0055`, set the `CODEMEM_INVITE_TOKEN_KEY` secret, deploy, and run `POST /v1/admin/invite-tokens/seal` until it reports no plaintext and no spent ciphertext left. `CODEMEM_INVITE_TOKEN_KEY_PREVIOUS` keeps links of the previous key readable during a rotation. A self-hosted coordinator starts encrypting after `codemem coordinator invitation record-floor 1`, run while no process has its database open, which also encrypts the tokens it stored before. Without a configured key, the coordinator creates one in a mode-600 file next to its database. The command checks the key, or creates that file, before it records the floor, and records nothing when it cannot, such as on a filesystem without hard links, where it asks for a configured key. The Viewer's settings never return either key.
+
 ### Fixed
 
 - The Viewer keeps answering while it builds a prompt pack. It assembled each pack on its event loop, which stopped every other request for about 200 ms per pack on a 12 GB store. The Viewer now assembles packs in a worker thread that opens the store read-only and reads as the Identity the request names. Before a pack is delivered, the Viewer checks that its Identity has not changed and that every memory in the pack is visible to it. If the worker fails, the pack is assembled as before.

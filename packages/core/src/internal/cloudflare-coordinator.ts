@@ -38,6 +38,7 @@ export {
 export { captureCoordinatorBrowserAuthConfig } from "../coordinator-browser-auth-config.js";
 export type { BrowserCsrfKey } from "../coordinator-browser-csrf.js";
 export { importBrowserCsrfKey } from "../coordinator-browser-csrf.js";
+export { inviteTokenKeysFromEnv } from "../coordinator-invite-token-seal.js";
 export type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,

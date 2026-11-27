@@ -28,13 +28,10 @@ afterEach(() => {
 async function missingGrant() {
 	const p = await producer("add_device");
 	await retain(p.subject);
-	const invite = await db
-		.prepare("SELECT token FROM coordinator_invites")
-		.first<{ token: string }>();
-	if (!invite) throw new Error("native invitation missing");
+	if (!p.inviteToken) throw new Error("native invitation missing");
 	const input: CoordinatorConsumeRecipientInviteInput = {
 		...p.subject,
-		token: invite.token,
+		token: p.inviteToken,
 		inviteKind: "add_device",
 		identityId: p.subject.ownerIdentityId,
 		recipientDisplayName: "Recipient",
@@ -77,13 +74,10 @@ const stages = {
 async function lostTokenRetry() {
 	const p = await producer("add_device");
 	await retain(p.subject);
-	const invite = await db
-		.prepare("SELECT token FROM coordinator_invites")
-		.first<{ token: string }>();
-	if (!invite) throw new Error("native invitation missing");
+	if (!p.inviteToken) throw new Error("native invitation missing");
 	const input: CoordinatorConsumeRecipientInviteInput = {
 		...p.subject,
-		token: invite.token,
+		token: p.inviteToken,
 		inviteKind: "add_device",
 		identityId: p.subject.ownerIdentityId,
 		now: timestamp,

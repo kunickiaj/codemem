@@ -40,8 +40,39 @@ coordinator rejects admin operations (invite creation, join request review) with
 
 When you upgrade the coordinator, stop the earlier release before you start the new one on the same database, and
 do not open that database with an earlier release afterwards. Join requests now keep only the digest of their
-invitation token. An earlier release cannot find their invitation, so it would
-approve them without checking whether the inviter was removed.
+invitation token. An earlier release cannot find their invitation, so it would approve them without checking
+whether the inviter was removed.
+
+Invitation tokens are encrypted at rest only after one more step. Until then the coordinator stores each token as
+earlier releases did, together with its digest. To start encrypting:
+
+1. Stop every process that opens the coordinator database: `codemem coordinator serve`, its container, and any
+   other codemem command pointed at the file.
+2. Check that none is left. `lsof ~/.codemem/coordinator.sqlite` must print nothing.
+3. Record that no earlier release opens the database, and encrypt the stored tokens:
+
+   ```fish
+   codemem coordinator invitation record-floor 1 --db-path ~/.codemem/coordinator.sqlite
+   ```
+
+4. Start the coordinator again with this release.
+
+The command refuses a version above the one this release supports. It checks the key before it records anything:
+a configured key must be a 32-byte key, and without one, the key file must be usable or the command creates it.
+If the database sits on a filesystem without hard links, such as some network or FAT volumes, the command cannot
+create the key file safely. It then records nothing and asks you to set `CODEMEM_INVITE_TOKEN_KEY` or
+`sync_coordinator_invite_token_key` yourself. From then on the coordinator stores each
+invitation token only as a digest and as ciphertext, so it can rebuild the link when an admin copies it again. Do
+not open the database with an older codemem release afterwards: it would accept and hand out the stored
+placeholders. On first use the coordinator creates the key in a file next to the database's real path,
+`~/.codemem/coordinator.sqlite.invite-token-key` for the default path, readable only by its user, and logs
+`created invite token key at <path>`. It refuses an existing key file that other users can read, that is a link,
+or that holds no 32-byte key. Back that file up with the database. Losing it only stops **Copy invite** for
+open invitations: they can still be accepted, and new invitations get a new key. A configured key always wins over
+the file: `CODEMEM_INVITE_TOKEN_KEY`, or `sync_coordinator_invite_token_key` in the codemem config file. To rotate,
+move the current value to `CODEMEM_INVITE_TOKEN_KEY_PREVIOUS` (or `sync_coordinator_invite_token_key_previous`) and
+set a new key. [Rotate the key](cloudflare-coordinator-deployment.md#rotate-the-key) says when the previous key can
+go. The Viewer never shows either key.
 
 ## CLI reference
 
@@ -102,6 +133,9 @@ codemem coordinator request list <group-id> --db-path <path>
 # Approve or deny (admin)
 codemem coordinator request approve <request-id> --db-path <path>
 codemem coordinator request deny <request-id> --db-path <path>
+
+# Start encrypting invitation tokens once no older codemem release opens the database (admin)
+codemem coordinator invitation record-floor 1 --db-path <path>
 ```
 
 ## Container deployment

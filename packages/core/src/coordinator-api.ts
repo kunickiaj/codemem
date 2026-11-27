@@ -73,7 +73,6 @@ import {
 	inviteTokenRefusals,
 	registerCoordinatorInviteTokenRoutes,
 } from "./coordinator-invite-token-route.js";
-import { assertBearerInviteToken } from "./coordinator-invite-token-seal.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import { registerCoordinatorKeyIdFillRoute } from "./coordinator-key-id-fill-api.js";
@@ -909,29 +908,28 @@ async function peerDiscoveryResponse(
 }
 
 /**
- * The link of a project invitation that is still open, rebuilt from its stored
- * token, or null. A row whose `token` column holds no bearer token, such as one a
- * later Worker sealed, is refused with `409 invite_link_unavailable`, so the link
- * never carries a placeholder.
+ * The link of a project invitation that is still open, rebuilt from its bearer
+ * token, or null. Without a key, inviteTokenRefusals answers the request with 503.
  */
-function projectInviteLinkValue(
+async function projectInviteLinkValue(
 	c: Context,
+	store: CoordinatorStore,
 	invite: CoordinatorInvite,
 	options: {
 		projects: ReadonlyArray<{ display_name?: unknown; existing_memory_count?: unknown }>;
 		now: string;
 	},
-): string | null {
-	if (invite.consumed_at || invite.token.startsWith("consumed:")) return null;
+): Promise<string | null> {
 	if (invite.revoked_at || new Date(invite.expires_at) <= new Date(options.now)) return null;
-	assertBearerInviteToken(invite.token);
+	const token = await store.inviteLinkToken(invite);
+	if (!token) return null;
 	const payload: InvitePayload = {
 		v: 1,
 		kind: "coordinator_team_invite",
 		coordinator_url: new URL(c.req.url).origin,
 		group_id: invite.group_id,
 		policy: invite.policy,
-		token: invite.token,
+		token,
 		expires_at: invite.expires_at,
 		team_name: invite.team_name_snapshot,
 		operation_id: String(invite.operation_id),
@@ -2753,7 +2751,7 @@ export function createCoordinatorApp(
 			} catch {
 				return c.json({ error: "operation_intent_invalid" }, 409);
 			}
-			const inviteLinkValue = projectInviteLinkValue(c, invite, {
+			const inviteLinkValue = await projectInviteLinkValue(c, store, invite, {
 				projects,
 				now: runtime.now(),
 			});
