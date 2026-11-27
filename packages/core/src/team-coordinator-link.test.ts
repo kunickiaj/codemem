@@ -311,12 +311,19 @@ describe("removals enforced before enforcement was recorded", () => {
 		 team_id, identity_id, removal_seq, removed_at, removed_by_device_id, recorded_at)
 		 VALUES (?, ?, ?, ?, 1, ?, NULL, ?)`);
 		insert.run(COORDINATOR, "group-a", team, "identity-setup-group", NOW, NOW);
+		// Another spelling of the same coordinator still counts.
+		insert.run(`${COORDINATOR}/`, "group-a", team, "identity-other-spelling", NOW, NOW);
 		insert.run(COORDINATOR, "group-b", team, "identity-other-group", NOW, NOW);
 
 		ensurePolicyTeamMemberRemovalsTable(db);
 
 		expect(
-			db.prepare("SELECT identity_id FROM policy_team_member_removal_enforcements").pluck().all(),
-		).toEqual(["identity-setup-group"]);
+			db
+				.prepare(
+					"SELECT identity_id FROM policy_team_member_removal_enforcements ORDER BY identity_id",
+				)
+				.pluck()
+				.all(),
+		).toEqual(["identity-other-spelling", "identity-setup-group"]);
 	});
 });
