@@ -4,14 +4,21 @@ import { join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	type CoordinatorEnrollmentSnapshotInput,
 	coordinatorEnrollmentDigest,
-	reconcileCoordinatorEnrollmentSnapshot,
+	reconcileCoordinatorEnrollmentSnapshot as reconcileSnapshot,
 } from "./coordinator-enrollment-reconciler.js";
 import { connect } from "./db.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 
 const NOW = "2026-07-26T00:00:00.000Z";
+
+/** Each check here read the group's removals successfully, and the group has none. */
+const reconcileCoordinatorEnrollmentSnapshot = (
+	db: DatabaseType,
+	input: CoordinatorEnrollmentSnapshotInput,
+) => reconcileSnapshot(db, { teamMemberRemovals: [], ...input });
 
 async function expectEnrollmentChangesWakePolicies(): Promise<void> {
 	const dir = mkdtempSync(join(tmpdir(), "coordinator-enrollment-wake-"));

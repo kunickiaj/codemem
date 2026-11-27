@@ -117,6 +117,10 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 				calls.push(`invites:${groupId}`);
 				return [];
 			},
+			listTeamMemberRemovals: async ({ groupId }) => {
+				calls.push(`removals:${groupId}`);
+				return [];
+			},
 			reconcileSnapshot: (input) => {
 				calls.push(`reconcile:${input.coordinatorId}:${input.groupId}:${input.localDeviceId}`);
 				return {
@@ -132,9 +136,11 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 		expect(calls).toEqual([
 			"devices:group-a",
 			"invites:group-a",
+			"removals:group-a",
 			"reconcile:https://coord.example.test:group-a:device-local",
 			"devices:group-b",
 			"invites:group-b",
+			"removals:group-b",
 			"reconcile:https://coord.example.test:group-b:device-local",
 		]);
 		expect(result).toEqual({
@@ -195,6 +201,7 @@ describe("coordinator enrollment maintenance failures", () => {
 			} as never,
 			listDevices: async () => [configuredOwnEnrollment(getEnrollmentStore(), "group-a")],
 			listConsumedTeamInvites: async () => [],
+			listTeamMemberRemovals: async () => [],
 			reconcileSnapshot: () => {
 				throw new Error("database is locked at /private/path");
 			},
@@ -217,6 +224,7 @@ describe("coordinator enrollment maintenance failures", () => {
 				throw "https://private.example.test/path?token=secret";
 			},
 			listConsumedTeamInvites: async () => [],
+			listTeamMemberRemovals: async () => [],
 		});
 
 		expect(result.failures).toEqual([
@@ -259,6 +267,7 @@ describe("coordinator enrollment issue recovery", () => {
 					throw new Error("fetch failed");
 				},
 				listConsumedTeamInvites: async () => [],
+				listTeamMemberRemovals: async () => [],
 			});
 			expect(failed).toMatchObject({ groupsProcessed: 0, failedGroups: 1 });
 			expect(
@@ -269,6 +278,7 @@ describe("coordinator enrollment issue recovery", () => {
 				config,
 				listDevices: async () => [configuredOwnEnrollment(store, "group-a")],
 				listConsumedTeamInvites: async () => [],
+				listTeamMemberRemovals: async () => [],
 			});
 			expect(succeeded).toMatchObject({ groupsProcessed: 1, failedGroups: 0, issues: 0 });
 			expect(

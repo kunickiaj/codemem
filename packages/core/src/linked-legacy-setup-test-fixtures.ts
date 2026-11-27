@@ -23,6 +23,7 @@ import {
 } from "./coordinator-device-headless-link-test-fixtures.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
+import { TEAM_MEMBER_REMOVAL_SCHEMA_SQL } from "./coordinator-team-member-removals.js";
 import { createD1AuthLinkBackend } from "./d1-coordinator-store.js";
 import { connect, type Database } from "./db.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
@@ -453,8 +454,10 @@ async function seededCoordinator(
 		const account = await seedCoordinatorState(coordinator, keyA, keyB, authority);
 		if (options.accountSchema === "v2") return { coordinator, account, removeDirectory };
 		if (!seeding) {
-			// D1 takes the account migrations 0046 and 0047 over the seeded V2 history.
+			// D1 takes the account migrations 0046 and 0047 over the seeded V2 history,
+			// then 0052, which admin devices read on every enrollment reconciliation.
 			await useCurrentAccountSchema(createD1AuthLinkBackend(sqliteD1(coordinator.db)));
+			coordinator.db.exec(TEAM_MEMBER_REMOVAL_SCHEMA_SQL);
 			return { coordinator, account, removeDirectory };
 		}
 		await seeding.close();

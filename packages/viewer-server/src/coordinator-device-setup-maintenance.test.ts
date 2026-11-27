@@ -19,6 +19,7 @@ import {
 	type LinkedLegacySetupFixture,
 	linkedLegacySetupFixture,
 } from "../../core/src/linked-legacy-setup-test-fixtures.js";
+import { linkTeamToCoordinatorGroup } from "../../core/src/team-member-removal-test-fixtures.js";
 import { reconcileConfiguredCoordinatorEnrollment, syncRoutes } from "./routes/sync.js";
 
 type Options = NonNullable<Parameters<typeof reconcileConfiguredCoordinatorEnrollment>[1]>;
@@ -80,6 +81,10 @@ beforeEach(() => {
 		}),
 		listConsumedTeamInvites: vi.fn(async () => {
 			calls.push("invites");
+			return [];
+		}),
+		listTeamMemberRemovals: vi.fn(async () => {
+			calls.push("removals");
 			return [];
 		}),
 		reconcileSnapshot: vi.fn(() => {
@@ -193,8 +198,10 @@ it.each([null, LEGACY_SETUP.identityId])(
 				"POST /v1/auth/device-binding",
 				"GET /v1/admin/devices",
 				"GET /v1/admin/invites",
+				"GET /v1/admin/team-member-removals",
 				"GET /v1/admin/devices",
 				"GET /v1/admin/invites",
+				"GET /v1/admin/team-member-removals",
 			]);
 			expect(
 				(await f.coordinator.store.listEnrolledDevices(LEGACY_SETUP.groupId)).find(
@@ -240,7 +247,7 @@ describe("maintenance origins without a completion write", () => {
 			expect(options.completeDeviceSetup).not.toHaveBeenCalled();
 			expect(options.listConsumedTeamInvites).toHaveBeenCalledOnce();
 			expect(options.reconcileSnapshot).toHaveBeenCalledOnce();
-			expect(calls).toEqual(["devices", "invites", "reconcile"]);
+			expect(calls).toEqual(["devices", "invites", "removals", "reconcile"]);
 		},
 	);
 
@@ -340,7 +347,7 @@ describe("canonical ownership and compatibility", () => {
 		// Assert
 		expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
 		expect(options.completeDeviceSetup).not.toHaveBeenCalled();
-		expect(calls).toEqual(["devices", "invites", "reconcile"]);
+		expect(calls).toEqual(["devices", "invites", "removals", "reconcile"]);
 	});
 
 	it.each([null, "identity-local"])(
@@ -357,7 +364,7 @@ describe("canonical ownership and compatibility", () => {
 			// Assert
 			expect(options.completeDeviceSetup).toHaveBeenCalledOnce();
 			expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
-			expect(calls).toEqual(["devices", "POST", "invites", "reconcile"]);
+			expect(calls).toEqual(["devices", "POST", "invites", "removals", "reconcile"]);
 		},
 	);
 
@@ -515,6 +522,86 @@ it.each(["Identity", "key", "profile", "generation", "config", "coordinator", "g
 		expect(transport.mock.calls.map(([, init]) => init?.method)).toEqual(["POST"]);
 		expect(options.listDevices).toHaveBeenCalledOnce();
 		expect(options.listConsumedTeamInvites).not.toHaveBeenCalled();
+	},
+);
+
+it("applies the group's Team member removals in the same reconciliation", async () => {
+	// Arrange
+	const removal = {
+		removal_seq: 3,
+		group_id: "group-a",
+		team_id: "team-a",
+		identity_id: "identity-removed",
+		removed_by_device_id: null,
+		removed_at: "2026-07-26T00:00:00.000Z",
+	};
+	options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
+	options.listTeamMemberRemovals = vi.fn(async () => [removal]);
+	// Act
+	const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
+	// Assert
+	expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
+	expect(options.reconcileSnapshot).toHaveBeenCalledWith(
+		expect.objectContaining({ teamMemberRemovals: [removal] }),
+	);
+});
+
+it.each([
+	["a proxy's HTML not-found page", 404, "<html><body>Not Found</body></html>"],
+	["a JSON not-found answer without an error code", 404, "{}"],
+	["missing removal storage", 503, '{"error":"team_member_removal_unavailable"}'],
+	["an empty removal list", 200, '{"version":1,"items":[],"next_after_seq":null}'],
+])(
+	"on a fresh admin machine, grants Team access only after a successful removal read: %s",
+	async (label, status, body) => {
+		// Arrange: an accepted invitation for a Team this group set up, and nothing recorded locally.
+		const team = linkTeamToCoordinatorGroup(store.db, {
+			candidateId: "candidate-a",
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+		});
+		store.db
+			.prepare(`INSERT INTO policy_teams(team_id, display_name, status, provenance, revision,
+		 migration_state, idempotency_key, created_at, updated_at)
+		 VALUES (?, 'Team', 'active', 'test', 'r1', 'user_managed', 'team', ?, ?)`)
+			.run(team, now, now);
+		options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
+		options.listConsumedTeamInvites = vi.fn(async () => [
+			{
+				invite_id: "invite-team",
+				group_id: "group-a",
+				policy_team_id: team,
+				assigned_identity_id: "identity-invited",
+				recipient_actor_id: "identity-invited",
+				bound_device_id: "device-invited",
+				consumed_at: now,
+			},
+		]);
+		options.listTeamMemberRemovals = undefined;
+		options.reconcileSnapshot = undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL) => {
+				if (!String(url).includes("/v1/admin/team-member-removals"))
+					throw new Error("Unexpected network request");
+				return new Response(body, { status });
+			}),
+		);
+		// Act
+		const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
+		// Assert
+		const granted = status === 200 ? 1 : 0;
+		expect(result, label).toMatchObject({
+			groupsProcessed: 1,
+			failedGroups: 0,
+			membershipsAdded: granted,
+		});
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) FROM policy_team_memberships WHERE team_id = ?")
+				.pluck()
+				.get(team),
+		).toBe(granted);
 	},
 );
 
