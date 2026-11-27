@@ -109,6 +109,24 @@ function completeSnapshot(
 }
 
 /**
+ * Whether key evidence keeps its contract for the requested IDs and the
+ * snapshot's enrolled list: two sorted lists of requested IDs with none
+ * repeated, and no key enrolled under an ID the snapshot does not list as
+ * enrolled.
+ */
+export function isCompletePeerKeyEvidence(
+	raw: unknown,
+	requested: Set<string>,
+	enrolled: readonly string[],
+): raw is CoordinatorPeerRemovalLookupResult["key_evidence"] {
+	if (!raw || typeof raw !== "object") return false;
+	const evidence = raw as Record<string, unknown>;
+	if (!["removed", "enrolled"].every((field) => validIds(evidence[field], requested))) return false;
+	// A key enrolled under an ID is an enrollment of that ID.
+	return (evidence.enrolled as string[]).every((id) => enrolled.includes(id));
+}
+
+/**
  * The key evidence when it keeps the contract, or none. A broken evidence answer
  * costs only the evidence: the legacy fields still answer as before it existed.
  */
@@ -117,16 +135,9 @@ function checkedKeyEvidence(
 	requested: Set<string>,
 	result: CoordinatorPeerRemovalLookupResult,
 ): CoordinatorPeerRemovalLookupResult["key_evidence"] {
-	const evidence = raw as Record<string, unknown> | null | undefined;
-	if (
-		!evidence ||
-		typeof evidence !== "object" ||
-		!["removed", "enrolled"].every((field) => validIds(evidence[field], requested)) ||
-		// A key enrolled under an ID is an enrollment of that ID.
-		(evidence.enrolled as string[]).some((id) => !result.enrolled.includes(id))
-	)
-		return { removed: [], enrolled: [] };
-	return evidence as unknown as CoordinatorPeerRemovalLookupResult["key_evidence"];
+	return isCompletePeerKeyEvidence(raw, requested, result.enrolled)
+		? raw
+		: { removed: [], enrolled: [] };
 }
 
 /**

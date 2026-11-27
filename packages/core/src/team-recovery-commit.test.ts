@@ -443,10 +443,7 @@ describe("Team recovery check after the commit", () => {
 
 	it("quarantines the Team again and keeps its hold when a device is removed between the second roster read and its block check", async () => {
 		// Arrange: the second roster still lists the Desktop, and the block check asked after it reports it removed.
-		const checks = blockChecks([DESKTOP, TABLET]).map((check) => ({
-			...check,
-			removed: check.deviceId === "device-b",
-		}));
+		const checks = blockChecks([DESKTOP, TABLET], [], { "device-b": "of_this_key" });
 		const second = evidence(undefined, {
 			deviceBlocks: { status: "read", source: GROUP, checks },
 		});
@@ -462,10 +459,7 @@ describe("Team recovery check after the commit", () => {
 	it("refuses the recovery when a device is removed between the first roster read and its block check", async () => {
 		const digest = reviewedDigest();
 		const before = snapshot();
-		const checks = blockChecks([DESKTOP, TABLET]).map((check) => ({
-			...check,
-			removed: check.deviceId === "device-b",
-		}));
+		const checks = blockChecks([DESKTOP, TABLET], [], { "device-b": "of_this_key" });
 		const first = evidence(undefined, { deviceBlocks: { status: "read", source: GROUP, checks } });
 
 		const result = await commit(digest, reader(first));

@@ -4,7 +4,8 @@ import {
 	coordinatorListRemovedDevicesAction,
 } from "./coordinator-actions.js";
 import {
-	fetchBlockedDeviceIdsForGroup,
+	type DeviceBlocksAndRemovals,
+	fetchDeviceBlocksAndRemovalsForGroup,
 	type PeerRemovalLookupEntry,
 } from "./coordinator-peer-revocation.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
@@ -18,7 +19,10 @@ import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 import type { MemoryStore } from "./store.js";
 import { buildBaseUrl } from "./sync-http-client.js";
 import type { TeamRecoveryEvidenceReading } from "./team-recovery-commit.js";
-import type { TeamRecoveryDeviceRemoval } from "./team-recovery-devices.js";
+import type {
+	TeamRecoveryDeviceBlockCheck,
+	TeamRecoveryDeviceRemoval,
+} from "./team-recovery-devices.js";
 import { TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS } from "./team-recovery-holds.js";
 import type { TeamRecoveryEvidence } from "./team-recovery-preview.js";
 
@@ -30,7 +34,7 @@ import type { TeamRecoveryEvidence } from "./team-recovery-preview.js";
  * The reader says where each part came from by what it asked: the coordinator
  * and the group of its own requests. Nothing in a reply decides that. The block
  * checks follow the same rule: each answer carries the device and the key this
- * machine sent, and only the blocked and removed flags come from the coordinator.
+ * machine sent, and only the block and the removal come from the coordinator.
  */
 
 /** What the reader asks about. The coordinator is the one every read is sent to. */
@@ -56,11 +60,11 @@ export interface TeamRecoveryEvidenceActions {
 	 * removed, asked as a member of the group. It fails unless the coordinator
 	 * answered about every one of them.
 	 */
-	blockedDeviceIds(
+	deviceBlocksAndRemovals(
 		groupId: string,
 		peers: readonly Required<PeerRemovalLookupEntry>[],
 		deadlineMs: number,
-	): Promise<{ blocked: readonly string[]; removed: readonly string[] }>;
+	): Promise<Readonly<DeviceBlocksAndRemovals>>;
 	/** The coordinator's copy of the completed setup, or null when it holds none. */
 	getCompletion(groupId: string, candidateRef: string, deadlineMs: number): Promise<unknown>;
 	listMemberRemovals(
@@ -111,20 +115,31 @@ async function readRosterAndBlocks(
 		public_key: device.public_key,
 	}));
 	const deviceBlocks = await part(async () => {
-		const answer = await actions.blockedDeviceIds(target.groupId, peers, deadlineMs);
+		const answer = await actions.deviceBlocksAndRemovals(target.groupId, peers, deadlineMs);
 		const blocked = new Set(answer.blocked);
-		// A device removed since the roster was read shows up here and nowhere else.
-		const removed = new Set(answer.removed);
 		// The device and key of each answer are the ones sent, never ones a reply names.
 		const checks = peers.map((peer) => ({
 			deviceId: peer.device_id,
 			publicKey: peer.public_key,
 			blocked: blocked.has(peer.device_id),
-			removed: removed.has(peer.device_id),
+			removal: reportedRemoval(answer, peer.device_id),
 		}));
 		return { source, checks };
 	});
 	return { roster: { status: "read", source, devices }, deviceBlocks };
+}
+
+/**
+ * What the block check says about a removal of the device. A device removed
+ * since the roster was read shows up here and nowhere else.
+ */
+function reportedRemoval(
+	answer: Readonly<DeviceBlocksAndRemovals>,
+	deviceId: string,
+): TeamRecoveryDeviceBlockCheck["removal"] {
+	if (answer.keyRemoved.includes(deviceId)) return "of_this_key";
+	if (answer.removedUnattributed.includes(deviceId)) return "unattributed";
+	return "none";
 }
 
 /**
@@ -218,8 +233,13 @@ export function coordinatorTeamRecoveryEvidenceActions(
 				includeBlocked: true,
 				remote: { url: remoteUrl, adminSecret, timeoutS: configuredS, deadlineMs },
 			}),
-		blockedDeviceIds: (groupId, peers, deadlineMs) =>
-			fetchBlockedDeviceIdsForGroup(store, config, { ...device, groupId, deadlineMs }, peers),
+		deviceBlocksAndRemovals: (groupId, peers, deadlineMs) =>
+			fetchDeviceBlocksAndRemovalsForGroup(
+				store,
+				config,
+				{ ...device, groupId, deadlineMs },
+				peers,
+			),
 		getCompletion: (groupId, candidateRef, deadlineMs) =>
 			coordinatorGetLegacyTeamCompletionAction({ groupId, candidateRef, ...admin(deadlineMs) }),
 		listMemberRemovals: (groupId, deadlineMs) =>

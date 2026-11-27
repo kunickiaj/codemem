@@ -7,11 +7,12 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
-import { fetchBlockedDeviceIdsForGroup } from "./coordinator-peer-revocation.js";
+import { fetchDeviceBlocksAndRemovalsForGroup } from "./coordinator-peer-revocation.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+import { planTeamRecoveryDevices } from "./team-recovery-devices.js";
 import {
 	coordinatorTeamRecoveryEvidenceActions,
 	readTeamRecoveryEvidence,
@@ -21,8 +22,12 @@ import {
 import { TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS } from "./team-recovery-holds.js";
 import {
 	CANDIDATE,
+	DESKTOP,
+	LAPTOP,
+	PHONE,
 	quarantinedTeam,
 	TARGET as RECOVERY_TARGET,
+	TABLET,
 } from "./team-recovery-test-fixtures.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -57,10 +62,14 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 		listDeviceRemovals: async () => [
 			{ group_id: "group-other", device_id: "device-z", fingerprint: "fingerprint-z" },
 		],
-		blockedDeviceIds: async (groupId, peers) => {
+		deviceBlocksAndRemovals: async (groupId, peers) => {
 			asked.push(["blocks", groupId, peers]);
 			// A reply can name anything. Only the devices that were asked about count.
-			return { blocked: ["device-b", "device-never-asked"], removed: ["device-never-asked"] };
+			return {
+				blocked: ["device-b", "device-never-asked"],
+				keyRemoved: ["device-never-asked"],
+				removedUnattributed: ["device-never-asked"],
+			};
 		},
 		getCompletion: async (groupId, candidateRef) => ({ groupId, candidateRef }),
 		listMemberRemovals: async () => [],
@@ -71,6 +80,7 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 }
 
 const failing = () => Promise.reject(new Error("coordinator_unavailable"));
+const NOTHING_REPORTED = { blocked: [], keyRemoved: [], removedUnattributed: [] };
 
 describe("Team recovery evidence reader", () => {
 	it("stamps each part with the coordinator and group it asked, and each block answer with the device and key it sent", async () => {
@@ -100,8 +110,8 @@ describe("Team recovery evidence reader", () => {
 			status: "read",
 			source: GROUP,
 			checks: [
-				{ deviceId: "device-a", publicKey: "key-of-device-a", blocked: false, removed: false },
-				{ deviceId: "device-b", publicKey: "key-of-device-b", blocked: true, removed: false },
+				{ deviceId: "device-a", publicKey: "key-of-device-a", blocked: false, removal: "none" },
+				{ deviceId: "device-b", publicKey: "key-of-device-b", blocked: true, removal: "none" },
 			],
 		});
 		expect(evidence.deviceRemovals).toMatchObject({ status: "read", source: HERE });
@@ -128,7 +138,7 @@ describe("Team recovery evidence reader", () => {
 
 	it.each([
 		["listDeviceRemovals", "deviceRemovals"],
-		["blockedDeviceIds", "deviceBlocks"],
+		["deviceBlocksAndRemovals", "deviceBlocks"],
 		["getCompletion", "completion"],
 		["listMemberRemovals", "memberRemovals"],
 		["readGroupBinding", "groupBinding"],
@@ -165,8 +175,7 @@ describe("Team recovery evidence reader", () => {
 		const actions: TeamRecoveryEvidenceActions = {
 			listDevices: (_groupId, deadlineMs) => seen(deadlineMs, [enrolled("device-a")]),
 			listDeviceRemovals: (deadlineMs) => seen(deadlineMs, []),
-			blockedDeviceIds: (_groupId, _peers, deadlineMs) =>
-				seen(deadlineMs, { blocked: [], removed: [] }),
+			deviceBlocksAndRemovals: (_groupId, _peers, deadlineMs) => seen(deadlineMs, NOTHING_REPORTED),
 			getCompletion: (_groupId, _candidateRef, deadlineMs) => seen(deadlineMs, null),
 			listMemberRemovals: (_groupId, deadlineMs) => seen(deadlineMs, []),
 			readGroupBinding: (teamId, deadlineMs) =>
@@ -176,6 +185,27 @@ describe("Team recovery evidence reader", () => {
 		await readTeamRecoveryEvidence(TARGET, actions, () => 1_000);
 
 		expect(deadlines).toEqual(new Array(6).fill(1_000 + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS));
+	});
+
+	it("carries what the block check says about a removal into each answer", async () => {
+		const { actions } = coordinator({
+			listDevices: async () => ["device-a", "device-b", "device-c"].map((id) => enrolled(id)),
+			deviceBlocksAndRemovals: async () => ({
+				blocked: [],
+				keyRemoved: ["device-a"],
+				removedUnattributed: ["device-b"],
+			}),
+		});
+
+		const { evidence } = await readTeamRecoveryEvidence(TARGET, actions);
+
+		expect(evidence.deviceBlocks).toMatchObject({
+			checks: [
+				{ deviceId: "device-a", removal: "of_this_key" },
+				{ deviceId: "device-b", removal: "unattributed" },
+				{ deviceId: "device-c", removal: "none" },
+			],
+		});
 	});
 
 	it("takes the start of the reading from this machine's clock before any read is sent", async () => {
@@ -229,31 +259,70 @@ function useLocalDevice() {
 	return local;
 }
 
-describe("the block check a Team recovery sends", () => {
+const NOTHING_BLOCKED = {
+	version: 1,
+	revoked: [],
+	removed: [],
+	enrolled: [peer.device_id],
+	removal_seq: 0,
+};
+
+/** The block check as this device sends it, and coordinators that answer it with a fixed body. */
+function useBlockCheck() {
 	const local = useLocalDevice();
 	const serve = useHttpServers();
-
 	const check = (url: string, groups: string[], peers = [peer]) =>
-		fetchBlockedDeviceIdsForGroup(
+		fetchDeviceBlocksAndRemovalsForGroup(
 			{ db: local.db, dbPath: ":memory:" },
 			readCoordinatorSyncConfig({ sync_coordinator_url: url, sync_coordinator_groups: groups }),
 			{ localDeviceId: local.deviceId, keysDir: local.keysDir, groupId: GROUP_ID },
 			peers,
 		);
-
-	/** A coordinator that answers every block check with this body. */
 	const answering = (body: unknown) =>
 		serve((_request, response) => {
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify(body));
 		});
-	const NOTHING_BLOCKED = {
-		version: 1,
-		revoked: [],
-		removed: [],
-		enrolled: [peer.device_id],
-		removal_seq: 0,
-	};
+	return { local, serve, check, answering };
+}
+
+describe("what the block check reports about a removal", () => {
+	const { check, answering } = useBlockCheck();
+
+	it.each([
+		[
+			"the key it sent removed, as removed under that key",
+			{ enrolled: [], key_evidence: { removed: [peer.device_id], enrolled: [] } },
+			{ keyRemoved: [peer.device_id] },
+		],
+		[
+			"a removal under another key and the key it sent still enrolled, as no removal",
+			{ key_evidence: { removed: [], enrolled: [peer.device_id] } },
+			{},
+		],
+		[
+			"a removal and no key evidence, as a removal of an unknown key",
+			{},
+			{ removedUnattributed: [peer.device_id] },
+		],
+		[
+			"a removal and key evidence that says nothing about the device, as a removal of an unknown key",
+			{ key_evidence: { removed: [], enrolled: [] } },
+			{ removedUnattributed: [peer.device_id] },
+		],
+	])(
+		"reads a reply that lists the device as removed and reports %s",
+		async (_case, reply, reported) => {
+			// Arrange: the list every coordinator sends matches a removal by device ID or by key.
+			const url = await answering({ ...NOTHING_BLOCKED, removed: [peer.device_id], ...reply });
+
+			await expect(check(url, [GROUP_ID])).resolves.toEqual({ ...NOTHING_REPORTED, ...reported });
+		},
+	);
+});
+
+describe("the block check a Team recovery sends", () => {
+	const { local, serve, check, answering } = useBlockCheck();
 
 	it("refuses an answer that arrives through a redirect", async () => {
 		// Arrange: another server would answer that nothing is blocked.
@@ -265,7 +334,7 @@ describe("the block check a Team recovery sends", () => {
 
 		await expect(check(coordinatorUrl, [GROUP_ID])).rejects.toThrow();
 		// The same answer given directly is accepted, so the redirect is what was refused.
-		await expect(check(elsewhere, [GROUP_ID])).resolves.toEqual({ blocked: [], removed: [] });
+		await expect(check(elsewhere, [GROUP_ID])).resolves.toEqual(NOTHING_REPORTED);
 	});
 
 	it.each([
@@ -274,6 +343,15 @@ describe("the block check a Team recovery sends", () => {
 		["a device listed twice", { enrolled: [peer.device_id, peer.device_id] }],
 		["a device both removed and blocked", { revoked: [peer.device_id], removed: [peer.device_id] }],
 		["nothing about a device that was asked about", { enrolled: [] }],
+		["key evidence that is not two lists", { key_evidence: { removed: [] } }],
+		[
+			"key evidence about a device that was never asked about",
+			{ key_evidence: { removed: ["device-other"], enrolled: [] } },
+		],
+		[
+			"one key both removed and still enrolled",
+			{ key_evidence: { removed: [peer.device_id], enrolled: [peer.device_id] } },
+		],
 	])(
 		"refuses a reply with %s, where the daemon's lookup would drop the entry",
 		async (_case, broken) => {
@@ -296,7 +374,7 @@ describe("the block check a Team recovery sends", () => {
 		});
 		const request = { localDeviceId: local.deviceId, keysDir: local.keysDir, groupId: GROUP_ID };
 
-		const late = fetchBlockedDeviceIdsForGroup(
+		const late = fetchDeviceBlocksAndRemovalsForGroup(
 			{ db: local.db, dbPath: ":memory:" },
 			config,
 			{ ...request, deadlineMs: Date.now() - 1 },
@@ -351,17 +429,31 @@ describe("the block check a Team recovery sends", () => {
 	});
 });
 
+type OnCoordinator = (store: BetterSqliteCoordinatorStore) => Promise<unknown>;
+
+/** Enrolls the one other device most tests ask about. */
+const enrollPeer: OnCoordinator = (store) =>
+	store.enrollDevice(GROUP_ID, {
+		deviceId: peer.device_id,
+		fingerprint: "fingerprint-peer",
+		publicKey: peer.public_key,
+	});
+
 /**
- * A coordinator with this device and one other enrolled in the group, reached
- * through its own routes. `beforeBlockCheck` runs on the coordinator's store
- * once the roster has been read, just before the block check is answered.
+ * A coordinator with this device enrolled in the group, and whatever `enroll`
+ * adds, reached through its own routes. `beforeBlockCheck` runs on the
+ * coordinator's store once the roster has been read, just before the block
+ * check is answered.
  */
 async function enrolledCoordinator(
 	local: ReturnType<typeof useLocalDevice>,
-	beforeBlockCheck?: (store: BetterSqliteCoordinatorStore) => Promise<unknown>,
+	{
+		enroll = enrollPeer,
+		beforeBlockCheck,
+	}: { enroll?: OnCoordinator; beforeBlockCheck?: OnCoordinator } = {},
 ) {
 	const coordinatorDbPath = join(local.root, "coordinator.sqlite");
-	const onStore = async (act: (store: BetterSqliteCoordinatorStore) => Promise<unknown>) => {
+	const onStore = async (act: OnCoordinator) => {
 		const store = new BetterSqliteCoordinatorStore(coordinatorDbPath);
 		await act(store).finally(() => store.close());
 	};
@@ -369,11 +461,7 @@ async function enrolledCoordinator(
 	await onStore(async (store) => {
 		await store.createGroup(GROUP_ID);
 		await store.enrollDevice(GROUP_ID, { ...self, fingerprint: "fingerprint-local" });
-		await store.enrollDevice(GROUP_ID, {
-			deviceId: peer.device_id,
-			fingerprint: "fingerprint-peer",
-			publicKey: peer.public_key,
-		});
+		await enroll(store);
 	});
 	const app = createBetterSqliteCoordinatorApp({
 		dbPath: coordinatorDbPath,
@@ -464,10 +552,11 @@ describe("the Team recovery reads against a coordinator", () => {
 		expect(pages).toBe(pagesAtDeadline);
 	}, 5_000);
 
-	it("reports a device removed between the roster read and the block check as removed in its answer", async () => {
-		const { read } = await enrolledCoordinator(local, (store) =>
-			store.removeEnrollment({ groupId: GROUP_ID, deviceId: peer.device_id }),
-		);
+	it("reports a device removed between the roster read and the block check as removed under the key it sent", async () => {
+		const { read } = await enrolledCoordinator(local, {
+			beforeBlockCheck: (store) =>
+				store.removeEnrollment({ groupId: GROUP_ID, deviceId: peer.device_id }),
+		});
 
 		const { evidence } = await read();
 
@@ -477,8 +566,8 @@ describe("the Team recovery reads against a coordinator", () => {
 			deviceBlocks: {
 				status: "read",
 				checks: inAnyOrder(
-					{ deviceId: local.deviceId, blocked: false, removed: false },
-					{ deviceId: peer.device_id, blocked: false, removed: true },
+					{ deviceId: local.deviceId, blocked: false, removal: "none" },
+					{ deviceId: peer.device_id, blocked: false, removal: "of_this_key" },
 				),
 			},
 		});
@@ -504,14 +593,96 @@ describe("the Team recovery reads against a coordinator", () => {
 			roster: { devices: inAnyOrder({ deviceId: local.deviceId }, { deviceId: peer.device_id }) },
 			deviceBlocks: {
 				checks: inAnyOrder(
-					{ ...self, blocked: false, removed: false },
-					{ deviceId: peer.device_id, publicKey: peer.public_key, blocked: false, removed: false },
+					{ ...self, blocked: false, removal: "none" },
+					{ deviceId: peer.device_id, publicKey: peer.public_key, blocked: false, removal: "none" },
 				),
 			},
 			deviceRemovals: { removals: [] },
 			completion: { manifest: null },
 			memberRemovals: { removals: [] },
 			groupBinding: { binding: { team_id: "team-engineering", state: "unbound" } },
+		});
+	});
+});
+
+describe("a Team recovery on what a coordinator reports about a device's keys", () => {
+	const local = useLocalDevice();
+	let db: InstanceType<typeof Database>;
+	beforeEach(() => {
+		db = new Database(":memory:");
+	});
+	afterEach(() => db.close());
+
+	const enrollment = ({ deviceId, fingerprint, publicKey }: typeof DESKTOP) => ({
+		deviceId,
+		fingerprint,
+		publicKey,
+	});
+	const remove = (store: BetterSqliteCoordinatorStore, deviceId: string) =>
+		store.removeEnrollment({ groupId: GROUP_ID, deviceId });
+
+	/**
+	 * Plans the devices of a quarantined Team on evidence read from a coordinator
+	 * that removed the Laptop and enrolls the Tablet. `desktop` enrolls the Desktop.
+	 */
+	async function planOnCoordinatorEvidence(
+		desktop: OnCoordinator,
+		beforeBlockCheck?: OnCoordinator,
+	) {
+		const manifest = await quarantinedTeam(db);
+		const { read } = await enrolledCoordinator(local, {
+			enroll: async (store) => {
+				await store.enrollDevice(GROUP_ID, enrollment(LAPTOP));
+				await remove(store, LAPTOP.deviceId);
+				await desktop(store);
+				await store.enrollDevice(GROUP_ID, enrollment(TABLET));
+			},
+			beforeBlockCheck,
+		});
+		const { roster, deviceRemovals, deviceBlocks } = (await read()).evidence;
+		if (roster.status !== "read" || deviceRemovals.status !== "read") throw new Error("unread");
+		if (deviceBlocks.status !== "read") throw new Error("block check unread");
+		return planTeamRecoveryDevices(db, {
+			teamId: manifest.team_id,
+			groupId: GROUP_ID,
+			manifest,
+			roster: new Map(roster.devices.map((device) => [device.deviceId, device])),
+			deviceRemovals: deviceRemovals.removals,
+			deviceBlocks: deviceBlocks.checks,
+			memberships: db
+				.prepare("SELECT identity_id AS identityId, status FROM policy_team_memberships")
+				.all() as Array<{ identityId: string; status: string }>,
+		});
+	}
+
+	it("keeps a device that has a removal on record under another key and is enrolled under the reviewed one", async () => {
+		// Arrange: the Desktop's ID was removed from another group, where it held an older key.
+		const earlier = "group-earlier";
+		const result = await planOnCoordinatorEvidence(async (store) => {
+			await store.createGroup(earlier);
+			await store.enrollDevice(earlier, { ...enrollment(PHONE), deviceId: DESKTOP.deviceId });
+			await store.enrollDevice(GROUP_ID, enrollment(DESKTOP));
+			await store.removeEnrollment({ groupId: earlier, deviceId: DESKTOP.deviceId });
+		});
+
+		expect(result).toMatchObject({
+			state: "planned",
+			devices: expect.arrayContaining([
+				expect.objectContaining({ deviceId: "device-b", outcome: "regains_access" }),
+			]),
+		});
+	});
+
+	it("refuses as contradictory a device whose reviewed key is removed between the roster read and the block check", async () => {
+		const result = await planOnCoordinatorEvidence(
+			(store) => store.enrollDevice(GROUP_ID, enrollment(DESKTOP)),
+			(store) => remove(store, DESKTOP.deviceId),
+		);
+
+		expect(result).toEqual({
+			state: "refused",
+			reason: "device_evidence_contradictory",
+			deviceIds: ["device-b"],
 		});
 	});
 });
