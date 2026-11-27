@@ -1244,6 +1244,22 @@ export const policyTeamRecoveryHolds = sqliteTable("policy_team_recovery_holds",
 	held_at: text("held_at").notNull(),
 });
 
+/**
+ * Projects the Team's last recovery did not share with it again, each with the
+ * recovery that skipped it.
+ */
+export const policyTeamRecoverySkippedProjects = sqliteTable(
+	"policy_team_recovery_skipped_projects",
+	{
+		team_id: text("team_id").notNull(),
+		project_identity: text("project_identity").notNull(),
+		recovery_id: text("recovery_id").notNull(),
+		reason: text("reason").notNull(),
+		skipped_at: text("skipped_at").notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.team_id, table.project_identity] })],
+);
+
 export type PolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferSelect;
 export type NewPolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferInsert;
 
@@ -1684,6 +1700,7 @@ export const schema = {
 	policyTeamMemberRemovalEnforcements,
 	policyTeamRecoveryExclusions,
 	policyTeamRecoveryHolds,
+	policyTeamRecoverySkippedProjects,
 	identityDevices,
 	projectRecipients,
 	legacyTeamSetupDrafts,

@@ -926,6 +926,7 @@ export function bootstrapSchema(db: Database): void {
 		ensurePolicyTeamMemberRemovalsTable(db);
 		ensurePolicyTeamRecoveryExclusionsTable(db);
 		ensurePolicyTeamRecoveryHoldsTable(db);
+		ensurePolicyTeamRecoverySkippedProjectsTable(db);
 		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
@@ -1033,6 +1034,23 @@ export function ensurePolicyTeamRecoveryHoldsTable(db: Database): void {
 		recovery_id TEXT NOT NULL,
 		reason TEXT NOT NULL,
 		held_at TEXT NOT NULL
+	)`);
+}
+
+/**
+ * Projects the Team's last recovery did not share with it again, each with the
+ * recovery that skipped it. Admission asks for current authorization for every
+ * one of them, whatever state its Team recipient is in.
+ */
+export function ensurePolicyTeamRecoverySkippedProjectsTable(db: Database): void {
+	if (db.readonly) return;
+	db.exec(`CREATE TABLE IF NOT EXISTS policy_team_recovery_skipped_projects (
+		team_id TEXT NOT NULL,
+		project_identity TEXT NOT NULL,
+		recovery_id TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		skipped_at TEXT NOT NULL,
+		PRIMARY KEY(team_id, project_identity)
 	)`);
 }
 

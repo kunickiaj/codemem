@@ -14,6 +14,7 @@ import {
 	repositoryIdentitiesByWorkspace,
 } from "./repository-mapping-aliases.js";
 import { readEffectiveTeamDeviceDecisions } from "./team-recovery-exclusions.js";
+import { readEffectivePolicyTeams } from "./team-recovery-holds.js";
 
 export { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
 
@@ -607,13 +608,7 @@ export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 	const identities = db
 		.prepare("SELECT actor_id, status, merged_into_actor_id FROM actors ORDER BY actor_id")
 		.all() as Array<{ actor_id: string; status: string; merged_into_actor_id: string | null }>;
-	const teams = db
-		.prepare("SELECT team_id, status, device_eligibility_mode FROM policy_teams ORDER BY team_id")
-		.all() as Array<{
-		team_id: string;
-		status: string;
-		device_eligibility_mode: string;
-	}>;
+	const teams = readEffectivePolicyTeams(db);
 	const teamMemberships = db
 		.prepare(
 			"SELECT team_id, identity_id, status FROM policy_team_memberships ORDER BY team_id, identity_id",

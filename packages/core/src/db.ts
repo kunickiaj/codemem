@@ -49,6 +49,7 @@ import {
 	ensurePolicyTeamMemberRemovalsTable,
 	ensurePolicyTeamRecoveryExclusionsTable,
 	ensurePolicyTeamRecoveryHoldsTable,
+	ensurePolicyTeamRecoverySkippedProjectsTable,
 	ensureRawEventCaptureContextSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
@@ -1083,6 +1084,7 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	ensurePolicyTeamMemberRemovalsTable(db);
 	ensurePolicyTeamRecoveryExclusionsTable(db);
 	ensurePolicyTeamRecoveryHoldsTable(db);
+	ensurePolicyTeamRecoverySkippedProjectsTable(db);
 	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "manual_addresses_json")) {
 		try {
 			db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");
