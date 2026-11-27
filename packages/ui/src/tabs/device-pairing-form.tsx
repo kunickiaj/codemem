@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { importCoordinatorInvite, inspectCoordinatorInvite } from "../lib/api/sync";
 import { friendlyError } from "../lib/form";
-import { takePendingPairingCode } from "../lib/pairing-handoff";
+import { onPendingPairingCode, takePendingPairingCode } from "../lib/pairing-handoff";
 
 type PairingReview = { deviceId: string; fingerprint: string; addresses: string[] };
 
@@ -93,7 +93,7 @@ function usePairingFlow(api: DevicePairingApi, onPaired?: () => unknown) {
 			setBusy(false);
 		}
 	}
-	return { busy, code, edit, message, review, reviewed, run, setCode };
+	return { busy, code, edit, message, review, reviewed, run };
 }
 
 /** Accepts a device pairing code: review the device it names, then save the pairing. */
@@ -107,12 +107,20 @@ export function DevicePairingForm({
 }) {
 	const flow = usePairingFlow(api, onPaired);
 	const field = useRef<HTMLTextAreaElement>(null);
-	const { setCode } = flow;
+	const edit = useRef(flow.edit);
+	edit.current = flow.edit;
 	useEffect(() => {
-		const handed = takePendingPairingCode();
-		if (handed) setCode(handed);
+		// A code can arrive while the form is open, because Devices stays mounted.
+		const take = () => {
+			const handed = takePendingPairingCode();
+			if (!handed) return;
+			edit.current(handed);
+			field.current?.focus();
+		};
+		take();
 		field.current?.focus();
-	}, [setCode]);
+		return onPendingPairingCode(take);
+	}, []);
 	const run = () => void flow.run(() => field.current?.focus());
 	return (
 		<form

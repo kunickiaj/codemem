@@ -33,7 +33,7 @@ import {
 	serviceDeviceItems,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
-import { hasPendingPairingCode } from "../lib/pairing-handoff";
+import { hasPendingPairingCode, onPendingPairingCode } from "../lib/pairing-handoff";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
@@ -2596,7 +2596,8 @@ function useDevicePairing(options: DevicesRendererOptions) {
 	// Sharing hands a pairing code to Devices. Open the form that will take it.
 	useEffect(() => {
 		if (hasPendingPairingCode()) setPairingOpen(true);
-	});
+		return onPendingPairingCode(() => setPairingOpen(true));
+	}, []);
 	const panel = pairingOpen ? (
 		<PairingPanel
 			onClose={closePairing}

@@ -116,3 +116,20 @@ it("consumes a handed-over code once", async () => {
 	expect(mount.querySelector("textarea")?.value).toBe("handed-code");
 	expect(hasPendingPairingCode()).toBe(false);
 });
+
+it("takes a code handed over while the form is already open and drops the old review", async () => {
+	const api = {
+		review: vi.fn(async () => ({ deviceId: "peer", fingerprint: "fp", addresses: [] })),
+		save: vi.fn(),
+	};
+	await act(() => render(<DevicePairingForm api={api} />, mount));
+	typeCode("old-code");
+	await press();
+	expect(submit()?.textContent).toBe("Save pairing");
+
+	await act(async () => setPendingPairingCode("new-code"));
+
+	expect(mount.querySelector("textarea")?.value).toBe("new-code");
+	expect(submit()?.textContent).toBe("Review pairing");
+	expect(hasPendingPairingCode()).toBe(false);
+});

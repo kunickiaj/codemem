@@ -805,6 +805,18 @@ describe("Device pairing entry point", () => {
 		expect(hasPendingPairingCode()).toBe(false);
 	});
 
+	it("opens the form for a code handed over after Devices is already showing", async () => {
+		mount(intent(), reconciliation());
+		expect(document.getElementById("devices-pairing-panel")).toBeNull();
+
+		await act(async () => setPendingPairingCode("late-code"));
+
+		expect(document.getElementById("devices-pairing-panel")).not.toBeNull();
+		expect(document.querySelector<HTMLTextAreaElement>("#devices-pairing-code")?.value).toBe(
+			"late-code",
+		);
+	});
+
 	it("reviews a pairing code and saves the pairing through the form", async () => {
 		const pairingApi = {
 			review: vi.fn(async () => ({
