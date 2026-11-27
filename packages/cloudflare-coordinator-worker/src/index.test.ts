@@ -25,6 +25,11 @@ import {
 import { createCloudflareCoordinatorWorker } from "./index.js";
 
 type SqliteDatabase = ReturnType<typeof connectCoordinator>;
+/** Admin bindings for a test that creates invitations. The test setup generates the key. */
+const INVITE_ADMIN_ENV = {
+	CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+	CODEMEM_INVITE_TOKEN_KEY: process.env.CODEMEM_INVITE_TOKEN_KEY,
+};
 const LEGACY_COMPLETION_KEY =
 	"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB";
 
@@ -1248,7 +1253,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 						coordinator_url: "https://coord.example.test",
 					}),
 				}),
-				{ COORDINATOR_DB: d1db, CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret" },
+				{ COORDINATOR_DB: d1db, ...INVITE_ADMIN_ENV },
 			);
 			expect(inviteRes.status).toBe(200);
 			const inviteJson = (await inviteRes.json()) as { payload: { token: string } };

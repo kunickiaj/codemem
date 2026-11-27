@@ -443,7 +443,8 @@ export function rethrowDeviceRemovedAbort(error: unknown): void {
 /**
  * The one statement that inserts an invitation, on both stores. With removal
  * storage it also records, as `issued_after_removal_seq`, the highest removal
- * sequence at that moment, or 0. It takes 24 bound values in column order.
+ * sequence at that moment, or 0. It takes 26 bound values in column order,
+ * ending with the sealed token's ciphertext and key ID.
  */
 export function inviteInsertSql(hasRemovalSchema: boolean): string {
 	const removalSeq = removalColumnSql(
@@ -457,8 +458,8 @@ export function inviteInsertSql(hasRemovalSchema: boolean): string {
 	token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
 	pending_person_id, project_summaries_json, project_intent_json, trust_state,
 	invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
-	reviewed_preview_digest, reviewed_intent_json${removalSeq.column}
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+	reviewed_preview_digest, reviewed_intent_json, token_ciphertext, token_key_id${removalSeq.column}
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 	${removalSeq.value})`;
 }
 

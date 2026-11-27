@@ -6,6 +6,7 @@ import type { CoordinatorStore } from "./coordinator-store-contract.js";
 
 export const INVITE_TOKEN_DIGESTS_PATH = "/v1/admin/invite-tokens/digests";
 export const INVITE_TOKEN_LOOKUP_FLOOR_PATH = "/v1/admin/invite-tokens/lookup-floor";
+export const INVITE_TOKEN_SEAL_PATH = "/v1/admin/invite-tokens/seal";
 const DEFAULT_LIMIT = INVITE_TOKEN_BACKFILL_MAX_ROWS;
 
 export interface InviteTokenRouteDeps
@@ -130,15 +131,18 @@ export function registerInviteTokenBackfillRoute(
 }
 
 /**
- * The admin-only invitation token routes: the lookup fence, and the digest
- * backfill, a deploy step of the Worker that matches tokens by digest only. Each
- * backfill request gives up to `limit` invitations from before token digests
- * their digest, replaces up to `limit` join request token copies with their
- * digest, and reports what remains.
+ * The admin-only invitation token routes: the lookup fence, and the backfills,
+ * deploy steps that each run one bounded batch per request and report what
+ * remains. The digest backfill gives invitations from before token digests their
+ * digest and replaces join request token copies with their digest. The sealing
+ * backfill seals invitations that still hold their token, once the floor is set.
  */
 export function registerCoordinatorInviteTokenRoutes(app: Hono, deps: InviteTokenRouteDeps): void {
 	registerLookupFloorRoutes(app, deps);
 	registerInviteTokenBackfillRoute(app, deps, INVITE_TOKEN_DIGESTS_PATH, (store, limit) =>
 		store.fillInviteTokenDigests(limit),
+	);
+	registerInviteTokenBackfillRoute(app, deps, INVITE_TOKEN_SEAL_PATH, (store, limit) =>
+		store.sealStoredInviteTokens(limit),
 	);
 }

@@ -65,12 +65,17 @@ const PROTECTED_WRITE_KEYS = new Set<string>([
 	"observer_auth_command",
 	"observer_headers",
 	"sync_coordinator_url",
+	"sync_coordinator_invite_token_key",
+	"sync_coordinator_invite_token_key_previous",
 ] as const);
 const SECRET_CONFIG_KEYS = new Set<string>([
 	"observer_auth_file",
 	"observer_auth_command",
 	"observer_headers",
 	"sync_coordinator_admin_secret",
+	// The coordinator's invitation token keys, from the config file or the environment.
+	"sync_coordinator_invite_token_key",
+	"sync_coordinator_invite_token_key_previous",
 ] as const);
 const REMOVED_CONFIG_KEYS = new Set<string>(["observer_rich_openai_use_responses"]);
 const ALLOWED_KEYS = [

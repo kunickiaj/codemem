@@ -17,6 +17,7 @@ import {
 	D1CoordinatorStore,
 	importBrowserCsrfKey,
 	importOwnerEnrollmentAdmissionKey,
+	inviteTokenKeysFromEnv,
 	maintainCoordinatorBrowserAuth,
 	OWNER_BROWSER_ADMISSION_PATH,
 	OWNER_QUALIFICATION_PATH,
@@ -42,6 +43,10 @@ import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 export interface CloudflareCoordinatorEnv extends CloudflareBrowserAuthEnv, RelayWorkerEnv {
 	COORDINATOR_DB?: D1DatabaseLike;
 	CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET?: string;
+	/** Seals invitation tokens at rest. See docs/cloudflare-coordinator-deployment.md. */
+	CODEMEM_INVITE_TOKEN_KEY?: string;
+	/** The key before the last rotation, kept until no stored token uses it. */
+	CODEMEM_INVITE_TOKEN_KEY_PREVIOUS?: string;
 }
 
 export interface CreateCloudflareCoordinatorWorkerOptions {
@@ -81,18 +86,23 @@ function relayAdmissionFor(
 	return publicRelayAdmission(env as unknown as Readonly<Record<string, unknown>>);
 }
 
-/** Per-request relay options: the public admission route and relay health instrumentation. */
-async function relayAppOptions(
+/**
+ * Per-request options from the bindings: the public relay admission route, relay
+ * health instrumentation, and the invitation token keys. Only the bindings supply
+ * the keys, never the process environment.
+ */
+async function bindingAppOptions(
 	request: Request,
 	env: CloudflareCoordinatorEnv,
 	ctx: RelayHealthContext | undefined,
 ): Promise<
 	Pick<
 		CreateD1CoordinatorAppOptions,
-		"relayAdmission" | "relayHealthInstrumentation" | "relayHealthProbes"
+		"relayAdmission" | "relayHealthInstrumentation" | "relayHealthProbes" | "inviteTokenKeys"
 	>
 > {
 	return {
+		inviteTokenKeys: inviteTokenKeysFromEnv(env as unknown as Readonly<Record<string, unknown>>),
 		relayAdmission: await relayAdmissionFor(request, env),
 		relayHealthInstrumentation: relayHealthInstrumentation(request, env, ctx),
 		relayHealthProbes: relayHealthProbesFor(
@@ -133,7 +143,7 @@ function createLegacyCloudflareCoordinatorWorker(
 				requestVerifier: verifyCloudflareCoordinatorRequest,
 				requestRateLimit: { limiter: deviceLimiter },
 				recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
-				...(await relayAppOptions(request, env, ctx)),
+				...(await bindingAppOptions(request, env, ctx)),
 			});
 			return app.fetch(request);
 		},
@@ -158,7 +168,7 @@ async function authenticationUnavailable(
 			requestVerifier: verifyCloudflareCoordinatorRequest,
 			requestRateLimit: { limiter: dependencies.deviceLimiter },
 			browserAuth: { kind: "unavailable" },
-			...(await relayAppOptions(request, env, dependencies.ctx)),
+			...(await bindingAppOptions(request, env, dependencies.ctx)),
 		}).fetch(request);
 	} catch {
 		return jsonResponse({ error: "coordinator_unavailable" }, 503);
@@ -244,7 +254,7 @@ function createBrowserAuthWorker(
 					requestVerifier: verifyCloudflareCoordinatorRequest,
 					requestRateLimit: { limiter: deviceLimiter },
 					browserAuth: browserRuntimeOptions(result),
-					...(await relayAppOptions(request, env, ctx)),
+					...(await bindingAppOptions(request, env, ctx)),
 				});
 				dispatched = true;
 				return await app.fetch(request);

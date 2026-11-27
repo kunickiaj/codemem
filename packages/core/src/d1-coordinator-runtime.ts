@@ -7,6 +7,7 @@ import {
 	type RelayHealthProbeEnrollment,
 } from "./coordinator-api.js";
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
+import type { InviteTokenKeyInput } from "./coordinator-invite-token-seal.js";
 import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
 import { D1CoordinatorStore, type D1DatabaseLike } from "./d1-coordinator-store.js";
 import {
@@ -33,6 +34,8 @@ export interface CreateD1CoordinatorAppOptions {
 	/** Configured relay health probe enrollments, labeled as service devices in admin listings. */
 	relayHealthProbes?: readonly RelayHealthProbeEnrollment[];
 	recipientInviteCoordinatorId?: string;
+	/** Invitation token keys. A Worker passes its CODEMEM_INVITE_TOKEN_KEY bindings. */
+	inviteTokenKeys?: InviteTokenKeyInput;
 	browserAuth?:
 		| Exclude<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>
 		| Omit<Extract<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>, "storeFactory">;
@@ -51,7 +54,7 @@ export function createD1CoordinatorApp(
 		relayHealthProbes: opts.relayHealth?.enabled
 			? [{ groupId: opts.relayHealth.groupId, deviceId: opts.relayHealth.probeDeviceId }]
 			: opts.relayHealthProbes,
-		storeFactory: () => new D1CoordinatorStore(db),
+		storeFactory: () => new D1CoordinatorStore(db, { inviteTokenKeys: opts.inviteTokenKeys }),
 		deviceRevocation: opts.deviceRevocation,
 		recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
 		runtime,
@@ -81,7 +84,11 @@ export function createD1CoordinatorApp(
 			: undefined,
 		browserAuth:
 			opts.browserAuth?.kind === "ready"
-				? { ...opts.browserAuth, storeFactory: () => new D1CoordinatorStore(db) }
+				? {
+						...opts.browserAuth,
+						storeFactory: () =>
+							new D1CoordinatorStore(db, { inviteTokenKeys: opts.inviteTokenKeys }),
+					}
 				: opts.browserAuth,
 	});
 }

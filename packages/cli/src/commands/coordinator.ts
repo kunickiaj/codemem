@@ -58,6 +58,7 @@ import { buildCoordinatorInvitationCreateCommand } from "./coordinator-invitatio
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
 import { buildCoordinatorDeviceListCommand } from "./coordinator-list-removed.js";
 import { buildCoordinatorQualifyOwnerCommand } from "./coordinator-qualify-owner.js";
+import { buildCoordinatorRecordTokenFloorCommand } from "./coordinator-record-token-floor.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
 import { buildCoordinatorRevokeDeviceCommand } from "./coordinator-revoke-device.js";
 
@@ -1213,7 +1214,7 @@ export function buildCoordinatorCommand(): Command {
 			process.exitCode = 1;
 		}
 	});
-	invitation.addCommand(importInviteCmd);
+	invitation.addCommand(importInviteCmd).addCommand(buildCoordinatorRecordTokenFloorCommand());
 
 	// ---- list-join-requests ----
 

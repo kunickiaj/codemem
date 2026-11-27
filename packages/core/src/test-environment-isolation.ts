@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -8,6 +9,10 @@ import { afterAll, afterEach } from "vitest";
  * The setup file of every vitest project that runs in Node. It keeps a test from
  * reading the developer's own codemem config or coordinator credentials, and
  * from opening a connection to a host other than this machine.
+ *
+ * It also sets CODEMEM_INVITE_TOKEN_KEY to a key generated for this process, so
+ * coordinator stores can create invitations. A test of a missing or rotated key
+ * passes its own keys to the store.
  *
  * A test that needs a config writes its own file and sets CODEMEM_CONFIG. A test
  * that expects a refused connection empties the `blocked` list of the guard
@@ -22,6 +27,8 @@ import { afterAll, afterEach } from "vitest";
 const DEVELOPER_COORDINATOR_VARIABLES = [
 	"CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
 	"CODEMEM_SYNC_COORDINATOR_URL",
+	"CODEMEM_INVITE_TOKEN_KEY",
+	"CODEMEM_INVITE_TOKEN_KEY_PREVIOUS",
 ];
 
 /** The embedding tests download their model. Tracked separately; allowed until then. */
@@ -89,6 +96,7 @@ const configPath = join(configDirectory, "config.json");
 writeFileSync(configPath, "{}\n");
 process.env.CODEMEM_CONFIG = configPath;
 for (const name of DEVELOPER_COORDINATOR_VARIABLES) delete process.env[name];
+process.env.CODEMEM_INVITE_TOKEN_KEY = randomBytes(32).toString("hex");
 
 afterEach(() => failOnBlockedConnections(guard));
 afterAll(() => {

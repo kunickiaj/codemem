@@ -240,6 +240,8 @@ export interface Producer {
 	run(): Promise<unknown>;
 	denyAdmission(): Promise<unknown>;
 	omitNamespace?(): void;
+	/** An invitation producer's bearer token. The stored row keeps only its digest and ciphertext. */
+	inviteToken?: string;
 }
 
 async function claim(h: Harness): Promise<Producer> {
@@ -496,6 +498,7 @@ async function invitation(h: Harness, kind: "team_member" | "add_device"): Promi
 		kind,
 		h,
 		subject: { ...input, coordinatorId: config.coordinatorId, ownerIdentityId: input.identityId },
+		inviteToken: invite.token,
 		run: () => h.store.consumeRecipientInvite(input),
 		omitNamespace: () => {
 			delete input.coordinatorId;
