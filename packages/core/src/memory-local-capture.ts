@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
+import { tableExists as hasTable } from "./schema-lookups.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 interface CaptureBirth {
@@ -33,13 +34,6 @@ export function assertLocalCaptureAdoptionActors(
 		AND (is_local <> 1 OR status <> 'active' OR merged_into_actor_id IS NOT NULL) LIMIT 1`)
 		.get("local:local", `local:${deviceId}`, actorId ?? `local:${deviceId}`);
 	if (conflict) throw new Error("device_adoption_actor_conflict");
-}
-
-function hasTable(db: Database, name: string): boolean {
-	return (
-		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !==
-		undefined
-	);
 }
 
 /** Schema only: the unsigned identity is born in the first genuine creation transaction. */

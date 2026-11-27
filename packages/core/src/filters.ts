@@ -9,6 +9,7 @@ import type { Database } from "./db.js";
 import { matchingLocalCreationClause } from "./memory-creation-provenance.js";
 import { localCreationSourceIds } from "./memory-local-capture.js";
 import { projectColumnClause } from "./project.js";
+import { tableExists } from "./schema-lookups.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -182,14 +183,7 @@ function localCreationSourcesForFilter(
 	if (!db || !visibleScopeIds) return [];
 	const creationClause = matchingLocalCreationClause(db);
 	if (!creationClause) return [];
-	if (
-		!db
-			.prepare(
-				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_source_bindings'",
-			)
-			.get()
-	)
-		return [];
+	if (!tableExists(db, "memory_source_bindings")) return [];
 	// Open the signing key only when matching creation evidence needs history access.
 	const candidate = db
 		.prepare(`SELECT 1 FROM memory_source_bindings msb

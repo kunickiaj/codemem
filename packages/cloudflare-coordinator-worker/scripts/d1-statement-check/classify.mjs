@@ -175,6 +175,13 @@ export const EXCLUSIONS = [
 		reason: "test fixture inspects its local SQLite file",
 	},
 	{
+		file: "schema-lookups.ts",
+		function: "currentAnswers",
+		sql: /^PRAGMA schema_version$/u,
+		reason:
+			"local SQLite connections keep table and column lookups until this counter moves; the lookups take a better-sqlite3 connection and never run on D1",
+	},
+	{
 		file: "schema-bootstrap.ts",
 		function: "isSqliteVecLoaded",
 		sql: /^SELECT vec_version\(\) AS v$/u,

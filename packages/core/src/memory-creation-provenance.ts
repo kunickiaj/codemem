@@ -1,5 +1,6 @@
 import type { Database } from "./db.js";
 import { getVerifiedMemorySource, memorySourceNamespace } from "./memory-source-identity.js";
+import { tableExists as hasTable } from "./schema-lookups.js";
 
 // Actor/workspace aliases and replication clocks may change during local adoption.
 // Scope and user-facing content must still match the immutable creation snapshot.
@@ -12,13 +13,6 @@ const CREATION_CONTENT_SQL = `json_array(memory_items.kind, memory_items.title,
 	memory_items.project, memory_items.active, memory_items.deleted_at,
 	json_remove(CASE WHEN json_valid(memory_items.metadata_json)
 		THEN memory_items.metadata_json ELSE '{}' END, '$.clock_device_id', '$.import_key'))`;
-
-function hasTable(db: Database, name: string): boolean {
-	return (
-		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !==
-		undefined
-	);
-}
 
 function ensureCreationProvenanceSchema(db: Database): void {
 	db.exec(`CREATE TABLE IF NOT EXISTS memory_local_creation_snapshots (
