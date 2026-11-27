@@ -57,7 +57,6 @@ import {
 	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
 import { columnExists, tableExists } from "./schema-lookups.js";
-import { ensureSessionsRepositoryEvidenceIndex } from "./sessions-repository-evidence-index.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
 import { ensureSyncTransferActivitySchema } from "./sync-transfer-activity.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
@@ -1119,7 +1118,6 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	ensureLegacyTeamSetupDraftSchema(db);
 	ensureMemoryItemsPagingIndex(db);
 	ensureSessionsPagingIndex(db);
-	ensureSessionsRepositoryEvidenceIndex(db);
 	ensureSyncAttemptsDiagnosticIndexes(db);
 	ensureRawEventSessionsPendingIndex(db);
 }

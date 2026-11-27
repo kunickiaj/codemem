@@ -1,13 +1,21 @@
 import { isAbsolute } from "node:path";
 import type { Database } from "./db.js";
-import { repositoryIdentityFromMetadata, resolveGitRepositoryIdentity } from "./project.js";
+import {
+	REPOSITORY_IDENTITY_METADATA_KEY,
+	repositoryIdentityFromMetadata,
+	resolveGitRepositoryIdentity,
+} from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import {
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
 	type ScopeMapping,
 } from "./scope-resolution.js";
-import { SESSION_REPOSITORY_IDENTITY_SQL } from "./sessions-repository-evidence-index.js";
+import {
+	SESSION_IDENTITY_CHECKED_COLUMN,
+	SESSION_IDENTITY_COLUMN,
+	sessionRepositoryIdentityReady,
+} from "./session-repository-identity.js";
 
 const GIT_IDENTITY_CACHE_TTL_MS = 5_000;
 const GIT_IDENTITY_CACHE_MAX_ENTRIES = 256;
@@ -140,24 +148,57 @@ function recordedRepositoryIdentities(
 }
 
 /**
- * Each distinct folder, git remote and recorded identity among sessions that record a
- * repository at all. Selects the identity expression instead of the metadata, so the
- * read stays on idx_sessions_repository_evidence and never parses session metadata in
- * JavaScript. Sessions with neither give no evidence, so leaving them out changes
- * nothing.
+ * Sessions whose metadata could give `repositoryIdentityFromMetadata` an identity, or that
+ * have a git remote. A JSON key equals the identity key only if the text spells it out or
+ * writes some of its characters as \u escapes: it has no character with a shorter escape.
+ * So a row with neither substring records no identity, and this skips parsing it without
+ * changing any result. It decides nothing about rows it keeps; JavaScript parses those.
  */
-function readRecordedRepositoryRows(
-	db: Database,
-): Array<{ cwd: string; git_remote: string | null; repository_identity: string | null }> {
-	return db
+const MAY_RECORD_REPOSITORY_SQL = `(instr(metadata_json, '${REPOSITORY_IDENTITY_METADATA_KEY}') > 0
+	OR instr(metadata_json, '\\u') > 0
+	OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))`;
+
+type RecordedRepositoryRow = {
+	cwd: string;
+	git_remote: string | null;
+	metadata_json?: string | null;
+	repository_identity?: string | null;
+};
+
+/**
+ * Each session's folder, git remote, and either its stored repository identity or its
+ * metadata. Every identity comes from `repositoryIdentityFromMetadata`: stored by the
+ * maintenance worker for checked rows, parsed here for the rest. Before the worker has
+ * installed the column, every row's metadata is parsed, as before. Rows with neither an
+ * identity nor a remote give no evidence, so the checked read leaves them out.
+ */
+function readRecordedRepositoryRows(db: Database): RecordedRepositoryRow[] {
+	const cwdFilter = "cwd IS NOT NULL AND TRIM(cwd) <> ''";
+	if (!sessionRepositoryIdentityReady(db)) {
+		return db
+			.prepare(
+				`SELECT DISTINCT cwd, git_remote, metadata_json FROM sessions
+				 WHERE ${cwdFilter} AND ${MAY_RECORD_REPOSITORY_SQL}`,
+			)
+			.all() as RecordedRepositoryRow[];
+	}
+	const checked = db
 		.prepare(
-			`SELECT DISTINCT cwd, git_remote, ${SESSION_REPOSITORY_IDENTITY_SQL} AS repository_identity
+			`SELECT DISTINCT cwd, git_remote, ${SESSION_IDENTITY_COLUMN} AS repository_identity
 			 FROM sessions
-			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
-			   AND ((${SESSION_REPOSITORY_IDENTITY_SQL}) IS NOT NULL
+			 WHERE ${SESSION_IDENTITY_CHECKED_COLUMN} = 1 AND ${cwdFilter}
+			   AND (${SESSION_IDENTITY_COLUMN} IS NOT NULL
 			        OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))`,
 		)
-		.all() as Array<{ cwd: string; git_remote: string | null; repository_identity: string | null }>;
+		.all() as RecordedRepositoryRow[];
+	const unchecked = db
+		.prepare(
+			`SELECT cwd, git_remote, metadata_json FROM sessions
+			 WHERE ${SESSION_IDENTITY_CHECKED_COLUMN} IS NULL AND ${cwdFilter}
+			   AND ${MAY_RECORD_REPOSITORY_SQL}`,
+		)
+		.all() as RecordedRepositoryRow[];
+	return [...checked, ...unchecked];
 }
 
 export function recordedRepositoryIdentitySetsByWorkspace(db: Database): Map<string, Set<string>> {
@@ -308,7 +349,7 @@ export function recordedRepositoryIdentitiesByWorkspace(
 }
 
 function collectRecordedRepositoryEvidence(
-	rows: Array<{ cwd: string; git_remote: string | null; repository_identity: string | null }>,
+	rows: RecordedRepositoryRow[],
 	requested: ReadonlySet<string>,
 ): { known: Set<string>; recordedByWorkspace: Map<string, Set<string>> } {
 	const recorded = recordedRepositoryIdentities(rows);

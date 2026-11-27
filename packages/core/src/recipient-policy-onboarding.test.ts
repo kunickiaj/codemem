@@ -1101,7 +1101,8 @@ describe("recipient-policy onboarding", () => {
 				prepareSpy.mockRestore();
 			}
 		};
-		const baseline = previewWithQueryCount();
+		// The first preview fills remembered schema lookups; the second is the baseline.
+		const [, baseline] = [previewWithQueryCount(), previewWithQueryCount()];
 		for (let index = 0; index < 20; index += 1) {
 			const teamId = `team-scale-${index}`;
 			insertTeam(db, teamId, `Scale Team ${index}`);

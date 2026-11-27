@@ -30,7 +30,7 @@ describe("project inventory request-scoped repository evidence", () => {
 		const executed = statements.mock.calls.map(([sql]) => sql.replace(/\s+/g, " ").trim());
 		expect(
 			executed.filter((sql) =>
-				/^SELECT DISTINCT cwd, git_remote, .* AS repository_identity FROM sessions\b/i.test(sql),
+				/^SELECT DISTINCT cwd, git_remote, metadata_json FROM sessions\b/i.test(sql),
 			),
 		).toHaveLength(1);
 		expect(
