@@ -180,7 +180,15 @@ const ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-access-delta:[0-9a-f]{64}$/u;
 const VIEWER_ACCESS_DELTA_DIGEST_PATTERN = /^legacy-team-viewer-access-delta-v1:[0-9a-f]{64}$/u;
 const activeCandidateMutations = new WeakMap<MemoryStore["db"], Map<string, Promise<void>>>();
 
-function claimCandidateMutation(db: MemoryStore["db"], candidateRef: string): (() => void) | null {
+/**
+ * Claims the candidate for one access-changing operation, or returns null when
+ * another holds it. Draft and finish routes, Team recovery and each background
+ * reconciliation pass take it, so none of them runs across another.
+ */
+export function claimCandidateMutation(
+	db: MemoryStore["db"],
+	candidateRef: string,
+): (() => void) | null {
 	let active = activeCandidateMutations.get(db);
 	if (!active) {
 		active = new Map();
