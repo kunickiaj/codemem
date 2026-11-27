@@ -23,6 +23,7 @@ import {
 	type SyncDaemonTickCallback,
 	VERSION,
 	type ViewerWriterLock,
+	viewerPidFilePaths,
 	viewerRuntimeDir,
 } from "@codemem/core";
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
@@ -210,19 +211,9 @@ export function commandHasExactDbPath(command: string, dbPath: string): boolean 
 	return new RegExp(`(?:^|\\s)--db-path(?:=|\\s+)${escapedPath}(?:\\s|$)`).test(command);
 }
 
-/**
- * Where releases before the database lock wrote `viewer.pid`: beside the
- * database path as given, which differs from the canonical folder when that path
- * goes through a symlink. A Viewer from such a release may still be running.
- */
-function legacyPidFilePath(dbPath: string): string {
-	return join(dirname(resolveDbPath(dbPath)), "viewer.pid");
-}
-
-/** The PID records for this database: the current location, then the older one. */
+/** The PID records for this database: the current location, then where earlier releases wrote it. */
 function readViewerPidRecords(dbPath: string): Array<{ path: string; record: ViewerPidRecord }> {
-	const paths = [...new Set([pidFilePath(dbPath), legacyPidFilePath(dbPath)])];
-	return paths.flatMap((path) => {
+	return viewerPidFilePaths(resolveDbPath(dbPath)).flatMap((path) => {
 		const record = readViewerPidRecordAt(path);
 		return record ? [{ path, record }] : [];
 	});
@@ -477,11 +468,9 @@ function removeFile(path: string): void {
 
 /** After a stop: the current PID record, and an older release's record for the same process. */
 function removeStoppedViewerPidRecords(dbPath: string, pid: number): void {
-	removeFile(pidFilePath(dbPath));
-	const legacy = legacyPidFilePath(dbPath);
-	if (legacy !== pidFilePath(dbPath) && readViewerPidRecordAt(legacy)?.pid === pid) {
-		removeFile(legacy);
-	}
+	const [current, ...older] = viewerPidFilePaths(resolveDbPath(dbPath));
+	if (current) removeFile(current);
+	for (const path of older) if (readViewerPidRecordAt(path)?.pid === pid) removeFile(path);
 }
 
 export function buildForegroundRunnerArgs(

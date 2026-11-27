@@ -17,6 +17,7 @@ import {
 	canonicalViewerDbPath,
 	isViewerWriterLockHeld,
 	processStartIdentity,
+	readViewerPidFile,
 	readViewerWriterLockOwner,
 	ViewerWriterLockHeldError,
 	ViewerWriterLockUnavailableError,
@@ -136,6 +137,23 @@ describe("viewer writer lock through a symlink to a database not created yet", (
 		} finally {
 			await stopHolder(throughLink);
 		}
+	});
+});
+
+describe("viewer PID file locations", () => {
+	it("reads the canonical record first and the one beside a symlinked path otherwise", () => {
+		mkdirSync(join(directory, "real"));
+		mkdirSync(join(directory, "links"));
+		const realPath = join(directory, "real", "mem.sqlite");
+		writeFileSync(realPath, "");
+		const link = join(directory, "links", "alias.sqlite");
+		symlinkSync(realPath, link);
+		writeFileSync(join(directory, "links", "viewer.pid"), "older");
+
+		expect(readViewerPidFile(link)).toBe("older");
+		writeFileSync(join(directory, "real", "viewer.pid"), "current");
+		expect(readViewerPidFile(link)).toBe("current");
+		expect(readViewerPidFile(realPath)).toBe("current");
 	});
 });
 

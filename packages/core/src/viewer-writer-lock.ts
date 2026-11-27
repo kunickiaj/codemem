@@ -110,6 +110,41 @@ export function viewerRuntimeDir(dbPath: string): string {
 	return dirname(canonicalViewerDbPath(dbPath));
 }
 
+/**
+ * Where `viewer.pid` may be: the canonical runtime folder, then where releases
+ * before the database lock wrote it, beside the database path as given. Those
+ * differ when the path goes through a symlink, and a Viewer from such a release
+ * may still be running after an upgrade.
+ */
+export function viewerPidFilePaths(dbPath: string): string[] {
+	return [
+		...new Set([
+			join(viewerRuntimeDir(dbPath), "viewer.pid"),
+			join(dirname(resolve(dbPath)), "viewer.pid"),
+		]),
+	];
+}
+
+function readTextFile(path: string): string | null {
+	try {
+		return readFileSync(path, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
+/** The first `viewer.pid` that exists, in `viewerPidFilePaths` order; null when there is none. */
+export function readViewerPidFile(
+	dbPath: string,
+	read: (path: string) => string | null = readTextFile,
+): string | null {
+	for (const path of viewerPidFilePaths(dbPath)) {
+		const text = read(path);
+		if (text !== null) return text;
+	}
+	return null;
+}
+
 export function viewerWriterLockPath(dbPath: string): string {
 	return `${canonicalViewerDbPath(dbPath)}.viewer-lock`;
 }

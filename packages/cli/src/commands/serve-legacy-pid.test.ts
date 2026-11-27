@@ -15,6 +15,7 @@ import {
 	terminateTrustedMaintenanceWorker,
 } from "./serve.js";
 import { resolveServeInvocation, resolveStopRestartInvocation } from "./serve-invocation.js";
+import { collectStatusReport } from "./status.js";
 
 /*
  * A Viewer from beta.3 or earlier wrote viewer.pid beside the database path it
@@ -177,6 +178,20 @@ describe("a running Viewer from before the database lock", () => {
 				),
 			},
 		]);
+	});
+
+	it("is reported running by `codemem status` on its non-default port", async () => {
+		const { viewer } = await beta3Viewer();
+		// Without its record, status would probe the default address instead. Point
+		// that at a port nothing listens on, so only the record can find the Viewer.
+		vi.stubEnv("CODEMEM_VIEWER_PORT", String(await freePort()));
+		try {
+			const report = await collectStatusReport({ dbPath: linkedDbPath, json: true });
+
+			expect(report.runtime).toEqual({ viewer: "running", pid: viewer.pid });
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("is stopped by `serve stop` on its port, which also removes its old record", async () => {

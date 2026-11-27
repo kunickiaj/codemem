@@ -4,9 +4,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { hostname, networkInterfaces } from "node:os";
-import { join } from "node:path";
 import type {
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorConsumedTeamInvite,
@@ -175,6 +173,7 @@ import {
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	readRepositoryIdentitySnapshot,
+	readViewerPidFile,
 	reassignProjectScopeInventoryProject,
 	recipientInviteAuthoritativeIdentityId,
 	recipientReviewedIntentDigest,
@@ -218,7 +217,6 @@ import {
 	verifyDirectPeerSignature,
 	verifyRecipientReviewedIntent,
 	verifySignature,
-	viewerRuntimeDir,
 	wakeRecipientPoliciesForIdentities,
 	wakeRecipientPoliciesForProjectIdentities,
 } from "@codemem/core";
@@ -5181,7 +5179,9 @@ function attemptStatus(attempt: Record<string, unknown>): string {
 
 function readViewerBinding(dbPath: string): { host: string; port: number } | null {
 	try {
-		const raw = readFileSync(join(viewerRuntimeDir(dbPath), "viewer.pid"), "utf8");
+		// The current location, then where a Viewer from an earlier release wrote it.
+		const raw = readViewerPidFile(dbPath);
+		if (raw === null) return null;
 		const parsed = JSON.parse(raw) as Partial<{ host: string; port: number }>;
 		if (typeof parsed.host === "string" && typeof parsed.port === "number") {
 			return { host: parsed.host, port: parsed.port };
