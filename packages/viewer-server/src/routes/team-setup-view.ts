@@ -23,6 +23,12 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 	blockingError?: LegacyTeamSetupActivationErrorCode;
 	/** Optional detail for `blockingError`; older clients ignore it. */
 	blockingReason?: LegacyTeamSetupErrorReason;
+	/**
+	 * The Team the Team recovery routes would recover for this candidate. Present
+	 * only on an admin device, and only while the Team this setup completed is
+	 * disabled. Older clients ignore it.
+	 */
+	recoverableTeamId?: string;
 };
 
 export interface LegacyTeamSetupSummaryResponseV1 {

@@ -1819,6 +1819,7 @@ export {
 	type TeamRecoveryEvidenceTarget,
 	teamRecoveryTarget,
 } from "./team-recovery-evidence-reader.js";
+export { isTeamRecoveryHoldAbandoned } from "./team-recovery-holds.js";
 export {
 	previewTeamRecovery,
 	type TeamRecoveryEvidence,

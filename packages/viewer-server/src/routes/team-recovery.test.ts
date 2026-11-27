@@ -468,6 +468,24 @@ describe("Team recovery routes when the device stops being an admin mid-request"
 		expect(count("policy_team_recovery_holds")).toBe(1);
 	});
 
+	it("recovers, in a later request, a Team an unconfirmed recovery left on hold", async () => {
+		// Arrange: the first recovery was saved and could not be confirmed, so the Team is active and held.
+		const digest = (await app().post("preview", {}))[1].expectedDigest;
+		await changingDuringRead(2, { syncCoordinatorAdminSecret: "" }).post("commit", {
+			expectedDigest: digest,
+		});
+		expect([teamState(), count("policy_team_recovery_holds")]).toEqual(["active:completed", 1]);
+
+		const [previewStatus, preview] = await app().post("preview", {});
+		const [commitStatus, committed] = await app().post("commit", {
+			expectedDigest: preview.expectedDigest,
+		});
+
+		expect([previewStatus, commitStatus, committed.state]).toEqual([200, 200, "recovered"]);
+		expect(teamState()).toBe("active:completed");
+		expect(count("policy_team_recovery_holds")).toBe(0);
+	});
+
 	it("gives no preview when the admin secret is cleared during its read", async () => {
 		const response = await changingDuringRead(1, { syncCoordinatorAdminSecret: "" }).post(
 			"preview",

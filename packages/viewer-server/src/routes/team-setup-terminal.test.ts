@@ -4601,3 +4601,158 @@ describe("Team setup background check and a setup that finishes while it reads",
 		}
 	});
 });
+
+type DisabledTeamSummary = {
+	candidates: Array<{
+		candidateRef: string;
+		blockingError?: string;
+		blockingReason?: string;
+		recoverableTeamId?: string;
+	}>;
+};
+
+/** A Team this device finished setting up. */
+async function finishedTeam(store: MemoryStore) {
+	const setupApp = teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+		completionDependencies: null,
+	});
+	const draft = await readyDraftThroughSummary(store, setupApp);
+	const review = inspectLegacyTeamSetupActivation(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: draft.attemptId,
+	});
+	await finishLegacyTeamSetupActivation(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: draft.attemptId,
+		finishDigest: review.finishDigest,
+		confirmedAccessDeltaDigest: review.accessDeltaDigest,
+		loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+		loadProjectInventory: () => [],
+		validateLockedPreview: () => true,
+		now: NOW,
+	});
+}
+
+/**
+ * A Team this device set up, disabled by a background check, and the summary
+ * read with this admin secret configured by then.
+ */
+async function disabledTeamSummary(
+	store: MemoryStore,
+	adminSecret: string,
+	later: Partial<ReturnType<typeof readCoordinatorSyncConfig>> = {},
+) {
+	await finishedTeam(store);
+	const conflict = async () => {
+		throw new Error("completion_conflict");
+	};
+	const config = completionConfig().readConfig();
+	let secret = config.syncCoordinatorAdminSecret;
+	const { app, check } = backgroundApp(store, {
+		loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+		readCoordinatorConfig: () => ({ ...config, syncCoordinatorAdminSecret: secret }),
+		completionDependencies: { create: conflict, get: async () => null, list: async () => [] },
+	});
+	await check().refresh();
+	secret = adminSecret;
+	Object.assign(config, later);
+	const summary = await app.request("/api/sync/team-setup/v1");
+	return (await summary.json()) as DisabledTeamSummary;
+}
+
+describe("Team setup summary for a Team that was disabled", () => {
+	it("names the Team to recover on an admin device", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const summary = await disabledTeamSummary(store, "private-admin-secret");
+
+			expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			expect(summary.candidates).toMatchObject([
+				{
+					candidateRef: CANDIDATE_REF,
+					recoverableTeamId: deterministicPolicyTeamId(CANDIDATE_REF),
+				},
+			]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("lists a Team whose recovery was saved and never confirmed, and names it for another recovery", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			// Arrange: the Team is active and on hold, and no recovery is confirming it any more.
+			await finishedTeam(store);
+			const teamId = deterministicPolicyTeamId(CANDIDATE_REF);
+			store.db
+				.prepare(
+					`INSERT INTO policy_team_recovery_holds(team_id, recovery_id, reason, held_at)
+					 VALUES (?, 'recovery-stopped', 'unverified', ?)`,
+				)
+				.run(teamId, NOW);
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: removalReadingCompletion(),
+			});
+			await check().refresh();
+
+			const held = (await (
+				await app.request("/api/sync/team-setup/v1")
+			).json()) as DisabledTeamSummary;
+			store.db.prepare("DELETE FROM policy_team_recovery_holds").run();
+			const lifted = (await (
+				await app.request("/api/sync/team-setup/v1")
+			).json()) as DisabledTeamSummary;
+
+			expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+			expect(held.candidates).toMatchObject([
+				{
+					candidateRef: CANDIDATE_REF,
+					blockingError: "team_setup_completion_unavailable",
+					blockingReason: "team_recovery_unconfirmed",
+					recoverableTeamId: teamId,
+				},
+			]);
+			expect(lifted.candidates).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([
+		["the Team's group is no longer configured", { syncCoordinatorGroups: ["group-other"] }],
+		[
+			"another coordinator is configured",
+			{ syncCoordinatorUrl: "https://elsewhere.example.invalid" },
+		],
+	])("names no Team once %s", async (_case, later) => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const summary = await disabledTeamSummary(store, "private-admin-secret", later);
+
+			expect(summary.candidates.map((candidate) => candidate.candidateRef)).toEqual([
+				CANDIDATE_REF,
+			]);
+			expect(summary.candidates[0]).not.toHaveProperty("recoverableTeamId");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("names no Team once the device is no longer an admin", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const summary = await disabledTeamSummary(store, "");
+
+			expect(summary.candidates.map((candidate) => candidate.candidateRef)).toEqual([
+				CANDIDATE_REF,
+			]);
+			expect(summary.candidates[0]).not.toHaveProperty("recoverableTeamId");
+		} finally {
+			store.close();
+		}
+	});
+});

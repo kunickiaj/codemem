@@ -42,6 +42,7 @@ import {
 	inspectLegacyTeamSetupActivation,
 	isLegacyTeamCandidateSelectable,
 	isLegacyTeamSetupProjectMappingIdentity,
+	isTeamRecoveryHoldAbandoned,
 	LegacyTeamSetupAdditiveConvergenceError,
 	type LegacyTeamSetupDeviceRemovalEvidence,
 	LegacyTeamSetupDeviceRemovalsUnavailableError,
@@ -76,6 +77,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 	setLegacyTeamSetupProjectMapping,
 	startMaintenanceJob,
+	teamRecoveryTarget,
 	validateLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifestBinding,
 } from "@codemem/core";
@@ -1406,6 +1408,75 @@ function summaryResponse(
 	return { version: TEAM_SETUP_VERSION, candidates, reconciliation: read.status };
 }
 
+/** The summary, with what only an admin device is told. */
+function summaryForDevice(
+	options: TeamSetupRoutesOptions,
+	read: TeamSetupReconciliationRead<SummaryReconciliationResult>,
+): LegacyTeamSetupSummaryResponseV1 | { error: LegacyTeamSetupActivationErrorCode } {
+	const store = options.getStore();
+	const summary = summaryResponse(store, read);
+	if ("error" in summary) return summary;
+	return withRecoverableTeams(store, summary, currentCompletionAuthorization(options));
+}
+
+/** What this device's configuration lets it read as a coordinator admin now, or null for nothing. */
+function currentCompletionAuthorization(
+	options: TeamSetupRoutesOptions,
+): CompletionAuthorization | null {
+	try {
+		return readCompletionAuthorization(options);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Names, for an admin device, the Team each candidate's recovery would restore:
+ * the Team its setup completed, while that Team is disabled or a recovery of it
+ * was saved and never confirmed, and only while the setup's coordinator and
+ * group are the configured ones. Local reads only.
+ */
+function withRecoverableTeams(
+	store: MemoryStore,
+	summary: LegacyTeamSetupSummaryResponseV1,
+	authorization: CompletionAuthorization | null,
+): LegacyTeamSetupSummaryResponseV1 {
+	if (!authorization) return summary;
+	const disabled = store.db
+		.prepare(
+			`SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'inactive'
+			 AND migration_state = 'needs_setup' AND provenance = 'reviewed_team_candidate'`,
+		)
+		.pluck();
+	const candidates = summary.candidates.map((candidate) => {
+		const teamId = deterministicPolicyTeamId(candidate.candidateRef);
+		const stopped = disabled.get(teamId) || isRecoveryUnconfirmed(store, candidate.candidateRef);
+		const target = stopped ? teamRecoveryTarget(store.db, teamId) : null;
+		// The recovery routes refuse a setup from another coordinator or group than the configured ones.
+		const recoverable = target !== null && authorizesGroup(authorization, target);
+		return recoverable ? { ...candidate, recoverableTeamId: teamId } : candidate;
+	});
+	return { ...summary, candidates };
+}
+
+const RECOVERY_UNCONFIRMED: CompletionBlocker = {
+	code: "team_setup_completion_unavailable",
+	reason: "team_recovery_unconfirmed",
+};
+
+/**
+ * Whether the candidate's Team is active with a recovery that was saved and
+ * never confirmed. Such a Team is on hold and shares nothing until another
+ * recovery is confirmed. A recovery this process is still confirming does not count.
+ */
+function isRecoveryUnconfirmed(store: MemoryStore, candidateRef: string): boolean {
+	const teamId = deterministicPolicyTeamId(candidateRef);
+	return (
+		hasCompletedLegacyTeamSetup(store, candidateRef) &&
+		isTeamRecoveryHoldAbandoned(store.db, teamId, Date.now())
+	);
+}
+
 /**
  * The candidates the last pass found, with local drafts read again so edits show
  * at once. Reads only: discovery, which can write drafts and access, runs in the pass.
@@ -1419,6 +1490,9 @@ function checkedCandidateSummaries(
 			const candidateRef = summaryCandidateRef(group);
 			const blocker = result.blockers.get(candidateRef);
 			if (blocker) return [blockedCandidateSummary(store, group, blocker)];
+			// A completed Team is not listed, except one left on hold, which needs a recovery.
+			if (isRecoveryUnconfirmed(store, candidateRef))
+				return [blockedCandidateSummary(store, group, RECOVERY_UNCONFIRMED)];
 			if (hasCompletedLegacyTeamSetup(store, candidateRef)) return [];
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 			const view =
@@ -3409,7 +3483,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	// The summary never waits for the coordinator; the background pass does that.
 	app.get("/api/sync/team-setup/v1", (c) => {
 		try {
-			const summary = summaryResponse(options.getStore(), reconciliation.read());
+			const summary = summaryForDevice(options, reconciliation.read());
 			return "error" in summary ? c.json(summary, errorStatus(summary.error)) : c.json(summary);
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);

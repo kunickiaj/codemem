@@ -45,6 +45,7 @@ export const LEGACY_TEAM_SETUP_ERROR_REASONS = [
 	"coordinator_roster_unavailable",
 	"device_removals_unavailable",
 	"team_member_removals_unavailable",
+	"team_recovery_unconfirmed",
 ] as const;
 
 export type LegacyTeamSetupErrorReason = (typeof LEGACY_TEAM_SETUP_ERROR_REASONS)[number];
