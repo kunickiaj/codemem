@@ -191,6 +191,15 @@ export {
 	updatePeerIdentity,
 	updatePeerScope,
 } from "./api/sync";
+export {
+	commitTeamMemberRemoval,
+	loadTeamGroupConflicts,
+	previewTeamMemberRemoval,
+	retryTeamInvitationRevokes,
+	TeamMemberRemovalApiError,
+	type TeamMemberRemovalCommit,
+	type TeamMemberRemovalPreview,
+} from "./api/team-member-removal";
 export type {
 	AcceptDiscoveredPeerResult,
 	CoordinatorInviteResult,

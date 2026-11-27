@@ -37,6 +37,10 @@ import {
 } from "./recipient-policy-person-settings";
 import type { ReceivedProjectShare } from "./recipient-policy-projects";
 import { type CoordinatorAccess, RecipientPolicyTeamCreate } from "./recipient-policy-team-create";
+import {
+	RecipientPolicyTeamMemberRemoval,
+	type TeamMemberRemovalActions,
+} from "./recipient-policy-team-member-removal";
 import { RecipientPolicyTeamSettings } from "./recipient-policy-team-settings";
 import { teamSetupRecoveryReason } from "./team-setup-recovery";
 
@@ -63,6 +67,10 @@ export interface RecipientPolicySharingOptions {
 	createTeam?: (displayName: string) => Promise<RecipientPolicyTeamCreateResultV1>;
 	personActions?: PersonSettingsActions;
 	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
+	/** Teams whose coordinator group is a conflict. Their cards show a warning. */
+	teamGroupConflicts?: string[];
+	onTeamMemberRemoved?: () => Promise<unknown> | unknown;
+	teamMemberRemovalActions?: TeamMemberRemovalActions;
 	coordinatorEnrollmentIssueCount?: number;
 	teamSetupSummary?: LegacyTeamSetupSummaryResponseV1;
 	teamSetupLoading?: boolean;
@@ -356,14 +364,10 @@ function SharingTabPanelContent({
 		case "teams":
 			return (
 				<TeamsView
-					accountView={accountView}
-					createTeamControl={createTeamControl(options)}
+					{...teamsViewProps(options, accountView)}
 					devices={devices}
-					disableMutations={options.refreshError === true}
 					intent={intent}
-					onTeamRenamed={options.onTeamRenamed}
 					projects={projects}
-					renameTeam={options.renameTeam}
 				/>
 			);
 		case "identities":
@@ -493,6 +497,39 @@ function RecipientActions({
 	);
 }
 
+/** What the Team cards need to offer member removal and to warn about group conflicts. */
+interface TeamMemberRemovalContext {
+	allowed: boolean;
+	localIdentityIds: Set<string>;
+	conflicts: Set<string>;
+	onRemoved?: () => Promise<unknown> | unknown;
+	actions?: TeamMemberRemovalActions;
+}
+
+function teamsViewProps(options: RecipientPolicySharingOptions, accountView: AccountView | null) {
+	return {
+		accountView,
+		createTeamControl: createTeamControl(options),
+		disableMutations: options.refreshError === true,
+		memberRemoval: teamMemberRemoval(options, accountView),
+		onTeamRenamed: options.onTeamRenamed,
+		renameTeam: options.renameTeam,
+	};
+}
+
+function teamMemberRemoval(
+	options: RecipientPolicySharingOptions,
+	accountView: AccountView | null,
+): TeamMemberRemovalContext {
+	return {
+		allowed: options.accessChangesAllowed === true,
+		localIdentityIds: localIdentityIds(accountView, options.deviceInventory),
+		conflicts: new Set(options.teamGroupConflicts ?? []),
+		onRemoved: options.onTeamMemberRemoved,
+		actions: options.teamMemberRemovalActions,
+	};
+}
+
 function teamMemberNames(
 	memberIds: string[],
 	activeIdentitiesById: Map<string, RecipientPolicyIntentGraphV1["identities"][number]>,
@@ -514,6 +551,7 @@ function TeamsView({
 	devices,
 	disableMutations,
 	intent,
+	memberRemoval,
 	onTeamRenamed,
 	projects,
 	renameTeam,
@@ -523,6 +561,7 @@ function TeamsView({
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
+	memberRemoval: TeamMemberRemovalContext;
 	onTeamRenamed?: () => Promise<unknown> | unknown;
 	projects: RecipientPolicyManagementProject[];
 	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
@@ -548,6 +587,7 @@ function TeamsView({
 				devices={devices}
 				disableMutations={disableMutations}
 				intent={intent}
+				memberRemoval={memberRemoval}
 				onTeamRenamed={onTeamRenamed}
 				projects={projects}
 				renameTeam={renameTeam}
@@ -590,6 +630,7 @@ function teamCardFacts(
 	);
 	return {
 		activeDeviceCount: devices.filter((device) => memberIds.includes(device.identityId)).length,
+		memberIds,
 		memberNames: teamMemberNames(memberIds, activeIdentitiesById, accountView),
 		projectNames,
 	};
@@ -601,12 +642,14 @@ function TeamCards({
 	devices,
 	disableMutations,
 	intent,
+	memberRemoval,
 	onTeamRenamed,
 	projects,
 	renameTeam,
 }: {
 	accountView: AccountView | null;
 	activeTeams: RecipientPolicyIntentGraphV1["teams"];
+	memberRemoval: TeamMemberRemovalContext;
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
@@ -625,13 +668,16 @@ function TeamCards({
 	return (
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			{activeTeams.map((team, index) => {
-				const { activeDeviceCount, memberNames, projectNames } = teamCardFacts(team.teamId, {
-					accountView,
-					activeIdentitiesById,
-					devices,
-					intent,
-					projectsById,
-				});
+				const { activeDeviceCount, memberIds, memberNames, projectNames } = teamCardFacts(
+					team.teamId,
+					{
+						accountView,
+						activeIdentitiesById,
+						devices,
+						intent,
+						projectsById,
+					},
+				);
 				const titleId = `recipient-policy-sharing-team-title-${index}`;
 				return (
 					<article
@@ -662,8 +708,16 @@ function TeamCards({
 									renameTeam={renameTeam}
 									teamId={team.teamId}
 								/>
+								<TeamMemberRemovalControl
+									disabled={disableMutations}
+									memberIds={memberIds}
+									memberNames={memberNames}
+									memberRemoval={memberRemoval}
+									team={team}
+								/>
 							</div>
 						</div>
+						{memberRemoval.conflicts.has(team.teamId) ? <TeamGroupConflictNotice /> : null}
 						<div className="recipient-policy-sharing-stats">
 							<div>
 								<strong>{memberNames.length}</strong>
@@ -686,6 +740,45 @@ function TeamCards({
 				);
 			})}
 		</div>
+	);
+}
+
+/** Offered only on an admin device, for members other than this device's own person. */
+function TeamMemberRemovalControl({
+	disabled,
+	memberIds,
+	memberNames,
+	memberRemoval,
+	team,
+}: {
+	disabled: boolean;
+	memberIds: string[];
+	memberNames: string[];
+	memberRemoval: TeamMemberRemovalContext;
+	team: RecipientPolicyIntentGraphV1["teams"][number];
+}) {
+	const members = memberIds
+		.map((identityId, index) => ({ identityId, displayName: memberNames[index] ?? "" }))
+		.filter((member) => !memberRemoval.localIdentityIds.has(member.identityId));
+	if (!memberRemoval.allowed || members.length === 0) return null;
+	return (
+		<RecipientPolicyTeamMemberRemoval
+			actions={memberRemoval.actions}
+			disabled={disabled}
+			members={members}
+			onRemoved={memberRemoval.onRemoved}
+			teamId={team.teamId}
+			teamName={team.displayName}
+		/>
+	);
+}
+
+function TeamGroupConflictNotice() {
+	return (
+		<p className="small recipient-policy-sharing-warning" role="status">
+			This Team's coordinator group is unclear, so its members don't receive its Projects and
+			removals are paused. An admin can bind the Team to one group on the coordinator to fix this.
+		</p>
 	);
 }
 

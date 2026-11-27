@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Sharing → Teams** can remove a person from one Team. On a device that holds the coordinator admin secret, **Remove member** reviews the devices that stop receiving the Team's Projects and the Team's pending invitations, revokes the invitations you keep selected, and offers **Retry revoking** for any that failed. A Team whose coordinator group is unclear shows a warning on its card.
 - Coordinators record each Team's group, so a Team member removal applies only in the group the Team belongs to. The first Team invitation for a Team binds it to the inviting group, and a Team invitation for the same Team from another group is refused with `409 team_bound_to_other_group`. Admin devices read bindings with `GET /v1/admin/team-group-bindings`. Cloudflare deployments need migration `0053` before the new Worker mints any Team invitation. It binds existing Teams whose invitations all came from one group. A Team that more than one group invited to stays unbound, and its Team invitations are refused with `409 team_binding_conflict` until an admin binds it with `POST /v1/admin/team-group-bindings`. A SQLite coordinator adds the storage when it starts.
 
 ### Changed

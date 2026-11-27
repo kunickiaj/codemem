@@ -59,6 +59,7 @@ interface RecipientPolicySharingLoaderDependencies {
 	loadIntent: typeof api.loadRecipientPolicyIntent;
 	loadProjects: (options?: ReadRequestOptions) => Promise<RecipientPolicyProjectInventory>;
 	loadSyncStatus: typeof api.loadSyncStatus;
+	loadTeamGroupConflicts: typeof api.loadTeamGroupConflicts;
 	loadTeamSetupSummary: typeof api.loadLegacyTeamSetupSummary;
 	mountManagement: typeof mountRecipientPolicyManagement;
 	mountSharing: typeof mountRecipientPolicySharing;
@@ -70,6 +71,7 @@ const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
 	loadIntent: api.loadRecipientPolicyIntent,
 	loadProjects: loadRecipientPolicyProjects,
 	loadSyncStatus: api.loadSyncStatus,
+	loadTeamGroupConflicts: api.loadTeamGroupConflicts,
 	loadTeamSetupSummary: api.loadLegacyTeamSetupSummary,
 	mountManagement: mountRecipientPolicyManagement,
 	mountSharing: mountRecipientPolicySharing,
@@ -85,6 +87,8 @@ interface RecipientPolicySharingLoaderState {
 	coordinatorAccess: CoordinatorAccess;
 	latestLoad: Promise<boolean> | null;
 	coordinatorEnrollmentIssueCount: number;
+	/** Kept from the last successful read, so a failed read does not hide a warning. */
+	teamGroupConflicts: string[];
 	lastDeviceInventory: Awaited<ReturnType<typeof api.loadDeviceIdentityInventory>> | undefined;
 	teamSetupSummary: api.LegacyTeamSetupSummaryResponseV1 | undefined;
 	teamSetupLoading: boolean;
@@ -116,6 +120,7 @@ function createRecipientPolicySharingLoaderState(): RecipientPolicySharingLoader
 		coordinatorAccess: "unknown",
 		latestLoad: null,
 		coordinatorEnrollmentIssueCount: 0,
+		teamGroupConflicts: [],
 		lastDeviceInventory: undefined,
 		teamSetupSummary: undefined,
 		teamSetupLoading: false,
@@ -143,6 +148,8 @@ function sharedSharingOptions(
 		onReviewDevices: options.onReviewDevices,
 		onTeamCreated: () => refresh(),
 		onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
+		onTeamMemberRemoved: () => refresh(),
+		teamGroupConflicts: state.teamGroupConflicts,
 	};
 }
 
@@ -244,8 +251,10 @@ function updateSharingLoaderAvailability(
 	>,
 	syncStatusResult: PromiseSettledResult<Awaited<ReturnType<typeof api.loadSyncStatus>>>,
 	adminStatusResult: PromiseSettledResult<unknown>,
+	conflictsResult: PromiseSettledResult<string[]>,
 ): void {
 	const { state } = context;
+	if (conflictsResult.status === "fulfilled") state.teamGroupConflicts = conflictsResult.value;
 	state.coordinatorAccess = coordinatorAccessFromStatus(adminStatusResult);
 	state.lastDeviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
 	if (deviceInventoryResult.status === "fulfilled") {
@@ -354,6 +363,7 @@ async function loadRecipientPolicySharingData(
 		deviceInventoryResult,
 		syncStatusResult,
 		adminStatusResult,
+		conflictsResult,
 	] = await Promise.allSettled([
 		dependencies.loadProjects({ signal: refreshOptions.signal }),
 		dependencies.loadIntent({ signal: refreshOptions.signal }),
@@ -363,6 +373,7 @@ async function loadRecipientPolicySharingData(
 			signal: refreshOptions.signal,
 		}),
 		dependencies.loadCoordinatorAdminStatus({ signal: refreshOptions.signal }),
+		dependencies.loadTeamGroupConflicts({ signal: refreshOptions.signal }),
 	]);
 	if (!isCurrent()) {
 		if (refreshOptions.signal?.aborted) return false;
@@ -375,6 +386,7 @@ async function loadRecipientPolicySharingData(
 		deviceInventoryResult,
 		syncStatusResult,
 		adminStatusResult,
+		conflictsResult,
 	);
 	const data = buildSharingLoadData(context, refresh, inventoryResult, intentResult);
 	const renderSharing = renderSharingLoad(context, refresh, sharingMount, managementMount, data);

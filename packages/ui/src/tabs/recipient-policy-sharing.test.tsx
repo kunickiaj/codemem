@@ -2035,3 +2035,43 @@ describe("Sharing person settings", () => {
 		expect(remove?.disabled).toBe(true);
 	});
 });
+
+describe("Sharing Team member removal", () => {
+	registerRecipientFocusedSharingLifecycle();
+
+	const removeButton = () =>
+		[...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Remove member",
+		);
+
+	it("is offered only on an admin device, for members other than this device's person", () => {
+		mount(intent(), { accessChangesAllowed: false });
+		expect(removeButton()).toBeUndefined();
+
+		mount(intent(), {
+			accessChangesAllowed: true,
+			deviceInventory: localDeviceInventory("identity-adam"),
+		});
+		expect(removeButton()?.getAttribute("aria-label")).toBe("Remove a member from ExampleCo");
+
+		const onlyMe = intent();
+		onlyMe.teamMemberships = onlyMe.teamMemberships.filter(
+			(membership) => membership.identityId === "identity-adam",
+		);
+		mount(onlyMe, {
+			accessChangesAllowed: true,
+			deviceInventory: localDeviceInventory("identity-adam"),
+		});
+		expect(removeButton()).toBeUndefined();
+	});
+
+	it("warns on a Team whose coordinator group is a conflict", () => {
+		mount(intent(), { teamGroupConflicts: ["team-example"] });
+
+		expect(visiblePanel().textContent).toContain(
+			"This Team's coordinator group is unclear, so its members don't receive its Projects",
+		);
+		mount(intent(), { teamGroupConflicts: [] });
+		expect(visiblePanel().textContent).not.toContain("coordinator group is unclear");
+	});
+});
