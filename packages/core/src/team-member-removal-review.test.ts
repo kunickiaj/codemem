@@ -388,3 +388,53 @@ describe("retrying invitation revokes for a Team set up elsewhere", () => {
 		expect(actions.revokeInvitation).not.toHaveBeenCalled();
 	});
 });
+
+describe("committing a removal when the member changes during the invitation read", () => {
+	it("refuses as stale when a device is added to the member while invitations are read", async () => {
+		const { ctx, actions } = context();
+		const preview = await previewTeamMemberRemoval(db, subject(), ctx);
+		if (preview.state !== "ready") throw new Error("preview not ready");
+		actions.listPendingInvitations.mockImplementationOnce(async () => {
+			row("identity_devices", {
+				device_id: "device-removed-second",
+				identity_id: "identity-removed",
+				display_name: "Second laptop",
+				status: "active",
+				idempotency_key: "binding-device-removed-second",
+				...managed,
+				...stamps,
+			});
+			return PENDING;
+		});
+
+		const result = await commitTeamMemberRemoval(
+			db,
+			{ ...subject(), expectedDigest: preview.expectedDigest, revokeInvitationIds: [] },
+			ctx,
+		);
+
+		expect(result).toEqual({ state: "rejected", error: "removal_preview_stale" });
+		expect(actions.recordRemoval).not.toHaveBeenCalled();
+	});
+
+	it("refuses when the person stops being a member while invitations are read", async () => {
+		const { ctx, actions } = context();
+		const preview = await previewTeamMemberRemoval(db, subject(), ctx);
+		if (preview.state !== "ready") throw new Error("preview not ready");
+		actions.listPendingInvitations.mockImplementationOnce(async () => {
+			db.prepare(
+				"UPDATE policy_team_memberships SET status = 'revoked' WHERE identity_id = 'identity-removed'",
+			).run();
+			return PENDING;
+		});
+
+		const result = await commitTeamMemberRemoval(
+			db,
+			{ ...subject(), expectedDigest: preview.expectedDigest, revokeInvitationIds: [] },
+			ctx,
+		);
+
+		expect(result).toEqual({ state: "rejected", error: "member_not_found" });
+		expect(actions.recordRemoval).not.toHaveBeenCalled();
+	});
+});

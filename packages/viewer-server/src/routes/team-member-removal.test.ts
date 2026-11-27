@@ -108,7 +108,10 @@ describe("Team member removal routes", () => {
 		["preview", { identityId: "identity-b", extra: 1 }],
 		["preview", { identityId: " identity-b" }],
 		["commit", { identityId: "identity-b", expectedDigest: "d" }],
-		["commit", { identityId: "identity-b", expectedDigest: "d", revokeInvitationIds: ["bad id"] }],
+		[
+			"commit",
+			{ identityId: "identity-b", expectedDigest: "d", revokeInvitationIds: ["bad\u0000id"] },
+		],
 	])("refuses a malformed %s body", async (path, body) => {
 		const response = await app().post(path, body);
 
@@ -164,6 +167,32 @@ describe("Team member removal routes", () => {
 			invitations: [{ inviteId: "invite-a", result: "revoked" }],
 		});
 		expect((await revoke({ inviteIds: [] })).status).toBe(400);
+	});
+
+	it("accepts an identity in any format the policy layer accepts", async () => {
+		const identityId = "person@example.test/çà";
+		row("actors", {
+			actor_id: identityId,
+			display_name: "Çà",
+			is_local: 0,
+			status: "active",
+			...stamps,
+		});
+		row("policy_team_memberships", {
+			team_id: team,
+			identity_id: identityId,
+			role: "member",
+			status: "active",
+			idempotency_key: "membership-unicode",
+			...managed,
+			...stamps,
+		});
+		const { post } = app();
+
+		const response = await post("preview", { identityId });
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ state: "ready", identityId });
 	});
 
 	it("answers 409 for a stale preview and records nothing", async () => {

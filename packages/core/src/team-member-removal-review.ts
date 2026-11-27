@@ -160,20 +160,25 @@ async function buildPreview(
 	input: { teamId: string; identityId: string },
 	context: TeamMemberRemovalContext,
 ): Promise<{ preview: TeamMemberRemovalPreview; subject: Subject } | TeamMemberRemovalRejection> {
-	const subject = readSubject(db, input, context);
-	if (typeof subject === "string") return subject;
+	const before = readSubject(db, input, context);
+	if (typeof before === "string") return before;
 	const list =
 		context.actions?.listPendingInvitations ?? coordinatorListPendingTeamInvitationsAction;
 	let pending: PendingTeamInvitation[];
 	try {
 		pending = await list(context.coordinator, {
-			groupId: subject.link.groupId,
+			groupId: before.link.groupId,
 			teamId: input.teamId,
 			now: (context.now ?? (() => new Date().toISOString()))(),
 		});
 	} catch {
 		return "invitations_unavailable";
 	}
+	// Read again after the coordinator call: a device, membership or Team link
+	// that changed meanwhile must change the digest or refuse the removal.
+	const subject = readSubject(db, input, context);
+	if (typeof subject === "string") return subject;
+	if (subject.link.groupId !== before.link.groupId) return "removal_preview_stale";
 	return {
 		subject,
 		preview: {

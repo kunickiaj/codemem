@@ -1223,6 +1223,7 @@ export {
 export {
 	canonicalRecipientPolicyJson,
 	deterministicPolicyTeamId,
+	isStrictRecipientPolicyId,
 	legacyTeamCandidateId,
 	legacyTeamCanonicalProjectRef,
 	legacyTeamDeviceRef,

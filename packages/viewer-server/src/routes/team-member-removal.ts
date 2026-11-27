@@ -2,6 +2,7 @@ import {
 	buildBaseUrl,
 	commitTeamMemberRemoval,
 	isCoordinatorAdminDevice,
+	isStrictRecipientPolicyId,
 	previewTeamMemberRemoval,
 	readCoordinatorSyncConfig,
 	revokePendingTeamInvitations,
@@ -19,7 +20,6 @@ import { parseViewerJsonBody, type StoreFactory } from "./sync.js";
  */
 
 const BASE = "/api/sync/recipient-policy/v1/teams/:teamId/member-removals";
-const ID = /^[A-Za-z0-9:._-]{1,256}$/u;
 
 const STATUS: Record<TeamMemberRemovalRejection, 400 | 404 | 409 | 503> = {
 	invalid_input: 400,
@@ -42,8 +42,9 @@ export interface TeamMemberRemovalRouteOptions {
 
 type Body = Record<string, unknown>;
 
+/** The identifier format the policy layer and the coordinator accept. */
 function isId(value: unknown): value is string {
-	return typeof value === "string" && ID.test(value);
+	return isStrictRecipientPolicyId(value);
 }
 
 function previewBody(body: unknown): { identityId: string } | null {
