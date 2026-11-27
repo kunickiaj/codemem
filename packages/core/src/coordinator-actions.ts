@@ -11,6 +11,7 @@ import {
 	type CoordinatorDeviceRemovalListResult,
 	parseDeviceRemovalListPage,
 } from "./coordinator-device-removal-list.js";
+import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	type CoordinatorIdentityGroupGrantActionResult,
 	isCoordinatorControllerAttestationReference,
@@ -2647,15 +2648,34 @@ function ensureInviteDeviceIdentity(dbPath: string, keysDir: string | undefined)
 
 interface InviteJoinTransport {
 	url: string;
-	signer?: { deviceId: string; dbPath: string; keysDir?: string };
+	/** The device the join enrolls, and the store that records it. */
+	device: { deviceId: string; dbPath: string; keysDir?: string };
+	signed: boolean;
 }
 
-function postInviteJoin({ url, signer }: InviteJoinTransport, body: Record<string, unknown>) {
+function postInviteJoin(
+	{ url, device, signed }: InviteJoinTransport,
+	body: Record<string, unknown>,
+) {
 	const options = { timeoutS: INVITE_IMPORT_TIMEOUT_S, redirect: "error" as const };
-	if (!signer) return requestJson("POST", url, { ...options, body });
+	if (!signed) return requestJson("POST", url, { ...options, body });
 	const bodyBytes = Buffer.from(JSON.stringify(body));
-	const headers = buildAuthHeaders({ ...signer, url, method: "POST", bodyBytes });
+	const headers = buildAuthHeaders({ ...device, url, method: "POST", bodyBytes });
 	return requestJson("POST", url, { ...options, bodyBytes, headers });
+}
+
+/**
+ * A coordinator can enroll this device's key as soon as it receives the join, signed or not,
+ * and before any setting is saved here. The store records that history first, so it stays on
+ * record even if the coordinator refuses the join or this process stops before saving.
+ */
+function recordInviteJoinHistory(dbPath: string): void {
+	const conn = connect(dbPath);
+	try {
+		recordStoreCoordinatorHistory(conn, "enrollment");
+	} finally {
+		conn.close();
+	}
 }
 
 async function requestInvitationJoin(
@@ -2663,6 +2683,7 @@ async function requestInvitationJoin(
 	body: Record<string, unknown>,
 	{ recipientLegacyRetry }: { recipientLegacyRetry: boolean },
 ) {
+	recordInviteJoinHistory(transport.device.dbPath);
 	try {
 		const [status, response] = await postInviteJoin(transport, body);
 		if (
@@ -2778,10 +2799,8 @@ export async function coordinatorImportInviteAction(opts: {
 	const [status, response] = await requestInvitationJoin(
 		{
 			url: `${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
-			signer:
-				recipientInvite || projectInvite
-					? { deviceId, dbPath: resolvedDbPath, keysDir }
-					: undefined,
+			device: { deviceId, dbPath: resolvedDbPath, keysDir },
+			signed: recipientInvite || projectInvite,
 		},
 		joinBody,
 		{ recipientLegacyRetry: recipientInvite && !projectInvite },

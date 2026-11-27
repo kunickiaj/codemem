@@ -16,6 +16,7 @@ import {
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	readViewerWriterLockOwner,
+	recordConfiguredCoordinatorHistory,
 	resolveCodememConfigPath,
 	resolveDbPath,
 	resolveKeyPaths,
@@ -1335,6 +1336,9 @@ async function openViewerStore(
 		p.log.warn("Embeddings disabled for this viewer process; raw-event ingestion remains active.");
 	}
 	store.enablePackWorker();
+	// Before any listener opens, so a coordinator set in the config file or the environment is
+	// on record even when no refresh runs.
+	recordConfiguredCoordinatorHistory(store.db, readCoordinatorSyncConfig());
 	return store;
 }
 

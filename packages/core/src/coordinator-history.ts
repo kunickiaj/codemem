@@ -16,10 +16,12 @@ export type CoordinatorHistorySource =
 	| "bootstrap_grant"
 	| "config"
 	| "coordinator_peer_list"
+	| "enrollment"
 	| "filter_management"
 	| "invitation"
 	| "membership_cache"
 	| "peer_trust"
+	| "presence"
 	| "scope"
 	| "scope_membership";
 

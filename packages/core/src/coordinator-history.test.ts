@@ -3,13 +3,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { coordinatorImportInviteAction } from "./coordinator-actions.js";
 import {
 	deviceHasCoordinatorHistory,
 	ensureCoordinatorHistorySchema,
 	readStoreId,
 	storeHasCoordinatorHistory,
 } from "./coordinator-history.js";
-import { lookupCoordinatorPeers, readCoordinatorSyncConfig } from "./coordinator-runtime.js";
+import { encodeInvitePayload } from "./coordinator-invites.js";
+import {
+	lookupCoordinatorPeers,
+	readCoordinatorSyncConfig,
+	registerCoordinatorPresence,
+} from "./coordinator-runtime.js";
 import { connect } from "./db.js";
 import { rememberPeerProjectFilterManagement } from "./peer-project-filter-management.js";
 import { ensureScopeMembershipCacheStateTable } from "./scope-membership-cache.js";
@@ -331,5 +337,78 @@ describe("configured coordinators are recorded before any coordinator call", () 
 		await refreshCoordinatorForDaemon(db, join(directory, "mem.sqlite"));
 
 		expect(storeHasCoordinatorHistory(db)).toBe(false);
+	});
+});
+
+describe("enrollment and presence record history before the request", () => {
+	function storeSourcesAt(path: string) {
+		const conn = connect(path);
+		try {
+			return conn
+				.prepare("SELECT source FROM coordinator_history WHERE subject_kind = 'store'")
+				.pluck()
+				.all();
+		} finally {
+			conn.close();
+		}
+	}
+
+	it("records an unsigned, auto-admitted join even when its settings are never saved", async () => {
+		const path = join(directory, "invite.sqlite");
+		const seen: unknown[][] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				seen.push(storeSourcesAt(path));
+				return Response.json({ ok: true, status: "enrolled" });
+			}),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: "auto-admit-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+		});
+		// A config path under a regular file can't be written, as if the process stopped first.
+		writeFileSync(join(directory, "not-a-directory"), "");
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: path,
+				keysDir: join(directory, "keys"),
+				configPath: join(directory, "not-a-directory", "config.json"),
+			}),
+		).rejects.toThrow();
+
+		expect(seen).toEqual([["enrollment"]]);
+		expect(storeSourcesAt(path)).toEqual(["enrollment"]);
+	});
+
+	it("records presence before announcing this device", async () => {
+		const path = join(directory, "mem.sqlite");
+		const seen: unknown[][] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				seen.push(storeSourcesAt(path));
+				return Response.json({ ok: true, addresses: [] });
+			}),
+		);
+
+		await registerCoordinatorPresence(
+			{ db, dbPath: path },
+			readCoordinatorSyncConfig({
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_groups: ["team-a"],
+			}),
+			{ keysDir: join(directory, "keys") },
+		);
+
+		expect(seen).toEqual([["presence"]]);
 	});
 });

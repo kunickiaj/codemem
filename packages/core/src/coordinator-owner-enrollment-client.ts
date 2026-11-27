@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { createCoordinatorOwnerEnrollmentReceiver } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	ownerEnrollmentFinalMessage,
 	verifyOwnerEnrollmentSignature,
@@ -562,6 +563,8 @@ async function preflight(
 	db: Database,
 ) {
 	assertFresh(db);
+	// Owner enrollment enrolls this key, so it is recorded before the first request.
+	recordStoreCoordinatorHistory(db, "enrollment");
 	const [deviceId] = ensureDeviceIdentity(db, { keysDir: paths.keys });
 	const publicKey = loadPublicKey(paths.keys);
 	const privateKey = loadPrivateKey(paths.keys, paths.db, deviceId);
