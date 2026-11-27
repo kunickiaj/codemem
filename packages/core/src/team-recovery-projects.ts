@@ -1,7 +1,10 @@
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
 import type { Database } from "./db.js";
 import { compareCodepoints } from "./recipient-policy-identifiers.js";
-import { normalizeRepositoryWorkspaceIdentity } from "./repository-mapping-aliases.js";
+import {
+	normalizeRepositoryWorkspaceIdentity,
+	repositoryIdentityForWorkspace,
+} from "./repository-mapping-aliases.js";
 import { resolveRepositoryIdentityScope, resolveSessionScope } from "./scope-stamping.js";
 
 /*
@@ -120,9 +123,9 @@ function revokedByQuarantine(recipient: RecipientRow | undefined): boolean {
 	);
 }
 
-// One session for each checkout that recorded one of the identities as its
-// remote, its path or its repository. Memories received from peers are not checkouts.
-const CHECKOUT_SESSIONS_SQL = `SELECT MAX(id) FROM sessions
+// Sessions that recorded one of the identities as their remote, their path or
+// their repository. Memories received from peers are not checkouts.
+const CANDIDATE_SESSIONS_SQL = `SELECT id, cwd, git_remote, metadata_json FROM sessions
 	WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
 	  AND COALESCE(tool_version, '') <> 'sync_replication'
 	  AND (
@@ -133,7 +136,40 @@ const CHECKOUT_SESSIONS_SQL = `SELECT MAX(id) FROM sessions
 	        AND RTRIM(REPLACE(TRIM(json_extract(metadata_json, '$.codemem_repository_identity')),
 	            char(92), '/'), '/') IN (SELECT value FROM json_each(@identities)))
 	  )
-	GROUP BY cwd, git_remote ORDER BY MAX(id)`;
+	ORDER BY id`;
+
+interface CandidateSession {
+	id: number;
+	cwd: string;
+	git_remote: string | null;
+	metadata_json: string | null;
+}
+
+const NO_WORKSPACES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * The latest session of each checkout of the Project. Stamping reads a
+ * session's repository from the identity it recorded before its remote, so a
+ * session that recorded another repository is that repository's checkout, even
+ * when its remote names this Project.
+ */
+function checkoutSessionIds(db: Database, identities: readonly string[]): number[] {
+	const rows = db
+		.prepare(CANDIDATE_SESSIONS_SQL)
+		.all({ identities: JSON.stringify(identities) }) as CandidateSession[];
+	const named = new Set(identities);
+	const latest = new Map<string, number>();
+	for (const row of rows) {
+		const recorded = repositoryIdentityForWorkspace(NO_WORKSPACES, {
+			gitRemote: row.git_remote,
+			metadataJson: row.metadata_json,
+		});
+		// A session that recorded no repository matched by its path.
+		if (recorded && !named.has(recorded)) continue;
+		latest.set(JSON.stringify([row.cwd, row.git_remote]), row.id);
+	}
+	return [...latest.values()].toSorted((left, right) => left - right);
+}
 
 interface ProjectRoute {
 	/** The scopes a mapping routes the Project to now. */
@@ -155,10 +191,7 @@ function projectRoute(db: Database, identities: readonly string[]): ProjectRoute
 		const value = normalizeRepositoryWorkspaceIdentity(identity);
 		return value ? [value] : [];
 	});
-	const sessionIds = db
-		.prepare(CHECKOUT_SESSIONS_SQL)
-		.pluck()
-		.all({ identities: JSON.stringify(normalized) }) as number[];
+	const sessionIds = checkoutSessionIds(db, normalized);
 	const resolutions = [
 		...sessionIds.map((sessionId) => resolveSessionScope(db, { sessionId, readOnly: true })),
 		...identities.map((identity) => resolveRepositoryIdentityScope(db, identity)),

@@ -240,6 +240,44 @@ describe("Team recovery Project plan with checkout routing", () => {
 		expect(plan()).toMatchObject([{ outcome: "resumes", routedScopeIds: ["scope-other"] }]);
 	});
 
+	it("ignores a checkout that recorded another repository under the Project's remote", () => {
+		// Arrange: stamping reads this session as the other repository's checkout,
+		// and the other repository is routed elsewhere.
+		const other = "https://git.example.invalid/acme/other.git";
+		run(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, tool_version, metadata_json)
+			 VALUES (?, '/nonexistent/acme/other', 'other', ?, 'test', ?)`,
+			NOW,
+			PROJECT,
+			JSON.stringify({ codemem_repository_identity: other }),
+		);
+		mapCheckout(other, "other", "scope-other");
+
+		expect(plan()).toMatchObject([
+			{
+				outcome: "restored",
+				routedScopeIds: [],
+				restoredMappings: [{ sourceProjectIdentity: PROJECT, scopeId: "scope-engineering" }],
+			},
+		]);
+	});
+
+	it("reads the route of a checkout that recorded the Project under another remote", () => {
+		const fork = "/nonexistent/fork/api";
+		run(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, tool_version, metadata_json)
+			 VALUES (?, ?, 'api', 'https://git.example.invalid/fork/api.git', 'test', ?)`,
+			NOW,
+			fork,
+			JSON.stringify({ codemem_repository_identity: PROJECT }),
+		);
+		mapCheckout(fork, "api", "scope-other");
+
+		expect(plan()).toMatchObject([
+			{ outcome: "skipped", reason: "mapping_changed", routedScopeIds: ["scope-other"] },
+		]);
+	});
+
 	it("ignores memories of the Project that arrived from a peer", () => {
 		run("UPDATE sessions SET tool_version = 'sync_replication'");
 		mapCheckout(null, "/nonexistent/acme/*", "scope-other");
