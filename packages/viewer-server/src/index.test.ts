@@ -724,6 +724,7 @@ function createTestApp(opts?: {
 	return {
 		app,
 		syncApp,
+		teamSetupReconciliation: () => teamSetupReconciliation,
 		ensureStore: () => storeFactory(),
 		getStore: () => store,
 		cleanup: () => {
@@ -2460,7 +2461,7 @@ describe("viewer-server", () => {
 
 		it("invalidates the cached Team setup summary after a recipient-policy rename", async () => {
 			const loadSnapshots = vi.fn(async () => []);
-			const { app, ensureStore, cleanup } = createTestApp({
+			const { app, ensureStore, cleanup, teamSetupReconciliation } = createTestApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 				readCoordinatorConfig: () => core.readCoordinatorSyncConfig({}),
 			});
@@ -2478,7 +2479,6 @@ describe("viewer-server", () => {
 					.run();
 
 				await app.request("/api/sync/team-setup/v1");
-				await app.request("/api/sync/team-setup/v1");
 				expect(loadSnapshots).toHaveBeenCalledTimes(1);
 
 				const renamed = await app.request("/api/sync/recipient-policy/v1/teams/team-local", {
@@ -2494,7 +2494,8 @@ describe("viewer-server", () => {
 				});
 				expect(renamed.status).toBe(200);
 
-				await app.request("/api/sync/team-setup/v1");
+				// The rename starts a background check, which loads the roster again.
+				await teamSetupReconciliation()?.settle();
 				expect(loadSnapshots).toHaveBeenCalledTimes(2);
 			} finally {
 				cleanup();
@@ -3100,8 +3101,9 @@ describe("viewer-server", () => {
 						 'new-projection', ?, ?)`,
 					)
 					.run(supersedingAttemptId, candidateRef, coordinatorId, groupId, now, now);
-				loadSnapshots.mockClear();
 				const terminalSummaryResponse = await app.request("/api/sync/team-setup/v1");
+				// The summary's background check loads a fresh roster; the stale routes below must not.
+				loadSnapshots.mockClear();
 				expect(terminalSummaryResponse.status).toBe(200);
 				const terminalSummary = (await terminalSummaryResponse.json()) as {
 					candidates: Array<{ candidateRef: string }>;

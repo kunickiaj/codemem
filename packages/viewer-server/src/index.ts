@@ -279,6 +279,7 @@ function registerConfigRoutes(
 	app: Hono,
 	opts: AppOptions | undefined,
 	sweeper: RawEventSweeper | null,
+	onCoordinatorConfigChanged: () => void,
 ): void {
 	app.route(
 		"/",
@@ -286,6 +287,7 @@ function registerConfigRoutes(
 			getSweeper: () => sweeper,
 			scheduleObserverApply: opts?.scheduleObserverApply,
 			getObserverApplyStatus: opts?.getObserverApplyStatus,
+			onCoordinatorConfigChanged,
 		}),
 	);
 }
@@ -423,7 +425,7 @@ export function createApp(opts?: AppOptions) {
 			getObserver,
 		}),
 	);
-	registerConfigRoutes(app, opts, sweeper);
+	registerConfigRoutes(app, opts, sweeper, () => invalidateTeamSetupSummary());
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	installRecipientAccessChangeGate(app, storeFactory, opts?.readCoordinatorConfig);
 	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());

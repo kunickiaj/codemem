@@ -8,6 +8,7 @@ import {
 /** The parts of the background reconciliation a test harness drives. */
 export interface SettleableReconciliation {
 	refresh: () => Promise<void>;
+	settle: () => Promise<void>;
 }
 
 /**

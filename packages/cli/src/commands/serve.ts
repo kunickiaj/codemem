@@ -4,6 +4,7 @@ import net, { type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
+	acquireViewerWriterLock,
 	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
@@ -19,6 +20,8 @@ import {
 	runSyncDaemon,
 	type SyncDaemonTickCallback,
 	VERSION,
+	type ViewerWriterLock,
+	ViewerWriterLockHeldError,
 } from "@codemem/core";
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
 import { Command, Option } from "commander";
@@ -1103,6 +1106,44 @@ function createBoundApp(
 	};
 }
 
+/** Referenced for the process lifetime, so its connection, and the lock, stay open. */
+let heldViewerWriterLock: ViewerWriterLock | null = null;
+
+/**
+ * Refuses to start a second Viewer on one database. The pid file check above is
+ * advisory and can race; this lock cannot, so two Viewers never interleave Team
+ * setup changes whose locks only work inside one process.
+ */
+export function claimViewerWriterLock(dbPath: string): ViewerWriterLock | null {
+	try {
+		return acquireViewerWriterLock(dbPath);
+	} catch (error) {
+		if (!(error instanceof ViewerWriterLockHeldError)) throw error;
+		const running = readViewerPidRecord(dbPath);
+		const owner = running ? ` (viewer pid ${running.pid} at ${running.host}:${running.port})` : "";
+		p.intro("codemem viewer");
+		p.log.error(`Another codemem viewer is already using ${dbPath}${owner}.`);
+		p.log.info(
+			"Stop it with `codemem service stop`, or use a separate database for another viewer.",
+		);
+		process.exitCode = 1;
+		return null;
+	}
+}
+
+/** Takes the Viewer lock, then stops a leftover maintenance worker; false when another Viewer runs. */
+async function takeOverViewerRuntime(dbPath: string): Promise<boolean> {
+	// Held until this process exits; the OS releases it even after a crash.
+	heldViewerWriterLock = claimViewerWriterLock(dbPath);
+	if (!heldViewerWriterLock) return false;
+	if (!(await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 1000, forceMs: 5000 }))) {
+		p.log.warn(
+			"Existing maintenance worker is not trusted or did not stop; starting viewer anyway",
+		);
+	}
+	return true;
+}
+
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
@@ -1116,11 +1157,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	if (invocation.configPath) process.env.CODEMEM_CONFIG = invocation.configPath;
 	warnIfViewerExposed(invocation.host, invocation.port);
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
-	if (!(await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 1000, forceMs: 5000 }))) {
-		p.log.warn(
-			"Existing maintenance worker is not trusted or did not stop; starting viewer anyway",
-		);
-	}
+	if (!(await takeOverViewerRuntime(dbPath))) return;
 	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
