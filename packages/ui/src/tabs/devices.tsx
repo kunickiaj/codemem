@@ -1434,7 +1434,7 @@ function deviceRenameMenuAction(options: DevicesRendererOptions, onRename: () =>
 }
 
 /** Removal and block act on a person's device other than this one. */
-type DeviceTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
+type DeviceTarget = Pick<DeviceProjection, "deviceId" | "displayName" | "syncPeer">;
 
 function deviceRemovalMenuActions(
 	device: DeviceTarget,
@@ -1481,7 +1481,12 @@ function deviceRemovalMenuActions(
 }
 
 async function disconnectFromMenu(device: DeviceTarget, options: DevicesRendererOptions) {
-	const feedback = await confirmAndDisconnectDevice(device, options.disconnect);
+	// The pairing may be saved under another ID than the one shown, and the route needs that ID.
+	const pairedId = device.syncPeer?.deviceId ?? device.deviceId;
+	const feedback = await confirmAndDisconnectDevice(
+		{ deviceId: pairedId, displayName: device.displayName },
+		options.disconnect,
+	);
 	if (!feedback) return;
 	const refreshed = await Promise.resolve()
 		.then(() => options.onCommitted?.())

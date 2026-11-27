@@ -3437,6 +3437,37 @@ describe("Device disconnect menu", () => {
 		expect(menuItem("Remove device…")).toBeUndefined();
 	});
 
+	it("disconnects a device by the ID its pairing is saved under, not the one shown", async () => {
+		const disconnect = vi.fn(async () => ({ binding: "kept" }));
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "sync_peer"],
+					validatedFingerprint: "fingerprint",
+					evidenceDeviceIds: [deviceId, "peer-alias"],
+				}),
+			]),
+			peerSyncMetadata: [
+				{
+					deviceId: "peer-alias",
+					paired: true,
+					status: "ok",
+					lastSyncAt: null,
+					recentIn: 0,
+					recentOut: 0,
+					statusAvailable: true,
+				},
+			],
+			disconnect: { confirm: vi.fn(async () => true), disconnect },
+		});
+
+		const action = menuItem("Disconnect on this device…");
+		await act(async () => action?.click());
+		await act(async () => {});
+
+		expect(disconnect).toHaveBeenCalledExactlyOnceWith("peer-alias");
+	});
+
 	it("offers no Disconnect for a device this device is not paired with", () => {
 		mount(intent(), reconciliation(), {
 			inventory: pairedLaptop(["identity_binding", "coordinator_enrollment"]),
