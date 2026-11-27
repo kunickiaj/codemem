@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- The Viewer no longer stops answering while it asks git for the origin remote of each workspace. Coordinator maintenance, the recipient-policy checks, several Sharing pages and every raw-event flush with Project mappings worked out which repository each session workspace belongs to, and ran `git config` as a child process for every workspace with a live repository and no recorded identity, again every 5 seconds. On a store with 195 workspaces that was 19 child processes and about 150 ms with every request blocked, each time. The answer is now kept per repository config file and reused while the file reads the same, so a changed remote is still seen at once. A config file that includes another is asked about every time, as before.
 - The Viewer keeps answering while it builds a prompt pack. It assembled each pack on its event loop, which stopped every other request for about 200 ms per pack on a 12 GB store. The Viewer now assembles packs in a worker thread that opens the store read-only and reads as the Identity the request names. Before a pack is delivered, the Viewer checks that its Identity has not changed and that every memory in the pack is visible to it. If the worker fails, the pack is assembled as before.
 
 ## [0.50.0-beta.4] - 2026-11-27
