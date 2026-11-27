@@ -6,7 +6,6 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import net from "node:net";
 import { networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
 
 import * as p from "@clack/prompts";
 import {
@@ -35,6 +34,7 @@ import {
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	readPeerProjectFilterAuthority,
+	readViewerPidFile,
 	rememberPeerProjectFilterManagement,
 	removePeerFromThisDevice,
 	requestJson,
@@ -155,7 +155,9 @@ async function portOpen(host: string, port: number): Promise<boolean> {
 
 function readViewerBinding(dbPath: string): { host: string; port: number } | null {
 	try {
-		const raw = readFileSync(join(dirname(dbPath), "viewer.pid"), "utf8");
+		// The current location, then where a Viewer from an earlier release wrote it.
+		const raw = readViewerPidFile(dbPath);
+		if (raw === null) return null;
 		const parsed = JSON.parse(raw) as Partial<{ host: string; port: number }>;
 		if (typeof parsed.host === "string" && typeof parsed.port === "number") {
 			return { host: parsed.host, port: parsed.port };

@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import {
 	collectOperationalStatus,
 	connectReadOnly,
@@ -7,6 +6,7 @@ import {
 	type OperationalStatusSnapshot,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
+	readViewerPidFile,
 	resolveDbPath,
 	VERSION,
 } from "@codemem/core";
@@ -452,8 +452,10 @@ export async function collectStatusReport(
 		}
 	}
 
-	const pidPath = join(dirname(dbPath), "viewer.pid");
-	const parsedPid = parseViewerPidRecord(deps.exists(pidPath) ? deps.readText(pidPath) : null);
+	// The current location, then where a Viewer from an earlier release wrote it.
+	const parsedPid = parseViewerPidRecord(
+		readViewerPidFile(dbPath, (path) => (deps.exists(path) ? deps.readText(path) : null)),
+	);
 	const runtime = await observeViewerRuntime(
 		parsedPid,
 		{

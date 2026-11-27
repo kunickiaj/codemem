@@ -1888,3 +1888,19 @@ export {
 	VIEWER_SERVICE_DISCRIMINATOR,
 	viewerUrl,
 } from "./viewer-probe.js";
+export {
+	acquireViewerWriterLock,
+	canonicalViewerDbPath,
+	isViewerWriterLockHeld,
+	processStartIdentity,
+	readViewerPidFile,
+	readViewerWriterLockOwner,
+	type ViewerWriterLock,
+	ViewerWriterLockHeldError,
+	type ViewerWriterLockOwner,
+	ViewerWriterLockUnavailableError,
+	viewerPidFilePaths,
+	viewerRuntimeDir,
+	viewerWriterLockOwnerPath,
+	viewerWriterLockPath,
+} from "./viewer-writer-lock.js";
