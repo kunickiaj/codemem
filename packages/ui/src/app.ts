@@ -95,6 +95,7 @@ import {
 import { applySyncSubView } from "./tabs/sync/sync-view-controller";
 import { legacySharedReviewView } from "./tabs/sync/team-sync/render/legacy-review-view";
 import { reassignLegacySharedReviewGroup } from "./tabs/sync/team-sync/render/sharing-review";
+import { deriveDiscoveredRows } from "./tabs/sync/team-sync/discovered-devices";
 import { summarizeSyncRunResult } from "./tabs/sync/view-model";
 import { derivePeerUiStatus } from "./tabs/sync/view-model/peer-status";
 
@@ -742,6 +743,7 @@ function deviceRendererActions(
 	| "rejoinHistoryRevision"
 	| "rejoinHistoryProfile"
 	| "joinRequestsRevision"
+	| "discoveredRows"
 > {
 	return {
 		...(lifecycleAvailable ? { removalConfirmation: {}, enrolledDeviceBlock: true } : {}),
@@ -749,6 +751,7 @@ function deviceRendererActions(
 		rejoinHistoryRevision: state.lastSyncCoordinator?.configured ? devicesLoadRevision : undefined,
 		rejoinHistoryProfile: state.lastSyncCoordinator?.coordinator_url ?? undefined,
 		joinRequestsRevision: state.lastSyncCoordinator?.configured ? devicesOpenRevision : undefined,
+		discoveredRows: deriveDiscoveredRows(),
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),

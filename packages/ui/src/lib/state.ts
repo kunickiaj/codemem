@@ -467,7 +467,6 @@ export const state = {
 		relatedPeerDeviceId?: string;
 	} | null,
 	syncJoinRequestsFeedback: null as { message: string; tone: "success" | "warning" } | null,
-	syncDiscoveredFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	pendingCoordinatorApprovalsByDeviceId: new Map<string, PendingCoordinatorApproval>(),
 	lastSyncAttempts: [] as unknown[],
 	lastSyncLegacyDevices: [] as unknown[],
