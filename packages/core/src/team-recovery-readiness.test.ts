@@ -22,6 +22,8 @@ import {
 	insertScope,
 	LAPTOP,
 	NOW,
+	PHONE,
+	rekeyed,
 	TABLET,
 	TARGET,
 } from "./team-recovery-test-fixtures.js";
@@ -84,6 +86,29 @@ const discoveredStatus = (devices = ROSTER) =>
 		now: NOW,
 	}).map((candidate) => candidate.status);
 
+describe("Team setup readiness and the roster an activation fingerprints", () => {
+	it("reads the Team as ready when the roster lists a device the completed setup does not", async () => {
+		// Arrange: the Phone joined the group after the setup was reviewed.
+		const manifest = reviewedSetup();
+		const withPhone = [...ROSTER, PHONE];
+
+		await applyLegacyTeamSetupCompletionManifest(db, {
+			...TARGET,
+			manifest,
+			freshRoster: withPhone,
+		});
+
+		// Assert: discovery fingerprints the same four devices, and the Phone gets no decision.
+		expect(discoveredStatus(withPhone)).toEqual(["ready"]);
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM policy_team_device_decisions WHERE device_id = ?")
+				.pluck()
+				.get(PHONE.deviceId),
+		).toBe(0);
+	});
+});
+
 describe("Team setup readiness after a Team recovery exclusion", () => {
 	/** A completed Team, disabled, whose recovery left the Laptop out. Returns its reapply. */
 	async function disabledWithLaptopLeftOut() {
@@ -119,6 +144,22 @@ describe("Team setup readiness after a Team recovery exclusion", () => {
 		).toBe("excluded");
 		expect(discoveredStatus()).toEqual(["ready"]);
 	});
+
+	it.each([
+		["with a different key", rekeyed(LAPTOP)],
+		["disabled", { ...LAPTOP, enabled: false }],
+	])(
+		"reads the Team as ready after an activation while the excluded device is back on the roster %s",
+		async (_case, laptopNow) => {
+			// Arrange: the completed setup lists the Laptop as it was reviewed, and the roster lists it as it is now.
+			const apply = await disabledWithLaptopLeftOut();
+			const changed = [laptopNow, DESKTOP, TABLET];
+
+			await apply(changed);
+
+			expect(discoveredStatus(changed)).toEqual(["ready"]);
+		},
+	);
 
 	it("reads the Team as ready after an activation while the excluded device is off the roster", async () => {
 		// Arrange: the coordinator no longer lists the Laptop, and the completed setup still does.

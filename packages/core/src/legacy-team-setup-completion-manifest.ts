@@ -1019,21 +1019,6 @@ function includedDevicesToVerify(
 	);
 }
 
-/**
- * The devices a Team recovery left out that the coordinator's roster no longer
- * lists. The manifest keeps them, and the roster check above no longer asks for
- * them, so the roster this apply fingerprints must not list them either.
- */
-function recoveryExcludedDevicesOffRoster(
-	db: Database,
-	manifest: CoordinatorLegacyTeamCompletionManifestV1,
-	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[],
-): Set<string> {
-	const onRoster = new Set(freshRoster.map((device) => device.deviceId));
-	const leftOut = teamRecoveryExcludedDeviceIds(db, manifest.team_id);
-	return new Set([...leftOut].filter((deviceId) => !onRoster.has(deviceId)));
-}
-
 /** Applies the manifest's setup through activation, for the draft it was written into. */
 function activateCanonicalSetup(
 	db: Database,
@@ -1053,7 +1038,7 @@ function activateCanonicalSetup(
 		completionKey: options.completionKey,
 		allowCompletedDraft: options.allowCompletedDraft,
 		allowStaleDraft: draft.state === "stale",
-		devicesOffRoster: recoveryExcludedDevicesOffRoster(db, manifest, options.freshRoster),
+		freshRoster: [...options.freshRoster],
 	});
 }
 

@@ -11,6 +11,7 @@ import {
 	isFilesystemRootProjectIdentity,
 	isMigratableLegacyTeamProjectIdentity,
 } from "./legacy-team-project-policy.js";
+import { currentLegacyTeamRosterFingerprint } from "./legacy-team-roster-fingerprint.js";
 import {
 	type LegacyTeamSetupDraftState,
 	type LegacyTeamSetupDraftView,
@@ -32,7 +33,6 @@ import {
 	isStrictRecipientPolicyId,
 	legacyTeamCandidateId,
 	legacyTeamProjectRef,
-	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import {
@@ -204,16 +204,6 @@ function effectiveGroupSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): {
 	}
 	for (const candidateId of conflictedCandidateIds) byCandidate.delete(candidateId);
 	return { snapshots: [...byCandidate.values()], conflictedCandidateIds };
-}
-
-function activeAssignmentIdentityLookup(db: Database): (deviceId: string) => string | null {
-	const statement = db
-		.prepare(
-			`SELECT identity_id FROM identity_devices
-			 WHERE device_id = ? AND status = 'active' LIMIT 1`,
-		)
-		.pluck();
-	return (deviceId) => (statement.get(deviceId) as string | undefined) ?? null;
 }
 
 function projectInventory(
@@ -1014,15 +1004,7 @@ function candidateAuthority(
 		projects,
 		authorityRow?.attempt_id ?? null,
 	);
-	const activeAssignmentIdentity = activeAssignmentIdentityLookup(db);
-	const rosterFingerprint = legacyTeamRosterFingerprint(
-		rosterDevices.map((device) => ({
-			deviceId: device.deviceId,
-			fingerprint: device.fingerprint,
-			enabled: device.enabled,
-			identityId: activeAssignmentIdentity(device.deviceId),
-		})),
-	);
+	const rosterFingerprint = currentLegacyTeamRosterFingerprint(db, rosterDevices);
 	const completedRow = authorityRow?.state === "completed" ? authorityRow : canonicalCompletedRow;
 	const completionEvidenceMatches =
 		completedRow !== null &&

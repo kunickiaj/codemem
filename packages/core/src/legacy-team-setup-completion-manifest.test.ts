@@ -59,6 +59,12 @@ const KEY_A = "a".repeat(64);
 const FRESH_ROSTER = [
 	{ deviceId: "device-a", fingerprint: KEY_A, displayName: "Laptop", enabled: true },
 ];
+/** What a canonical apply is given besides its draft. */
+const CANONICAL_APPLY = {
+	policyRevision: "canonical-revision",
+	completedAt: NOW,
+	freshRoster: FRESH_ROSTER,
+};
 
 function rawDigest(domain: string, value: unknown): string {
 	return recipientPolicyDigest(domain, value).slice(domain.length + 1);
@@ -472,8 +478,7 @@ describe("legacy Team setup completion manifests", () => {
 			applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 				candidateRef: draft.candidateRef,
 				attemptId: draft.attemptId,
-				policyRevision: "canonical-revision",
-				completedAt: NOW,
+				...CANONICAL_APPLY,
 				completionKey: "canonical-completion-key",
 			}),
 		).toThrow("team_setup_failed");
@@ -936,8 +941,8 @@ describe("legacy Team setup completion manifests", () => {
 			applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 				candidateRef: CANDIDATE,
 				attemptId: draft.attemptId,
+				...CANONICAL_APPLY,
 				policyRevision: "revision",
-				completedAt: NOW,
 			}),
 		).toThrow("team_setup_failed");
 		expect(() =>

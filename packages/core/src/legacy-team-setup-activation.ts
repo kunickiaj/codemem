@@ -13,6 +13,7 @@ import {
 } from "./legacy-recipient-policy-projection.js";
 import { isStoredLegacyTeamAssignmentExpectationWellFormed } from "./legacy-team-assignment-expectation.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
+import { currentLegacyTeamRosterFingerprint } from "./legacy-team-roster-fingerprint.js";
 import {
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
@@ -1701,18 +1702,7 @@ function applyActivationRows(
 	// Team and (later) the completed draft so the next discovery, which
 	// fingerprints the same fresh roster against the new canonical assignments,
 	// matches instead of reopening a successful setup.
-	const activeIdentityForDevice = db.prepare(
-		"SELECT identity_id FROM identity_devices WHERE device_id = ? AND status = 'active' LIMIT 1",
-	);
-	const postRosterFingerprint = legacyTeamRosterFingerprint(
-		freshRoster.map((device) => ({
-			deviceId: device.deviceId,
-			fingerprint: device.fingerprint,
-			enabled: device.enabled,
-			identityId:
-				(activeIdentityForDevice.pluck().get(device.deviceId) as string | undefined) ?? null,
-		})),
-	);
+	const postRosterFingerprint = currentLegacyTeamRosterFingerprint(db, freshRoster);
 	db.prepare(
 		"UPDATE policy_teams SET source_fingerprint = ?, updated_at = ? WHERE team_id = ?",
 	).run(postRosterFingerprint, now, model.teamId);
@@ -2052,6 +2042,8 @@ function canonicalCompletionReplay(
  * to reuse the stored key; deriving a fresh preview from materialized policy
  * would otherwise rotate the key on every retry.
  */
+type FreshRoster = Awaited<ReturnType<FinishLegacyTeamSetupActivationInput["loadFreshRoster"]>>;
+
 export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 	db: Database,
 	input: PreviewLegacyTeamSetupActivationInput & {
@@ -2061,12 +2053,12 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		allowCompletedDraft?: boolean;
 		allowStaleDraft?: boolean;
 		/**
-		 * Devices the completed setup lists that are no longer on the coordinator's
-		 * roster and that the caller has verified may be missing. They are left out
-		 * of the roster fingerprint this activation saves, because discovery
-		 * fingerprints the coordinator's roster and would never match otherwise.
+		 * The coordinator's roster the caller verified the setup against. The
+		 * activation saves this roster's fingerprint, which is the one discovery
+		 * computes, and never one built from the devices the setup lists: the two
+		 * differ for a device a Team recovery left out.
 		 */
-		devicesOffRoster?: ReadonlySet<string>;
+		freshRoster: FreshRoster;
 	},
 ): LegacyTeamSetupActivationResultV1 {
 	if (!db.inTransaction) activationError("team_setup_failed");
@@ -2085,16 +2077,7 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		const model = loadModel(db, { ...input, allowInactiveCanonicalTeam: true });
 		const inspected = buildPreview(model);
 		requireLegacyTeamSetupAccessDeltaWithinLimit(inspected.accessDelta);
-		const offRoster = input.devicesOffRoster ?? new Set<string>();
-		const roster = model.devices
-			.filter((device) => device.decision !== "removed" && !offRoster.has(device.device_id))
-			.map((device) => ({
-				deviceId: device.device_id,
-				fingerprint: device.key_fingerprint,
-				displayName: device.display_name,
-				enabled: device.enabled !== 0,
-			}));
-		return applyActivation(db, model, inspected, roster, input.completedAt, {
+		return applyActivation(db, model, inspected, input.freshRoster, input.completedAt, {
 			revisionOverride: input.policyRevision,
 			completionKey: input.completionKey,
 			allowExistingCompletion: input.allowCompletedDraft,
