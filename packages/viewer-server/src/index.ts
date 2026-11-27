@@ -59,6 +59,7 @@ import {
 } from "./routes/sync.js";
 import { type ViewerTargetStore, viewerTargetQueryGuard } from "./routes/target-validation.js";
 import { teamCreateRoutes } from "./routes/team-create.js";
+import { teamMemberRemovalRoutes } from "./routes/team-member-removal.js";
 import {
 	type LegacyTeamCompletionDependencies,
 	type LegacyTeamConfiguredGroupSnapshotLoader,
@@ -418,6 +419,10 @@ export function createApp(opts?: AppOptions) {
 	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());
 	registerViewerDeviceRemoval(app, storeFactory, opts);
 	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
+	app.route(
+		"/",
+		teamMemberRemovalRoutes(storeFactory, { readCoordinatorConfig: opts?.readCoordinatorConfig }),
+	);
 	app.route("/", projectWithdrawalRoutes(storeFactory));
 	app.route(
 		"/",

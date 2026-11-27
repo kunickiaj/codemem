@@ -43,6 +43,32 @@ export const teamMemberRemovalLinkKey = (coordinatorId: string, groupId: string)
  * the Team. A Team with no completed setup has no proven group.
  */
 export function teamCoordinatorLinks(db: Database, teamId: string): Set<string> {
+	return new Set(
+		completedSetupGroups(db, teamId)
+			.map((row) => teamMemberRemovalLinkKey(row.coordinator_id, row.group_id))
+			.filter((key): key is string => key !== null),
+	);
+}
+
+/**
+ * The one coordinator group the Team was set up from, where its removals are
+ * recorded. Null when the Team has no completed setup, or setups from more than
+ * one group.
+ */
+export function teamRemovalCoordinatorGroup(
+	db: Database,
+	teamId: string,
+): { coordinatorId: string; groupId: string } | null {
+	const rows = completedSetupGroups(db, teamId);
+	const keys = new Set(
+		rows.map((row) => teamMemberRemovalLinkKey(row.coordinator_id, row.group_id)),
+	);
+	const first = rows[0];
+	if (!first || keys.size !== 1 || keys.has(null)) return null;
+	return { coordinatorId: first.coordinator_id, groupId: first.group_id };
+}
+
+function completedSetupGroups(db: Database, teamId: string) {
 	const rows = db
 		.prepare(
 			`SELECT DISTINCT draft.candidate_id, draft.coordinator_id, draft.group_id
@@ -55,12 +81,7 @@ export function teamCoordinatorLinks(db: Database, teamId: string): Set<string> 
 			 WHERE draft.state = 'completed' AND draft.completed_team_id = ?`,
 		)
 		.all(teamId) as Array<{ candidate_id: string; coordinator_id: string; group_id: string }>;
-	return new Set(
-		rows
-			.filter((row) => deterministicPolicyTeamId(row.candidate_id) === teamId)
-			.map((row) => teamMemberRemovalLinkKey(row.coordinator_id, row.group_id))
-			.filter((key): key is string => key !== null),
-	);
+	return rows.filter((row) => deterministicPolicyTeamId(row.candidate_id) === teamId);
 }
 
 /**
