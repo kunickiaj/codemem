@@ -264,7 +264,7 @@ function applyRecovery(
 	{ nowMs, authorized }: { nowMs: number; authorized: boolean },
 ): Applied {
 	if (!authorized) return { state: "refused", reason: "admin_authority_changed" };
-	if (isEvidenceStale(reading.startedAtMs, nowMs))
+	if (isTeamRecoveryEvidenceStale(reading.startedAtMs, nowMs))
 		return { state: "refused", reason: "evidence_stale" };
 	// A Team an abandoned recovery left active and held is disabled first, hold and all,
 	// and then recovered like any disabled Team. A refusal undoes that with the rest.
@@ -400,8 +400,12 @@ function decidingEvidence(evidence: TeamRecoveryEvidence, plan: TeamRecoveryPlan
 
 type Reread = "verified" | "evidence_changed" | "evidence_unavailable";
 
-/** A read that started too long before `nowMs`, or after it, says nothing that can be acted on now. */
-function isEvidenceStale(startedAtMs: number, nowMs: number): boolean {
+/**
+ * A read that started too long before `nowMs`, or after it, says nothing that
+ * can be acted on now. The preview applies the same rule, so it never offers a
+ * plan the commit would refuse for its age.
+ */
+export function isTeamRecoveryEvidenceStale(startedAtMs: number, nowMs: number): boolean {
 	const age = nowMs - startedAtMs;
 	return !Number.isFinite(age) || age < 0 || age > TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS;
 }
@@ -477,7 +481,7 @@ async function verifyAfterCommit(
 	const settle = () =>
 		settleRecovery(db, written, {
 			reread,
-			stale: isEvidenceStale(startedAtMs, nowMs()),
+			stale: isTeamRecoveryEvidenceStale(startedAtMs, nowMs()),
 			authorized: (context.stillAuthorized ?? (() => true))(),
 		});
 	return serializeRecovery(db, { teamId: plan.preview.teamId, groupId: plan.groupId }, () =>

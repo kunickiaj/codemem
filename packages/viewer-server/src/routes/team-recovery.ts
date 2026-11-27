@@ -3,6 +3,7 @@ import {
 	coordinatorTeamRecoveryEvidenceActions,
 	isCoordinatorAdminDevice,
 	isStrictRecipientPolicyId,
+	isTeamRecoveryEvidenceStale,
 	previewTeamRecovery,
 	readCoordinatorSyncConfig,
 	readTeamRecoveryEvidence,
@@ -99,8 +100,11 @@ type Config = ReturnType<typeof readCoordinatorSyncConfig>;
 
 /** Whether the configuration is for the setup's coordinator and one of its groups. */
 function configuredFor(config: Config, target: TeamRecoveryEvidenceTarget): boolean {
+	// The setup keeps the coordinator URL as it was spelled then, so both sides are normalized.
+	const configured = normalizedCoordinatorId(config.syncCoordinatorUrl);
 	return (
-		normalizedCoordinatorId(config.syncCoordinatorUrl) === target.coordinatorId &&
+		configured !== null &&
+		configured === normalizedCoordinatorId(target.coordinatorId) &&
 		config.syncCoordinatorGroups.includes(target.groupId)
 	);
 }
@@ -204,10 +208,13 @@ export function teamRecoveryRoutes(getStore: StoreFactory, options: TeamRecovery
 		if ("error" in request) return c.json({ error: request.error }, request.status);
 		if (!isEmptyObject(await parseViewerJsonBody(c, { allowEmpty: true })))
 			return c.json({ error: "invalid_input" }, 400);
-		const { evidence } = await read(request);
+		const { evidence, startedAtMs } = await read(request);
 		// The reads take a while. A device that is no admin by now gets no preview.
 		if (!request.stillAuthorized()) return c.json({ error: "coordinator_admin_required" }, 403);
 		const nowMs = (options.nowMs ?? Date.now)();
+		// The commit refuses evidence this old, so no plan is offered on it.
+		if (isTeamRecoveryEvidenceStale(startedAtMs, nowMs))
+			return c.json({ error: "evidence_stale" }, REFUSAL_STATUS.evidence_stale);
 		const preview = previewTeamRecovery(request.db, request.target, evidence, { nowMs });
 		if (preview.state === "ready") return c.json(preview);
 		const failure = commitFailure(preview);

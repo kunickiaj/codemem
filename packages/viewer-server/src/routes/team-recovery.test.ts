@@ -10,6 +10,7 @@ import {
 	loadPublicKey,
 	type MemoryStore,
 	readCoordinatorSyncConfig,
+	TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS,
 	type TeamRecoveryEvidenceActions,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -41,7 +42,10 @@ afterEach(() => db.close());
 const teamState = () =>
 	db.prepare("SELECT status || ':' || migration_state FROM policy_teams").pluck().get();
 
-/** The coordinator once the Laptop has been removed from the group. Each read can be replaced. */
+/**
+ * The coordinator once the Laptop has been removed from the group. Each read can be replaced.
+ * A reading lists the roster twice, once before the block check and once after it.
+ */
 function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 	const listed = [DESKTOP, TABLET].map((device) => ({
 		group_id: GROUP_ID,
@@ -54,6 +58,7 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 		created_at: NOW,
 	}));
 	const actions: TeamRecoveryEvidenceActions = {
+		coordinatorUrl: COORDINATOR_ID,
 		listDevices: async () => listed,
 		listDeviceRemovals: async () => [LAPTOP_REMOVAL],
 		deviceBlocksAndRemovals: async () => NOTHING_REPORTED,
@@ -205,6 +210,38 @@ describe("Team recovery route statuses", () => {
 		expect(teamState()).toBe("inactive:needs_setup");
 	});
 
+	it("recovers a Team whose setup kept another spelling of the configured coordinator URL", async () => {
+		// Arrange: the Team was set up while the coordinator URL was spelled in capitals.
+		db.close();
+		db = new Database(":memory:");
+		manifest = await quarantinedTeam(db, { coordinatorId: "HTTPS://COORDINATOR.EXAMPLE.INVALID" });
+
+		const [status, body] = await app().post("preview", {});
+
+		expect([status, body.state]).toEqual([200, "ready"]);
+	});
+
+	it("does not take two coordinator settings that are not URLs for the same coordinator", async () => {
+		db.close();
+		db = new Database(":memory:");
+		manifest = await quarantinedTeam(db, { coordinatorId: "not a url" });
+
+		const response = await app({ coordinatorUrl: "not a url either" }).post("preview", {});
+
+		expect(response).toEqual([409, { error: "team_coordinator_not_configured" }]);
+	});
+
+	it("answers 503, and offers no plan, when the evidence is too old by the time it is read", async () => {
+		// Arrange: this machine's clock passes the evidence limit while the reads are out.
+		let calls = 0;
+		const nowMs = () => {
+			calls += 1;
+			return Date.parse(NOW) + (calls === 1 ? 0 : TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS + 1);
+		};
+
+		expect(await app({ nowMs }).post("preview", {})).toEqual([503, { error: "evidence_stale" }]);
+	});
+
 	it("answers 409 for a Team that is not disabled", async () => {
 		db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
 
@@ -246,7 +283,8 @@ describe("Team recovery commit route after its first transaction", () => {
 		let rosterReads = 0;
 		const first = coordinator();
 		const second = coordinator(later);
-		const pick = () => (rosterReads > 1 ? second : first);
+		// A reading lists the roster twice, and its first listing comes before any of its other reads.
+		const pick = () => (rosterReads > 2 ? second : first);
 		return coordinator({
 			listDevices: (groupId) => {
 				rosterReads += 1;
@@ -313,7 +351,8 @@ describe("Team recovery commit route after its first transaction", () => {
 		const [status] = await app({ actions }).post("commit", { expectedDigest: digest });
 
 		expect(status).toBe(200);
-		expect(claimedDuring).toEqual([true, true]);
+		// Both readings, each listing the roster twice.
+		expect(claimedDuring).toEqual([true, true, true, true]);
 		const release = claimCandidateMutation(db, CANDIDATE);
 		expect(release).not.toBeNull();
 		release?.();
@@ -351,14 +390,15 @@ describe("Team recovery routes when the device stops being an admin mid-request"
 	];
 	const count = (table: string) => db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get();
 
-	/** A request whose configuration changes while its `during`th read of the roster is out. */
+	/** A request whose configuration changes while its `during`th reading is out. */
 	function changingDuringRead(during: number, change: Partial<Config>) {
 		let rosterReads = 0;
 		let changed: Partial<Config> = {};
 		const actions = coordinator({
 			listDevices: (groupId, deadlineMs) => {
 				rosterReads += 1;
-				if (rosterReads === during) changed = change;
+				// Each reading lists the roster twice: change it on that reading's first listing.
+				if (rosterReads === 2 * during - 1) changed = change;
 				return coordinator().listDevices(groupId, deadlineMs);
 			},
 		});
@@ -403,14 +443,14 @@ describe("Team recovery routes when the device stops being an admin mid-request"
 	);
 
 	it("answers 403 and leaves the Team as it is when the read after the commit also fails", async () => {
-		// Arrange: the admin secret is cleared while the second roster read is out, and that read fails.
+		// Arrange: the admin secret is cleared while the read after the commit is out, and that read fails.
 		const digest = (await app().post("preview", {}))[1].expectedDigest;
 		let rosterReads = 0;
 		let changed: Partial<Config> = {};
 		const actions = coordinator({
 			listDevices: (groupId, deadlineMs) => {
 				rosterReads += 1;
-				if (rosterReads === 1) return coordinator().listDevices(groupId, deadlineMs);
+				if (rosterReads <= 2) return coordinator().listDevices(groupId, deadlineMs);
 				changed = { syncCoordinatorAdminSecret: "" };
 				return Promise.reject(new Error("coordinator_unavailable"));
 			},
