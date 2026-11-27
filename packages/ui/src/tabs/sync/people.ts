@@ -16,7 +16,6 @@ import type { SyncActionFeedback } from "./components/sync-inline-feedback";
 import { renderLegacyClaimsSlice } from "./components/sync-legacy-claims";
 import { canManageLegacyCoordinatorSpaces, renderSyncPeersList } from "./components/sync-peers";
 import { hideSkeleton, isPeerScopeReviewPending, shouldClearStalePeersFeedback } from "./helpers";
-import { peerRemovalFeedback } from "./peer-removal-feedback";
 import { openSyncConfirmDialog } from "./sync-dialogs";
 import {
 	deriveVisiblePeopleActors,
@@ -189,27 +188,6 @@ export function renderSyncPeers() {
 			} catch (error) {
 				return {
 					message: friendlyError(error, "Failed to trigger sync."),
-					tone: "warning",
-				} satisfies SyncActionFeedback;
-			}
-		},
-		onRemove: async (peerId, label) => {
-			try {
-				const result = await api.deletePeer(peerId);
-				const feedback = peerRemovalFeedback(result, { label });
-				state.syncPeerFeedbackById.delete(peerId);
-				// Tag the section feedback with the removed peer id so a
-				// subsequent re-pair of the same device can detect and clear
-				// the stale "Removed peer X" banner on the next render.
-				state.syncPeersSectionFeedback = { ...feedback, relatedPeerDeviceId: peerId };
-				await _loadSyncData();
-				return feedback;
-			} catch (error) {
-				return {
-					message: friendlyError(
-						error,
-						"Failed to remove peer. The local peer entry is still here.",
-					),
 					tone: "warning",
 				} satisfies SyncActionFeedback;
 			}

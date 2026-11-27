@@ -2154,7 +2154,7 @@ describe("Device safe rendering", () => {
 		);
 		expect(text).toContain("Device evidence conflicts");
 		expect(document.querySelectorAll(".device-identity-setup-card select")).toHaveLength(1);
-		for (const label of ["Review this device", "Pair Tablet", "Open Advanced review"]) {
+		for (const label of ["Review this device", "Pair Tablet"]) {
 			const action = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
 				label === "Pair Tablet"
 					? button.getAttribute("aria-label") === label
@@ -2187,19 +2187,13 @@ describe("Device safe rendering", () => {
 			"Copy pairing command",
 		);
 		expect(onNavigate).not.toHaveBeenCalled();
-		act(() =>
-			(
-				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Open Advanced review",
-				) as HTMLButtonElement
-			).click(),
-		);
-		expect(onNavigate).toHaveBeenNthCalledWith(1, "advanced_sync");
+		expect(deviceCard("Server").textContent).toContain("Disconnect or remove it below");
+		expect(text).not.toContain("Advanced");
 		expect(text).not.toContain("Confirm Tablet belongs");
 	});
 });
 describe("Device setup review", () => {
-	it("routes missing-Identity recovery to Identity administration", () => {
+	it("routes missing-Identity recovery to Sharing", () => {
 		const onNavigate = vi.fn();
 		mount(intent({ identities: [] }), reconciliation(), {
 			inventory: inventory([inventoryItem("setup-device", "Home Laptop", "setup_required")]),
@@ -2209,12 +2203,12 @@ describe("Device setup review", () => {
 		act(() =>
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Open Identity administration",
+					(button) => button.textContent === "Open Sharing",
 				) as HTMLButtonElement
 			).click(),
 		);
 
-		expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
+		expect(onNavigate).toHaveBeenCalledWith("sharing");
 	});
 
 	it("reviews exactly the selected devices without per-device confirmation", async () => {
@@ -3319,7 +3313,7 @@ describe("Device setup errors", () => {
 		[503, "binding_write_stale", "changed after review"],
 		[409, "binding_write_conflict", "evidence conflicts"],
 		[404, "target_identity_unavailable", "no longer available"],
-		[503, "deciding_identity_unavailable", "Open Identity administration"],
+		[503, "deciding_identity_unavailable", "Restore or replace it in Sharing"],
 		[404, "unavailable_but_unknown", "no longer available"],
 		[500, "binding_commit_failed", "could not be completed"],
 	])("maps safe binding failure %s/%s to actionable recovery", (status, code, expected) => {
@@ -3412,6 +3406,99 @@ describe("Device removal menu", () => {
 
 		expect(document.querySelector('[aria-label="Remove Work Laptop"]')).toBeNull();
 		expect(document.querySelector('[aria-label="Retire Work Laptop"]')).toBeNull();
+	});
+});
+
+describe("Device disconnect menu", () => {
+	const deviceId = "device-address-fingerprint-secret";
+
+	function pairedLaptop(sources: DeviceIdentityInventoryV1["items"][number]["sources"]) {
+		return inventory([
+			inventoryItem(deviceId, "Work Laptop", "configured", {
+				sources,
+				validatedFingerprint: "fingerprint",
+			}),
+		]);
+	}
+
+	function menuItem(label: string) {
+		const row = document.getElementById(`device-identity-card-${deviceId}`);
+		return [
+			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		].find((button) => button.textContent === label);
+	}
+
+	it("offers Disconnect on a paired device even when the host has not mounted Remove", () => {
+		mount(intent(), reconciliation(), {
+			inventory: pairedLaptop(["identity_binding", "sync_peer"]),
+		});
+
+		expect(menuItem("Disconnect on this device…")?.disabled).toBe(false);
+		expect(menuItem("Remove device…")).toBeUndefined();
+	});
+
+	it("offers no Disconnect for a device this device is not paired with", () => {
+		mount(intent(), reconciliation(), {
+			inventory: pairedLaptop(["identity_binding", "coordinator_enrollment"]),
+			removalConfirmation: {},
+		});
+
+		expect(menuItem("Disconnect on this device…")).toBeUndefined();
+		expect(menuItem("Remove device…")).toBeDefined();
+	});
+
+	it("disconnects after confirmation, refreshes Devices and reports the result", async () => {
+		const disconnect = vi.fn(async () => ({ binding: "kept" }));
+		const confirm = vi.fn(async () => true);
+		const onCommitted = vi.fn(async () => true);
+		mount(intent(), reconciliation(), {
+			inventory: pairedLaptop(["identity_binding", "sync_peer"]),
+			disconnect: { confirm, disconnect },
+			onCommitted,
+		});
+
+		const action = menuItem("Disconnect on this device…");
+		await act(async () => action?.click());
+		await act(async () => {});
+
+		await vi.waitFor(() =>
+			expect(document.getElementById("devices-commit-status")?.textContent).toBe(
+				"Disconnected this device from Work Laptop. The device stays in Projects. An administrator's device can remove it.",
+			),
+		);
+		expect(disconnect).toHaveBeenCalledExactlyOnceWith(deviceId);
+		expect(onCommitted).toHaveBeenCalledOnce();
+		expect(document.activeElement).toBe(document.getElementById("devices-heading"));
+	});
+
+	it("changes nothing when the person keeps the connection", async () => {
+		const disconnect = vi.fn();
+		const onCommitted = vi.fn();
+		mount(intent(), reconciliation(), {
+			inventory: pairedLaptop(["identity_binding", "sync_peer"]),
+			disconnect: { confirm: vi.fn(async () => false), disconnect },
+			onCommitted,
+		});
+
+		const action = menuItem("Disconnect on this device…");
+		await act(async () => action?.click());
+
+		expect(disconnect).not.toHaveBeenCalled();
+		expect(onCommitted).not.toHaveBeenCalled();
+	});
+
+	it("offers Disconnect on a conflicted card, with guidance that does not mention Advanced", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("conflict-device", "Server", "conflicted", { sources: ["sync_peer"] }),
+			]),
+			removalConfirmation: {},
+		});
+
+		const card = document.getElementById("device-identity-card-conflict-device");
+		expect(card?.textContent).toContain("Disconnect or remove it below, then pair it again.");
+		expect(card?.querySelector('[aria-label="Disconnect from Server"]')).not.toBeNull();
+		expect(card?.textContent).not.toContain("Advanced");
 	});
 });
 
