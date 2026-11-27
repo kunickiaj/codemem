@@ -314,6 +314,7 @@ CREATE TABLE IF NOT EXISTS groups (
   display_name TEXT,
   archived_at TEXT,
   readiness_generation TEXT,
+  readiness_coordinator_id TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -628,6 +629,13 @@ CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness_projects (
 
 CREATE INDEX IF NOT EXISTS idx_coordinator_boundary_readiness_projects_boundary
   ON coordinator_boundary_readiness_projects(group_id, boundary_scope_id);
+
+CREATE TABLE IF NOT EXISTS coordinator_readiness_bindings (
+  group_id TEXT NOT NULL, device_id TEXT NOT NULL, record_id TEXT NOT NULL,
+  coordinator_id TEXT NOT NULL, generation TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL,
+  sequence INTEGER NOT NULL, refresh_revision INTEGER NOT NULL, filter_evidence TEXT NOT NULL,
+  PRIMARY KEY (group_id, device_id)
+);
 
 CREATE TABLE IF NOT EXISTS coordinator_reciprocal_approvals (
   request_id TEXT PRIMARY KEY,

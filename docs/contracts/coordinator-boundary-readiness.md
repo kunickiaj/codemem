@@ -9,8 +9,8 @@ grants no access.
 ## Generation-bound device evidence (version 2)
 
 The device client can construct and sign a version 2 request for one configured
-coordinator group. No runtime calls this client yet. The coordinator currently
-accepts only version 1. The local `sync migration status` command does not call
+coordinator group. No runtime calls this client yet. The coordinator accepts
+version 2 only for a current preparation. The local `sync migration status` command does not call
 either sender.
 
 The future caller supplies the generation issued by the coordinator (a fresh
@@ -165,7 +165,9 @@ downgraded device sends. The record is removed before the presence is stored. If
 the removal fails, the request fails and no presence is stored, so the device
 tries again and an older build is never left with a record that says it is ready.
 
-After a discard the coordinator accepts a first sequence again.
+After a discard the coordinator accepts a first legacy sequence again. For
+version 2 it retains the last accepted sequence and refresh revision for the
+generation, so a delayed report cannot restore discarded evidence.
 
 ## What a reader of the records must do
 
@@ -214,6 +216,20 @@ the previous record is discarded. It must not leave an older complete record
 available while inventory is unknown.
 
 ## Storage
+
+Migration `0057_bind_boundary_readiness.sql` adds the coordinator audience to
+the group and a binding for the last accepted v2 record. The signed request
+names its HTTPS coordinator, group, device, key, generation and refresh
+revision. The write checks the active generation and the enabled, unrevoked
+enrollment inside the same transaction as the inventory update. A stale or
+mismatched request cannot replace the inventory. No production operation
+starts a preparation.
+
+`getVerifiedBoundaryReadiness` checks the same audience, generation and key
+while reading the binding, header and Projects in one transaction. Legacy
+replacement and discard break the record ID match. A future cutover must
+repeat these checks in its own deciding transaction. A successful response to
+the device does not authorize a cutover or grant access.
 
 Tables `coordinator_boundary_readiness` (one row per group and device) and
 `coordinator_boundary_readiness_projects` (one row per entry), added by migration

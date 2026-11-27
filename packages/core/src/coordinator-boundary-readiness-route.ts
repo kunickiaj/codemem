@@ -4,6 +4,8 @@ import {
 	type BoundaryReadinessProject,
 	type PutBoundaryReadinessResult,
 } from "./coordinator-boundary-readiness.js";
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { type ReadinessBinding, validReadinessBinding } from "./coordinator-readiness-binding.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 import { supportsSyncFeature } from "./sync-capability.js";
 
@@ -61,6 +63,7 @@ export async function discardReadinessWithoutFeature(
 }
 
 interface ReadinessBody {
+	binding?: ReadinessBinding;
 	sequence: number;
 	omittedProjects: number;
 	projects: BoundaryReadinessProject[];
@@ -76,7 +79,7 @@ function parseReadinessBody(
 	caller: { groupId: string; deviceId: string },
 ): ReadinessBody | { error: string } {
 	if (!data) return { error: "invalid_json" };
-	if (data.version !== 1) return { error: "readiness_version_unsupported" };
+	if (data.version !== 1 && data.version !== 2) return { error: "readiness_version_unsupported" };
 	if (data.device_id !== undefined && data.device_id !== caller.deviceId) {
 		return { error: "device_id_mismatch" };
 	}
@@ -95,18 +98,24 @@ function parseReadinessBody(
 	};
 }
 
-function storedResponse(c: Context, result: PutBoundaryReadinessResult): Response {
+function storedResponse(
+	c: Context,
+	result: PutBoundaryReadinessResult,
+	echo: Record<string, unknown>,
+): Response {
 	if (result.kind === "stored") {
 		return c.json({
-			version: 1,
+			...echo,
 			status: "stored",
 			sequence: result.sequence,
 			rejected: result.rejected,
 		});
 	}
 	if (result.kind === "stale") {
-		return c.json({ version: 1, status: "stale", sequence: result.sequence });
+		return c.json({ ...echo, status: "stale", sequence: result.sequence });
 	}
+	if (result.kind === "binding_mismatch")
+		return c.json({ error: "readiness_binding_mismatch" }, 409);
 	if (result.kind === "not_enrolled") return c.json({ error: "device_not_enrolled" }, 403);
 	return c.json({ error: "boundary_readiness_unavailable" }, 503);
 }
@@ -118,7 +127,16 @@ async function putResponse(
 	body: ReadinessBody,
 ): Promise<Response> {
 	try {
-		return storedResponse(c, await store.putBoundaryReadiness({ ...caller, ...body }));
+		const echo = body.binding
+			? {
+					version: 2,
+					group_id: caller.groupId,
+					device_id: caller.deviceId,
+					key_id: body.binding.keyId,
+					group_generation: body.binding.generation,
+				}
+			: { version: 1 };
+		return storedResponse(c, await store.putBoundaryReadiness({ ...caller, ...body }), echo);
 	} catch (error) {
 		const code = error instanceof Error ? error.message : "";
 		if (code === "invalid_input") return c.json({ error: "readiness_record_invalid" }, 400);
@@ -127,6 +145,51 @@ async function putResponse(
 		}
 		return c.json({ error: "boundary_readiness_unavailable" }, 503);
 	}
+}
+
+async function verifiedBody(
+	c: Context,
+	caller: CoordinatorEnrollment,
+	groupId: string,
+	data: Record<string, unknown> | null,
+) {
+	const device = { groupId, deviceId: caller.device_id };
+	const inventory = parseReadinessBody(data, device);
+	if ("error" in inventory || data?.version !== 2) return inventory;
+	if (
+		data.group_id !== groupId ||
+		caller.group_id !== groupId ||
+		data.device_id !== caller.device_id
+	)
+		return { error: "readiness_binding_mismatch" };
+	const target = new URL(c.req.url);
+	if (
+		target.protocol !== "https:" ||
+		typeof data.coordinator_id !== "string" ||
+		`${data.coordinator_id}${BOUNDARY_READINESS_PATH}` !== `${target.origin}${target.pathname}`
+	)
+		return { error: "readiness_coordinator_mismatch" };
+	const keyId = await ed25519KeyId(caller.public_key);
+	if (!keyId || data.key_id !== keyId) return { error: "readiness_key_mismatch" };
+	if (
+		typeof data.group_generation !== "string" ||
+		typeof data.scope_refresh_revision !== "number" ||
+		typeof data.omitted_projects !== "number" ||
+		(data.filter_evidence !== "none" &&
+			data.filter_evidence !== "present" &&
+			data.filter_evidence !== "unknown")
+	)
+		return { error: "readiness_record_invalid" };
+	const binding = {
+		coordinatorId: data.coordinator_id,
+		generation: data.group_generation,
+		keyId,
+		publicKey: caller.public_key,
+		revision: data.scope_refresh_revision,
+		filterEvidence: data.filter_evidence,
+	} satisfies ReadinessBinding;
+	if (!validReadinessBinding(binding)) return { error: "readiness_record_invalid" };
+	return { ...inventory, binding };
 }
 
 /** A denial or rate-limit response, or the signed caller's enrollment. */
@@ -178,7 +241,7 @@ export function registerCoordinatorBoundaryReadinessRoute(
 			const caller = await authorizeCaller(c, deps, store, { groupId, raw });
 			if (caller instanceof Response) return caller;
 			const device = { groupId, deviceId: String(caller.device_id) };
-			const body = parseReadinessBody(deps.parseJsonObject(raw), device);
+			const body = await verifiedBody(c, caller, groupId, deps.parseJsonObject(raw));
 			if ("error" in body) return c.json({ error: body.error }, 400);
 			return await putResponse(c, store, device, body);
 		} finally {

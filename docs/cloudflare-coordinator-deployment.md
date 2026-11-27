@@ -952,6 +952,11 @@ batch as the write. Apply the migration before starting any preparation.
 SQLite adds the column on startup. It starts NULL for every group. This
 migration does not start a preparation or change access.
 
+Apply `0057_bind_boundary_readiness.sql` before deploying the Worker that verifies
+v2 readiness reports. It adds a nullable coordinator ID and an empty table for
+verified records. Existing v1 records do not count as verified evidence. SQLite
+installs the same storage on startup.
+
 Before resuming writers on D1, fill the key IDs of enrollments that predate `0048`.
 The migration leaves them null because SQL cannot compute the Ed25519 key ID.
 Device removal remains unavailable until every enrollment has a key ID. SQLite fills

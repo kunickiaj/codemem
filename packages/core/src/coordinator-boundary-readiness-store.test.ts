@@ -42,7 +42,13 @@ describe.each(["SQLite", "D1"] as const)("%s readiness record contract", (backen
 	const test = boundaryReadinessHarness(async (use) => {
 		const f = setupStore(backend, { authClock: () => BOUNDARY_READINESS_CLOCK_MS });
 		try {
-			await use({ store: f.store, prefix: `readiness-${++sequence}` });
+			await use({
+				store: f.store,
+				prefix: `readiness-${++sequence}`,
+				exec: async (sql, ...params) => {
+					f.db.prepare(sql).run(...params);
+				},
+			});
 		} finally {
 			await f.store.close();
 			if (f.db.open) f.db.close();

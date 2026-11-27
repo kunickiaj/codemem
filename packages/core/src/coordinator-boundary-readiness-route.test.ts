@@ -176,7 +176,7 @@ describe("POST /v1/boundary-readiness refuses a request", () => {
 	it.each([
 		["no group", record, "", "group_id_required"],
 		["a body that is not JSON", "{", "?group_id=g1", "invalid_json"],
-		["another version", { ...record, version: 2 }, "?group_id=g1", "readiness_version_unsupported"],
+		["another version", { ...record, version: 3 }, "?group_id=g1", "readiness_version_unsupported"],
 		["no sequence", { version: 1, projects: [] }, "?group_id=g1", "readiness_record_invalid"],
 		["no Project list", { version: 1, sequence: 1 }, "?group_id=g1", "readiness_record_invalid"],
 		[

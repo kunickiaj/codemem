@@ -250,6 +250,7 @@ import {
 import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-removal-query.js";
 import { selectDeviceListingCapabilities } from "./coordinator-presence-capabilities.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
+import type { ReadinessPreparation } from "./coordinator-readiness-binding.js";
 import {
 	CLEAR_CHANGED_GROUP,
 	hasReadinessGeneration,
@@ -2809,6 +2810,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async putBoundaryReadiness(input: PutBoundaryReadinessInput) {
 		return this.boundaryReadiness.putBoundaryReadiness(input);
+	}
+
+	getVerifiedBoundaryReadiness(input: ReadinessPreparation & { deviceId: string }) {
+		return this.boundaryReadiness.getVerifiedBoundaryReadiness(input);
 	}
 
 	async getBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
