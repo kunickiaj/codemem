@@ -19,6 +19,7 @@ import type { MemoryStore } from "./store.js";
 import { buildBaseUrl } from "./sync-http-client.js";
 import type { TeamRecoveryEvidenceReading } from "./team-recovery-commit.js";
 import type { TeamRecoveryDeviceRemoval } from "./team-recovery-devices.js";
+import { TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS } from "./team-recovery-holds.js";
 import type { TeamRecoveryEvidence } from "./team-recovery-preview.js";
 
 /*
@@ -40,21 +41,32 @@ export interface TeamRecoveryEvidenceTarget {
 	candidateRef: string;
 }
 
-/** The coordinator reads, replaced in tests. Each throws when its read fails. */
+/**
+ * The coordinator reads, replaced in tests. Each throws when its read fails,
+ * and each gets the reading's deadline on this machine's clock: a read made of
+ * several pages or batches must have all of them back by then, or fail.
+ */
 export interface TeamRecoveryEvidenceActions {
 	/** Every device enrolled in the group, disabled ones included. */
-	listDevices(groupId: string): Promise<readonly CoordinatorEnrollment[]>;
+	listDevices(groupId: string, deadlineMs: number): Promise<readonly CoordinatorEnrollment[]>;
 	/** The coordinator's device removal records, blocked devices included. */
-	listDeviceRemovals(): Promise<readonly TeamRecoveryDeviceRemoval[]>;
-	/** The IDs among `peers` that the coordinator blocks, asked as a member of the group. */
+	listDeviceRemovals(deadlineMs: number): Promise<readonly TeamRecoveryDeviceRemoval[]>;
+	/**
+	 * The IDs among `peers` that the coordinator blocks, asked as a member of the
+	 * group. It fails unless the coordinator answered about every one of them.
+	 */
 	blockedDeviceIds(
 		groupId: string,
 		peers: readonly Required<PeerRemovalLookupEntry>[],
+		deadlineMs: number,
 	): Promise<readonly string[]>;
 	/** The coordinator's copy of the completed setup, or null when it holds none. */
-	getCompletion(groupId: string, candidateRef: string): Promise<unknown>;
-	listMemberRemovals(groupId: string): Promise<readonly CoordinatorTeamMemberRemoval[]>;
-	readGroupBinding(teamId: string): Promise<CoordinatorTeamGroupBinding>;
+	getCompletion(groupId: string, candidateRef: string, deadlineMs: number): Promise<unknown>;
+	listMemberRemovals(
+		groupId: string,
+		deadlineMs: number,
+	): Promise<readonly CoordinatorTeamMemberRemoval[]>;
+	readGroupBinding(teamId: string, deadlineMs: number): Promise<CoordinatorTeamGroupBinding>;
 }
 
 const UNAVAILABLE = { status: "unavailable" } as const;
@@ -78,11 +90,12 @@ async function part<T extends object>(
 async function readRosterAndBlocks(
 	target: TeamRecoveryEvidenceTarget,
 	actions: TeamRecoveryEvidenceActions,
+	deadlineMs: number,
 ): Promise<Pick<TeamRecoveryEvidence, "roster" | "deviceBlocks">> {
 	const source = { coordinatorId: target.coordinatorId, groupId: target.groupId };
 	let enrolled: readonly CoordinatorEnrollment[];
 	try {
-		enrolled = await actions.listDevices(target.groupId);
+		enrolled = await actions.listDevices(target.groupId, deadlineMs);
 	} catch {
 		return { roster: UNAVAILABLE, deviceBlocks: UNAVAILABLE };
 	}
@@ -97,7 +110,7 @@ async function readRosterAndBlocks(
 		public_key: device.public_key,
 	}));
 	const deviceBlocks = await part(async () => {
-		const blocked = new Set(await actions.blockedDeviceIds(target.groupId, peers));
+		const blocked = new Set(await actions.blockedDeviceIds(target.groupId, peers, deadlineMs));
 		// The device and key of each answer are the ones sent, never ones a reply names.
 		const checks = peers.map((peer) => ({
 			deviceId: peer.device_id,
@@ -112,7 +125,8 @@ async function readRosterAndBlocks(
 /**
  * Reads every part of the evidence now. `startedAtMs` is this machine's clock
  * before the first read is sent, which is what a recovery measures the age of
- * its evidence from.
+ * its evidence from. Evidence older than the limit is refused, so every read,
+ * with all its pages and batches, has until then and no longer.
  */
 export async function readTeamRecoveryEvidence(
 	target: TeamRecoveryEvidenceTarget,
@@ -120,23 +134,27 @@ export async function readTeamRecoveryEvidence(
 	nowMs: () => number = Date.now,
 ): Promise<TeamRecoveryEvidenceReading> {
 	const startedAtMs = nowMs();
+	const deadlineMs = startedAtMs + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS;
 	const here = { coordinatorId: target.coordinatorId };
 	const group = { ...here, groupId: target.groupId };
 	const [rosterAndBlocks, deviceRemovals, completion, memberRemovals, groupBinding] =
 		await Promise.all([
-			readRosterAndBlocks(target, actions),
-			part(async () => ({ source: here, removals: await actions.listDeviceRemovals() })),
+			readRosterAndBlocks(target, actions, deadlineMs),
 			part(async () => ({
-				source: group,
-				manifest: await actions.getCompletion(target.groupId, target.candidateRef),
+				source: here,
+				removals: await actions.listDeviceRemovals(deadlineMs),
 			})),
 			part(async () => ({
 				source: group,
-				removals: await actions.listMemberRemovals(target.groupId),
+				manifest: await actions.getCompletion(target.groupId, target.candidateRef, deadlineMs),
+			})),
+			part(async () => ({
+				source: group,
+				removals: await actions.listMemberRemovals(target.groupId, deadlineMs),
 			})),
 			part(async () => ({
 				source: here,
-				binding: await actions.readGroupBinding(target.teamId),
+				binding: await actions.readGroupBinding(target.teamId, deadlineMs),
 			})),
 		]);
 	return {
@@ -180,24 +198,36 @@ export function coordinatorTeamRecoveryEvidenceActions(
 ): TeamRecoveryEvidenceActions {
 	const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
 	const adminSecret = config.syncCoordinatorAdminSecret;
-	const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
-	const admin = { remoteUrl, adminSecret, timeoutS };
+	const configuredS = Math.max(1, config.syncCoordinatorTimeoutS);
+	// One request: the admin target, with the timeout cut to what the deadline leaves.
+	const admin = (deadlineMs: number) => {
+		const leftS = (deadlineMs - Date.now()) / 1000;
+		if (leftS <= 0) throw new Error("team_recovery_evidence_deadline_passed");
+		return { remoteUrl, adminSecret, timeoutS: Math.min(configuredS, leftS) };
+	};
 	return {
-		listDevices: (groupId) =>
-			coordinatorListDevicesAction({ groupId, includeDisabled: true, ...admin }),
-		listDeviceRemovals: () =>
+		listDevices: (groupId, deadlineMs) =>
+			coordinatorListDevicesAction({ groupId, includeDisabled: true, ...admin(deadlineMs) }),
+		listDeviceRemovals: (deadlineMs) =>
 			coordinatorListRemovedDevicesAction({
 				includeBlocked: true,
-				remote: { url: remoteUrl, adminSecret, timeoutS },
+				remote: { url: remoteUrl, adminSecret, timeoutS: configuredS, deadlineMs },
 			}),
-		blockedDeviceIds: (groupId, peers) =>
-			fetchBlockedDeviceIdsForGroup(store, config, { ...device, groupId }, peers),
-		getCompletion: (groupId, candidateRef) =>
-			coordinatorGetLegacyTeamCompletionAction({ groupId, candidateRef, ...admin }),
-		listMemberRemovals: (groupId) => coordinatorListTeamMemberRemovalsAction({ groupId, ...admin }),
-		readGroupBinding: async (teamId) => {
+		blockedDeviceIds: (groupId, peers, deadlineMs) =>
+			fetchBlockedDeviceIdsForGroup(store, config, { ...device, groupId, deadlineMs }, peers),
+		getCompletion: (groupId, candidateRef, deadlineMs) =>
+			coordinatorGetLegacyTeamCompletionAction({ groupId, candidateRef, ...admin(deadlineMs) }),
+		listMemberRemovals: (groupId, deadlineMs) =>
+			coordinatorListTeamMemberRemovalsAction({
+				groupId,
+				remoteUrl,
+				adminSecret,
+				timeoutS: configuredS,
+				deadlineMs,
+			}),
+		readGroupBinding: async (teamId, deadlineMs) => {
 			const [binding] = await coordinatorReadTeamGroupBindingsAction({
-				...admin,
+				...admin(deadlineMs),
 				teamIds: [teamId],
 			});
 			if (!binding) throw new Error("team_group_binding_response_invalid");

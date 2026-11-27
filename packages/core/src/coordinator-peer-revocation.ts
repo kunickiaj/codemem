@@ -1,4 +1,5 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { isCompletePeerRevocationSnapshot } from "./coordinator-peer-revocation-route.js";
 import type { CoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
@@ -69,6 +70,10 @@ type SignedRequest = {
 	removedFromGroups?: string[];
 	/** Fail on a redirect, so the answer comes from the coordinator and group that were asked. */
 	redirect?: "error";
+	/** Accept only a reply that keeps the coordinator's whole contract and answers every device. */
+	completeReply?: true;
+	/** When the whole check must be over, on this machine's clock. */
+	deadlineMs?: number;
 };
 
 /** The stored key when the coordinator would accept it. Otherwise the device is asked about by ID only. */
@@ -146,6 +151,46 @@ function keyEnrolledIds(
 	return evidence.enrolled;
 }
 
+/**
+ * The reply for a caller that must not act on a partial answer. A reply that
+ * breaks the coordinator's contract anywhere is refused as a whole: an entry
+ * that is malformed, repeated or was never asked about is not dropped. So is a
+ * reply that says nothing about a device that was asked about. Only then does a
+ * device that is not listed as blocked count as not blocked.
+ */
+function parseCompleteReply(
+	response: Record<string, unknown> | null,
+	entries: PeerRemovalLookupEntry[],
+): PeerRemovalReply {
+	const sent = entries.map((entry) => entry.device_id);
+	if (response?.version !== 1 || !isCompletePeerRevocationSnapshot(response, new Set(sent)))
+		throw new Error("peer_revocation_response_invalid");
+	const { revoked, removed, enrolled } = response as {
+		revoked: string[];
+		removed: string[];
+		enrolled: string[];
+	};
+	const answered = new Set([...revoked, ...removed, ...enrolled]);
+	if (sent.some((deviceId) => !answered.has(deviceId)))
+		throw new Error("peer_revocation_response_incomplete");
+	return {
+		revoked,
+		removed,
+		enrolled,
+		removalSeq: response.removal_seq as number,
+		keyEnrolled: [],
+	};
+}
+
+/** The timeout for one request: the configured one, cut to what the deadline leaves. */
+function batchTimeoutS(config: CoordinatorSyncConfig, deadlineMs?: number): number {
+	const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+	if (deadlineMs === undefined) return timeoutS;
+	const leftS = (deadlineMs - Date.now()) / 1000;
+	if (leftS <= 0) throw new Error("peer_revocation_deadline_passed");
+	return Math.min(timeoutS, leftS);
+}
+
 /** A reply without all three arrays and the integer is invalid, and the caller keeps every pairing. */
 function parseReply(
 	response: Record<string, unknown> | null,
@@ -195,13 +240,15 @@ async function checkBatch(
 		headers,
 		body,
 		bodyBytes,
-		timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		timeoutS: batchTimeoutS(config, request.deadlineMs),
 		redirect: request.redirect,
 	});
 	if (status === 403 && response?.error === "device_removed")
 		request.removedFromGroups?.push(request.groupId);
 	if (status !== 200) throw new CheckStatusError(status);
-	return parseReply(response, entries);
+	return request.completeReply
+		? parseCompleteReply(response, entries)
+		: parseReply(response, entries);
 }
 
 type FirstAnswer =
@@ -351,13 +398,14 @@ export async function queryPeerRemoval(
  * Asks the coordinator, as a member of exactly this group, which of these
  * devices it blocks. Returns the blocked IDs among those sent. Unlike the
  * lookups above it does not try another group and does not follow a redirect,
- * and it throws unless every batch came back as a valid answer: the caller
- * records the coordinator and group it asked, and that must be who answered.
+ * and it throws unless every batch came back, before the deadline, as a
+ * complete answer about every device sent: the caller records the coordinator
+ * and group it asked, and treats a device that is not listed as not blocked.
  */
 export async function fetchBlockedDeviceIdsForGroup(
 	store: StoreLike,
 	config: CoordinatorSyncConfig,
-	request: { localDeviceId: string; keysDir?: string; groupId: string },
+	request: { localDeviceId: string; keysDir?: string; groupId: string; deadlineMs?: number },
 	peers: readonly PeerRemovalLookupEntry[],
 ): Promise<string[]> {
 	const entries = peers.map((peer) => {
@@ -369,7 +417,8 @@ export async function fetchBlockedDeviceIdsForGroup(
 	});
 	const blocked: string[] = [];
 	for (const batch of batchesOf(entries)) {
-		const reply = await checkBatch(store, config, { ...request, redirect: "error" }, batch);
+		const strict = { ...request, redirect: "error", completeReply: true } as const;
+		const reply = await checkBatch(store, config, strict, batch);
 		blocked.push(...reply.revoked);
 	}
 	return blocked;

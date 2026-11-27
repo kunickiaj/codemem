@@ -18,6 +18,7 @@ import {
 	type TeamRecoveryEvidenceActions,
 	teamRecoveryTarget,
 } from "./team-recovery-evidence-reader.js";
+import { TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS } from "./team-recovery-holds.js";
 import {
 	CANDIDATE,
 	quarantinedTeam,
@@ -155,6 +156,27 @@ describe("Team recovery evidence reader", () => {
 		expect(asked).toEqual([]);
 	});
 
+	it("gives every read the same deadline: the evidence limit after the reading started", async () => {
+		const deadlines: number[] = [];
+		const seen = <T>(deadlineMs: number, answer: T): Promise<T> => {
+			deadlines.push(deadlineMs);
+			return Promise.resolve(answer);
+		};
+		const actions: TeamRecoveryEvidenceActions = {
+			listDevices: (_groupId, deadlineMs) => seen(deadlineMs, [enrolled("device-a")]),
+			listDeviceRemovals: (deadlineMs) => seen(deadlineMs, []),
+			blockedDeviceIds: (_groupId, _peers, deadlineMs) => seen(deadlineMs, []),
+			getCompletion: (_groupId, _candidateRef, deadlineMs) => seen(deadlineMs, null),
+			listMemberRemovals: (_groupId, deadlineMs) => seen(deadlineMs, []),
+			readGroupBinding: (teamId, deadlineMs) =>
+				seen(deadlineMs, { team_id: teamId, state: "unbound" as const }),
+		};
+
+		await readTeamRecoveryEvidence(TARGET, actions, () => 1_000);
+
+		expect(deadlines).toEqual(new Array(6).fill(1_000 + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS));
+	});
+
 	it("takes the start of the reading from this machine's clock before any read is sent", async () => {
 		let clock = 1_000;
 		const { actions } = coordinator({
@@ -172,6 +194,21 @@ describe("Team recovery evidence reader", () => {
 
 const GROUP_ID = "group-a";
 const peer = { device_id: "device-peer", public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPeer" };
+
+/** Starts local HTTP servers for a test and closes them after it. Returns the URL of each. */
+function useHttpServers() {
+	let servers: Server[] = [];
+	afterEach(async () => {
+		await Promise.all(servers.map((server) => new Promise((done) => server.close(done))));
+		servers = [];
+	});
+	return async (handler: Parameters<typeof createServer>[1]): Promise<string> => {
+		const server = createServer(handler);
+		servers.push(server);
+		await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+		return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	};
+}
 
 /** This device with its keys in a temporary directory, set up and removed around each test. */
 function useLocalDevice() {
@@ -193,15 +230,7 @@ function useLocalDevice() {
 
 describe("the block check a Team recovery sends", () => {
 	const local = useLocalDevice();
-	let servers: Server[];
-
-	beforeEach(() => {
-		servers = [];
-	});
-
-	afterEach(async () => {
-		await Promise.all(servers.map((server) => new Promise((done) => server.close(done))));
-	});
+	const serve = useHttpServers();
 
 	const check = (url: string, groups: string[], peers = [peer]) =>
 		fetchBlockedDeviceIdsForGroup(
@@ -211,22 +240,23 @@ describe("the block check a Team recovery sends", () => {
 			peers,
 		);
 
-	/** A local HTTP server, and the URL it listens on. */
-	async function serve(handler: Parameters<typeof createServer>[1]): Promise<string> {
-		const server = createServer(handler);
-		servers.push(server);
-		await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-		return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-	}
+	/** A coordinator that answers every block check with this body. */
+	const answering = (body: unknown) =>
+		serve((_request, response) => {
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify(body));
+		});
+	const NOTHING_BLOCKED = {
+		version: 1,
+		revoked: [],
+		removed: [],
+		enrolled: [peer.device_id],
+		removal_seq: 0,
+	};
 
 	it("refuses an answer that arrives through a redirect", async () => {
 		// Arrange: another server would answer that nothing is blocked.
-		const elsewhere = await serve((_request, response) => {
-			response.writeHead(200, { "content-type": "application/json" });
-			response.end(
-				JSON.stringify({ version: 1, revoked: [], removed: [], enrolled: [], removal_seq: 0 }),
-			);
-		});
+		const elsewhere = await answering(NOTHING_BLOCKED);
 		const coordinatorUrl = await serve((request, response) => {
 			response.writeHead(307, { location: `${elsewhere}${request.url}` });
 			response.end();
@@ -235,6 +265,45 @@ describe("the block check a Team recovery sends", () => {
 		await expect(check(coordinatorUrl, [GROUP_ID])).rejects.toThrow();
 		// The same answer given directly is accepted, so the redirect is what was refused.
 		await expect(check(elsewhere, [GROUP_ID])).resolves.toEqual([]);
+	});
+
+	it.each([
+		["an entry that is not a device ID", { revoked: [42] }],
+		["a device that was never asked about", { revoked: ["device-other"] }],
+		["a device listed twice", { enrolled: [peer.device_id, peer.device_id] }],
+		["a device both removed and blocked", { revoked: [peer.device_id], removed: [peer.device_id] }],
+		["nothing about a device that was asked about", { enrolled: [] }],
+	])(
+		"refuses a reply with %s, where the daemon's lookup would drop the entry",
+		async (_case, broken) => {
+			const url = await answering({ ...NOTHING_BLOCKED, ...broken });
+
+			await expect(check(url, [GROUP_ID])).rejects.toThrow("peer_revocation_response");
+		},
+	);
+
+	it("stops asking once its deadline has passed", async () => {
+		let requests = 0;
+		const url = await serve((_request, response) => {
+			requests += 1;
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify(NOTHING_BLOCKED));
+		});
+		const config = readCoordinatorSyncConfig({
+			sync_coordinator_url: url,
+			sync_coordinator_groups: [GROUP_ID],
+		});
+		const request = { localDeviceId: local.deviceId, keysDir: local.keysDir, groupId: GROUP_ID };
+
+		const late = fetchBlockedDeviceIdsForGroup(
+			{ db: local.db, dbPath: ":memory:" },
+			config,
+			{ ...request, deadlineMs: Date.now() - 1 },
+			[peer],
+		);
+
+		await expect(late).rejects.toThrow("peer_revocation_deadline_passed");
+		expect(requests).toBe(0);
 	});
 
 	it("asks exactly the group it was given, and fails when that group refuses", async () => {
@@ -283,6 +352,51 @@ describe("the block check a Team recovery sends", () => {
 
 describe("the Team recovery reads against a coordinator", () => {
 	const local = useLocalDevice();
+	const serve = useHttpServers();
+
+	it("stops reading device removals at the deadline, however many pages the coordinator offers", async () => {
+		// Arrange: every page is valid and names another, so the list never ends.
+		let pages = 0;
+		const url = await serve((request, response) => {
+			pages += 1;
+			const before = Number(new URL(request.url ?? "", "http://x").searchParams.get("before_seq"));
+			const seq = (before || 1_000_000) - 1;
+			const item = {
+				removal_id: `removal-${seq}`,
+				removal_seq: seq,
+				group_id: GROUP_ID,
+				device_id: `device-${seq}`,
+				fingerprint: `fingerprint-${seq}`,
+				key_id: null,
+				display_name: null,
+				identity_id: null,
+				removed_at: "2026-09-01T12:00:00.000Z",
+			};
+			setTimeout(() => {
+				response.writeHead(200, { "content-type": "application/json" });
+				response.end(JSON.stringify({ version: 1, items: [item], next_before_seq: seq }));
+			}, 10);
+		});
+		const config = {
+			...readCoordinatorSyncConfig({
+				sync_coordinator_url: url,
+				sync_coordinator_groups: [GROUP_ID],
+			}),
+			syncCoordinatorAdminSecret: "synthetic-admin",
+		};
+		const actions = coordinatorTeamRecoveryEvidenceActions(
+			{ db: local.db, dbPath: ":memory:" },
+			config,
+			{ localDeviceId: local.deviceId, keysDir: local.keysDir },
+		);
+
+		const stalled = actions.listDeviceRemovals(Date.now() + 200);
+
+		await expect(stalled).rejects.toThrow();
+		const pagesAtDeadline = pages;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(pages).toBe(pagesAtDeadline);
+	}, 5_000);
 
 	it("reads every part from a coordinator through its own routes, as an admin device of the group", async () => {
 		// Arrange: a coordinator with this device and one other enrolled in the group.

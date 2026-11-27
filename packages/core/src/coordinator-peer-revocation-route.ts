@@ -77,6 +77,23 @@ function validIds(value: unknown, requested: Set<string>): boolean {
 	);
 }
 
+/**
+ * Whether a snapshot keeps the whole contract for the requested IDs: a sequence
+ * number, three sorted lists of requested IDs with none repeated, and no ID
+ * both removed and blocked. The route replies only with such a snapshot, and a
+ * client that must not drop or guess an entry accepts only such a reply.
+ */
+export function isCompletePeerRevocationSnapshot(
+	value: Record<string, unknown>,
+	requested: Set<string>,
+): boolean {
+	if (!Number.isSafeInteger(value.removal_seq) || (value.removal_seq as number) < 0) return false;
+	if (!["revoked", "removed", "enrolled"].every((field) => validIds(value[field], requested)))
+		return false;
+	const revoked = value.revoked as string[];
+	return !(value.removed as string[]).some((id) => revoked.includes(id));
+}
+
 /** Refuse a broken store contract rather than replying with partial data or evidence. */
 function completeSnapshot(
 	raw: unknown,
@@ -85,15 +102,9 @@ function completeSnapshot(
 	if (!raw || typeof raw !== "object") throw new Error("peer_revocation_unavailable");
 	const value = raw as Record<string, unknown>;
 	const requested = new Set(peers.map((peer) => peer.device_id));
-	if (
-		!Number.isSafeInteger(value.removal_seq) ||
-		(value.removal_seq as number) < 0 ||
-		!["revoked", "removed", "enrolled"].every((field) => validIds(value[field], requested))
-	)
+	if (!isCompletePeerRevocationSnapshot(value, requested))
 		throw new Error("peer_revocation_unavailable");
 	const result = raw as CoordinatorPeerRemovalLookupResult;
-	if (result.removed.some((id) => result.revoked.includes(id)))
-		throw new Error("peer_revocation_unavailable");
 	return { ...result, key_evidence: checkedKeyEvidence(value.key_evidence, requested, result) };
 }
 
