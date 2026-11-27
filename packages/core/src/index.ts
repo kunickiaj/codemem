@@ -174,6 +174,7 @@ export {
 	COORDINATOR_AUTH_STAGE_MIGRATIONS,
 	type CoordinatorAuthSchemaStage,
 	coordinatorAuthStageBaselineSql,
+	coordinatorD1ApplyOnlyMigrations,
 	coordinatorD1BaselineMigrations,
 	coordinatorD1ConditionalBaselineMigrations,
 	readCoordinatorAuthSchemaStage,

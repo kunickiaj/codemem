@@ -31,6 +31,7 @@ import {
 	ENROLLMENT_REMOVAL_MIGRATION_NAME,
 	ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL,
 } from "./coordinator-device-removal.js";
+import { TEAM_GROUP_BINDING_MIGRATION_NAME } from "./coordinator-team-group-bindings.js";
 import {
 	TEAM_MEMBER_REMOVAL_MIGRATION_NAME,
 	TEAM_MEMBER_REMOVAL_STORAGE_PRESENT_SQL,
@@ -117,6 +118,19 @@ const POST_STAGE_MIGRATION_READINESS_SQL: Readonly<Record<string, string>> = Obj
 });
 
 /**
+ * Migrations a baseline never records, because data they write must exist
+ * before they count as applied: 0053 binds existing Teams and checks that it
+ * bound every Team of one group. `wrangler d1 migrations apply` runs and
+ * records them; each is safe to run on a database that already has its objects.
+ */
+const APPLY_ONLY_MIGRATIONS: readonly string[] = Object.freeze([TEAM_GROUP_BINDING_MIGRATION_NAME]);
+
+/** Migrations that only `wrangler d1 migrations apply` records, never a baseline. */
+export function coordinatorD1ApplyOnlyMigrations(): readonly string[] {
+	return APPLY_ONLY_MIGRATIONS;
+}
+
+/**
  * Every numbered migration, from 0001, that a baseline of a database at `stage` can
  * record. For `current` the list ends with the migrations after the last auth stage,
  * which the baseline statement records only when their storage exists.
@@ -124,7 +138,8 @@ const POST_STAGE_MIGRATION_READINESS_SQL: Readonly<Record<string, string>> = Obj
 export function coordinatorD1BaselineMigrations(
 	stage: "v2" | "prior_extension" | "current",
 ): readonly string[] {
-	if (stage === "current") return COORDINATOR_D1_MIGRATION_NAMES;
+	if (stage === "current")
+		return COORDINATOR_D1_MIGRATION_NAMES.filter((name) => !APPLY_ONLY_MIGRATIONS.includes(name));
 	const last = COORDINATOR_D1_MIGRATION_NAMES.indexOf(STAGE_LAST_MIGRATION[stage]);
 	return COORDINATOR_D1_MIGRATION_NAMES.slice(0, last + 1);
 }

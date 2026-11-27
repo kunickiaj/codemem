@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import {
 	COORDINATOR_AUTH_STAGE_MIGRATIONS,
 	coordinatorAuthStageBaselineSql,
+	coordinatorD1ApplyOnlyMigrations,
 	coordinatorD1BaselineMigrations,
 	readCoordinatorAuthSchemaStage,
 } from "../../core/src/coordinator-auth-schema-stage.js";
@@ -126,10 +127,13 @@ it("baselines an existing current database without a ledger once, then the chain
 	const schema = await definitions();
 	await db.prepare(coordinatorAuthStageBaselineSql("current")).run();
 	await db.prepare(coordinatorAuthStageBaselineSql("current")).run();
+	const baselined = await ledger();
 	await applyD1Migrations(db, env.TEST_MIGRATIONS);
-	// Assert: every numbered migration is recorded once, from 0001, and nothing replayed.
+	// Assert: every numbered migration is recorded once, from 0001. Only the
+	// migrations a baseline never records, such as 0053, ran, on objects that exist.
+	expect(baselined).toEqual([...coordinatorD1BaselineMigrations("current")]);
 	expect(await ledger()).toEqual(env.TEST_MIGRATIONS.map(({ name }) => name));
-	expect(await ledger()).toEqual([...coordinatorD1BaselineMigrations("current")]);
+	expect(await ledger()).toEqual([...baselined, ...coordinatorD1ApplyOnlyMigrations()]);
 	expect(await definitions()).toEqual(schema);
 	expect(await retained()).toEqual(before);
 });

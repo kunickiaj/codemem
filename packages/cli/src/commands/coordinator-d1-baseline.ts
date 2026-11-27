@@ -1,5 +1,6 @@
 import {
 	coordinatorAuthStageBaselineSql,
+	coordinatorD1ApplyOnlyMigrations,
 	coordinatorD1BaselineMigrations,
 	coordinatorD1ConditionalBaselineMigrations,
 } from "@codemem/core";
@@ -13,6 +14,13 @@ type Stage = (typeof STAGES)[number];
 interface Options {
 	stage: Stage;
 	json?: boolean;
+}
+
+/** Names the migrations a baseline leaves for `wrangler d1 migrations apply`, which must run their data steps. */
+function applyOnlyMigrationsText(stage: Stage): string {
+	if (stage !== "current") return "";
+	const names = coordinatorD1ApplyOnlyMigrations();
+	return `-- Never records ${names.join(" or ")}, even when its objects exist: wrangler d1 migrations apply runs it, including its data steps.\n`;
 }
 
 /** Names the migrations that the statement records only when their objects exist. */
@@ -32,7 +40,7 @@ function exportBaseline(options: Options): void {
 	const conditional = coordinatorD1ConditionalBaselineMigrations(options.stage);
 	const always = migrations.filter((name) => !conditional.includes(name));
 	process.stdout.write(
-		`-- Records ${always.length} migrations, ${always[0]} through ${always.at(-1)}, in the existing d1_migrations ledger\n-- only if auth-stage ${options.stage} readiness and the remaining table and column names match.\n${conditionalMigrationsText(options.stage)}-- The inventory does not check types, constraints, indexes, triggers or row validity. Compare the schema before applying.\n-- Otherwise it records nothing or fails to compile. "no such table: d1_migrations" means the ledger must be created first.\n-- Nothing has been applied.\n${statement};\n`,
+		`-- Records ${always.length} migrations, ${always[0]} through ${always.at(-1)}, in the existing d1_migrations ledger\n-- only if auth-stage ${options.stage} readiness and the remaining table and column names match.\n${conditionalMigrationsText(options.stage)}${applyOnlyMigrationsText(options.stage)}-- The inventory does not check types, constraints, indexes, triggers or row validity. Compare the schema before applying.\n-- Otherwise it records nothing or fails to compile. "no such table: d1_migrations" means the ledger must be created first.\n-- Nothing has been applied.\n${statement};\n`,
 	);
 }
 
