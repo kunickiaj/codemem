@@ -315,3 +315,76 @@ describe("sync admission after a Team member removal", () => {
 		expect(admitted("team-scope", REMOVED)).toBe(true);
 	});
 });
+
+describe("sync admission while the Team's coordinator group is a conflict", () => {
+	const LOCAL_LAPTOP = "device-local-laptop";
+	const conflict = () =>
+		row("policy_team_coordinator_links", {
+			team_id: team,
+			coordinator_id: COORDINATOR,
+			group_id: "group-b",
+			source: "coordinator_binding",
+			recorded_at: NOW,
+		});
+
+	beforeEach(async () => {
+		row("sync_device", {
+			device_id: LOCAL,
+			public_key: "pk-local",
+			fingerprint: "fp-local",
+			created_at: NOW,
+		});
+		person("identity-local", LOCAL);
+		row("identity_devices", {
+			device_id: LOCAL_LAPTOP,
+			identity_id: "identity-local",
+			display_name: LOCAL_LAPTOP,
+			status: "active",
+			provenance: "test",
+			revision: "r1",
+			migration_state: "user_managed",
+			idempotency_key: `binding-${LOCAL_LAPTOP}`,
+			created_at: NOW,
+			updated_at: NOW,
+		});
+		row("policy_team_memberships", {
+			team_id: team,
+			identity_id: "identity-local",
+			role: "member",
+			status: "active",
+			provenance: "test",
+			revision: "r1",
+			migration_state: "user_managed",
+			idempotency_key: "membership-identity-local",
+			created_at: NOW,
+			updated_at: NOW,
+		});
+		scope("shared-scope", [LOCAL, LOCAL_LAPTOP, REMOVED, STAYING]);
+		map(TEAM_PROJECT, "shared-scope");
+		await refreshTestScopeRows(db);
+	});
+
+	it("refuses every other member's device the Team's scopes until the conflict is gone", () => {
+		expect(admitted("shared-scope", STAYING)).toBe(true);
+
+		conflict();
+
+		expect(admitted("shared-scope", STAYING)).toBe(false);
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+		expect(advertised(STAYING)).not.toContain("shared-scope");
+		db.prepare("DELETE FROM policy_team_coordinator_links").run();
+		expect(admitted("shared-scope", STAYING)).toBe(true);
+	});
+
+	it("keeps this device's own person, and scopes without the Team's Projects", async () => {
+		share(OTHER_PROJECT, "identity", "identity-staying");
+		scope("own-scope", [LOCAL, STAYING]);
+		map(OTHER_PROJECT, "own-scope");
+		await refreshTestScopeRows(db);
+
+		conflict();
+
+		expect(admitted("shared-scope", LOCAL_LAPTOP)).toBe(true);
+		expect(admitted("own-scope", STAYING)).toBe(true);
+	});
+});

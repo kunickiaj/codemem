@@ -582,6 +582,11 @@ it.each([
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (url: string | URL) => {
+				if (String(url).includes("/v1/admin/team-group-bindings"))
+					return Response.json({
+						version: 1,
+						items: [{ team_id: team, state: "bound", group_id: "group-a" }],
+					});
 				if (!String(url).includes("/v1/admin/team-member-removals"))
 					throw new Error("Unexpected network request");
 				return new Response(body, { status });
@@ -602,6 +607,54 @@ it.each([
 				.pluck()
 				.get(team),
 		).toBe(granted);
+	},
+);
+
+it.each([
+	["a coordinator without the binding route", 404, "<html><body>Not Found</body></html>"],
+	["missing binding storage", 503, '{"error":"team_group_binding_unavailable"}'],
+	["an answer that leaves out the Team", 200, '{"version":1,"items":[]}'],
+	["a binding to another group", 200, "other-group"],
+	["a binding to this group", 200, "this-group"],
+])(
+	"grants an invitation's Team access only when the coordinator binds the Team to this group: %s",
+	async (label, status, body) => {
+		// Arrange: an accepted invitation for a Team created here, with no group recorded.
+		const team = "team-invited";
+		store.db
+			.prepare(`INSERT INTO policy_teams(team_id, display_name, status, provenance, revision,
+		 migration_state, idempotency_key, created_at, updated_at)
+		 VALUES (?, 'Team', 'active', 'test', 'r1', 'user_managed', 'team', ?, ?)`)
+			.run(team, now, now);
+		options.completeDeviceSetup = vi.fn(async () => ({ kind: "complete" }));
+		options.listConsumedTeamInvites = vi.fn(async () => [
+			{
+				invite_id: "invite-team",
+				group_id: "group-a",
+				policy_team_id: team,
+				assigned_identity_id: "identity-invited",
+				recipient_actor_id: "identity-invited",
+				bound_device_id: "device-invited",
+				consumed_at: now,
+			},
+		]);
+		options.reconcileSnapshot = undefined;
+		const answer = (groupId: string) =>
+			JSON.stringify({ version: 1, items: [{ team_id: team, state: "bound", group_id: groupId }] });
+		const bindings = vi.fn(async (url: string | URL) => {
+			if (!String(url).includes(`/v1/admin/team-group-bindings?team_id=${team}`))
+				throw new Error("Unexpected network request");
+			if (body === "this-group") return new Response(answer("group-a"), { status });
+			if (body === "other-group") return new Response(answer("group-b"), { status });
+			return new Response(body, { status });
+		});
+		vi.stubGlobal("fetch", bindings);
+		// Act
+		const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
+		// Assert
+		const granted = body === "this-group" ? 1 : 0;
+		expect(bindings, label).toHaveBeenCalledOnce();
+		expect(result, label).toMatchObject({ failedGroups: 0, membershipsAdded: granted });
 	},
 );
 

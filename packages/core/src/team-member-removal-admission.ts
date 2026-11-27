@@ -81,6 +81,25 @@ function policyAuthorizes(db: Database, projectId: string, deviceId: string): bo
 	return derivation.devices.some((device) => device.deviceId === deviceId);
 }
 
+/**
+ * Returns the Team's Projects that the scope holds, through a mapping of any
+ * provenance or through memories it already stores. Built once per scope.
+ */
+export function teamProjectsHeldInScope(
+	db: Database,
+	scopeId: string,
+): (teamId: string) => string[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const canonical = (value: string) =>
+		canonicalRepositoryProjectIdentity(repositoryIdentities, value);
+	const mappings = readScopeMappings(db, scopeId);
+	const stored = projectsStoredInScope(db, scopeId, repositoryIdentities);
+	const held = (projectId: string) =>
+		stored.has(canonical(projectId)) ||
+		mappingsHoldProject(mappings, new Set([projectId, canonical(projectId)]), canonical);
+	return (teamId) => teamProjects(db, teamId).filter(held);
+}
+
 /** Whether sync admission refuses the device the scope because of a Team member removal. */
 export function teamMemberRemovalRefusesScope(
 	db: Database,
@@ -88,17 +107,8 @@ export function teamMemberRemovalRefusesScope(
 ): boolean {
 	const removals = teamMemberRemovalsForDevice(db, input.deviceId);
 	if (removals.length === 0) return false;
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	const canonical = (value: string) =>
-		canonicalRepositoryProjectIdentity(repositoryIdentities, value);
-	const mappings = readScopeMappings(db, input.scopeId);
-	const stored = projectsStoredInScope(db, input.scopeId, repositoryIdentities);
-	const held = (projectId: string) =>
-		stored.has(canonical(projectId)) ||
-		mappingsHoldProject(mappings, new Set([projectId, canonical(projectId)]), canonical);
+	const heldProjects = teamProjectsHeldInScope(db, input.scopeId);
 	return removals.some(({ teamId }) =>
-		teamProjects(db, teamId).some(
-			(projectId) => held(projectId) && !policyAuthorizes(db, projectId, input.deviceId),
-		),
+		heldProjects(teamId).some((projectId) => !policyAuthorizes(db, projectId, input.deviceId)),
 	);
 }

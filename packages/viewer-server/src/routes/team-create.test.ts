@@ -1,5 +1,6 @@
 import { listRecipientPolicyIntent, MemoryStore, readCoordinatorSyncConfig } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { teamCoordinatorLinkState } from "../../../core/src/team-member-removal-lookup.js";
 import { teamCreateRoutes } from "./team-create.js";
 
 type CoordinatorOverrides = Partial<ReturnType<typeof readCoordinatorSyncConfig>>;
@@ -88,6 +89,17 @@ describe("Create Team route", () => {
 
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ error: "team_name_invalid" });
+	});
+
+	it("records the configured coordinator group as the Team's group", async () => {
+		const response = await post({ displayName: "Platform" });
+		const { teamId } = (await response.json()) as { teamId: string };
+
+		expect(teamCoordinatorLinkState(store.db, teamId)).toEqual({
+			state: "linked",
+			coordinatorId: "https://coordinator.example.test",
+			groupId: "group-one",
+		});
 	});
 
 	it("rejects a name another active Team uses", async () => {

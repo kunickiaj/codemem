@@ -1163,6 +1163,24 @@ export const policyTeamMemberRemovals = sqliteTable(
 	],
 );
 
+/**
+ * Coordinator groups that hold a Team: recorded when an admin device creates
+ * the Team, and learned from the Team's accepted invitations in groups this
+ * device is enrolled in. Two different groups for one Team are a conflict, and
+ * no removal applies to that Team until it is resolved.
+ */
+export const policyTeamCoordinatorLinks = sqliteTable(
+	"policy_team_coordinator_links",
+	{
+		team_id: text("team_id").notNull(),
+		coordinator_id: text("coordinator_id").notNull(),
+		group_id: text("group_id").notNull(),
+		source: text("source").notNull(),
+		recorded_at: text("recorded_at").notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.team_id, table.coordinator_id, table.group_id] })],
+);
+
 export type PolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferSelect;
 export type NewPolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferInsert;
 
@@ -1599,6 +1617,7 @@ export const schema = {
 	policyTeamMemberships,
 	policyTeamDeviceDecisions,
 	policyTeamMemberRemovals,
+	policyTeamCoordinatorLinks,
 	identityDevices,
 	projectRecipients,
 	legacyTeamSetupDrafts,

@@ -1,4 +1,5 @@
 import {
+	buildBaseUrl,
 	createRecipientPolicyTeam,
 	RecipientPolicyTeamCreateError,
 	readCoordinatorSyncConfig,
@@ -36,12 +37,22 @@ function isCreateTeamBody(body: unknown): body is { displayName: string } {
 	);
 }
 
+/** The one configured group the Team's invitations will go through, if there is exactly one. */
+function invitationGroup(config: ReturnType<typeof readCoordinatorSyncConfig>) {
+	const groups = config.syncCoordinatorGroups;
+	const coordinatorId = buildBaseUrl(config.syncCoordinatorUrl);
+	return groups.length === 1 && groups[0] && coordinatorId
+		? { coordinatorId, groupId: groups[0] }
+		: undefined;
+}
+
 async function createTeam(
 	c: Context,
 	getStore: StoreFactory,
 	readConfig: typeof readCoordinatorSyncConfig,
 ) {
-	const unavailable = teamCreationUnavailable(coordinatorAdminStatusPayload(readConfig()));
+	const config = readConfig();
+	const unavailable = teamCreationUnavailable(coordinatorAdminStatusPayload(config));
 	if (unavailable) return c.json({ error: unavailable.code }, unavailable.httpStatus);
 	const body = await parseViewerJsonBody(c);
 	if (!isCreateTeamBody(body)) return c.json({ error: "team_name_invalid" as const }, 400);
@@ -56,6 +67,7 @@ async function createTeam(
 			displayName: body.displayName,
 			creatorIdentityId: store.actorId,
 			now: new Date().toISOString(),
+			coordinatorGroup: invitationGroup(config),
 		});
 		return c.json(team, 201);
 	} catch (error) {

@@ -65,6 +65,7 @@ const reconcile = (
 		now: NOW,
 		consumedTeamInvites: invites,
 		teamMemberRemovals: removals === "not read" ? undefined : removals,
+		teamGroupBindings: [{ team_id: team, state: "bound", group_id: "group-a" }],
 		enrollments: [],
 	});
 const membership = () =>

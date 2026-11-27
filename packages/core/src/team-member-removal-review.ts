@@ -11,8 +11,8 @@ import type { Database } from "./db.js";
 import { recipientPolicyDigest } from "./recipient-policy-identifiers.js";
 import {
 	isTeamMemberRemoved,
+	teamCoordinatorLinkState,
 	teamMemberRemovalCoordinatorKey,
-	teamRemovalCoordinatorGroup,
 } from "./team-member-removal-lookup.js";
 import { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 
@@ -32,6 +32,7 @@ export type TeamMemberRemovalRejection =
 	| "invalid_input"
 	| "team_not_found"
 	| "team_not_linked"
+	| "team_link_conflict"
 	| "team_coordinator_not_configured"
 	| "member_not_found"
 	| "member_already_removed"
@@ -100,8 +101,10 @@ function readTeamTarget(
 		.prepare("SELECT display_name, status FROM policy_teams WHERE team_id = ?")
 		.get(teamId) as { display_name: string; status: string } | undefined;
 	if (team?.status !== "active") return "team_not_found";
-	const link = teamRemovalCoordinatorGroup(db, teamId);
-	if (!link) return "team_not_linked";
+	const linkState = teamCoordinatorLinkState(db, teamId);
+	if (linkState.state === "conflict") return "team_link_conflict";
+	if (linkState.state === "none") return "team_not_linked";
+	const link = { coordinatorId: linkState.coordinatorId, groupId: linkState.groupId };
 	const configured = teamMemberRemovalCoordinatorKey(context.coordinator.remoteUrl);
 	if (
 		configured === null ||

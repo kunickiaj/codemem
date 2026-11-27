@@ -300,13 +300,22 @@ the affected Project access, and keeps every Team setup and Team invitation from
 again. From the moment the removal is recorded, the device's sync admission refuses the person's devices every
 scope that holds one of the Team's Projects, through a mapping of any kind or through memories already stored
 there. A scope that holds only Projects the person still has another way, such as a direct share or another
-Team, stays open to them. A removal applies only to a Team that its coordinator group set up on that device. A
-record for any other Team is kept without effect and reported. The Viewer also reads the list before it applies a
+Team, stays open to them. A removal applies only in the Team's own coordinator group. A Team's group comes from
+its completed setup, from the group an admin device created it for in the Viewer, and from the group the
+coordinator bound it to, which each enrollment check reads with `GET /v1/admin/team-group-bindings`. An accepted
+invitation is never evidence of a Team's group, and it grants its Team only when the Team's group is the
+invitation's group. When these sources disagree, or the coordinator holds no group for a Team and nothing else
+names one, the Team's group is a conflict. Then no removal applies to it, its invitations grant nothing, the
+Viewer's removal step refuses it and lists it as a warning, and the device refuses every other member's devices
+the scopes that hold the Team's Projects until the conflict is resolved, for example by binding the Team with
+`POST /v1/admin/team-group-bindings`. Devices of the admin device's own person keep their access. A record for
+any other Team is kept without effect and reported. The Viewer also reads the list before it applies a
 Team setup that another admin device completed. If that read fails, it applies nothing in that pass and leaves the
 Team as it is.
 
-If the removal list cannot be read, for any reason, the Viewer still reconciles enrolled devices but grants no
-Team access from an accepted invitation in that check, and reports each invitation it held back. A not-found
+If the removal list or the Team bindings cannot be read, for any reason, the Viewer still reconciles enrolled
+devices but grants no Team access from an accepted invitation in that check, and reports each invitation it held
+back. A not-found
 answer counts as a failure, because the coordinator exposes nothing that proves it predates removals. A coordinator
 from before 0052, or a Worker deployed without the migration, therefore holds back new Team members on upgraded
 admin devices until the migration and Worker are in place. That is why the migration goes in before the Worker.

@@ -83,6 +83,7 @@ import {
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
 	coordinatorListTeamMemberRemovalsAction,
+	coordinatorReadTeamGroupBindingsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorRenameGroupAction,
@@ -208,6 +209,7 @@ import {
 	summarizeInboundScopeRejections,
 	supportsSyncFeature,
 	syncScopeResetRequiredPayload,
+	teamIdsForBindingRead,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMappings,
@@ -2063,6 +2065,7 @@ interface ConfiguredCoordinatorEnrollmentOptions {
 		remoteUrl: string;
 		adminSecret: string;
 	}) => Promise<CoordinatorTeamMemberRemoval[]>;
+	readTeamGroupBindings?: typeof coordinatorReadTeamGroupBindingsAction;
 	reconcileSnapshot?: (
 		input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
 	) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
@@ -2169,6 +2172,44 @@ async function completeCoordinatorEnrollment(
 	return enrollments;
 }
 
+/**
+ * The group's Team member removals and the coordinator's binding of each Team
+ * this check handles, each undefined when its read fails. Read after the
+ * invitations: a removal recorded between the reads is still applied, so no
+ * invitation in this snapshot restores that member. A failed read still
+ * reconciles devices, but grants no Team access from an invitation, and
+ * reconciliation reports each invitation it held back. Each Team's group comes
+ * from its coordinator, never from its invitations.
+ */
+async function readTeamEvidence(
+	store: MemoryStore,
+	options: ConfiguredCoordinatorEnrollmentOptions,
+	input: {
+		groupId: string;
+		remoteUrl: string;
+		adminSecret: string;
+		invites: readonly CoordinatorConsumedTeamInvite[];
+	},
+) {
+	const { groupId, remoteUrl, adminSecret } = input;
+	const listRemovals = options.listTeamMemberRemovals ?? coordinatorListTeamMemberRemovalsAction;
+	const readBindings = options.readTeamGroupBindings ?? coordinatorReadTeamGroupBindingsAction;
+	const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret }).catch(
+		() => undefined,
+	);
+	const teamIds = teamIdsForBindingRead(store.db, {
+		coordinatorId: buildBaseUrl(remoteUrl),
+		invitedTeamIds: input.invites
+			.filter((invite) => invite.group_id === groupId)
+			.map((invite) => invite.policy_team_id),
+	});
+	const teamGroupBindings =
+		teamIds.length === 0
+			? []
+			: await readBindings({ remoteUrl, adminSecret, teamIds }).catch(() => undefined);
+	return { teamMemberRemovals, teamGroupBindings };
+}
+
 async function reconcileConfiguredCoordinatorGroup(
 	store: MemoryStore,
 	groupId: string,
@@ -2182,7 +2223,6 @@ async function reconcileConfiguredCoordinatorGroup(
 	const adminSecret = config.syncCoordinatorAdminSecret.trim();
 	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
 	const listInvites = options.listConsumedTeamInvites ?? coordinatorListConsumedTeamInvitesAction;
-	const listRemovals = options.listTeamMemberRemovals ?? coordinatorListTeamMemberRemovalsAction;
 	const reconcile =
 		options.reconcileSnapshot ??
 		((input) => reconcileCoordinatorEnrollmentSnapshot(store.db, input));
@@ -2209,13 +2249,12 @@ async function reconcileConfiguredCoordinatorGroup(
 		);
 		stage = "list_consumed_team_invites";
 		const invites = await listInvites({ groupId, remoteUrl, adminSecret });
-		// Read after the invitations: a removal recorded between the two reads is
-		// still applied, so no invitation in this snapshot restores that member.
-		// A failed read still reconciles devices, but grants no Team access from
-		// an invitation; reconciliation reports each invitation it held back.
-		const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret }).catch(
-			() => undefined,
-		);
+		const { teamMemberRemovals, teamGroupBindings } = await readTeamEvidence(store, options, {
+			groupId,
+			remoteUrl,
+			adminSecret,
+			invites,
+		});
 		stage = "complete_device_setup";
 		context.assertCurrent();
 		stage = "reconcile_snapshot";
@@ -2226,6 +2265,7 @@ async function reconcileConfiguredCoordinatorGroup(
 				enrollments,
 				consumedTeamInvites: invites,
 				teamMemberRemovals,
+				teamGroupBindings,
 				localDeviceId: store.deviceId,
 			}),
 		};
