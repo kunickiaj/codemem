@@ -468,6 +468,21 @@ describe("Team recovery check after the commit", () => {
 		expect(snapshot()).toEqual(before);
 	});
 
+	it("quarantines the Team again and keeps its hold when a device its first read listed is off the roster in the read after the commit", async () => {
+		// Arrange: the Desktop left the group during the first read, which its block check could not see.
+		const removal = { group_id: GROUP_ID, device_id: "device-b", fingerprint: DESKTOP.fingerprint };
+		const second = evidence([TABLET], {
+			deviceRemovals: { status: "read", source: HERE, removals: [LAPTOP_REMOVAL, removal] },
+		});
+
+		const result = await commit(reviewedDigest(), reader(evidence(), second));
+
+		expect(result).toEqual({ state: "quarantined_again", reason: "evidence_changed" });
+		expect(teamState()).toBe("inactive:needs_setup");
+		expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+		expect(refused("device-b")).toBe(true);
+	});
+
 	it("quarantines the Team again when the evidence cannot be read again", async () => {
 		const unreadable = evidence(undefined, { roster: { status: "unavailable" } });
 

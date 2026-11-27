@@ -547,6 +547,8 @@ describe("the Team recovery reads against a coordinator", () => {
 		const stalled = actions.listDeviceRemovals(Date.now() + 200);
 
 		await expect(stalled).rejects.toThrow();
+		// A request sent just before the deadline can reach this server just after it.
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		const pagesAtDeadline = pages;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(pages).toBe(pagesAtDeadline);
@@ -570,6 +572,45 @@ describe("the Team recovery reads against a coordinator", () => {
 					{ deviceId: peer.device_id, blocked: false, removal: "of_this_key" },
 				),
 			},
+		});
+	});
+
+	it("misses, in the block check, a device removed from the group while its key stays enrolled in another, and reads it off the roster next time", async () => {
+		// Arrange: the device holds one key in two groups, and leaves this group once the roster is read.
+		const other = "group-other";
+		const { read } = await enrolledCoordinator(local, {
+			enroll: async (store) => {
+				await enrollPeer(store);
+				await store.createGroup(other);
+				await store.enrollDevice(other, {
+					deviceId: peer.device_id,
+					fingerprint: "fingerprint-peer",
+					publicKey: peer.public_key,
+				});
+			},
+			beforeBlockCheck: (store) =>
+				store
+					.removeEnrollment({ groupId: GROUP_ID, deviceId: peer.device_id })
+					.catch(() => undefined),
+		});
+
+		const first = (await read()).evidence;
+		const second = (await read()).evidence;
+
+		// Assert: the check reports no removal while the key is enrolled anywhere.
+		expect(first).toMatchObject({
+			roster: { devices: inAnyOrder({ deviceId: local.deviceId }, { deviceId: peer.device_id }) },
+			deviceBlocks: {
+				checks: inAnyOrder(
+					{ deviceId: local.deviceId, removal: "none" },
+					{ deviceId: peer.device_id, blocked: false, removal: "none" },
+				),
+			},
+		});
+		// The next reading no longer lists the device and has its removal on record.
+		expect(second).toMatchObject({
+			roster: { devices: [{ deviceId: local.deviceId }] },
+			deviceRemovals: { removals: [{ group_id: GROUP_ID, device_id: peer.device_id }] },
 		});
 	});
 
