@@ -87,6 +87,16 @@ interface RepositoryScopeContext {
 	allowRepositoryCwdFallback: boolean;
 	mappings: ScopeMapping[];
 	repositoryIdentity: string | null;
+	/** The repository's mappings disagree, or its checkout is ambiguous, so none applies. */
+	mappingsSetAside: boolean;
+}
+
+/**
+ * A stamping decision and whether mappings were set aside to reach it. When
+ * they were, the fallback scope does not mean that nothing maps the repository.
+ */
+export interface SessionScopeResolution extends ScopeResolution {
+	mappingsSetAside: boolean;
 }
 
 function clean(value: string | null | undefined): string | null {
@@ -123,6 +133,7 @@ function emptyRepositoryScopeContext(
 	return {
 		allowRepositoryCwdFallback: true,
 		mappings,
+		mappingsSetAside: false,
 		repositoryIdentity: repositoryIdentityForWorkspace(new Map(), {
 			cwd: row?.cwd,
 			gitRemote: row?.git_remote ?? null,
@@ -238,6 +249,7 @@ function repositoryScopeContext(
 	return {
 		allowRepositoryCwdFallback: !ambiguousCwd && !repositoryConflict,
 		mappings: effectiveMappings,
+		mappingsSetAside: repositoryConflict || unresolvedAmbiguousCwd,
 		repositoryIdentity,
 	};
 }
@@ -259,12 +271,12 @@ function loadSessionScopeRow(db: Database, sessionId: number): SessionScopeRow |
 export function resolveSessionScope(
 	db: Database,
 	options: ResolveSessionScopeOptions,
-): ScopeResolution {
+): SessionScopeResolution {
 	const session = loadSessionScopeRow(db, options.sessionId);
 	const context = repositoryScopeContext(db, session, loadProjectScopeMappings(db), {
 		readOnly: options.readOnly,
 	});
-	return resolveProjectScope({
+	const resolution = resolveProjectScope({
 		allowRepositoryCwdFallback: context.allowRepositoryCwdFallback,
 		explicitScopeId: options.explicitScopeId,
 		gitRemote: session?.git_remote ?? null,
@@ -276,6 +288,35 @@ export function resolveSessionScope(
 		localDefaultScopeId: options.localDefaultScopeId ?? LOCAL_DEFAULT_SCOPE_ID,
 		mappings: context.mappings,
 	});
+	return { ...resolution, mappingsSetAside: context.mappingsSetAside };
+}
+
+/**
+ * The stamping decision for a repository known only by its identity, with no
+ * checkout: the same matching rules, with each mapping of a checkout path also
+ * applying to the repository that checkout belongs to. Reads only.
+ */
+export function resolveRepositoryIdentityScope(
+	db: Database,
+	repositoryIdentity: string,
+): SessionScopeResolution {
+	const mappings = loadProjectScopeMappings(db);
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const mappingsSetAside = hasRepositoryConflict(
+		mappings,
+		repositoryIdentities,
+		normalizeRepositoryWorkspaceIdentity(repositoryIdentity),
+	);
+	const resolution = resolveProjectScope({
+		allowRepositoryCwdFallback: false,
+		repositoryIdentity,
+		mappings: mappingsSetAside
+			? []
+			: withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
+					discoverFilesystem: true,
+				}),
+	});
+	return { ...resolution, mappingsSetAside };
 }
 
 export function resolveSessionScopeId(db: Database, options: ResolveSessionScopeOptions): string {

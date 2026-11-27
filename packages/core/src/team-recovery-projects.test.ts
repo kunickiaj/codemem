@@ -193,6 +193,31 @@ describe("Team recovery Project plan with checkout routing", () => {
 		]);
 	});
 
+	it("skips a Project whose checkouts are mapped to scopes that disagree", () => {
+		// Arrange: stamping sets conflicting mappings aside and falls back to local
+		// storage. That fallback is not an untouched Project.
+		insertCheckout(db, `${CHECKOUT}-second`, PROJECT);
+		mapCheckout(CHECKOUT, "api", "scope-other");
+		mapCheckout(`${CHECKOUT}-second`, "api", "scope-engineering");
+
+		expect(plan()).toMatchObject([
+			{ outcome: "skipped", reason: "mapping_changed", restoredMappings: [] },
+		]);
+	});
+
+	it("restores a Project past a catch-all pattern that stamping never applies", () => {
+		// Arrange: stamping ignores a pattern with no path or host in it.
+		mapCheckout(null, "*", "scope-other");
+
+		expect(plan()).toMatchObject([
+			{
+				outcome: "restored",
+				routedScopeIds: [],
+				restoredMappings: [{ sourceProjectIdentity: PROJECT, scopeId: "scope-engineering" }],
+			},
+		]);
+	});
+
 	it("restores a Project whose checkout nothing routes", () => {
 		mapCheckout(null, "/nonexistent/other/*", "scope-other");
 

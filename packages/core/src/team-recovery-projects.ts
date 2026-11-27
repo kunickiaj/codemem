@@ -1,9 +1,8 @@
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
 import type { Database } from "./db.js";
-import { selectedProjectScopeMappings } from "./legacy-recipient-policy-projection.js";
 import { compareCodepoints } from "./recipient-policy-identifiers.js";
 import { normalizeRepositoryWorkspaceIdentity } from "./repository-mapping-aliases.js";
-import { resolveSessionScope } from "./scope-stamping.js";
+import { resolveRepositoryIdentityScope, resolveSessionScope } from "./scope-stamping.js";
 
 /*
  * The Project half of the Team recovery preview: which Projects the Team's
@@ -121,9 +120,6 @@ function revokedByQuarantine(recipient: RecipientRow | undefined): boolean {
 	);
 }
 
-type Selected =
-	ReturnType<typeof selectedProjectScopeMappings> extends Map<string, infer Value> ? Value : never;
-
 // One session for each checkout that recorded one of the identities as its
 // remote, its path or its repository. Memories received from peers are not checkouts.
 const CHECKOUT_SESSIONS_SQL = `SELECT MAX(id) FROM sessions
@@ -139,16 +135,22 @@ const CHECKOUT_SESSIONS_SQL = `SELECT MAX(id) FROM sessions
 	  )
 	GROUP BY cwd, git_remote ORDER BY MAX(id)`;
 
+interface ProjectRoute {
+	/** The scopes a mapping routes the Project to now. */
+	scopeIds: string[];
+	/**
+	 * Mappings for the Project disagree, or a checkout is ambiguous, so stamping
+	 * applies none of them. Mappings exist, and they are not the setup's.
+	 */
+	conflict: boolean;
+}
+
 /**
- * The scopes a new memory of the Project would be stamped with now: from each
- * checkout of it this machine has seen, under the live stamping rules, and by
- * its identity alone, which covers a Project with no checkout here.
+ * Where a new memory of the Project would be stamped now, under the live
+ * stamping rules: from each checkout of it this machine has seen, and by its
+ * identity alone, which covers a Project with no checkout here.
  */
-function routedScopeIds(
-	db: Database,
-	identities: readonly string[],
-	selected: ReadonlyMap<string, Selected>,
-): string[] {
+function projectRoute(db: Database, identities: readonly string[]): ProjectRoute {
 	const normalized = identities.flatMap((identity) => {
 		const value = normalizeRepositoryWorkspaceIdentity(identity);
 		return value ? [value] : [];
@@ -157,18 +159,19 @@ function routedScopeIds(
 		.prepare(CHECKOUT_SESSIONS_SQL)
 		.pluck()
 		.all({ identities: JSON.stringify(normalized) }) as number[];
-	const scopeIds = new Set<string>();
-	for (const sessionId of sessionIds) {
-		const route = resolveSessionScope(db, { sessionId, readOnly: true });
-		// Only the fallback is no route. A mapping that names the local default
-		// scope keeps the Project on this machine on purpose, and that is a route.
-		if (route.reason !== "local_default") scopeIds.add(route.scopeId);
-	}
-	for (const identity of identities) {
-		const mapping = selected.get(identity);
-		if (mapping) scopeIds.add(mapping.scopeId);
-	}
-	return [...scopeIds].toSorted(compareCodepoints);
+	const resolutions = [
+		...sessionIds.map((sessionId) => resolveSessionScope(db, { sessionId, readOnly: true })),
+		...identities.map((identity) => resolveRepositoryIdentityScope(db, identity)),
+	];
+	// Only the fallback is no route. A mapping that names the local default
+	// scope keeps the Project on this machine on purpose, and that is a route.
+	const routed = resolutions.filter((resolution) => resolution.reason !== "local_default");
+	return {
+		scopeIds: [...new Set(routed.map((resolution) => resolution.scopeId))].toSorted(
+			compareCodepoints,
+		),
+		conflict: resolutions.some((resolution) => resolution.mappingsSetAside),
+	};
 }
 
 type ProjectPlan = Pick<TeamRecoveryProject, "outcome" | "reason" | "restoredMappings">;
@@ -176,7 +179,7 @@ type ProjectPlan = Pick<TeamRecoveryProject, "outcome" | "reason" | "restoredMap
 function planSetupProject(
 	project: SetupProject,
 	recipient: RecipientRow | undefined,
-	route: { scopeIds: readonly string[]; selected: Selected | undefined },
+	route: ProjectRoute,
 	activeScopeIds: ReadonlySet<string>,
 ): ProjectPlan {
 	// Someone shared it with the Team again, or outside the setup: nothing to restore.
@@ -189,15 +192,12 @@ function planSetupProject(
 	if (!revokedByQuarantine(recipient)) return skipped("sharing_changed");
 	if (project.sources.some((source) => !activeScopeIds.has(source.scopeId)))
 		return skipped("scope_unavailable");
-	// Nothing routes the Project now: the setup's own mappings come back.
-	if (route.scopeIds.length === 0)
-		return { outcome: "restored", restoredMappings: project.sources };
 	const reviewed = new Set(project.sources.map((source) => source.scopeId));
-	// A route to any other scope, or one no mapping names the Project for, is someone's change.
-	const changed =
-		route.scopeIds.some((scopeId) => !reviewed.has(scopeId)) ||
-		route.selected?.workspaceIdentity === null;
-	return changed ? skipped("mapping_changed") : { outcome: "restored", restoredMappings: [] };
+	// A route to any other scope, or mappings that disagree, is someone's change.
+	if (route.conflict || route.scopeIds.some((scopeId) => !reviewed.has(scopeId)))
+		return skipped("mapping_changed");
+	// Nothing routes the Project now: the setup's own mappings come back.
+	return { outcome: "restored", restoredMappings: route.scopeIds.length ? [] : project.sources };
 }
 
 /** Plans every Project the Team would or would not receive once recovered. Reads only. */
@@ -225,14 +225,12 @@ export function planTeamRecoveryProjects(
 		...new Set([projectIdentity, ...sourcesOf(projectIdentity)]),
 	];
 	const projectIdentities = [...setup.keys(), ...outside];
-	const selected = selectedProjectScopeMappings(db, projectIdentities.flatMap(identitiesOf));
 	const activeScopeIds = activeGroupScopeIds(db, input);
 	return projectIdentities
 		.toSorted(compareCodepoints)
 		.map((projectIdentity): TeamRecoveryProject => {
 			const project = setup.get(projectIdentity);
-			const scopeIds = routedScopeIds(db, identitiesOf(projectIdentity), selected);
-			const route = { scopeIds, selected: selected.get(projectIdentity) };
+			const route = projectRoute(db, identitiesOf(projectIdentity));
 			const plan: ProjectPlan = project
 				? planSetupProject(project, recipientByProject.get(projectIdentity), route, activeScopeIds)
 				: { outcome: "resumes", restoredMappings: [] };
@@ -240,7 +238,7 @@ export function planTeamRecoveryProjects(
 				projectIdentity,
 				displayName: project?.displayName ?? null,
 				...plan,
-				routedScopeIds: scopeIds,
+				routedScopeIds: route.scopeIds,
 			};
 		});
 }
