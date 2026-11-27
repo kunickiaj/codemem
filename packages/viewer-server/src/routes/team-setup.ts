@@ -31,7 +31,6 @@ import {
 	deriveLegacyTeamSetupCompletionManifest,
 	deterministicPolicyTeamId,
 	discoverLegacyTeamCandidates,
-	ensureDeviceIdentity,
 	fetchPeerRemovalLookup,
 	fingerprintPublicKey,
 	getLegacyTeamSetupDraft,
@@ -53,6 +52,7 @@ import {
 	legacyTeamSetupCompletionActorIds,
 	legacyTeamSetupFailureCheck,
 	listProjectScopeCandidates,
+	loadRuntimeSigningPublicKey,
 	normalizeHumanPresentationName,
 	previewLegacyTeamSetupActivation,
 	RemoteCoordinatorRequestError,
@@ -341,13 +341,36 @@ export interface LegacyTeamCompletionDependencies {
 	) => ReturnType<typeof fetchPeerRemovalLookup>;
 }
 
-function lookupPeerRemovalsAsDaemon(
+/**
+ * The daemon's signed lookup, asked with this device's existing identity. A
+ * reconciliation never creates or repairs signing keys: with no usable identity
+ * the lookup is reported unavailable, which keeps every pairing.
+ */
+export async function lookupPeerRemovalsAsDaemon(
 	store: MemoryStore,
 	config: ReturnType<typeof readCoordinatorSyncConfig>,
 ) {
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
-	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	const rows = store.db.prepare("SELECT device_id FROM sync_device LIMIT 2").pluck().all();
+	const localDeviceId = rows.length === 1 && typeof rows[0] === "string" ? rows[0] : null;
+	if (
+		!localDeviceId ||
+		!loadRuntimeSigningPublicKey(store.db, { deviceId: localDeviceId, keysDir })
+	)
+		return unavailablePeerRemovalLookup();
 	return fetchPeerRemovalLookup(store, config, { localDeviceId, keysDir });
+}
+
+function unavailablePeerRemovalLookup(): Awaited<ReturnType<typeof fetchPeerRemovalLookup>> {
+	return {
+		status: "failed",
+		revoked: [],
+		removed: [],
+		enrolled: [],
+		removalSeq: null,
+		generation: null,
+		removedFromGroups: [],
+	};
 }
 
 const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
