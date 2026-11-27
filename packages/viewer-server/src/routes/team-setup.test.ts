@@ -14,7 +14,8 @@ import {
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { syncRoutes } from "./sync.js";
-import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
+import { __teamSetupTestHooks } from "./team-setup.js";
+import { teamSetupRoutesReconcilingOnRead as teamSetupRoutes } from "./team-setup-test-fixtures.js";
 
 function createRouteStore(): { store: MemoryStore; close: () => void } {
 	const store = new MemoryStore(":memory:");
@@ -1348,7 +1349,7 @@ describe("Team setup roster loading", () => {
 				});
 				const summary = await app.request("/api/sync/team-setup/v1");
 				expect(summary.status).toBe(200);
-				expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+				expect(await summary.json()).toMatchObject({ version: 1, candidates: [] });
 				const detail = await app.request(
 					`/api/sync/team-setup/v1/${legacyTeamCandidateId(coordinatorId, groupId)}`,
 				);
@@ -1969,7 +1970,7 @@ describe("Team setup summary and coordinator admin access", () => {
 		try {
 			const summary = await app.request("/api/sync/team-setup/v1");
 			expect(summary.status).toBe(200);
-			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+			expect(await summary.json()).toMatchObject({ version: 1, candidates: [] });
 			const detail = await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}`);
 			expect(detail.status).toBe(503);
 			expect(await detail.json()).toEqual({ error: "team_setup_roster_unavailable" });
@@ -2081,7 +2082,7 @@ describe("Team setup error logging", () => {
 			expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
 			expect(warn).toHaveBeenCalledWith(
 				expect.stringMatching(
-					/^\[team-setup\] route=GET \/api\/sync\/team-setup\/v1 apiCode=team_setup_roster_unavailable check=\S+ \([\w.-]+:\d+\)$/u,
+					/^\[team-setup\] route=background GET \/api\/sync\/team-setup\/v1 apiCode=team_setup_roster_unavailable check=\S+ \([\w.-]+:\d+\)$/u,
 				),
 			);
 		} finally {

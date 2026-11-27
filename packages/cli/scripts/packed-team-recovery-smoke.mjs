@@ -208,7 +208,18 @@ async function installedFixture(installDir, scenario) {
 			});
 			return { status: response.status, body: await response.json() };
 		};
-		const summary = await request("/api/sync/team-setup/v1");
+		// The list shows the Viewer's background check. The first read starts it, so
+		// read until that check has finished.
+		const settledSummary = async () => {
+			for (let tries = 0; tries < 200; tries++) {
+				const read = await request("/api/sync/team-setup/v1");
+				const check = read.body?.reconciliation;
+				if (read.status !== 200 || (check?.state !== "never" && !check?.refreshing)) return read;
+				await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+			}
+			throw new Error("Team setup background check did not finish");
+		};
+		const summary = await settledSummary();
 		if (scenario !== "recover") {
 			// Assert: invalid included devices cannot create grants or placeholder actors.
 			assert.equal(summary.status, 200, JSON.stringify(summary));

@@ -42,6 +42,10 @@ import {
 	type LegacyTeamConfiguredGroupSnapshotLoader,
 	TEAM_SETUP_ROUTE_PREFIX,
 } from "./routes/team-setup.js";
+import {
+	reconcileBeforeSummaryReads,
+	type SettleableReconciliation,
+} from "./routes/team-setup-test-fixtures.js";
 
 const TOKEN_PROVENANCE_BASE = {
 	token_unit: "tokens",
@@ -63,6 +67,21 @@ const LEGACY_UNCLASSIFIED_PROVENANCE = {
  * Sync status serves coordinator answers from memory. The first read starts the
  * background refresh; this waits for it and reads again.
  */
+/**
+ * A coordinator that accepts completion publication and reads both removal lists,
+ * which Team setup requires before it repairs a completed Team's recipients.
+ */
+function publishingCoordinatorReadingRemovals(): NonNullable<
+	AppOptions["teamSetupCompletionDependencies"]
+> {
+	return {
+		create: async ({ manifest }) => ({ status: "created", manifest }),
+		list: async () => [],
+		listRemovals: async () => [],
+		listTeamMemberRemovals: async () => [],
+	};
+}
+
 const JOIN_REQUEST_STATUS_PATH = "/api/sync/status?includeDiagnostics=1&includeJoinRequests=1";
 
 async function refreshedStatus(
@@ -703,8 +722,14 @@ function createTestApp(opts?: {
 		teamSetupCompletionDependencies: opts?.teamSetupCompletionDependencies ?? null,
 		readCoordinatorConfig: opts?.readCoordinatorConfig,
 		renameCoordinatorGroup: opts?.renameCoordinatorGroup,
+		onTeamSetupReconciliation: (registered: SettleableReconciliation) => {
+			teamSetupReconciliation = registered;
+		},
 	};
-	const app = createApp(appOptions);
+	let teamSetupReconciliation: SettleableReconciliation | null = null;
+	// Team setup checks the coordinator in the background; these tests read its
+	// summary after one pass, as the summary used to reconcile before answering.
+	const app = reconcileBeforeSummaryReads(createApp(appOptions), () => teamSetupReconciliation);
 
 	const syncApp = createSyncApp({
 		storeFactory,
@@ -714,6 +739,7 @@ function createTestApp(opts?: {
 	return {
 		app,
 		syncApp,
+		teamSetupReconciliation: () => teamSetupReconciliation,
 		ensureStore: () => storeFactory(),
 		getStore: () => store,
 		cleanup: () => {
@@ -2450,7 +2476,7 @@ describe("viewer-server", () => {
 
 		it("invalidates the cached Team setup summary after a recipient-policy rename", async () => {
 			const loadSnapshots = vi.fn(async () => []);
-			const { app, ensureStore, cleanup } = createTestApp({
+			const { app, ensureStore, cleanup, teamSetupReconciliation } = createTestApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 				readCoordinatorConfig: () => core.readCoordinatorSyncConfig({}),
 			});
@@ -2468,7 +2494,6 @@ describe("viewer-server", () => {
 					.run();
 
 				await app.request("/api/sync/team-setup/v1");
-				await app.request("/api/sync/team-setup/v1");
 				expect(loadSnapshots).toHaveBeenCalledTimes(1);
 
 				const renamed = await app.request("/api/sync/recipient-policy/v1/teams/team-local", {
@@ -2484,7 +2509,8 @@ describe("viewer-server", () => {
 				});
 				expect(renamed.status).toBe(200);
 
-				await app.request("/api/sync/team-setup/v1");
+				// The rename starts a background check, which loads the roster again.
+				await teamSetupReconciliation()?.settle();
 				expect(loadSnapshots).toHaveBeenCalledTimes(2);
 			} finally {
 				cleanup();
@@ -2501,10 +2527,7 @@ describe("viewer-server", () => {
 						sync_coordinator_groups: [groupId],
 						sync_coordinator_admin_secret: "test-secret",
 					}),
-				teamSetupCompletionDependencies: {
-					create: async ({ manifest }) => ({ status: "created", manifest }),
-					list: async () => [],
-				},
+				teamSetupCompletionDependencies: publishingCoordinatorReadingRemovals(),
 			});
 			try {
 				const store = ensureStore();
@@ -2893,7 +2916,7 @@ describe("viewer-server", () => {
 				);
 				const pendingAfterFinish = await app.request("/api/sync/team-setup/v1");
 				expect(pendingAfterFinish.status).toBe(200);
-				expect(await pendingAfterFinish.json()).toEqual({ version: 1, candidates: [] });
+				expect(await pendingAfterFinish.json()).toMatchObject({ version: 1, candidates: [] });
 				store.db
 					.prepare(
 						`DELETE FROM project_recipients
@@ -2904,7 +2927,7 @@ describe("viewer-server", () => {
 				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
 				const reconciledSummary = await app.request("/api/sync/team-setup/v1");
 				expect(reconciledSummary.status).toBe(200);
-				expect(await reconciledSummary.json()).toEqual({ version: 1, candidates: [] });
+				expect(await reconciledSummary.json()).toMatchObject({ version: 1, candidates: [] });
 				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
 				expect(
 					store.db
@@ -3090,8 +3113,9 @@ describe("viewer-server", () => {
 						 'new-projection', ?, ?)`,
 					)
 					.run(supersedingAttemptId, candidateRef, coordinatorId, groupId, now, now);
-				loadSnapshots.mockClear();
 				const terminalSummaryResponse = await app.request("/api/sync/team-setup/v1");
+				// The summary's background check loads a fresh roster; the stale routes below must not.
+				loadSnapshots.mockClear();
 				expect(terminalSummaryResponse.status).toBe(200);
 				const terminalSummary = (await terminalSummaryResponse.json()) as {
 					candidates: Array<{ candidateRef: string }>;

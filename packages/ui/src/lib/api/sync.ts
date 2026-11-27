@@ -1104,9 +1104,20 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 	blockingReason?: LegacyTeamSetupErrorReason;
 };
 
+/** How current the Viewer's last check of Team setup with the coordinator is. */
+export interface LegacyTeamSetupReconciliationStatusV1 {
+	state: "current" | "stale" | "never";
+	refreshing: boolean;
+	checked_at: string | null;
+	age_ms: number | null;
+	error_code: string | null;
+}
+
 export interface LegacyTeamSetupSummaryResponseV1 {
 	version: 1;
 	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
+	/** Absent from older Viewers, which checked the coordinator on every read. */
+	reconciliation?: LegacyTeamSetupReconciliationStatusV1;
 }
 
 export type LegacyTeamSetupAssignmentExpectationV1 =

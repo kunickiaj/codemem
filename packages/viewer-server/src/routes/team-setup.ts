@@ -23,6 +23,7 @@ import {
 	claimRecipientPolicyActorMutations,
 	claimRecipientPolicyPublicationMutation,
 	clearLegacyTeamSetupDeviceDecision,
+	completeMaintenanceJob,
 	containLegacyTeamSetupCompletionConflict,
 	coordinatorCreateLegacyTeamCompletionAction,
 	coordinatorGetLegacyTeamCompletionAction,
@@ -56,6 +57,7 @@ import {
 	legacyTeamSetupFailureCheck,
 	listProjectScopeCandidates,
 	loadRuntimeSigningPublicKey,
+	localRemovedDeviceIds,
 	normalizeHumanPresentationName,
 	previewLegacyTeamSetupActivation,
 	RemoteCoordinatorRequestError,
@@ -72,10 +74,17 @@ import {
 	setLegacyTeamSetupDeviceAssignment,
 	setLegacyTeamSetupDeviceDecision,
 	setLegacyTeamSetupProjectMapping,
+	startMaintenanceJob,
 	validateLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifestBinding,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
+import {
+	createTeamSetupReconciliation,
+	type TeamSetupReconciliation,
+	type TeamSetupReconciliationOutcome,
+	type TeamSetupReconciliationRead,
+} from "./team-setup-reconciliation.js";
 import {
 	type LegacyTeamSetupCandidateSummaryV1,
 	type LegacyTeamSetupDetailResponseV1,
@@ -196,13 +205,22 @@ function candidateMutationSettled(db: MemoryStore["db"], candidateRef: string): 
 	return activeCandidateMutations.get(db)?.get(candidateRef) ?? Promise.resolve();
 }
 
+/**
+ * Candidates whose mutation a background pass skipped because a draft or finish
+ * route held the claim. The pass retries them instead of reporting a failure.
+ */
+const skippedCandidateMutations = new AsyncLocalStorage<Set<string>>();
+
 async function runCandidateMutation<T>(
 	db: MemoryStore["db"],
 	candidateRef: string,
 	operation: () => Promise<T>,
 ): Promise<boolean> {
 	const release = claimCandidateMutation(db, candidateRef);
-	if (!release) return false;
+	if (!release) {
+		skippedCandidateMutations.getStore()?.add(candidateRef);
+		return false;
+	}
 	try {
 		await operation();
 		return true;
@@ -345,6 +363,12 @@ export interface TeamSetupRoutesOptions {
 	completionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	registerSummaryInvalidator?: (invalidate: () => void) => void;
+	/** How soon a check retries candidates it skipped because a route held them; for tests. */
+	reconciliationRetryDelayMs?: number;
+	/** Receives the background reconciliation, so the service can start it and tests can await it. */
+	registerReconciliation?: (
+		reconciliation: TeamSetupReconciliation<SummaryReconciliationResult>,
+	) => void;
 }
 
 export interface LegacyTeamCompletionDependencies {
@@ -980,74 +1004,400 @@ function blockedCandidateSummary(
 	};
 }
 
-function pendingCandidateSummaries(
-	store: MemoryStore,
-	groups: LegacyTeamConfiguredGroupSnapshot[],
-	blockingErrors: Map<string, CompletionBlocker>,
-): LegacyTeamSetupPendingCandidateSummaryV1[] {
-	const unblockedGroups = groups.filter(
-		(group) => !blockingErrors.has(legacyTeamCandidateId(group.coordinatorId, group.groupId)),
-	);
-	const pending = readPureCandidateViews(store, unblockedGroups)
-		.map(candidateSummary)
-		.filter(
-			(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
-				candidate.status !== "ready",
-		);
-	const blocked = groups.flatMap((group) => {
-		const error = blockingErrors.get(legacyTeamCandidateId(group.coordinatorId, group.groupId));
-		return error ? [blockedCandidateSummary(store, group, error)] : [];
-	});
-	return [...pending, ...blocked].toSorted((left, right) => {
-		if (left.candidateRef < right.candidateRef) return -1;
-		return left.candidateRef > right.candidateRef ? 1 : 0;
-	});
+/**
+ * What one background pass found. `views` are the candidates discovery produced
+ * after this pass's fresh evidence; `failed` groups carry a blocker; `skipped`
+ * groups kept the previous pass's view and blocker because a route held their claim.
+ */
+interface SummaryReconciliationResult {
+	groups: LegacyTeamConfiguredGroupSnapshot[];
+	views: Map<string, LegacyTeamCandidateView>;
+	blockers: Map<string, CompletionBlocker>;
+	failed: Set<string>;
+	skipped: Set<string>;
 }
 
-async function reconcileSummaryCandidates(
-	store: MemoryStore,
-	groups: LegacyTeamConfiguredGroupSnapshot[],
+const TEAM_SETUP_RECONCILIATION_JOB = "team_setup_reconciliation";
+
+interface SummaryReconciliationDependencies {
+	loadSnapshots: ReturnType<typeof createCachedSnapshotLoader>;
 	reconcile: (
 		store: MemoryStore,
 		groups: LegacyTeamCandidateGroupDescriptor[],
 		options: CompletionReconciliationOptions,
-	) => Promise<void>,
-): Promise<LegacyTeamSetupSummaryResponseV1> {
-	readPureCandidateViews(store, groups);
-	const blockingErrors = new Map<string, CompletionBlocker>();
-	await reconcile(store, groups, summaryReconciliationOptions(blockingErrors));
-	return {
-		version: TEAM_SETUP_VERSION,
-		candidates: pendingCandidateSummaries(store, groups, blockingErrors),
-	};
+	) => Promise<void>;
+	/** Whether current admin authority covers rediscovering a completed group. */
+	mayRediscover: (group: LegacyTeamCandidateGroupDescriptor) => boolean;
+	/** Reads the coordinator's device and Team member removals for one group. */
+	readRemovalsForRepair: (group: LegacyTeamCandidateGroupDescriptor) => Promise<RepairEvidence>;
 }
 
-function readPureCandidateViews(
+/**
+ * One background pass, on fresh evidence only: it loads the roster from the
+ * coordinator, creates drafts for groups that have no local setup at all, then
+ * reads completions and removals. Only after that, for each group that neither
+ * failed nor was skipped, it rediscovers groups with a local completion, the
+ * step that can restore setup-owned Project recipients. Every discovery runs
+ * under the candidate claim, and none runs on a cached roster or after a failed
+ * removal read.
+ */
+async function runSummaryReconciliation(
 	store: MemoryStore,
-	groups: LegacyTeamConfiguredGroupSnapshot[],
-): LegacyTeamCandidateView[] {
-	const existing: LegacyTeamCandidateView[] = [];
-	const discoverable: LegacyTeamConfiguredGroupSnapshot[] = [];
+	dependencies: SummaryReconciliationDependencies,
+	previous: SummaryReconciliationResult | null,
+): Promise<SummaryReconciliationResult> {
+	dependencies.loadSnapshots.invalidate();
+	const groups = await dependencies.loadSnapshots();
+	// Discovery below runs one group at a time, so bound the whole roster here.
+	requireBoundedSnapshots(groups);
+	await Promise.all(
+		groups.map((group) => candidateMutationSettled(store.db, summaryCandidateRef(group))),
+	);
+	const blockers = new Map<string, CompletionBlocker>();
+	const skipped = new Set<string>();
+	const views = new Map<string, LegacyTeamCandidateView>();
+	// Applying a coordinator completion needs the group's draft. Creating it reads
+	// only the fresh roster and changes no access: a group without any local setup
+	// has no completion whose recipients discovery could restore.
 	for (const group of groups) {
-		const candidateRef = legacyTeamCandidateId(group.coordinatorId, group.groupId);
-		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
-		if (hasCompletedLegacyTeamSetup(store, candidateRef)) {
-			// Only canonical terminal completions pass through discovery: they can
-			// reconcile missing setup recipient edges while preserving newer drafts.
-			if (isLegacyTeamCandidateSelectable(store.db, candidateRef)) discoverable.push(group);
-			continue;
-		}
-		if (!draft || draft.state === "completed") {
-			discoverable.push(group);
-			continue;
-		}
-		existing.push(candidateFromDraft(draft));
+		if (!hasNoLocalSetup(store, summaryCandidateRef(group))) continue;
+		await discoverAfterReconciliation(store, group, dependencies, { views, skipped });
 	}
-	return [...existing, ...discoverCandidates(store, discoverable)]
-		.filter((candidate) => !hasCompletedLegacyTeamSetup(store, candidate.candidateRef))
-		.toSorted((left, right) =>
-			left.candidateRef < right.candidateRef ? -1 : left.candidateRef > right.candidateRef ? 1 : 0,
+	await skippedCandidateMutations.run(skipped, () =>
+		dependencies.reconcile(store, groups, summaryReconciliationOptions(blockers)),
+	);
+	for (const group of groups) {
+		const candidateRef = summaryCandidateRef(group);
+		if (blockers.has(candidateRef) || skipped.has(candidateRef) || views.has(candidateRef))
+			continue;
+		// Rediscovering a completion can restore setup recipients. Reconciliation
+		// reads removals only on some paths, so read them here for every completion.
+		let removals: Extract<RepairEvidence, { status: "read" }> | null = null;
+		if (hasRepairableSetupTeam(store, candidateRef)) {
+			const evidence = await dependencies.readRemovalsForRepair(group);
+			if (evidence.status === "failed") blockers.set(candidateRef, evidence.blocker);
+			if (evidence.status !== "read") continue;
+			removals = evidence;
+		}
+		await discoverAfterReconciliation(store, group, dependencies, { views, skipped }, () =>
+			removals ? applyRemovalsBeforeRepair(store, group, removals) : true,
 		);
+	}
+	return carrySkippedGroups({ groups, views, blockers, skipped }, previous);
+}
+
+/**
+ * Whether rediscovering this candidate can restore setup recipients: core repairs
+ * them only for the setup's Team while it is active, so this is the same check.
+ */
+function hasRepairableSetupTeam(store: MemoryStore, candidateRef: string): boolean {
+	return Boolean(
+		store.db
+			.prepare("SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'active' LIMIT 1")
+			.pluck()
+			.get(deterministicPolicyTeamId(candidateRef)),
+	);
+}
+
+const DEVICE_REMOVALS_UNREAD: CompletionBlocker = {
+	code: "team_setup_completion_unavailable",
+	reason: "device_removals_unavailable",
+};
+const TEAM_MEMBER_REMOVALS_UNREAD: CompletionBlocker = {
+	code: "team_setup_completion_unavailable",
+	reason: "team_member_removals_unavailable",
+};
+
+/**
+ * Whether a completed group's recipients may be repaired. `read`: both removal
+ * lists were read. `unavailable`: no current admin authority for the group or no
+ * removal reads at all, so nothing is repaired, as on a device without the admin
+ * secret. `failed`: a removal read was attempted and failed, so nothing is
+ * repaired and the group carries the blocker.
+ */
+type RepairEvidence =
+	| {
+			status: "read";
+			deviceRemovals: ReadonlyArray<{ group_id: string; device_id: string; fingerprint: string }>;
+			teamMemberRemovals: CoordinatorTeamMemberRemoval[];
+	  }
+	| { status: "unavailable" }
+	| { status: "failed"; blocker: CompletionBlocker };
+
+/** Fresh removal evidence for one group, read before any recipient repair. */
+async function readRemovalsForRepair(
+	options: TeamSetupRoutesOptions,
+	store: MemoryStore,
+	group: LegacyTeamCandidateGroupDescriptor,
+): Promise<RepairEvidence> {
+	const dependencies =
+		options.completionDependencies === undefined
+			? defaultCompletionDependencies
+			: options.completionDependencies;
+	const authorization = readCompletionAuthorization(options);
+	const reads = dependencies?.listRemovals && dependencies.listTeamMemberRemovals;
+	if (!reads || !authorization || !authorizesGroup(authorization, group)) {
+		return { status: "unavailable" };
+	}
+	const timeoutS = Math.max(1, authorization.config.syncCoordinatorTimeoutS);
+	const deadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
+	const { removalReads } = completionReadActions(
+		dependencies,
+		{ authorization, store },
+		timeoutS,
+		deadlineMs,
+	);
+	const devices = await removalReads.listRemovals();
+	if (devices?.status !== "read") return { status: "failed", blocker: DEVICE_REMOVALS_UNREAD };
+	let teamMemberRemovals: CoordinatorTeamMemberRemoval[] | undefined;
+	try {
+		teamMemberRemovals = await removalReads.listTeamMemberRemovals(group.groupId);
+	} catch {
+		return { status: "failed", blocker: TEAM_MEMBER_REMOVALS_UNREAD };
+	}
+	if (!teamMemberRemovals) return { status: "unavailable" };
+	return { status: "read", deviceRemovals: devices.removals, teamMemberRemovals };
+}
+
+/**
+ * Applies the removals a check read, before rediscovery can restore recipients,
+ * and returns whether the repair may run.
+ *
+ * Team member removals are recorded with their enforcements, as the enrollment
+ * check does. They commit in their own transaction before rediscovery, under the
+ * same candidate claim, so any recipient the repair restores is refused to a
+ * removed person's devices.
+ *
+ * A device removal covers one group, and the device may still be enrolled in
+ * another, so this check does not end device-wide access: the sync daemon's
+ * removal check does that once the device is removed everywhere, and the Team
+ * then goes back to review. While this machine still pins or binds a device
+ * this group removed, under the removed key, the repair waits.
+ */
+function applyRemovalsBeforeRepair(
+	store: MemoryStore,
+	group: LegacyTeamCandidateGroupDescriptor,
+	evidence: Extract<RepairEvidence, { status: "read" }>,
+): boolean {
+	applyTeamMemberRemovals(store.db, {
+		coordinatorId: group.coordinatorId,
+		groupId: group.groupId,
+		removals: evidence.teamMemberRemovals,
+		now: new Date().toISOString(),
+	});
+	const removed = evidence.deviceRemovals.filter((removal) => removal.group_id === group.groupId);
+	if (removed.length === 0) return true;
+	// Read only: never create a signing identity here.
+	const localDeviceId =
+		(store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").pluck().get() as
+			| string
+			| undefined) ?? "";
+	// The local IDs whose pin and binding, if any, match a removed key.
+	const removedLocally = localRemovedDeviceIds(
+		store.db,
+		{
+			enrollments: removed.map(({ device_id, fingerprint }) => ({ device_id, fingerprint })),
+			keyId: null,
+		},
+		localDeviceId,
+	);
+	const stillServed = store.db.prepare(
+		`SELECT 1 FROM identity_devices WHERE device_id = ? AND status = 'active'
+		 UNION ALL SELECT 1 FROM sync_peers WHERE peer_device_id = ? LIMIT 1`,
+	);
+	return removedLocally.every((deviceId) => !stillServed.get(deviceId, deviceId));
+}
+
+/** No draft of any state and no completed Team: discovery here only creates a draft. */
+function hasNoLocalSetup(store: MemoryStore, candidateRef: string): boolean {
+	return (
+		getLegacyTeamSetupDraft(store.db, candidateRef) === null &&
+		!hasCompletedLegacyTeamSetup(store, candidateRef)
+	);
+}
+
+function summaryCandidateRef(group: LegacyTeamCandidateGroupDescriptor): string {
+	return legacyTeamCandidateId(group.coordinatorId, group.groupId);
+}
+
+/** Discovery for one group under its claim; a taken claim marks the group skipped. */
+async function discoverAfterReconciliation(
+	store: MemoryStore,
+	group: LegacyTeamConfiguredGroupSnapshot,
+	dependencies: SummaryReconciliationDependencies,
+	found: { views: Map<string, LegacyTeamCandidateView>; skipped: Set<string> },
+	mayRepair: () => boolean = () => true,
+): Promise<void> {
+	const candidateRef = summaryCandidateRef(group);
+	const ran = await runCandidateMutation(store.db, candidateRef, async () => {
+		if (!mayRepair()) return;
+		const view = discoveredSummaryView(store, group, dependencies.mayRediscover);
+		if (view) found.views.set(candidateRef, view);
+	});
+	if (!ran) found.skipped.add(candidateRef);
+}
+
+/** The candidate view the summary lists for one group, discovering it when needed. */
+function discoveredSummaryView(
+	store: MemoryStore,
+	group: LegacyTeamConfiguredGroupSnapshot,
+	mayRediscover: (group: LegacyTeamCandidateGroupDescriptor) => boolean,
+): LegacyTeamCandidateView | null {
+	const candidateRef = summaryCandidateRef(group);
+	const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+	if (hasCompletedLegacyTeamSetup(store, candidateRef)) {
+		// Only canonical terminal completions pass through discovery: they can
+		// reconcile missing setup recipient edges while preserving newer drafts.
+		if (!isLegacyTeamCandidateSelectable(store.db, candidateRef)) return null;
+	} else if (draft && draft.state !== "completed") {
+		return candidateFromDraft(draft);
+	}
+	const [view] = completedTeamDiscoveryAuthority.run(mayRediscover, () =>
+		discoverCandidates(store, [group]),
+	);
+	return view ?? null;
+}
+
+/** A skipped group keeps what the previous pass found, so a busy route never clears it. */
+function carrySkippedGroups(
+	result: Omit<SummaryReconciliationResult, "failed">,
+	previous: SummaryReconciliationResult | null,
+): SummaryReconciliationResult {
+	for (const candidateRef of result.skipped) {
+		result.blockers.delete(candidateRef);
+		const blocker = previous?.blockers.get(candidateRef);
+		if (blocker) result.blockers.set(candidateRef, blocker);
+		const view = previous?.views.get(candidateRef);
+		if (view) result.views.set(candidateRef, view);
+	}
+	return { ...result, failed: new Set(result.blockers.keys()) };
+}
+
+/** Candidates with an unfinished local draft, listed before the coordinator was ever checked. */
+function localDraftCandidateSummaries(
+	store: MemoryStore,
+): LegacyTeamSetupPendingCandidateSummaryV1[] {
+	const candidateRefs = store.db
+		.prepare(
+			`SELECT DISTINCT candidate_id FROM legacy_team_setup_drafts
+			 WHERE state <> 'completed' AND superseded_at IS NULL ORDER BY candidate_id`,
+		)
+		.pluck()
+		.all() as string[];
+	return candidateRefs.flatMap((candidateRef) => {
+		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+		if (!draft || draft.state === "completed" || hasCompletedLegacyTeamSetup(store, candidateRef)) {
+			return [];
+		}
+		const summary = candidateSummary(candidateFromDraft(draft));
+		return summary.status === "ready" ? [] : [summary as LegacyTeamSetupPendingCandidateSummaryV1];
+	});
+}
+
+/**
+ * The summary from the last reconciliation pass, read from local state only. With
+ * nothing checked yet and the latest check failed, the answer is that failure, as
+ * when the summary checked inline.
+ */
+function summaryResponse(
+	store: MemoryStore,
+	read: TeamSetupReconciliationRead<SummaryReconciliationResult>,
+): LegacyTeamSetupSummaryResponseV1 | { error: LegacyTeamSetupActivationErrorCode } {
+	if (!read.result && read.status.error_code) {
+		return { error: read.status.error_code as LegacyTeamSetupActivationErrorCode };
+	}
+	const candidates = read.result
+		? checkedCandidateSummaries(store, read.result)
+		: localDraftCandidateSummaries(store);
+	return { version: TEAM_SETUP_VERSION, candidates, reconciliation: read.status };
+}
+
+/**
+ * The candidates the last pass found, with local drafts read again so edits show
+ * at once. Reads only: discovery, which can write drafts and access, runs in the pass.
+ */
+function checkedCandidateSummaries(
+	store: MemoryStore,
+	result: SummaryReconciliationResult,
+): LegacyTeamSetupPendingCandidateSummaryV1[] {
+	return result.groups
+		.flatMap((group) => {
+			const candidateRef = summaryCandidateRef(group);
+			const blocker = result.blockers.get(candidateRef);
+			if (blocker) return [blockedCandidateSummary(store, group, blocker)];
+			if (hasCompletedLegacyTeamSetup(store, candidateRef)) return [];
+			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+			const view =
+				draft && draft.state !== "completed"
+					? candidateFromDraft(draft)
+					: result.views.get(candidateRef);
+			if (!view || view.status === "ready") return [];
+			return [candidateSummary(view) as LegacyTeamSetupPendingCandidateSummaryV1];
+		})
+		.toSorted((left, right) => compareCandidateRefs(left.candidateRef, right.candidateRef));
+}
+
+function compareCandidateRefs(left: string, right: string): number {
+	if (left < right) return -1;
+	return left > right ? 1 : 0;
+}
+
+/** The background check behind the summary, refreshed again when coordinator settings change. */
+function createSummaryReconciliation(
+	options: TeamSetupRoutesOptions,
+	loadSnapshots: ReturnType<typeof createCachedSnapshotLoader>,
+	reconcile: SummaryReconciliationDependencies["reconcile"],
+): TeamSetupReconciliation<SummaryReconciliationResult> {
+	const mayRediscover = (group: LegacyTeamCandidateGroupDescriptor) => {
+		const authorization = readCompletionAuthorization(options);
+		return Boolean(authorization && authorizesGroup(authorization, group));
+	};
+	const dependencies: SummaryReconciliationDependencies = {
+		loadSnapshots,
+		reconcile,
+		mayRediscover,
+		readRemovalsForRepair: (group) => readRemovalsForRepair(options, options.getStore(), group),
+	};
+	const reconciliation = createTeamSetupReconciliation<SummaryReconciliationResult>({
+		run: (previous) => runSummaryReconciliation(options.getStore(), dependencies, previous),
+		assess: (result) => ({
+			failedGroups: result.failed.size,
+			skippedGroups: result.skipped.size,
+			errorCode: result.blockers.values().next().value?.code ?? null,
+		}),
+		retryDelayMs: options.reconciliationRetryDelayMs,
+		errorCode: (error) => teamSetupFailure(error, "background GET /api/sync/team-setup/v1").code,
+		record: (outcome) => recordReconciliationOutcome(options.getStore(), outcome),
+	});
+	options.registerReconciliation?.(reconciliation);
+	options.registerSummaryInvalidator?.(() => {
+		loadSnapshots.invalidate();
+		void reconciliation.refresh();
+	});
+	return reconciliation;
+}
+
+/** Shows each pass on the Health tab; a coordinator outage is not a failed job. */
+function recordReconciliationOutcome(
+	store: MemoryStore,
+	outcome: TeamSetupReconciliationOutcome,
+): void {
+	const checkedAt =
+		outcome.checkedAtMs === null ? null : new Date(outcome.checkedAtMs).toISOString();
+	const message = outcome.ok
+		? "Checked Team setup with the coordinator"
+		: `Could not check Team setup with the coordinator (${outcome.errorCode}); showing the last check`;
+	// One transaction, so status never shows the row as pending.
+	store.db.transaction(() => {
+		startMaintenanceJob(store.db, {
+			kind: TEAM_SETUP_RECONCILIATION_JOB,
+			title: "Team setup check",
+			status: "pending",
+			message,
+			metadata: { last_checked_at: checkedAt, last_error_code: outcome.errorCode },
+		});
+		completeMaintenanceJob(store.db, TEAM_SETUP_RECONCILIATION_JOB, { message });
+	})();
 }
 
 function hasCompletedLegacyTeamSetup(store: MemoryStore, candidateRef: string): boolean {
@@ -1389,6 +1739,7 @@ function projectMutationAtomically<Mutation, Projection>(
 }
 
 export const __teamSetupTestHooks = {
+	claimCandidateMutation,
 	createCachedSnapshotLoader,
 	loadConfiguredLegacyTeamGroupSnapshotsWith,
 	normalizedCoordinatorId,
@@ -2416,7 +2767,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		}
 	}
 	const loadedSummarySnapshots = createLoadedSummarySnapshotCache(loadedSnapshots, options);
-	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
+	const reconciliation = createSummaryReconciliation(
+		options,
+		loadedSummarySnapshots,
+		reconcileCompletions,
+	);
 	const completionDependencies =
 		options.completionDependencies === undefined
 			? defaultCompletionDependencies
@@ -2957,18 +3312,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		return { coordinatorId: row.coordinator_id, groupId: row.group_id };
 	}
 
-	app.get("/api/sync/team-setup/v1", async (c) => {
-		let groups: LegacyTeamConfiguredGroupSnapshot[];
+	// The summary never waits for the coordinator; the background pass does that.
+	app.get("/api/sync/team-setup/v1", (c) => {
 		try {
-			groups = await loadedSummarySnapshots();
-		} catch (error) {
-			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
-			return c.json({ error: failure.code }, failure.status);
-		}
-		try {
-			const store = options.getStore();
-			const response = await reconcileSummaryCandidates(store, groups, reconcileCompletions);
-			return c.json(response);
+			const summary = summaryResponse(options.getStore(), reconciliation.read());
+			return "error" in summary ? c.json(summary, errorStatus(summary.error)) : c.json(summary);
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
 			return c.json({ error: failure.code }, failure.status);

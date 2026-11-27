@@ -195,6 +195,16 @@ export interface AppOptions extends SyncAppOptions {
 	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
+	/**
+	 * How often Team setup checks completions with the coordinator in the background.
+	 * Unset, a check runs only when a summary read finds the last one old.
+	 */
+	teamSetupReconciliationIntervalMs?: number;
+	/** Receives the Team setup background check; for tests. */
+	onTeamSetupReconciliation?: (reconciliation: {
+		refresh: () => Promise<void>;
+		settle: () => Promise<void>;
+	}) => void;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	/** Supplied by the foreground host to serialize Remove cleanup with refreshes. */
 	createDeviceRemovalRefreshHooks?: DeviceRemovalRefreshHooksFactory;
@@ -269,6 +279,7 @@ function registerConfigRoutes(
 	app: Hono,
 	opts: AppOptions | undefined,
 	sweeper: RawEventSweeper | null,
+	onCoordinatorConfigChanged: () => void,
 ): void {
 	app.route(
 		"/",
@@ -276,6 +287,7 @@ function registerConfigRoutes(
 			getSweeper: () => sweeper,
 			scheduleObserverApply: opts?.scheduleObserverApply,
 			getObserverApplyStatus: opts?.getObserverApplyStatus,
+			onCoordinatorConfigChanged,
 		}),
 	);
 }
@@ -413,7 +425,7 @@ export function createApp(opts?: AppOptions) {
 			getObserver,
 		}),
 	);
-	registerConfigRoutes(app, opts, sweeper);
+	registerConfigRoutes(app, opts, sweeper, () => invalidateTeamSetupSummary());
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	installRecipientAccessChangeGate(app, storeFactory, opts?.readCoordinatorConfig);
 	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());
@@ -434,6 +446,8 @@ export function createApp(opts?: AppOptions) {
 			registerSummaryInvalidator: (invalidate) => {
 				invalidateTeamSetupSummary = invalidate;
 			},
+			registerReconciliation: (reconciliation) =>
+				startTeamSetupReconciliation(reconciliation, opts),
 		}),
 	);
 	app.route("/", updateStatusRoutes({ getUpdateStatus: opts?.getUpdateStatus }));
@@ -441,6 +455,17 @@ export function createApp(opts?: AppOptions) {
 	registerStaticRoutes(app);
 
 	return app;
+}
+
+function startTeamSetupReconciliation(
+	reconciliation: { refresh: () => Promise<void>; settle: () => Promise<void> } & {
+		startPeriodic: (intervalMs: number) => void;
+	},
+	opts: AppOptions | undefined,
+): void {
+	opts?.onTeamSetupReconciliation?.(reconciliation);
+	const intervalMs = opts?.teamSetupReconciliationIntervalMs;
+	if (intervalMs) reconciliation.startPeriodic(intervalMs);
 }
 
 /** Preserve the public server options while transport adapters use the narrower factory. */

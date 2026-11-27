@@ -1056,6 +1056,9 @@ export async function callMemoryToolForHost(
 	return callCodememToolLocally(store, name, args, caller);
 }
 
+/** How often the running service checks Team setup completions with the coordinator. */
+const TEAM_SETUP_RECONCILIATION_INTERVAL_MS = 5 * 60_000;
+
 function foregroundAppOptions(
 	store: MemoryStore,
 	rawEventOptions: ReturnType<typeof startRawEventProcessing>["appOptions"],
@@ -1073,6 +1076,8 @@ function foregroundAppOptions(
 		...rawEventOptions,
 		...options.coordinatorRefresh,
 		getSyncRuntimeStatus: () => options.syncRuntimeStatus,
+		// Team setup checks completions with the coordinator off the request path.
+		teamSetupReconciliationIntervalMs: TEAM_SETUP_RECONCILIATION_INTERVAL_MS,
 	};
 }
 

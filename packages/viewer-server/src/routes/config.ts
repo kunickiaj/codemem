@@ -150,6 +150,8 @@ export interface ConfigRouteOptions {
 	getSweeper?: () => RawEventSweeper | null;
 	scheduleObserverApply?: () => boolean;
 	getObserverApplyStatus?: () => { state: "active" | "applying" | "failed"; message?: string };
+	/** Called after a save changes any coordinator setting, so Team setup checks again. */
+	onCoordinatorConfigChanged?: () => void;
 }
 
 function loadProviderOptions(): string[] {
@@ -469,6 +471,9 @@ function applyRuntimeEffects(changedKeys: string[], opts: ConfigRouteOptions): s
 		}
 		opts.getSweeper?.()?.notifyConfigChanged();
 		applied.push("raw_events_sweeper_interval_s");
+	}
+	if (changedKeys.some((key) => key.startsWith("sync_coordinator_"))) {
+		opts.onCoordinatorConfigChanged?.();
 	}
 	return applied;
 }

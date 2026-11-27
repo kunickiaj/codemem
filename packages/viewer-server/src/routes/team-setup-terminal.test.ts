@@ -21,7 +21,12 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { readPeerRemovalCheckState } from "../../../core/src/peer-removal-check-state.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
-import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
+import {
+	__teamSetupTestHooks,
+	teamSetupRoutes as backgroundTeamSetupRoutes,
+} from "./team-setup.js";
+import type { TeamSetupReconciliation } from "./team-setup-reconciliation.js";
+import { teamSetupRoutesReconcilingOnRead as teamSetupRoutes } from "./team-setup-test-fixtures.js";
 
 const COORDINATOR_ID = "https://coordinator.example.test";
 const GROUP_ID = "group-alpha";
@@ -99,6 +104,19 @@ function completionConfig(timeoutS?: number) {
 		}),
 		listGroups: vi.fn(async () => []),
 		listDevices: vi.fn(async () => []),
+	};
+}
+
+/**
+ * A coordinator that accepts publication and reads both removal lists, which the
+ * summary check requires before it repairs a completed Team's recipients.
+ */
+function removalReadingCompletion() {
+	return {
+		create: vi.fn(async ({ manifest }) => ({ status: "created" as const, manifest })),
+		list: async () => [],
+		listRemovals: async () => [],
+		listTeamMemberRemovals: async () => [],
 	};
 }
 
@@ -685,7 +703,7 @@ describe("Team setup terminal migration routing", () => {
 				.run(NOW, NOW);
 			const response = await targetApp.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(target.db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(1);
 		} finally {
 			source.close();
@@ -893,7 +911,7 @@ describe("Team setup terminal migration routing", () => {
 			});
 			const response = await app.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(list).toHaveBeenCalledOnce();
 			expect(create).not.toHaveBeenCalled();
 		} finally {
@@ -956,7 +974,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const response = await app.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(create).toHaveBeenCalledOnce();
 			expect(publicationStartedDuringCreate).toBe(false);
 			expect(teamStartedDuringCreate).toBe(false);
@@ -1045,7 +1063,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const response = await app.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(get).toHaveBeenCalledWith(
 				expect.objectContaining({
 					groupId: GROUP_ID,
@@ -2371,7 +2389,8 @@ describe("Team setup terminal migration routing", () => {
 				state: "completed",
 			});
 			expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
-			expect(loadSnapshots).toHaveBeenCalledTimes(2);
+			// Each summary check loads a fresh roster, and the detail read loads one.
+			expect(loadSnapshots).toHaveBeenCalledTimes(3);
 		} finally {
 			store.close();
 		}
@@ -2495,7 +2514,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const summary = await app.request("/api/sync/team-setup/v1");
 			expect(summary.status).toBe(200);
-			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+			expect(await summary.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.attemptId).toBe(draft.attemptId);
 			expect(
 				store.db
@@ -2515,7 +2534,7 @@ describe("Team setup terminal migration routing", () => {
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
 			// Repairing a completed Team's recipients needs a device that could finish setup.
 			readCoordinatorConfig: completionConfig().readConfig,
-			completionDependencies: null,
+			completionDependencies: removalReadingCompletion(),
 		});
 		try {
 			const { projectIdentity, teamId, newerAttemptId } = await completedTeamMissingItsRecipient(
@@ -2525,7 +2544,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const summary = await app.request("/api/sync/team-setup/v1");
 			expect(summary.status).toBe(200);
-			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+			expect(await summary.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.attemptId).toBe(newerAttemptId);
 			expect(
 				store.db
@@ -3096,7 +3115,7 @@ describe("Team setup terminal routing with draft edit authority", () => {
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
 			// A device that can edit the draft sees it in review.
 			readCoordinatorConfig: completionConfig().readConfig,
-			completionDependencies: null,
+			completionDependencies: removalReadingCompletion(),
 		});
 		try {
 			expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
@@ -3818,7 +3837,10 @@ describe("Completed Team recipient repair from the summary", () => {
 		// Arrange
 		const store = new MemoryStore(":memory:");
 		try {
-			const app = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const app = repairApp(store, {
+				readCoordinatorConfig: completionConfig().readConfig,
+				completionDependencies: removalReadingCompletion(),
+			});
 			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, app, {
 				recipient: "revoked",
 			});
@@ -4049,4 +4071,385 @@ describe("Team setup finish recovery and Team member removals", () => {
 			}
 		},
 	);
+});
+
+/** The real routes, with the background check captured instead of run before reads. */
+function backgroundApp(
+	store: MemoryStore,
+	options: Omit<Parameters<typeof backgroundTeamSetupRoutes>[0], "getStore">,
+) {
+	let reconciliation: TeamSetupReconciliation<unknown> | null = null;
+	let invalidate: () => void = () => undefined;
+	const app = backgroundTeamSetupRoutes({
+		getStore: () => store,
+		...options,
+		registerReconciliation: (registered) => {
+			reconciliation = registered as TeamSetupReconciliation<unknown>;
+		},
+		registerSummaryInvalidator: (registered) => {
+			invalidate = registered;
+		},
+	});
+	const check = () => {
+		if (!reconciliation) throw new Error("background check was not registered");
+		return reconciliation;
+	};
+	return { app, check, invalidate: () => invalidate() };
+}
+
+describe("Team setup background check", () => {
+	it("serves the summary without calling the coordinator", async () => {
+		const store = new MemoryStore(":memory:");
+		let coordinatorAllowed = true;
+		const coordinatorCalls: string[] = [];
+		const coordinator =
+			<T>(name: string, answer: () => T) =>
+			async () => {
+				if (!coordinatorAllowed) coordinatorCalls.push(name);
+				return answer();
+			};
+		try {
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: coordinator("roster", () => SNAPSHOTS),
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: {
+					create: coordinator("create", () => {
+						throw new Error("unexpected completion publication");
+					}),
+					list: coordinator("list", () => []),
+				},
+			});
+			await check().refresh();
+			coordinatorAllowed = false;
+
+			const summary = await app.request("/api/sync/team-setup/v1");
+			await check().settle();
+
+			expect(summary.status).toBe(200);
+			expect(await summary.json()).toMatchObject({
+				candidates: [expect.objectContaining({ candidateRef: CANDIDATE_REF })],
+				reconciliation: { state: "current", refreshing: false, error_code: null },
+			});
+			expect(coordinatorCalls).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("lists unfinished drafts as not checked before the first check finishes", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const first = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				completionDependencies: null,
+			});
+			await first.check().refresh();
+			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)).not.toBeNull();
+			// A restarted Viewer whose first check has not answered yet.
+			const restarted = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: () => new Promise(() => {}),
+				completionDependencies: null,
+			});
+
+			const summary = await restarted.app.request("/api/sync/team-setup/v1");
+
+			expect(await summary.json()).toMatchObject({
+				candidates: [expect.objectContaining({ candidateRef: CANDIDATE_REF })],
+				reconciliation: { state: "never", refreshing: true, checked_at: null },
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Team setup background check and access changes", () => {
+	it("switches off a conflicting completion without anyone opening Team setup", async () => {
+		const store = new MemoryStore(":memory:");
+		const setupApp = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			completionDependencies: null,
+		});
+		try {
+			const draft = await readyDraftThroughSummary(store, setupApp);
+			const review = inspectLegacyTeamSetupActivation(store.db, {
+				candidateRef: CANDIDATE_REF,
+				attemptId: draft.attemptId,
+			});
+			await finishLegacyTeamSetupActivation(store.db, {
+				candidateRef: CANDIDATE_REF,
+				attemptId: draft.attemptId,
+				finishDigest: review.finishDigest,
+				confirmedAccessDeltaDigest: review.accessDeltaDigest,
+				loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+				loadProjectInventory: () => [],
+				validateLockedPreview: () => true,
+				now: NOW,
+			});
+			const { check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: {
+					create: async () => {
+						throw new Error("completion_conflict");
+					},
+					get: async () => null,
+					list: async () => [],
+				},
+			});
+
+			// The service's periodic check, with no request to any Team setup route.
+			check().startPeriodic(60 * 60_000);
+			await check().settle();
+			check().stop();
+
+			expect(
+				store.db
+					.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
+					.get(deterministicPolicyTeamId(CANDIDATE_REF)),
+			).toEqual({ status: "inactive", migration_state: "needs_setup" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps the last check's blockers and reports stale when a check fails", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const { manifest, removal } = await installCompletedTeam(store);
+			removeDeviceLocally(store, removal.device_id);
+			let rosterAvailable = true;
+			const { app, check, invalidate } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => {
+					if (!rosterAvailable) throw new Error("team_setup_roster_unavailable");
+					return SNAPSHOTS.map((snapshot) => ({ ...snapshot, devices: [] }));
+				},
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: {
+					create: vi.fn(),
+					list: async () => [{ group_id: GROUP_ID, manifest }],
+					listRemovals: vi.fn().mockRejectedValue(new Error("removal read failed")),
+				},
+			});
+			await check().refresh();
+			const blocked = {
+				candidateRef: CANDIDATE_REF,
+				blockingError: "team_setup_completion_unavailable",
+				blockingReason: "device_removals_unavailable",
+			};
+			expect(await (await app.request("/api/sync/team-setup/v1")).json()).toMatchObject({
+				candidates: [blocked],
+			});
+
+			rosterAvailable = false;
+			invalidate();
+			await check().settle();
+			const summary = await app.request("/api/sync/team-setup/v1");
+
+			expect(summary.status).toBe(200);
+			expect(await summary.json()).toMatchObject({
+				candidates: [blocked],
+				reconciliation: { state: "stale", error_code: "team_setup_roster_unavailable" },
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Team setup background check after review", () => {
+	it("restores no setup recipient from the summary while the coordinator cannot be read", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const setupApp = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, setupApp, {
+				recipient: "revoked",
+				newerAttempt: false,
+			});
+			let coordinatorReadable = true;
+			const listRemovals = vi.fn().mockRejectedValue(new Error("removal read failed"));
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				readCoordinatorConfig: completionConfig().readConfig,
+				completionDependencies: {
+					create: vi.fn(),
+					list: async () => {
+						if (!coordinatorReadable) throw new Error("coordinator unreachable");
+						return [];
+					},
+					listRemovals,
+				},
+			});
+			// A good check leaves its roster cached; then the recipient is revoked and
+			// the coordinator, removals included, cannot be read.
+			await check().refresh();
+			store.db
+				.prepare(
+					`UPDATE project_recipients SET status = 'revoked'
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+				)
+				.run(projectIdentity, teamId);
+			coordinatorReadable = false;
+			await check().refresh();
+
+			const summary = await app.request("/api/sync/team-setup/v1");
+			await check().settle();
+
+			expect(summary.status).toBe(200);
+			expect(await summary.json()).toMatchObject({ reconciliation: { state: "stale" } });
+			expect(teamRecipientStatus(store, projectIdentity, teamId)).toBe("revoked");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("restores no setup recipient when the completion list is empty and removals cannot be read", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const setupApp = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, setupApp, {
+				recipient: "revoked",
+				newerAttempt: false,
+			});
+			const create = vi.fn(async ({ manifest }) => ({ status: "created" as const, manifest }));
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				readCoordinatorConfig: completionConfig().readConfig,
+				completionDependencies: {
+					// No coordinator completion: reconciliation publishes the local one and
+					// never reads removals on that path.
+					create,
+					list: async () => [],
+					listRemovals: vi
+						.fn()
+						.mockRejectedValue(
+							new Error("Remote coordinator request failed (503): removal list unavailable"),
+						),
+					listTeamMemberRemovals: async () => [],
+				},
+			});
+
+			await check().refresh();
+			const summary = await app.request("/api/sync/team-setup/v1");
+
+			expect(teamRecipientStatus(store, projectIdentity, teamId)).toBe("revoked");
+			expect(await summary.json()).toMatchObject({
+				candidates: [
+					{
+						candidateRef: CANDIDATE_REF,
+						blockingError: "team_setup_completion_unavailable",
+						blockingReason: "device_removals_unavailable",
+					},
+				],
+				reconciliation: { state: "stale", failed_groups: 1 },
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Team setup background check retries", () => {
+	it("retries a group it skipped while setup was changing it", async () => {
+		const store = new MemoryStore(":memory:");
+		const setupApp = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			completionDependencies: null,
+		});
+		let releaseRouteClaim: (() => void) | null = null;
+		try {
+			const draft = await readyDraftThroughSummary(store, setupApp);
+			const review = inspectLegacyTeamSetupActivation(store.db, {
+				candidateRef: CANDIDATE_REF,
+				attemptId: draft.attemptId,
+			});
+			await finishLegacyTeamSetupActivation(store.db, {
+				candidateRef: CANDIDATE_REF,
+				attemptId: draft.attemptId,
+				finishDigest: review.finishDigest,
+				confirmedAccessDeltaDigest: review.accessDeltaDigest,
+				loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+				loadProjectInventory: () => [],
+				validateLockedPreview: () => true,
+				now: NOW,
+			});
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				reconciliationRetryDelayMs: 10,
+				completionDependencies: {
+					create: async () => {
+						throw new Error("completion_conflict");
+					},
+					get: async () => null,
+					list: async () => {
+						// A draft route takes the claim while the check reads the coordinator.
+						releaseRouteClaim ??= __teamSetupTestHooks.claimCandidateMutation(
+							store.db,
+							CANDIDATE_REF,
+						);
+						return [];
+					},
+				},
+			});
+
+			await check().refresh();
+			const skipped = (await (await app.request("/api/sync/team-setup/v1")).json()) as {
+				reconciliation?: { skipped_groups?: number };
+			};
+			const teamWhileSkipped = teamStatus(store);
+			releaseRouteClaim?.();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			await check().settle();
+
+			// The retry switched the conflicting completion off once the route let go.
+			expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			expect(teamWhileSkipped).toEqual({ status: "active", migration_state: "completed" });
+			expect(skipped.reconciliation?.skipped_groups).toBe(1);
+		} finally {
+			releaseRouteClaim?.();
+			store.close();
+		}
+	});
+});
+
+describe("Team setup background check status", () => {
+	it("reports a group whose check failed as stale with its error", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const { manifest, removal } = await installCompletedTeam(store);
+			removeDeviceLocally(store, removal.device_id);
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () =>
+					SNAPSHOTS.map((snapshot) => ({ ...snapshot, devices: [] })),
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: {
+					create: vi.fn(),
+					list: async () => [{ group_id: GROUP_ID, manifest }],
+					listRemovals: vi.fn().mockRejectedValue(new Error("removal read failed")),
+				},
+			});
+
+			await check().refresh();
+			const summary = await app.request("/api/sync/team-setup/v1");
+
+			expect(await summary.json()).toMatchObject({
+				candidates: [
+					{ candidateRef: CANDIDATE_REF, blockingError: "team_setup_completion_unavailable" },
+				],
+				reconciliation: {
+					state: "stale",
+					error_code: "team_setup_completion_unavailable",
+					failed_groups: 1,
+					skipped_groups: 0,
+				},
+			});
+		} finally {
+			store.close();
+		}
+	});
 });

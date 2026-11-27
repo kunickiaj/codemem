@@ -6,7 +6,7 @@ import {
 	readCoordinatorSyncConfig,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
-import { teamSetupRoutes } from "./team-setup.js";
+import { teamSetupRoutesReconcilingOnRead as teamSetupRoutes } from "./team-setup-test-fixtures.js";
 
 describe("Team setup refresh snapshots", () => {
 	it("rejects snapshots when the attempt completes during loading", async () => {

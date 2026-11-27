@@ -2,6 +2,17 @@ import type { LegacyTeamSetupSummaryResponseV1 } from "../lib/api/sync";
 import { teamSetupRecoveryReason } from "./team-setup-recovery";
 
 type SetupCandidate = LegacyTeamSetupSummaryResponseV1["candidates"][number];
+type Reconciliation = LegacyTeamSetupSummaryResponseV1["reconciliation"];
+
+const NOT_CHECKED = "Not checked with the coordinator yet";
+
+/** "Last checked with the coordinator 12 min ago", for a result that is out of date. */
+function staleNote(reconciliation: Reconciliation): string | null {
+	if (reconciliation?.state !== "stale") return null;
+	const minutes = Math.max(1, Math.round((reconciliation.age_ms ?? 0) / 60_000));
+	const checking = reconciliation.refreshing ? "; checking again" : "";
+	return `Last checked with the coordinator ${minutes} min ago${checking}`;
+}
 
 export interface ProjectTeamSetupViewOptions {
 	onOpenTeamSetup?: (candidateRef: string) => void;
@@ -31,6 +42,7 @@ function restoreCandidateFocus(
 function candidateRow(
 	candidate: SetupCandidate,
 	onOpenTeamSetup: ProjectTeamSetupViewOptions["onOpenTeamSetup"],
+	reconciliation: Reconciliation,
 ): HTMLElement {
 	const row = document.createElement("div");
 	row.className = "project-inventory-actions";
@@ -52,6 +64,13 @@ function candidateRow(
 	button.dataset.teamSetupCandidateRef = candidate.candidateRef;
 	button.addEventListener("click", () => onOpenTeamSetup(candidate.candidateRef));
 	row.appendChild(button);
+	// Finish still checks with the coordinator itself, so it stays available.
+	if (reconciliation?.state === "never") {
+		const note = document.createElement("span");
+		note.className = "section-meta project-team-setup-unchecked";
+		note.textContent = NOT_CHECKED;
+		row.appendChild(note);
+	}
 	return row;
 }
 
@@ -63,14 +82,16 @@ function recoveryReason(candidate: SetupCandidate): HTMLElement | null {
 	return reason;
 }
 
-function setupSignature(candidates: SetupCandidate[]): string {
-	return JSON.stringify(
-		candidates.map((candidate) => [
+function setupSignature(summary: LegacyTeamSetupSummaryResponseV1): string {
+	return JSON.stringify([
+		summary.reconciliation?.state ?? null,
+		staleNote(summary.reconciliation),
+		summary.candidates.map((candidate) => [
 			candidate.candidateRef,
 			candidate.displayName,
 			candidate.blockingError ?? null,
 		]),
-	);
+	]);
 }
 
 function setupSurface(
@@ -79,11 +100,18 @@ function setupSurface(
 ): HTMLElement {
 	const surface = document.createElement("section");
 	surface.className = "card project-team-setup-entry";
-	surface.dataset.teamSetupSignature = setupSignature(summary.candidates);
+	surface.dataset.teamSetupSignature = setupSignature(summary);
 	const needsRecovery = summary.candidates.every((candidate) => candidate.blockingError);
 	const heading = document.createElement("h2");
 	heading.textContent = needsRecovery ? "Team needs recovery" : "Finish setting up this Team";
 	surface.appendChild(heading);
+	const stale = staleNote(summary.reconciliation);
+	if (stale) {
+		const note = document.createElement("p");
+		note.className = "section-meta project-team-setup-checked";
+		note.textContent = stale;
+		surface.appendChild(note);
+	}
 	if (!needsRecovery) {
 		const detail = document.createElement("p");
 		detail.className = "section-meta";
@@ -92,7 +120,7 @@ function setupSurface(
 		surface.appendChild(detail);
 	}
 	for (const candidate of summary.candidates) {
-		surface.appendChild(candidateRow(candidate, options.onOpenTeamSetup));
+		surface.appendChild(candidateRow(candidate, options.onOpenTeamSetup, summary.reconciliation));
 		const reason = recoveryReason(candidate);
 		if (reason) surface.appendChild(reason);
 	}
@@ -118,7 +146,7 @@ export function renderProjectTeamSetupEntry(
 		return;
 	}
 	if (!summary) return;
-	const signature = setupSignature(candidates);
+	const signature = setupSignature(summary);
 	if (existing?.dataset.teamSetupSignature === signature) {
 		mount.hidden = false;
 		return;
