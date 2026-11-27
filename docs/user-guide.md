@@ -132,7 +132,6 @@ The local service runs the viewer, sync, raw-event ingestion, and maintenance.
 - `codemem service stop` stops the local service, and `codemem service restart` restarts it in the background.
 - `codemem service status` returns the same local operational report as `codemem status`.
 - `codemem serve` remains a compatibility entrypoint. Existing `serve` invocations continue to work, and bare `codemem serve` runs the local service in the foreground.
-- Only one local service runs per database. A second start on the same database stops with "Another codemem viewer is already using …", even on another port. The running service holds a lock file next to the database (`mem.sqlite.viewer-lock`) until it exits, and the lock is released if the process crashes. To run two services, give each its own database.
 
 ## Viewer trust model
 

@@ -708,7 +708,6 @@ describe("serve relay wiring", () => {
 			vi.stubEnv("CODEMEM_DB", store.dbPath);
 			vi.spyOn(fs, "existsSync").mockReturnValue(false);
 			vi.spyOn(core, "initDatabase").mockReturnValue({ path: store.dbPath } as never);
-			vi.spyOn(core, "acquireViewerWriterLock").mockReturnValue({ path: "", release() {} });
 			vi.spyOn(core, "readCodememConfigFile").mockReturnValue({ sync_enabled: true });
 			vi.spyOn(core, "readCoordinatorSyncConfig").mockReturnValue({ syncEnabled: true } as never);
 			vi.spyOn(core, "ObserverClient").mockImplementation(class {} as never);

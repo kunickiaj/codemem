@@ -1027,6 +1027,8 @@ interface SummaryReconciliationDependencies {
 	) => Promise<void>;
 	/** Whether current admin authority covers rediscovering a completed group. */
 	mayRediscover: (group: LegacyTeamCandidateGroupDescriptor) => boolean;
+	/** Reads the coordinator's device and Team member removals for one group. */
+	readRemovalsForRepair: (group: LegacyTeamCandidateGroupDescriptor) => Promise<RepairEvidence>;
 }
 
 /**
@@ -1067,9 +1069,84 @@ async function runSummaryReconciliation(
 		const candidateRef = summaryCandidateRef(group);
 		if (blockers.has(candidateRef) || skipped.has(candidateRef) || views.has(candidateRef))
 			continue;
+		// Rediscovering a completion can restore setup recipients. Reconciliation
+		// reads removals only on some paths, so read them here for every completion.
+		if (hasRepairableSetupTeam(store, candidateRef)) {
+			const evidence = await dependencies.readRemovalsForRepair(group);
+			if (evidence.status === "failed") blockers.set(candidateRef, evidence.blocker);
+			if (evidence.status !== "read") continue;
+		}
 		await discoverAfterReconciliation(store, group, dependencies, { views, skipped });
 	}
 	return carrySkippedGroups({ groups, views, blockers, skipped }, previous);
+}
+
+/**
+ * Whether rediscovering this candidate can restore setup recipients: core repairs
+ * them only for the setup's Team while it is active, so this is the same check.
+ */
+function hasRepairableSetupTeam(store: MemoryStore, candidateRef: string): boolean {
+	return Boolean(
+		store.db
+			.prepare("SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'active' LIMIT 1")
+			.pluck()
+			.get(deterministicPolicyTeamId(candidateRef)),
+	);
+}
+
+const DEVICE_REMOVALS_UNREAD: CompletionBlocker = {
+	code: "team_setup_completion_unavailable",
+	reason: "device_removals_unavailable",
+};
+const TEAM_MEMBER_REMOVALS_UNREAD: CompletionBlocker = {
+	code: "team_setup_completion_unavailable",
+	reason: "team_member_removals_unavailable",
+};
+
+/**
+ * Whether a completed group's recipients may be repaired. `read`: both removal
+ * lists were read. `unavailable`: no current admin authority for the group or no
+ * removal reads at all, so nothing is repaired, as on a device without the admin
+ * secret. `failed`: a removal read was attempted and failed, so nothing is
+ * repaired and the group carries the blocker.
+ */
+type RepairEvidence =
+	| { status: "read" }
+	| { status: "unavailable" }
+	| { status: "failed"; blocker: CompletionBlocker };
+
+/** Fresh removal evidence for one group, read before any recipient repair. */
+async function readRemovalsForRepair(
+	options: TeamSetupRoutesOptions,
+	store: MemoryStore,
+	group: LegacyTeamCandidateGroupDescriptor,
+): Promise<RepairEvidence> {
+	const dependencies =
+		options.completionDependencies === undefined
+			? defaultCompletionDependencies
+			: options.completionDependencies;
+	const authorization = readCompletionAuthorization(options);
+	const reads = dependencies?.listRemovals && dependencies.listTeamMemberRemovals;
+	if (!reads || !authorization || !authorizesGroup(authorization, group)) {
+		return { status: "unavailable" };
+	}
+	const timeoutS = Math.max(1, authorization.config.syncCoordinatorTimeoutS);
+	const deadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
+	const { removalReads } = completionReadActions(
+		dependencies,
+		{ authorization, store },
+		timeoutS,
+		deadlineMs,
+	);
+	if ((await removalReads.listRemovals())?.status !== "read") {
+		return { status: "failed", blocker: DEVICE_REMOVALS_UNREAD };
+	}
+	try {
+		await removalReads.listTeamMemberRemovals(group.groupId);
+	} catch {
+		return { status: "failed", blocker: TEAM_MEMBER_REMOVALS_UNREAD };
+	}
+	return { status: "read" };
 }
 
 /** No draft of any state and no completed Team: discovery here only creates a draft. */
@@ -1214,7 +1291,12 @@ function createSummaryReconciliation(
 		const authorization = readCompletionAuthorization(options);
 		return Boolean(authorization && authorizesGroup(authorization, group));
 	};
-	const dependencies = { loadSnapshots, reconcile, mayRediscover };
+	const dependencies: SummaryReconciliationDependencies = {
+		loadSnapshots,
+		reconcile,
+		mayRediscover,
+		readRemovalsForRepair: (group) => readRemovalsForRepair(options, options.getStore(), group),
+	};
 	const reconciliation = createTeamSetupReconciliation<SummaryReconciliationResult>({
 		run: (previous) => runSummaryReconciliation(options.getStore(), dependencies, previous),
 		assess: (result) => ({

@@ -67,6 +67,21 @@ const LEGACY_UNCLASSIFIED_PROVENANCE = {
  * Sync status serves coordinator answers from memory. The first read starts the
  * background refresh; this waits for it and reads again.
  */
+/**
+ * A coordinator that accepts completion publication and reads both removal lists,
+ * which Team setup requires before it repairs a completed Team's recipients.
+ */
+function publishingCoordinatorReadingRemovals(): NonNullable<
+	AppOptions["teamSetupCompletionDependencies"]
+> {
+	return {
+		create: async ({ manifest }) => ({ status: "created", manifest }),
+		list: async () => [],
+		listRemovals: async () => [],
+		listTeamMemberRemovals: async () => [],
+	};
+}
+
 const JOIN_REQUEST_STATUS_PATH = "/api/sync/status?includeDiagnostics=1&includeJoinRequests=1";
 
 async function refreshedStatus(
@@ -2512,10 +2527,7 @@ describe("viewer-server", () => {
 						sync_coordinator_groups: [groupId],
 						sync_coordinator_admin_secret: "test-secret",
 					}),
-				teamSetupCompletionDependencies: {
-					create: async ({ manifest }) => ({ status: "created", manifest }),
-					list: async () => [],
-				},
+				teamSetupCompletionDependencies: publishingCoordinatorReadingRemovals(),
 			});
 			try {
 				const store = ensureStore();

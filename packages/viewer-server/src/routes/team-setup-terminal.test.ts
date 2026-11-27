@@ -107,6 +107,19 @@ function completionConfig(timeoutS?: number) {
 	};
 }
 
+/**
+ * A coordinator that accepts publication and reads both removal lists, which the
+ * summary check requires before it repairs a completed Team's recipients.
+ */
+function removalReadingCompletion() {
+	return {
+		create: vi.fn(async ({ manifest }) => ({ status: "created" as const, manifest })),
+		list: async () => [],
+		listRemovals: async () => [],
+		listTeamMemberRemovals: async () => [],
+	};
+}
+
 async function readyDraftThroughSummary(
 	store: MemoryStore,
 	app: ReturnType<typeof teamSetupRoutes>,
@@ -2521,7 +2534,7 @@ describe("Team setup terminal migration routing", () => {
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
 			// Repairing a completed Team's recipients needs a device that could finish setup.
 			readCoordinatorConfig: completionConfig().readConfig,
-			completionDependencies: null,
+			completionDependencies: removalReadingCompletion(),
 		});
 		try {
 			const { projectIdentity, teamId, newerAttemptId } = await completedTeamMissingItsRecipient(
@@ -3102,7 +3115,7 @@ describe("Team setup terminal routing with draft edit authority", () => {
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
 			// A device that can edit the draft sees it in review.
 			readCoordinatorConfig: completionConfig().readConfig,
-			completionDependencies: null,
+			completionDependencies: removalReadingCompletion(),
 		});
 		try {
 			expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
@@ -3824,7 +3837,10 @@ describe("Completed Team recipient repair from the summary", () => {
 		// Arrange
 		const store = new MemoryStore(":memory:");
 		try {
-			const app = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const app = repairApp(store, {
+				readCoordinatorConfig: completionConfig().readConfig,
+				completionDependencies: removalReadingCompletion(),
+			});
 			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, app, {
 				recipient: "revoked",
 			});
@@ -4289,6 +4305,54 @@ describe("Team setup background check after review", () => {
 		}
 	});
 
+	it("restores no setup recipient when the completion list is empty and removals cannot be read", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const setupApp = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, setupApp, {
+				recipient: "revoked",
+				newerAttempt: false,
+			});
+			const create = vi.fn(async ({ manifest }) => ({ status: "created" as const, manifest }));
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				readCoordinatorConfig: completionConfig().readConfig,
+				completionDependencies: {
+					// No coordinator completion: reconciliation publishes the local one and
+					// never reads removals on that path.
+					create,
+					list: async () => [],
+					listRemovals: vi
+						.fn()
+						.mockRejectedValue(
+							new Error("Remote coordinator request failed (503): removal list unavailable"),
+						),
+					listTeamMemberRemovals: async () => [],
+				},
+			});
+
+			await check().refresh();
+			const summary = await app.request("/api/sync/team-setup/v1");
+
+			expect(teamRecipientStatus(store, projectIdentity, teamId)).toBe("revoked");
+			expect(await summary.json()).toMatchObject({
+				candidates: [
+					{
+						candidateRef: CANDIDATE_REF,
+						blockingError: "team_setup_completion_unavailable",
+						blockingReason: "device_removals_unavailable",
+					},
+				],
+				reconciliation: { state: "stale", failed_groups: 1 },
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Team setup background check retries", () => {
 	it("retries a group it skipped while setup was changing it", async () => {
 		const store = new MemoryStore(":memory:");
 		const setupApp = teamSetupRoutes({

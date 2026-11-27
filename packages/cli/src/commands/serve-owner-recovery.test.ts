@@ -63,8 +63,6 @@ vi.mock("@clack/prompts", () => ({
 }));
 vi.mock("@codemem/core", async (original) => ({
 	...(await original<typeof import("@codemem/core")>()),
-	// The fixture database path is not writable; the Viewer lock has its own tests.
-	acquireViewerWriterLock: () => ({ path: "", release() {} }),
 	MemoryStore: class {
 		constructor() {
 			throw new Error("Unexpected real store");

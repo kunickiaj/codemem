@@ -76,8 +76,6 @@ vi.mock("@codemem/core", async (original) => ({
 		stop = mocks.sweeperStop;
 	},
 	initDatabase: mocks.initDatabase,
-	// The fixture database path is not writable; the Viewer lock has its own tests.
-	acquireViewerWriterLock: () => ({ path: "", release() {} }),
 	readCodememConfigFile: mocks.readConfig,
 	readCodememConfigFileAtPath: mocks.readAtPath,
 	readCoordinatorSyncConfig: mocks.syncConfig,
