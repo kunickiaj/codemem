@@ -1792,6 +1792,21 @@ export {
 	type TeamMemberRemovalContext,
 	type TeamMemberRemovalRejection,
 } from "./team-member-removal-review.js";
+export {
+	TEAM_RECOVERY_DECISION_PROVENANCE,
+	type TeamRecoveryDevice,
+	type TeamRecoveryDeviceBlockCheck,
+	type TeamRecoveryDeviceRemoval,
+} from "./team-recovery-devices.js";
+export {
+	previewTeamRecovery,
+	type TeamRecoveryEvidence,
+	type TeamRecoveryPerson,
+	type TeamRecoveryPreview,
+	type TeamRecoveryPreviewResult,
+	type TeamRecoveryRefusal,
+} from "./team-recovery-preview.js";
+export type { TeamRecoveryProject } from "./team-recovery-projects.js";
 // Test utilities (exported for consumer packages like viewer-server)
 export type { MixedScopeFixture } from "./test-utils.js";
 export { initTestSchema, insertTestSession, seedMixedScopeFixture } from "./test-utils.js";
