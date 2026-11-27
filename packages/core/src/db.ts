@@ -53,6 +53,7 @@ import {
 	ensureSyncPeerExplicitPairingColumns,
 	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
+import { columnExists, tableExists } from "./schema-lookups.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
 import { ensureSyncTransferActivitySchema } from "./sync-transfer-activity.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
@@ -68,6 +69,7 @@ export {
 } from "./database-runtime-primitives.js";
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
+export { columnExists, tableExists };
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -561,23 +563,6 @@ export function assertSchemaReady(db: DatabaseType): void {
 				"Rebuild the database schema with the current TypeScript runtime before retrying.",
 		);
 	}
-}
-
-/** Check if a table exists in the database. */
-export function tableExists(db: DatabaseType, table: string): boolean {
-	const row = db
-		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-		.get(table);
-	return row !== undefined;
-}
-
-/** Check if a column exists in a table. */
-export function columnExists(db: DatabaseType, table: string, column: string): boolean {
-	if (!tableExists(db, table)) return false;
-	const row = db
-		.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1")
-		.get(table, column);
-	return row !== undefined;
 }
 
 function addColumnIfMissing(
