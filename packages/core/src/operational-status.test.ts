@@ -52,7 +52,14 @@ describe("collectOperationalStatus", () => {
 			const result = collectOperationalStatus(db);
 
 			expect(result).toEqual({
-				sync: { available: true, daemon_error: true, needs_attention: true, peer_errors: 1 },
+				sync: {
+					available: true,
+					daemon_error: true,
+					needs_attention: true,
+					peer_errors: 1,
+					daemon_error_at: "2026-08-11T12:00:00Z",
+					latest_peer_sync_at: null,
+				},
 				maintenance: { state: "idle", running: 0, failed: 0 },
 				semantic_index: { state: "failed", vector_table_present: false },
 				raw_events: { available: true, pending: 2, failed_batches: 1 },
@@ -61,6 +68,7 @@ describe("collectOperationalStatus", () => {
 					failed_batches: 1,
 					backoff_batches: 1,
 					recent_failed_batches: 1,
+					latest_recent_failure_at: "2026-08-11T10:00:00Z",
 				},
 			});
 			expect(JSON.stringify(result)).not.toContain("private");
@@ -73,6 +81,33 @@ describe("collectOperationalStatus", () => {
 				failed_batches: 0,
 				backoff_batches: 1,
 				recent_failed_batches: 0,
+				latest_recent_failure_at: null,
+			});
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("sync status evidence", () => {
+	it("reports when the daemon error happened and when a peer last synced", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(
+				`INSERT INTO sync_daemon_state(id, last_error_at, last_ok_at)
+				 VALUES (1, '2026-08-11T09:00:00Z', '2026-08-11T08:00:00Z')`,
+			).run();
+			const insertPeer = db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, created_at, last_sync_at) VALUES (?, ?, ?)",
+			);
+			insertPeer.run("peer-online", "2026-08-01T00:00:00Z", "2026-08-11T11:30:00Z");
+			insertPeer.run("peer-offline", "2026-08-01T00:00:00Z", "2026-08-02T00:00:00Z");
+
+			expect(collectOperationalStatus(db).sync).toMatchObject({
+				daemon_error: true,
+				daemon_error_at: "2026-08-11T09:00:00Z",
+				latest_peer_sync_at: "2026-08-11T11:30:00Z",
 			});
 		} finally {
 			db.close();
@@ -122,6 +157,7 @@ describe("observer failure windows", () => {
 					failed_batches: exhausted,
 					backoff_batches: historical,
 					recent_failed_batches: recent,
+					latest_recent_failure_at: recent > 0 ? updatedAt : null,
 				});
 				expect(db.prepare("SELECT * FROM raw_event_flush_batches").all()).toEqual(before);
 			} finally {
@@ -175,7 +211,14 @@ describe("operational status compatibility", () => {
 			}
 
 			expect(collectOperationalStatus(db, { embeddingDisabled: true })).toEqual({
-				sync: { available: false, daemon_error: false, needs_attention: false, peer_errors: 0 },
+				sync: {
+					available: false,
+					daemon_error: false,
+					needs_attention: false,
+					peer_errors: 0,
+					daemon_error_at: null,
+					latest_peer_sync_at: null,
+				},
 				maintenance: { state: "unknown", running: 0, failed: 0 },
 				semantic_index: { state: "disabled", vector_table_present: false },
 				raw_events: { available: false, pending: 0, failed_batches: 0 },

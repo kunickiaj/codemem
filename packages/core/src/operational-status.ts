@@ -17,6 +17,10 @@ export interface OperationalStatusSnapshot {
 		daemon_error: boolean;
 		needs_attention: boolean;
 		peer_errors: number;
+		/** When the daemon recorded the error behind `daemon_error`. */
+		daemon_error_at?: string | null;
+		/** The most recent successful sync with any peer. */
+		latest_peer_sync_at?: string | null;
 	};
 	maintenance: {
 		state: OperationalMaintenanceState;
@@ -37,6 +41,8 @@ export interface OperationalStatusSnapshot {
 		failed_batches: number;
 		/** @deprecated Historical failed/error count, not evidence of an active runtime pause. */
 		backoff_batches: number;
+		/** When the most recent row counted in `recent_failed_batches` was updated. */
+		latest_recent_failure_at?: string | null;
 		/** Failed/error rows within the requested window. Does not predict retry eligibility. */
 		recent_failed_batches: number;
 	};
@@ -66,6 +72,7 @@ function collectSync(db: Database): OperationalStatusSnapshot["sync"] {
 	const peersTablePresent = tableExists(db, "sync_peers");
 	let daemonError = false;
 	let needsAttention = false;
+	let daemonErrorAt: string | null = null;
 	if (daemonTablePresent) {
 		// `phase` is an additive column; guard it so an older compatible
 		// database still reports daemon errors instead of failing the whole
@@ -79,12 +86,16 @@ function collectSync(db: Database): OperationalStatusSnapshot["sync"] {
 					`SELECT
 						CASE WHEN last_error_at IS NOT NULL
 							AND (last_ok_at IS NULL OR last_error_at > last_ok_at) THEN 1 ELSE 0 END AS daemon_error,
+						last_error_at,
 						${phaseExpression} AS needs_attention
 					 FROM sync_daemon_state WHERE id = 1`,
 				)
-				.get() as { daemon_error?: unknown; needs_attention?: unknown } | undefined;
+				.get() as
+				| { daemon_error?: unknown; needs_attention?: unknown; last_error_at?: unknown }
+				| undefined;
 			daemonError = Number(row?.daemon_error ?? 0) === 1;
 			needsAttention = Number(row?.needs_attention ?? 0) === 1;
+			daemonErrorAt = daemonError ? timestamp(row?.last_error_at) : null;
 		} catch {
 			// Optional or older table shape: leave the bounded summary unknown/empty.
 		}
@@ -100,7 +111,25 @@ function collectSync(db: Database): OperationalStatusSnapshot["sync"] {
 				"sync_peers",
 				"SELECT COUNT(*) AS count FROM sync_peers WHERE last_error IS NOT NULL AND TRIM(last_error) != ''",
 			) ?? 0,
+		daemon_error_at: daemonErrorAt,
+		latest_peer_sync_at: peersTablePresent
+			? latestTimestamp(db, "SELECT MAX(last_sync_at) AS at FROM sync_peers")
+			: null,
 	};
+}
+
+function timestamp(value: unknown): string | null {
+	return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/** One timestamp from an aggregate query, or null when the query fails or finds none. */
+function latestTimestamp(db: Database, sql: string, params: unknown[] = []): string | null {
+	try {
+		const row = db.prepare(sql).get(...params) as { at?: unknown } | undefined;
+		return timestamp(row?.at);
+	} catch {
+		return null;
+	}
 }
 
 function collectMaintenance(db: Database): OperationalStatusSnapshot["maintenance"] {
@@ -255,6 +284,14 @@ function collectObserver(
 				   AND TRIM(observer_error_code) != ''${recentFailureCutoff ? " AND updated_at >= ?" : ""}`,
 				recentFailureCutoff ? [recentFailureCutoff] : [],
 			) ?? 0,
+		latest_recent_failure_at: latestTimestamp(
+			db,
+			`SELECT MAX(updated_at) AS at FROM raw_event_flush_batches
+			 WHERE status IN ('error', 'failed')
+			   AND observer_error_code IS NOT NULL
+			   AND TRIM(observer_error_code) != ''${recentFailureCutoff ? " AND updated_at >= ?" : ""}`,
+			recentFailureCutoff ? [recentFailureCutoff] : [],
+		),
 	};
 }
 

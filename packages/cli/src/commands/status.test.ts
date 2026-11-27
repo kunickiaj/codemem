@@ -280,6 +280,103 @@ describe("status observer failure projection", () => {
 	});
 });
 
+describe("status sync projection", () => {
+	it("warns about a daemon error when peers have synced since", async () => {
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.sync.daemon_error = true;
+		snapshot.sync.daemon_error_at = "2026-08-11T09:00:00.000Z";
+		snapshot.sync.latest_peer_sync_at = "2026-08-11T11:55:00.000Z";
+		const { command, stdout } = harness({ snapshot });
+
+		await command.parseAsync(["--json"], { from: "user" });
+
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.sync.state).toBe("degraded");
+		expect(report.ok).toBe(true);
+		expect(report.attention).toEqual([
+			{
+				code: "sync_daemon_warning",
+				severity: "warning",
+				message:
+					"The sync daemon reported a problem 3h ago, but peers have synced since (last 5m ago); run `codemem sync doctor`",
+			},
+		]);
+	});
+
+	it("reports a sync error with its age when no peer has synced since", async () => {
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.sync.daemon_error = true;
+		snapshot.sync.daemon_error_at = "2026-08-11T11:00:00.000Z";
+		snapshot.sync.latest_peer_sync_at = "2026-08-11T10:00:00.000Z";
+		const { command, stdout } = harness({ snapshot });
+
+		await command.parseAsync(["--json"], { from: "user" });
+
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.sync.state).toBe("error");
+		expect(report.ok).toBe(false);
+		expect(report.attention).toContainEqual({
+			code: "sync_daemon_error",
+			severity: "error",
+			message: "Sync has not succeeded since an error 1h ago; run `codemem sync doctor`",
+		});
+	});
+
+	it("keeps needs_attention an error even when peers sync", async () => {
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.sync.needs_attention = true;
+		snapshot.sync.latest_peer_sync_at = "2026-08-11T11:55:00.000Z";
+		const { command, stdout } = harness({ snapshot });
+
+		await command.parseAsync(["--json"], { from: "user" });
+
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.sync.state).toBe("error");
+	});
+
+	it("reports offline peers as a warning with their count", async () => {
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.sync.peer_errors = 2;
+		snapshot.sync.latest_peer_sync_at = "2026-08-11T11:55:00.000Z";
+		const { command, stdout } = harness({ snapshot });
+
+		await command.parseAsync(["--json"], { from: "user" });
+
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.sync.state).toBe("degraded");
+		expect(report.ok).toBe(true);
+		expect(report.attention).toEqual([
+			{
+				code: "sync_degraded",
+				severity: "warning",
+				message:
+					"2 peers failed the last sync attempt; run `codemem sync peers` or `codemem sync doctor`",
+			},
+		]);
+	});
+});
+
+describe("status observer failure wording", () => {
+	it("says how many observer batches failed in the last 24 hours and how long ago", async () => {
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.observer.recent_failed_batches = 3;
+		snapshot.observer.latest_recent_failure_at = "2026-08-11T07:00:00.000Z";
+		const { command, stdout } = harness({ snapshot });
+
+		await command.parseAsync(["--json"], { from: "user" });
+
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.attention).toEqual([
+			{
+				code: "observer_recent_failures",
+				severity: "warning",
+				message:
+					"3 observer batches failed in the last 24 hours, most recently 5h ago. Run `codemem diagnostics capture status`",
+			},
+		]);
+	});
+});
+
 describe("status output and usage", () => {
 	it("renders compact human output and detailed command suggestions", async () => {
 		const snapshot = structuredClone(healthySnapshot);

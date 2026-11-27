@@ -187,26 +187,78 @@ export function boundAttention(items: StatusAttention[]): StatusAttention[] {
 	}));
 }
 
+/** How long before `checkedAt` an ISO time was, such as "3h"; null when unparseable. */
+function ageBefore(iso: string | null | undefined, checkedAt: Date): string | null {
+	const parsed = Date.parse(iso ?? "");
+	if (!Number.isFinite(parsed)) return null;
+	const seconds = Math.max(0, Math.round((checkedAt.getTime() - parsed) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.round(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.round(minutes / 60);
+	if (hours < 48) return `${hours}h`;
+	return `${Math.round(hours / 24)}d`;
+}
+
+function plural(count: number, singular: string, pluralForm: string): string {
+	return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+/**
+ * A daemon error is a sync error only while no peer has synced since. When peers
+ * sync after it, the error came from other daemon work, such as coordinator
+ * maintenance, and syncing itself works.
+ */
+function peersSyncedSinceDaemonError(sync: OperationalStatusSnapshot["sync"]): boolean {
+	const errorAt = Date.parse(sync.daemon_error_at ?? "");
+	const syncedAt = Date.parse(sync.latest_peer_sync_at ?? "");
+	return Number.isFinite(errorAt) && Number.isFinite(syncedAt) && syncedAt > errorAt;
+}
+
+function projectDaemonError(
+	sync: OperationalStatusSnapshot["sync"],
+	checkedAt: Date,
+	attention: StatusAttention[],
+): SyncState {
+	const age = ageBefore(sync.daemon_error_at, checkedAt);
+	const when = age ? ` ${age} ago` : "";
+	if (!sync.needs_attention && peersSyncedSinceDaemonError(sync)) {
+		const syncedAge = ageBefore(sync.latest_peer_sync_at, checkedAt);
+		attention.push({
+			code: "sync_daemon_warning",
+			severity: "warning",
+			message: `The sync daemon reported a problem${when}, but peers have synced since (last ${syncedAge} ago); run \`codemem sync doctor\``,
+		});
+		return "degraded";
+	}
+	attention.push({
+		code: "sync_daemon_error",
+		severity: "error",
+		message: sync.needs_attention
+			? "Sync requires attention; run `codemem sync doctor`"
+			: `Sync has not succeeded since an error${when}; run \`codemem sync doctor\``,
+	});
+	return "error";
+}
+
 function projectSync(
 	enabled: boolean,
 	snapshot: OperationalStatusSnapshot | null,
+	checkedAt: Date,
 	attention: StatusAttention[],
 ): SyncState {
 	if (!enabled) return "disabled";
 	if (!snapshot) return "unknown";
 	if (snapshot.sync.daemon_error || snapshot.sync.needs_attention) {
-		attention.push({
-			code: "sync_daemon_error",
-			severity: "error",
-			message: "Sync requires attention; run `codemem sync doctor`",
-		});
-		return "error";
+		return projectDaemonError(snapshot.sync, checkedAt, attention);
 	}
 	if (snapshot.sync.peer_errors > 0) {
+		// A peer that is offline or failing is a warning; the daemon error above
+		// covers sync that is failing as a whole.
 		attention.push({
 			code: "sync_degraded",
 			severity: "warning",
-			message: "Sync has recent peer failures; run `codemem sync peers` or `codemem sync doctor`",
+			message: `${plural(snapshot.sync.peer_errors, "peer", "peers")} failed the last sync attempt; run \`codemem sync peers\` or \`codemem sync doctor\``,
 		});
 		return "degraded";
 	}
@@ -269,6 +321,7 @@ function addRuntimeAttention(
 function projectDatabaseSubsystems(
 	snapshot: OperationalStatusSnapshot | null,
 	configuredObserver: boolean,
+	checkedAt: Date,
 	attention: StatusAttention[],
 ): Pick<OperationalStatusReport, "maintenance" | "semantic_index" | "raw_events" | "observer"> {
 	if (!snapshot) {
@@ -344,7 +397,7 @@ function projectDatabaseSubsystems(
 		attention.push({
 			code: "observer_recent_failures",
 			severity: "warning",
-			message: "Observer batches failed recently. Run `codemem diagnostics capture status`",
+			message: recentObserverFailureMessage(snapshot.observer, checkedAt),
 		});
 	}
 	return {
@@ -353,6 +406,17 @@ function projectDatabaseSubsystems(
 		raw_events: { state: rawState, pending },
 		observer: { state: observerState },
 	};
+}
+
+/** "Recently" is the last 24 hours; the message says how many failed and how long ago. */
+function recentObserverFailureMessage(
+	observer: OperationalStatusSnapshot["observer"],
+	checkedAt: Date,
+): string {
+	const failed = plural(observer.recent_failed_batches, "observer batch", "observer batches");
+	const age = ageBefore(observer.latest_recent_failure_at, checkedAt);
+	const latest = age ? `, most recently ${age} ago` : "";
+	return `${failed} failed in the last 24 hours${latest}. Run \`codemem diagnostics capture status\``;
 }
 
 export async function collectStatusReport(
@@ -401,10 +465,11 @@ export async function collectStatusReport(
 	const attention: StatusAttention[] = [];
 	addDatabaseAttention(databaseState, attention);
 	addRuntimeAttention(runtime, attention);
-	const sync = projectSync(syncEnabled(config, deps.env), snapshot, attention);
+	const sync = projectSync(syncEnabled(config, deps.env), snapshot, checkedAt, attention);
 	const subsystems = projectDatabaseSubsystems(
 		snapshot,
 		observerConfigured(config, deps.env),
+		checkedAt,
 		attention,
 	);
 	const ok = !attention.some((item) => item.severity === "error");
