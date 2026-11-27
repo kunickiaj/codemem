@@ -36,12 +36,18 @@ export async function pendingJoin(f: RevocationFixture, publicKey = f.input.publ
 	};
 	seed.fingerprint = fingerprintPublicKey(seed.publicKey);
 	await f.store.enrollDevice(seed.groupId, seed);
+	// Approval resolves the request's invitation by its token digest.
+	const invite = await f.store.createInvite({
+		groupId: f.input.groupId,
+		policy: "approval_required",
+		expiresAt: "2099-01-01T00:00:00.000Z",
+	});
 	const request = await f.store.createJoinRequest({
 		...f.input,
 		publicKey,
 		fingerprint: fingerprintPublicKey(publicKey),
 		displayName: "Reviewed laptop",
-		token: "join-fixture-token",
+		token: invite.token,
 	});
 	const options: CoordinatorReviewJoinRequestInput = {
 		requestId: request.request_id,

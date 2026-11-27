@@ -124,8 +124,8 @@ describe("Team member removal storage on the SQLite coordinator", () => {
 		initializeBaseSchema(db);
 		dropTeamMemberRemovalStorage(db);
 		db.exec(`INSERT INTO groups(group_id, created_at) VALUES ('prior-group', 'fixture-time');
-			INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at, invite_kind, policy_team_id)
-			VALUES ('prior-invite', 'prior-group', 'prior-token', 'auto_admit', 'later', 'fixture-time', 'team_member', 'team-a');`);
+			INSERT INTO coordinator_invites(invite_id, group_id, token, token_digest, policy, expires_at, created_at, invite_kind, policy_team_id)
+			VALUES ('prior-invite', 'prior-group', 'prior-token', 'df77e44eafbdcf39e98933940d879aadeda6d4aba53d50802da638de9b8b5441', 'auto_admit', 'later', 'fixture-time', 'team_member', 'team-a');`);
 		const snapshot = () => ({
 			schema: db
 				.prepare(

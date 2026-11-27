@@ -464,14 +464,14 @@ export function inviteInsertSql(hasRemovalSchema: boolean): string {
 
 /**
  * `issued_after_removal_seq` of a new join request, copied from its invitation.
- * When ready, bind the group ID, the plaintext token, and its digest, in that order.
+ * When ready, bind the group ID and the invitation token digest, in that order.
  */
 export function joinRequestRemovalSeqSql(ready: boolean): RemovalColumnSql {
 	return removalColumnSql(
 		ready,
 		"issued_after_removal_seq",
 		`(SELECT i.issued_after_removal_seq FROM coordinator_invites i
-WHERE i.group_id = ? AND (i.token = ? OR i.token_digest = ?) LIMIT 1)`,
+WHERE i.group_id = ? AND i.token_digest = ? LIMIT 1)`,
 	);
 }
 

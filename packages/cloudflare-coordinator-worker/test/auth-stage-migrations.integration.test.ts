@@ -129,10 +129,11 @@ it("baselines an existing current database without a ledger once, then the chain
 	await db.prepare(coordinatorAuthStageBaselineSql("current")).run();
 	const baselined = await ledger();
 	await applyD1Migrations(db, env.TEST_MIGRATIONS);
-	// Assert: every numbered migration is recorded once, from 0001. Only the
-	// migrations a baseline never records, such as 0053, ran, on objects that exist.
+	// Assert: every numbered migration is recorded once. Only the migrations a
+	// baseline never records, such as 0053, ran, on objects that exist, so they
+	// follow later migrations the baseline did record, such as 0054.
 	expect(baselined).toEqual([...coordinatorD1BaselineMigrations("current")]);
-	expect(await ledger()).toEqual(env.TEST_MIGRATIONS.map(({ name }) => name));
+	expect([...(await ledger())].sort()).toEqual(env.TEST_MIGRATIONS.map(({ name }) => name).sort());
 	expect(await ledger()).toEqual([...baselined, ...coordinatorD1ApplyOnlyMigrations()]);
 	expect(await definitions()).toEqual(schema);
 	expect(await retained()).toEqual(before);

@@ -223,6 +223,27 @@ import {
 	type CoordinatorRevokeInviteInput,
 	InviteRevocationOperations,
 } from "./coordinator-invite-revocation.js";
+import {
+	COORDINATOR_METADATA_SCHEMA_SQL,
+	COORDINATOR_METADATA_STORAGE_PRESENT_SQL,
+	type InviteTokenLookupFence,
+	LOOKUP_VERSION_SEEN,
+	RAISE_METADATA_SQL,
+} from "./coordinator-invite-token-fence.js";
+import {
+	bearerInvite,
+	INVITE_TOKEN_LOOKUP_VERSION,
+	joinRequestStoredDigest,
+	joinRequestStoredToken,
+	PLAINTEXT_TOKEN_SQL,
+} from "./coordinator-invite-token-seal.js";
+import {
+	FILL_INVITE_DIGESTS_SQL,
+	HASH_JOIN_REQUESTS_SQL,
+	INVITES_WITHOUT_DIGEST_SQL,
+	type InviteTokenDigestProgress,
+	InviteTokenStorage,
+} from "./coordinator-invite-token-storage.js";
 import { joinReviewGuardEvidence } from "./coordinator-join-review-guards.js";
 import {
 	captureLegacyCompletionOwnerProof,
@@ -1170,6 +1191,52 @@ function initializePostStageStorage(db: DatabaseType): void {
 		db.transaction(() => db.exec(TEAM_MEMBER_REMOVAL_SCHEMA_SQL)).immediate();
 	if (db.prepare(TEAM_GROUP_BINDING_STORAGE_PRESENT_SQL).pluck().get() !== 1)
 		db.transaction(() => db.exec(TEAM_GROUP_BINDING_MIGRATION_SQL)).immediate();
+	fillInviteTokenDigestsSync(db);
+	recordInviteTokenLookupVersionSync(db);
+}
+
+/** The metadata table, and this build's invitation token lookup version, recorded when it is the highest yet. */
+function recordInviteTokenLookupVersionSync(db: DatabaseType): void {
+	if (db.prepare(COORDINATOR_METADATA_STORAGE_PRESENT_SQL).pluck().get() !== 1)
+		db.transaction(() => db.exec(COORDINATOR_METADATA_SCHEMA_SQL)).immediate();
+	const seen = db
+		.prepare("SELECT value FROM coordinator_metadata WHERE name = ?")
+		.pluck()
+		.get(LOOKUP_VERSION_SEEN) as number | undefined;
+	// A warm start of a current file only reads.
+	if (seen !== undefined && seen >= INVITE_TOKEN_LOOKUP_VERSION) return;
+	db.prepare(RAISE_METADATA_SQL).run(
+		LOOKUP_VERSION_SEEN,
+		INVITE_TOKEN_LOOKUP_VERSION,
+		new Date().toISOString(),
+	);
+}
+
+/**
+ * Invitations from before token digests get their digest, and join requests
+ * that copied a token keep only its digest, so digest lookups and the inviter
+ * check of a join approval find them. A current file is only read.
+ */
+function fillInviteTokenDigestsSync(db: DatabaseType): void {
+	const invites = db
+		.prepare(`SELECT invite_id, token FROM coordinator_invites WHERE ${INVITES_WITHOUT_DIGEST_SQL}`)
+		.all() as Array<{ invite_id: string; token: string }>;
+	const requests = db
+		.prepare(`SELECT request_id, token FROM coordinator_join_requests WHERE ${PLAINTEXT_TOKEN_SQL}`)
+		.all() as Array<{ request_id: string; token: string }>;
+	if (invites.length === 0 && requests.length === 0) return;
+	const rows = {
+		invites: invites.map((row) => [row.invite_id, row.token, tokenDigest(row.token)]),
+		requests: requests.map((row) => [
+			row.request_id,
+			row.token,
+			joinRequestStoredToken(tokenDigest(row.token)),
+		]),
+	};
+	db.transaction(() => {
+		db.prepare(FILL_INVITE_DIGESTS_SQL).run(JSON.stringify(rows.invites));
+		db.prepare(HASH_JOIN_REQUESTS_SQL).run(JSON.stringify(rows.requests));
+	}).immediate();
 }
 
 export function connectCoordinator(
@@ -1238,6 +1305,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
+	private readonly inviteTokens: InviteTokenStorage;
 
 	constructor(
 		path?: string,
@@ -1273,6 +1341,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
+		this.inviteTokens = new InviteTokenStorage(rawAuthBackend, tokenDigest);
 		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
 		this.accountChangeBackend = withCoordinatorAuthSchema(rawAuthBackend, { connections: true });
 		this.accountChangesCapability = new AccountChangeOperations(
@@ -2303,7 +2372,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			return existing;
 		};
 		const renewOperationInvite = (existing: CoordinatorInvite): CoordinatorInvite => {
-			if (!existing.revoked_at && existing.expires_at > now) return existing;
+			// A create retry hands out the stored token, so a row holding a placeholder is refused.
+			if (!existing.revoked_at && existing.expires_at > now) return bearerInvite(existing);
 			// A renewal keeps issued_after_removal_seq: it does not move the invitation past a later removal.
 			this.db
 				.prepare(`UPDATE coordinator_invites
@@ -2324,7 +2394,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				);
 			const renewed = readOperationInvite();
 			if (!renewed) throw new Error("invite_operation_reissue_failed");
-			return renewed;
+			return bearerInvite(renewed);
 		};
 		if (operationId) {
 			const existing = readOperationInvite();
@@ -2382,24 +2452,51 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return row ? rowToRecord<CoordinatorInvite>(row) : null;
 	}
 
-	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
-		const row = this.db
-			.prepare(`SELECT ${INVITE_COLUMNS}
-				 FROM coordinator_invites
-				 WHERE (token_digest = ? OR token = ?)
-				   AND revoked_at IS NULL
-				   AND expires_at > ?`)
-			.get(tokenDigest(token), token, new Date().toISOString());
+	/**
+	 * The invitation with this token digest. A presented token is matched by its
+	 * digest only, and a miss writes nothing. Rows from before token digests get
+	 * theirs when the store opens its file.
+	 */
+	private async inviteByDigest(
+		token: string,
+		condition = "",
+		values: unknown[] = [],
+	): Promise<CoordinatorInvite | null> {
+		const read = () =>
+			this.db
+				.prepare(
+					`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ?${condition}`,
+				)
+				.get(tokenDigest(token), ...values);
+		const row = read() as CoordinatorInvite | undefined;
 		return row ? rowToRecord<CoordinatorInvite>(row) : null;
 	}
 
+	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
+		return this.inviteByDigest(token, " AND revoked_at IS NULL AND expires_at > ?", [
+			new Date().toISOString(),
+		]);
+	}
+
 	async getInviteByTokenForInspection(token: string): Promise<CoordinatorInvite | null> {
-		const row = this.db
-			.prepare(
-				`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
-			)
-			.get(tokenDigest(token), token);
-		return row ? rowToRecord<CoordinatorInvite>(row) : null;
+		return this.inviteByDigest(token);
+	}
+
+	async fillInviteTokenDigests(limit: number): Promise<InviteTokenDigestProgress> {
+		return this.inviteTokens.fillDigests(limit, new Date().toISOString());
+	}
+
+	/** Recorded when the store opens its file; this reports whether that record exists. */
+	async recordInviteTokenLookupVersion(): Promise<boolean> {
+		return this.inviteTokens.recordLookupVersion(new Date().toISOString());
+	}
+
+	async inviteTokenLookupFence(): Promise<InviteTokenLookupFence> {
+		return this.inviteTokens.lookupFence();
+	}
+
+	async raiseInviteTokenLookupFloor(version: number): Promise<InviteTokenLookupFence> {
+		return this.inviteTokens.raiseLookupFloor(version, new Date().toISOString());
 	}
 
 	async inspectRecipientInvite(
@@ -2579,10 +2676,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.db
 			.transaction((): CoordinatorRecipientInviteAcceptance => {
 				const invite = this.db
-					.prepare(
-						`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
-					)
-					.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
+					.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ?`)
+					.get(tokenDigest(opts.token)) as CoordinatorInvite | undefined;
 				if (
 					!invite ||
 					!preflightInspection ||
@@ -3006,10 +3101,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.db
 			.transaction(() => {
 				let invite = this.db
-					.prepare(
-						`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
-					)
-					.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
+					.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ?`)
+					.get(tokenDigest(opts.token)) as CoordinatorInvite | undefined;
 				if (!invite?.operation_id || !invite.project_intent_json || invite.revoked_at) {
 					throw new Error("invite_invalid");
 				}
@@ -3223,9 +3316,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const requestId = tokenUrlSafe(12);
 		const hasRemovalSchema = this.hasRemovalSchema();
 		const removalSeq = joinRequestRemovalSeqSql(hasRemovalSchema);
-		const removalSeqValues = hasRemovalSchema
-			? [opts.groupId, opts.token, tokenDigest(opts.token)]
-			: [];
+		// The request keeps only the invitation token's digest.
+		const digest = tokenDigest(opts.token);
+		const removalSeqValues = hasRemovalSchema ? [opts.groupId, digest] : [];
 		const keyId = opts.inviteId === undefined ? null : enrollmentRevocationKeyId(opts.publicKey);
 		const fence =
 			opts.inviteId === undefined
@@ -3244,7 +3337,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				opts.publicKey,
 				opts.fingerprint,
 				opts.displayName ?? null,
-				opts.token,
+				joinRequestStoredToken(digest),
 				now,
 				...removalSeqValues,
 				...(fence?.ordered.values ?? []),
@@ -3363,7 +3456,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				publicKey: row.public_key,
 				keyId,
 			},
-			tokenDigest(row.token),
+			joinRequestStoredDigest(row.token) ?? tokenDigest(row.token),
 		);
 		const guard = { ...evidence, removal };
 		this.assertJoinApprovalCurrentSync(guard);

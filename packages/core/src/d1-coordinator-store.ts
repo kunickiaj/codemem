@@ -158,6 +158,12 @@ import {
 	type CoordinatorRevokeInviteInput,
 	InviteRevocationOperations,
 } from "./coordinator-invite-revocation.js";
+import type { InviteTokenLookupFence } from "./coordinator-invite-token-fence.js";
+import { bearerInvite, joinRequestStoredToken } from "./coordinator-invite-token-seal.js";
+import {
+	type InviteTokenDigestProgress,
+	InviteTokenStorage,
+} from "./coordinator-invite-token-storage.js";
 import {
 	assertJoinReviewConfirmation,
 	JOIN_REVIEW_COLUMNS,
@@ -1405,7 +1411,7 @@ function prepareRecipientInviteBootstrap(db: D1DatabaseLike, write: RecipientInv
 	return [
 		db
 			.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?, trust_state = 'bootstrap_grant_created'
-			WHERE (token_digest = ? OR token = ?) AND invite_kind = 'add_device'
+			WHERE token_digest = ? AND invite_kind = 'add_device'
 			AND invite_id = ? AND group_id = ?
 			AND bootstrap_grant_id IS NULL AND inviter_device_id IS NOT NULL AND expires_at > ?
 			AND EXISTS (SELECT 1 FROM enrolled_devices e WHERE e.group_id = coordinator_invites.group_id
@@ -1414,7 +1420,6 @@ function prepareRecipientInviteBootstrap(db: D1DatabaseLike, write: RecipientInv
 			.bind(
 				tokenUrlSafe(12),
 				digest,
-				opts.token,
 				invite.invite_id,
 				invite.group_id,
 				consumedAt,
@@ -1427,14 +1432,13 @@ function prepareRecipientInviteBootstrap(db: D1DatabaseLike, write: RecipientInv
 			i.expires_at, ?, i.recipient_actor_id, NULL FROM coordinator_invites i
 			JOIN enrolled_devices e ON e.group_id = i.group_id
 				AND e.device_id = i.inviter_device_id AND e.enabled = 1
-			WHERE (i.token_digest = ? OR i.token = ?) AND i.invite_kind = 'add_device'
+			WHERE i.token_digest = ? AND i.invite_kind = 'add_device'
 			AND i.invite_id = ? AND i.group_id = ?
 			AND i.bootstrap_grant_id IS NOT NULL AND i.bound_device_id = ?
 			AND changes() = 1 AND ${boundEligibilitySql}`)
 			.bind(
 				consumedAt,
 				digest,
-				opts.token,
 				invite.invite_id,
 				invite.group_id,
 				opts.deviceId,
@@ -1502,8 +1506,8 @@ function prepareRecipientInviteConsume(
 			],
 		},
 		invite: {
-			sql: "(token_digest = ? OR token = ?) AND invite_id = ? AND group_id = ?",
-			values: [digest, opts.token, invite.invite_id, invite.group_id],
+			sql: "token_digest = ? AND invite_id = ? AND group_id = ?",
+			values: [digest, invite.invite_id, invite.group_id],
 		},
 		open: {
 			sql: `consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
@@ -1546,13 +1550,12 @@ function prepareRecipientInviteConsume(
 /** The insert and the update of prepareInviteConsumeAndEnroll for a recipient invitation. */
 function prepareRecipientInviteEnrollment(db: D1DatabaseLike, write: RecipientInviteConsume) {
 	const { invite, opts, digest } = write;
-	const boundInviteSql = `(i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
+	const boundInviteSql = `i.token_digest = ? AND i.bound_device_id = ?
 		AND i.invite_id = ? AND i.group_id = ?
 		AND i.bound_public_key = ? AND i.bound_fingerprint = ?
 		AND i.recipient_actor_id = ?`;
 	const boundInviteValues = [
 		digest,
-		opts.token,
 		opts.deviceId,
 		invite.invite_id,
 		invite.group_id,
@@ -1647,7 +1650,7 @@ function prepareProjectInviteConsume(
 	return prepareInviteConsumeAndEnroll(db, {
 		deviceId: opts.deviceId,
 		consume: { sql: PROJECT_INVITE_CONSUME_SQL, values: projectInviteConsumeValues(write) },
-		invite: { sql: "(token_digest = ? OR token = ?)", values: [digest, opts.token] },
+		invite: { sql: "token_digest = ?", values: [digest] },
 		open: {
 			sql: `${PROJECT_INVITE_OPEN_SQL} AND ${guard.eligibilitySql}`,
 			values: [consumedAt, ...guard.eligibilityValues],
@@ -1704,12 +1707,11 @@ function prepareProjectInviteRetryConsume(
 ): D1PreparedStatementLike {
 	return db
 		.prepare(`UPDATE coordinator_invites SET ${PROJECT_INVITE_CONSUME_SQL}
-			WHERE (token_digest = ? OR token = ?) AND ${PROJECT_INVITE_OPEN_SQL}
+			WHERE token_digest = ? AND ${PROJECT_INVITE_OPEN_SQL}
 			AND ${write.guard.eligibilitySql}`)
 		.bind(
 			...projectInviteConsumeValues(write),
 			write.digest,
-			write.opts.token,
 			write.consumedAt,
 			...write.guard.eligibilityValues,
 		);
@@ -1727,18 +1729,11 @@ function prepareProjectInviteEnrollment(db: D1DatabaseLike, write: ProjectInvite
 			i.recipient_actor_id, i.recipient_device_display_name, 1, ?${keyIdSql.value}
 			FROM coordinator_invites i
 			JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
-			WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ? AND changes() = 1
+			WHERE i.token_digest = ? AND i.bound_device_id = ? AND changes() = 1
 			AND NOT EXISTS (SELECT 1 FROM enrolled_devices e
 				WHERE e.group_id = i.group_id AND e.device_id = i.bound_device_id)
 			AND ${guard.boundEligibilitySql}`)
-		.bind(
-			write.consumedAt,
-			...keyIdValues,
-			digest,
-			opts.token,
-			opts.deviceId,
-			...guard.boundEligibilityValues,
-		);
+		.bind(write.consumedAt, ...keyIdValues, digest, opts.deviceId, ...guard.boundEligibilityValues);
 	// The key text is pinned, so the key ID written here is the ID of the stored key.
 	const update = db
 		.prepare(`UPDATE enrolled_devices SET
@@ -1747,7 +1742,7 @@ function prepareProjectInviteEnrollment(db: D1DatabaseLike, write: ProjectInvite
 			AND (identity_id IS NULL OR identity_id = ?) AND changes() = 1
 			AND EXISTS (SELECT 1 FROM coordinator_invites i
 				JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
-				WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
+				WHERE i.token_digest = ? AND i.bound_device_id = ?
 					AND i.group_id = ?)
 			AND ${guard.boundEligibilitySql}`)
 		.bind(
@@ -1759,7 +1754,6 @@ function prepareProjectInviteEnrollment(db: D1DatabaseLike, write: ProjectInvite
 			opts.publicKey,
 			opts.recipientActorId,
 			digest,
-			opts.token,
 			opts.deviceId,
 			invite.group_id,
 			...guard.boundEligibilityValues,
@@ -1794,9 +1788,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
+	private readonly inviteTokens: InviteTokenStorage;
 
 	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
 		this.db = db;
+		this.inviteTokens = new InviteTokenStorage(createRawD1AuthLinkBackend(db), tokenDigest);
 		const ledgerBackend: DeviceRemovalBackend = {
 			all: (statement) =>
 				db
@@ -2836,7 +2832,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const renewOperationInvite = async (
 			existing: CoordinatorInvite,
 		): Promise<CoordinatorInvite> => {
-			if (!existing.revoked_at && existing.expires_at > now) return existing;
+			// A create retry hands out the stored token, so a row holding a placeholder is refused.
+			if (!existing.revoked_at && existing.expires_at > now) return bearerInvite(existing);
 			// A renewal keeps issued_after_removal_seq: it does not move the invitation past a later removal.
 			await runChanges(
 				this.db
@@ -2859,7 +2856,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			);
 			const renewed = await readOperationInvite();
 			if (!renewed) throw new Error("invite_operation_reissue_failed");
-			return renewed;
+			return bearerInvite(renewed);
 		};
 		if (operationId) {
 			const existing = await readOperationInvite();
@@ -2921,30 +2918,51 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return row ? rowToRecord<CoordinatorInvite>(row) : null;
 	}
 
-	async getInviteByToken(_token: string): Promise<CoordinatorInvite | null> {
-		const digest = await tokenDigest(_token);
-		const row = await firstRow<CoordinatorInvite>(
-			this.db
-				.prepare(`SELECT ${INVITE_COLUMNS}
-					 FROM coordinator_invites
-					 WHERE (token_digest = ? OR token = ?)
-					   AND revoked_at IS NULL
-					   AND expires_at > ?`)
-				.bind(digest, _token, nowISO()),
-		);
+	/**
+	 * The invitation with this token digest. A presented token is matched by its
+	 * digest only, and a miss writes nothing. Rows from before token digests get
+	 * theirs from the admin backfill, which runs before this Worker takes traffic.
+	 */
+	private async inviteByDigest(
+		token: string,
+		condition = "",
+		values: unknown[] = [],
+	): Promise<CoordinatorInvite | null> {
+		const digest = await tokenDigest(token);
+		const read = () =>
+			firstRow<CoordinatorInvite>(
+				this.db
+					.prepare(
+						`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ?${condition}`,
+					)
+					.bind(digest, ...values),
+			);
+		const row = await read();
 		return row ? rowToRecord<CoordinatorInvite>(row) : null;
 	}
 
+	async getInviteByToken(_token: string): Promise<CoordinatorInvite | null> {
+		return this.inviteByDigest(_token, " AND revoked_at IS NULL AND expires_at > ?", [nowISO()]);
+	}
+
 	async getInviteByTokenForInspection(_token: string): Promise<CoordinatorInvite | null> {
-		const digest = await tokenDigest(_token);
-		const row = await firstRow<CoordinatorInvite>(
-			this.db
-				.prepare(
-					`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
-				)
-				.bind(digest, _token),
-		);
-		return row ? rowToRecord<CoordinatorInvite>(row) : null;
+		return this.inviteByDigest(_token);
+	}
+
+	async fillInviteTokenDigests(limit: number): Promise<InviteTokenDigestProgress> {
+		return this.inviteTokens.fillDigests(limit, nowISO());
+	}
+
+	async recordInviteTokenLookupVersion(): Promise<boolean> {
+		return this.inviteTokens.recordLookupVersion(nowISO());
+	}
+
+	async inviteTokenLookupFence(): Promise<InviteTokenLookupFence> {
+		return this.inviteTokens.lookupFence();
+	}
+
+	async raiseInviteTokenLookupFloor(version: number): Promise<InviteTokenLookupFence> {
+		return this.inviteTokens.raiseLookupFloor(version, nowISO());
 	}
 
 	async inspectRecipientInvite(
@@ -3200,7 +3218,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			this.db
 				.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 					trust_state = 'bootstrap_grant_created'
-					WHERE (token_digest = ? OR token = ?) AND bootstrap_grant_id IS NULL
+					WHERE token_digest = ? AND bootstrap_grant_id IS NULL
 					AND bound_device_id = ?
 					AND (changes() = 1 OR ? = 1) AND ${PROJECT_INVITE_ENROLLMENT_SQL}
 					AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
@@ -3212,7 +3230,6 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(
 					grantId,
 					digest,
-					_opts.token,
 					_opts.deviceId,
 					initial.consumed_at ? 1 : 0,
 					...enrollmentValues,
@@ -3227,7 +3244,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					i.expires_at, ?, i.inviter_actor_id, NULL FROM coordinator_invites i
 					JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
 					JOIN enrolled_devices e ON e.group_id = i.group_id AND e.device_id = i.inviter_device_id
-					WHERE (i.token_digest = ? OR i.token = ?)
+					WHERE i.token_digest = ?
 					AND ((i.bootstrap_grant_id = ? AND changes() = 1)
 						OR (i.bootstrap_grant_id = ? AND ? = 1))
 					AND i.bound_device_id = ? AND e.enabled = 1
@@ -3235,7 +3252,6 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(
 					consumedAt,
 					digest,
-					_opts.token,
 					grantId,
 					initial.bootstrap_grant_id ?? null,
 					initial.consumed_at ? 1 : 0,
@@ -3309,9 +3325,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const requestId = tokenUrlSafe(12);
 		const hasRemovalSchema = await this.hasRemovalSchema();
 		const removalSeq = joinRequestRemovalSeqSql(hasRemovalSchema);
-		const removalSeqValues = hasRemovalSchema
-			? [_opts.groupId, _opts.token, await tokenDigest(_opts.token)]
-			: [];
+		// The request keeps only the invitation token's digest.
+		const digest = await tokenDigest(_opts.token);
+		const removalSeqValues = hasRemovalSchema ? [_opts.groupId, digest] : [];
 		const keyId =
 			_opts.inviteId === undefined ? null : await ed25519KeyIdForRevocation(_opts.publicKey);
 		const fence =
@@ -3331,7 +3347,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				_opts.publicKey,
 				_opts.fingerprint,
 				_opts.displayName ?? null,
-				_opts.token,
+				joinRequestStoredToken(digest),
 				now,
 				...removalSeqValues,
 				...(fence?.ordered.values ?? []),
@@ -3489,7 +3505,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				publicKey: row.public_key,
 				keyId,
 			},
-			await tokenDigest(row.token),
+			await this.inviteTokens.joinRequestDigest(row.token),
 		);
 		return removal
 			? {

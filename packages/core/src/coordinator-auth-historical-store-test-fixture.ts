@@ -47,6 +47,7 @@ const callerMigrationNames = Object.freeze([
 	"0050_add_boundary_readiness.sql",
 	"0052_add_team_member_removals.sql",
 	"0053_add_team_group_bindings.sql",
+	"0054_add_coordinator_metadata.sql",
 ]);
 const excludedOwnerMigrationNames = [
 	"0030_add_owner_enrollment_attempts.sql",

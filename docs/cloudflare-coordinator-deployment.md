@@ -372,6 +372,93 @@ Revoke those with `POST /v1/admin/invites/revoke`.
 Team as `bound` with its `group_id`, `unbound`, or `conflict` when it is unbound and Team invitations for it came
 from more than one group. Both routes require the admin secret.
 
+### Invitation token digests (rollback floor)
+
+This Worker matches a presented invitation token by its SHA-256 digest only. Earlier Workers also compared it with
+the stored `token` column. Join requests now keep only the digest of the token they were made with, as
+`sha256:<digest>`, and approving one first resolves its invitation by that digest: a join request whose
+invitation cannot be resolved is refused with `404 invite_invalid`, so no approval skips the check that its
+inviter was not removed. A lookup that matches nothing writes nothing.
+
+This Worker never hands out a stored value that is not a bearer token. When an invitation's `token` column holds a
+placeholder, which a later Worker leaves when it encrypts the token, **Copy invite** and a create retry of that
+invitation answer `409 invite_link_unavailable`. The invitation can still be accepted with its token.
+
+Migration `0054_add_coordinator_metadata.sql` adds an empty `coordinator_metadata` table. This Worker records
+its invitation token lookup version there when an admin runs the digest backfill or reads or records the floor
+below. Anonymous requests never write to it. You record the lowest lookup version of every Worker that serves the
+database. Later Workers encrypt stored tokens only once that recorded floor is at least this Worker's version, so
+the floor must describe every deployment that serves the database.
+
+Earlier Workers cannot read the join requests this one stores. When an earlier Worker approves one, it finds no
+invitation for it and approves it without checking whether the inviter was removed. No value in the join
+request's `token` column makes an earlier Worker refuse instead: it treats every invitation it cannot find as
+having a current inviter. So no earlier Worker may serve the database once this one has stored a join request,
+and the deploy is a full cutover, never a gradual rollout.
+
+Invitations from before token digests, and join requests that copied a token, need a backfill that SQL cannot
+do, because D1 cannot compute SHA-256. Upgrade in this order:
+
+1. [Back up the database](#back-up-the-database) and apply the migrations, which include 0054.
+2. Pause join approvals: tell every admin not to approve join requests until step 5 is done. Approval requests
+   in flight during a deploy can reach either Worker.
+3. Deploy the Worker as a full cutover with `wrangler deploy`, not `wrangler versions deploy` with a percentage.
+   Wait until `wrangler deployments list` shows only this version, at 100 percent, for every Worker bound to the
+   database, including other environments and routes.
+4. Right away, run the digest backfill until it reports nothing left. Until then, an invitation from before token
+   digests cannot be accepted, and a pending join request for one cannot be approved. Both work once the
+   backfill has filled them, so nothing is lost:
+
+   ```fish
+   curl --fail-with-body --request POST \
+     --header "X-Codemem-Coordinator-Admin: $CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET" \
+     --header 'Content-Type: application/json' \
+     --data '{"limit":100}' \
+     "$CODEMEM_SYNC_COORDINATOR_URL/v1/admin/invite-tokens/digests"
+   ```
+
+   The response is `{ version: 1, filled_invites, hashed_join_requests, remaining_invites_without_digest,
+   remaining_plaintext_join_requests }`. Each request changes at most 100 rows of each table, with one read and
+   one write per table, so it stays within D1's per-request query limit. Repeat it until both `remaining` counts
+   are `0`. Requests are safe to repeat.
+5. Confirm the counts. Both must be `0`. Then resume join approvals:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 execute codemem-coordinator --remote --config ../../examples/cloudflare-coordinator/wrangler.toml --command "SELECT (SELECT COUNT(*) FROM coordinator_invites WHERE instr(token, ':') = 0 AND token_digest IS NULL) AS invites_without_digest, (SELECT COUNT(*) FROM coordinator_join_requests WHERE instr(token, ':') = 0) AS plaintext_join_requests"
+   ```
+
+6. Confirm that no earlier Worker serves the database: every deployment and version of every Worker bound to it,
+   including gradual deployments, other environments and routes, runs this Worker or a later one. For each
+   Worker, `wrangler deployments list` and `wrangler versions list` show what serves traffic. Then record the
+   floor. It only rises, never above the lookup version of the Worker that records it:
+
+   ```fish
+   curl --fail-with-body --request POST \
+     --header "X-Codemem-Coordinator-Admin: $CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET" \
+     --header 'Content-Type: application/json' \
+     --data '{"min_serving_lookup_version":1}' \
+     "$CODEMEM_SYNC_COORDINATOR_URL/v1/admin/invite-tokens/lookup-floor"
+   ```
+
+   The response is `{ version: 1, build_lookup_version, lookup_version_seen, min_serving_lookup_version }`. A `GET`
+   of the same path reads these values. The same record as one SQL statement, for a database you reach only with
+   `wrangler d1 execute`:
+
+   ```sql
+   INSERT INTO coordinator_metadata (name, value, updated_at)
+   VALUES ('invite_token_min_serving_lookup_version', 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+   ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+   WHERE excluded.value > coordinator_metadata.value;
+   ```
+
+This Worker is the **rollback floor** for invitation tokens. Once the floor is recorded, roll back only to this
+Worker or a later one, and never deploy an earlier one beside it. An earlier Worker compares a presented token
+with the stored `token` column and copies links from it, so it would accept and hand out the placeholders that
+later Workers store. It would also approve the join requests this one stored without checking whether their
+inviter was removed, so if you roll back below this Worker at any point, pause join approvals until this Worker
+serves the database again. A SQLite coordinator fills the digests and records its lookup version when it opens its file; record
+its floor the same way once no earlier codemem release opens that file.
+
 ### Device rebind storage (0038)
 
 Migration `0038_add_device_rebind.sql` adds two tables for signing in on a device whose

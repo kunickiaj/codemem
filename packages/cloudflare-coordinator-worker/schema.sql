@@ -2010,3 +2010,10 @@ BEFORE DELETE ON coordinator_team_group_bindings
 BEGIN
  SELECT RAISE(ABORT, 'team_group_binding_immutable');
 END;
+
+-- migration 0054_add_coordinator_metadata.sql: named integer values, such as the invitation token lookup fence.
+CREATE TABLE IF NOT EXISTS coordinator_metadata (
+  name TEXT PRIMARY KEY,
+  value INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
