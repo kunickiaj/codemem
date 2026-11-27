@@ -11,9 +11,14 @@ import {
 	type InteractiveTeamSetupStep,
 	reduceSetupSession,
 	type SetupSessionEvent,
+	type SetupSessionState,
 } from "./legacy-team-setup-session";
+import { type TeamRecoveryActions, TeamRecoveryPanel } from "./team-recovery-panel";
 
-export type LegacyTeamSetupDialogDependencies = SetupEffectDependencies;
+export type LegacyTeamSetupDialogDependencies = SetupEffectDependencies & {
+	/** The Team recovery calls; tests replace them. */
+	recovery?: Partial<TeamRecoveryActions>;
+};
 
 const defaultDependencies: LegacyTeamSetupDialogDependencies = {
 	clearDecision: api.clearLegacyTeamSetupDecision,
@@ -69,7 +74,7 @@ function canRestoreFocus(element: HTMLElement | null): element is HTMLElement {
 	return true;
 }
 
-/** Session events for a device row's person assignment. */
+/** Session events for a device row's person assignment and its decision. */
 function deviceRowEvents(dispatch: (event: SetupSessionEvent) => void) {
 	return {
 		onAssign: (device: LegacyTeamSetupDeviceV1, assignee: LegacyTeamSetupAssignee) =>
@@ -78,21 +83,37 @@ function deviceRowEvents(dispatch: (event: SetupSessionEvent) => void) {
 			dispatch({ type: "clear_device", deviceRef: device.deviceRef }),
 		onDeviceDraftChange: (deviceRef: string) =>
 			dispatch({ type: "device_draft_changed", deviceRef }),
+		onDecide: decideDevice(dispatch),
 	};
 }
 
-function LegacyTeamSetupDialogHost({
-	dependencies,
-}: {
-	dependencies: LegacyTeamSetupDialogDependencies;
-}) {
-	const [session, setSession] = useState(createSetupSessionState);
-	const returnFocus = useRef<HTMLElement | null>(null);
-	const runner = useMemo(() => createSetupEffectRunner(dependencies), [dependencies]);
-	const dispatch = (event: SetupSessionEvent) => {
-		setSession((current) => reduceSetupSession(current, event));
+function decideDevice(dispatch: (event: SetupSessionEvent) => void) {
+	return (
+		device: LegacyTeamSetupDeviceV1,
+		decision: "included" | "excluded" | "removed",
+		targetIdentityRef?: string,
+	) => {
+		if (decision === "included" && !targetIdentityRef) {
+			dispatch({
+				type: "open_blocked",
+				message: `Save a person assignment before including ${device.displayName}.`,
+			});
+			return;
+		}
+		dispatch({
+			type: "decide_device",
+			deviceRef: device.deviceRef,
+			decision,
+			...(targetIdentityRef ? { targetIdentityRef } : {}),
+		});
 	};
+}
 
+/** Opens the dialog for each request another part of the Viewer sends. */
+function useOpenRequests(
+	setSession: (update: (current: SetupSessionState) => SetupSessionState) => void,
+	returnFocus: { current: HTMLElement | null },
+) {
 	useLayoutEffect(() => {
 		const onOpen = (event: Event) => {
 			const request = event as CustomEvent<OpenTeamSetupEventDetail>;
@@ -116,7 +137,18 @@ function LegacyTeamSetupDialogHost({
 		return () => {
 			window.removeEventListener(OPEN_TEAM_SETUP_EVENT, onOpen);
 		};
-	}, []);
+	}, [returnFocus, setSession]);
+}
+
+/** The setup session: its state, its events, and the effects its commands and focus ask for. */
+function useSetupSession(dependencies: LegacyTeamSetupDialogDependencies) {
+	const [session, setSession] = useState(createSetupSessionState);
+	const returnFocus = useRef<HTMLElement | null>(null);
+	const runner = useMemo(() => createSetupEffectRunner(dependencies), [dependencies]);
+	const dispatch = (event: SetupSessionEvent) => {
+		setSession((current) => reduceSetupSession(current, event));
+	};
+	useOpenRequests(setSession, returnFocus);
 
 	useEffect(() => {
 		if (session.status !== "open") return;
@@ -135,6 +167,17 @@ function LegacyTeamSetupDialogHost({
 		target.focus();
 		dispatch({ type: "focus_applied", id: session.focus.id });
 	}, [session]);
+	return { session, dispatch, returnFocus };
+}
+
+function LegacyTeamSetupDialogHost({
+	dependencies,
+}: {
+	dependencies: LegacyTeamSetupDialogDependencies;
+}) {
+	const { session, dispatch, returnFocus } = useSetupSession(dependencies);
+	// Retrying or refreshing the setup also reads again whether its Team needs a recovery.
+	const [recoveryChecks, setRecoveryChecks] = useState(0);
 
 	if (session.status === "closed") return null;
 	const close = () => {
@@ -156,29 +199,28 @@ function LegacyTeamSetupDialogHost({
 			{...deviceRowEvents(dispatch)}
 			onClose={close}
 			onCloseAutoFocus={(event) => restoreFocus(event, returnFocus)}
-			onDecide={(device, decision, targetIdentityRef) => {
-				if (decision === "included" && !targetIdentityRef) {
-					dispatch({
-						type: "open_blocked",
-						message: `Save a person assignment before including ${device.displayName}.`,
-					});
-					return;
-				}
-				dispatch({
-					type: "decide_device",
-					deviceRef: device.deviceRef,
-					decision,
-					...(targetIdentityRef ? { targetIdentityRef } : {}),
-				});
-			}}
 			onFinish={() => dispatch({ type: "finish" })}
 			onMap={(project, resolvedProjectRef) =>
 				dispatch({ type: "map_project", projectRef: project.projectRef, resolvedProjectRef })
 			}
 			onNavigate={navigate}
 			onOpenAutoFocus={focusTitle}
-			onRefresh={() => dispatch({ type: "refresh" })}
-			onRetry={() => dispatch({ type: "retry" })}
+			onRefresh={() => {
+				setRecoveryChecks((count) => count + 1);
+				dispatch({ type: "refresh" });
+			}}
+			onRetry={() => {
+				setRecoveryChecks((count) => count + 1);
+				dispatch({ type: "retry" });
+			}}
+			recoveryPanel={
+				<TeamRecoveryPanel
+					actions={dependencies.recovery}
+					candidateRef={session.candidateRef}
+					onRecovered={dependencies.onCompleted}
+					refreshKey={recoveryChecks}
+				/>
+			}
 		/>
 	);
 }

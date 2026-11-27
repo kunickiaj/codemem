@@ -3747,3 +3747,120 @@ describe("Team setup on a device without the admin secret", () => {
 		expect(document.body.textContent).not.toContain("team_setup_admin_required");
 	});
 });
+
+describe("Team recovery in the Team setup dialog", () => {
+	it("offers to recover a Team that was turned off, beside the recovery details", async () => {
+		// Arrange: the summary names the Team an admin device can recover for this setup.
+		const candidate = {
+			candidateRef: "opaque-candidate",
+			displayName: "Engineering",
+			status: "stale" as const,
+			deviceCount: 1,
+			projectCount: 0,
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			recoverableTeamId: "team-1",
+		};
+		const recovery = {
+			loadSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [candidate] }),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockResolvedValue(detail({ conflictState: "team_setup_completion_conflict" })),
+			recovery,
+		});
+
+		const review = await vi.waitFor(() => button("Review recovery"));
+
+		expect(document.getElementById("legacy-team-setup-global-error")?.contains(review)).toBe(true);
+		expect(recovery.preview).not.toHaveBeenCalled();
+	});
+
+	it("offers the recovery after Retry when the first look for a Team to recover failed", async () => {
+		// Arrange: the setup cannot be loaded, and the first summary read fails too.
+		const candidate = {
+			candidateRef: "opaque-candidate",
+			displayName: "Engineering",
+			status: "stale" as const,
+			deviceCount: 1,
+			projectCount: 0,
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			recoverableTeamId: "team-1",
+		};
+		// The summary cannot be read until the connection is back.
+		let online = false;
+		const recovery = {
+			loadSummary: vi.fn(async () => {
+				if (!online) throw new Error("offline");
+				return { version: 1 as const, candidates: [candidate] };
+			}),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockResolvedValue(detail({ conflictState: "team_setup_completion_conflict" })),
+			recovery,
+		});
+		await vi.waitFor(() =>
+			expect(document.getElementById("legacy-team-setup-retry")).not.toBeNull(),
+		);
+		await act(async () => undefined);
+		expect(document.getElementById("team-recovery-panel")).toBeNull();
+		online = true;
+		const readsBeforeRetry = recovery.loadSummary.mock.calls.length;
+
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+
+		await vi.waitFor(() => button("Review recovery"));
+		expect(recovery.loadSummary.mock.calls.length).toBeGreaterThan(readsBeforeRetry);
+	});
+
+	it("offers the recovery for a setup that loads while its Team is on hold", async () => {
+		// Arrange: the setup reads as completed, and the summary lists it for another recovery.
+		const candidate = {
+			candidateRef: "opaque-candidate",
+			displayName: "Engineering",
+			status: "stale" as const,
+			deviceCount: 1,
+			projectCount: 0,
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			blockingError: "team_setup_completion_unavailable" as const,
+			blockingReason: "team_recovery_unconfirmed" as const,
+			recoverableTeamId: "team-1",
+		};
+		const recovery = {
+			loadSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [candidate] }),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
+		setup({ loadDetail: vi.fn().mockResolvedValue(detail()), recovery });
+
+		await vi.waitFor(() => button("Review recovery"));
+
+		expect(document.getElementById("legacy-team-setup-global-error")).toBeNull();
+		expect(document.getElementById("team-recovery-panel")?.textContent).toContain(
+			"could not be confirmed",
+		);
+	});
+
+	it("adds nothing to a setup whose Team needs no recovery", async () => {
+		const recovery = {
+			loadSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [] }),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
+		setup({ loadDetail: vi.fn().mockResolvedValue(detail()), recovery });
+
+		await vi.waitFor(() => expect(recovery.loadSummary).toHaveBeenCalled());
+		await act(async () => undefined);
+
+		expect(document.getElementById("team-recovery-panel")).toBeNull();
+	});
+});

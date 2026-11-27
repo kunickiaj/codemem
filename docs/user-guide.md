@@ -811,6 +811,22 @@ If the page closes or the finish response is lost, refresh **Sharing** and open 
 
 When a Team's completed setup cannot be recovered, **Sharing** shows **Needs recovery** with the reason and **View recovery details**, rather than asking you to migrate it again. Other Teams can still be reviewed. If this device verifies that its existing policy matches the coordinator's and only a local Project scan limit prevents recovery, its existing sharing stays active. Conflicting or unverifiable policy still requires containment before recovery can continue.
 
+#### Recovering a Team that was turned off after devices were removed
+
+A Team's setup is saved on the coordinator and cannot be changed there. When a device that setup includes is later removed from the coordinator group, the saved setup no longer matches the group, and Codemem can turn the Team off: the Team stops sharing its Projects and shows **Needs recovery**. Setting the Team up again does not help, because the coordinator keeps the original setup.
+
+On a device that holds the coordinator admin secret and is configured for the Team's coordinator group, **View recovery details** shows **Recover this Team**:
+
+1. Select **Review recovery**. Codemem reads the group's devices, its device removal records, the Team's saved setup, its member removals and its group from the coordinator, and changes nothing.
+2. Check the review. It lists the people who become members again, the devices that receive the Team's Projects again and the Projects shared with the Team again. It also lists what is left out and why: devices removed from the coordinator group, people removed from the Team or no longer active, and Projects whose sharing or mapping was changed after the Team was turned off.
+3. Select **Recover Team**.
+
+Recovery never brings back a removed device or person, and it does not add anyone the original setup excluded. A device it leaves out stays out of this Team, even if it is enrolled in the group again later.
+
+Recovery stops and changes nothing when it cannot be sure. That includes a coordinator read that fails or takes longer than 30 seconds, a device that is missing from the group with no removal on record, a device whose key changed since the setup, a device the coordinator blocks or has disabled, and a Team bound to another group. The dialog says which one applies. A read that failed can be tried again as it is.
+
+After it saves a recovery, Codemem reads the coordinator once more before the Team shares anything. If that read fails or shows that something changed, the Team is turned off again, and what the recovery left out stays left out. If that read takes too long to act on, the Team stays on hold and shares nothing. In either case the Team shows **Needs recovery**, and **View recovery details** offers **Review recovery** again.
+
 Every device that finishes or recovers setup must use a coordinator that supports cross-device Team completion. The device must also list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. With an older coordinator, Codemem keeps the setup unfinished rather than creating a local-only result; update the coordinator, then retry. A device upgraded after a prior local completion makes that result available when it reconnects, after which other upgraded devices recover it automatically.
 
 A device that is not a member of every Space in a completed Team still applies the setup. It shares only the Projects in Spaces it belongs to, and adds the others if it later joins those Spaces. Leaving one of the Team's Spaces later does not reopen setup on that device.

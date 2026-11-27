@@ -200,6 +200,12 @@ export {
 	type TeamMemberRemovalCommit,
 	type TeamMemberRemovalPreview,
 } from "./api/team-member-removal";
+export {
+	commitTeamRecovery,
+	previewTeamRecovery,
+	TeamRecoveryApiError,
+	type TeamRecoveryPreviewV1,
+} from "./api/team-recovery";
 export type {
 	AcceptDiscoveredPeerResult,
 	CoordinatorInviteResult,

@@ -1690,6 +1690,29 @@
         background: var(--accent-warm-subtle);
       }
       .legacy-team-setup-recovery p { margin: 0; }
+      .team-recovery-panel {
+        display: grid;
+        gap: var(--sp-2);
+        justify-items: start;
+        max-width: 44rem;
+        margin-block: var(--sp-4);
+        padding: var(--sp-4);
+        border: 1px solid var(--accent-warm);
+        border-radius: var(--radius-sm);
+        background: var(--accent-warm-subtle);
+      }
+      .team-recovery-panel p { margin: 0; }
+      .legacy-team-setup-recovery .team-recovery-panel {
+        margin-block: var(--sp-2) 0;
+        padding: var(--sp-3) 0 0;
+        border: 0;
+        border-top: 1px solid var(--accent-warm);
+        border-radius: 0;
+        background: none;
+      }
+      .team-recovery-review { display: grid; gap: var(--sp-2); }
+      .team-recovery-list { margin: 0; padding-left: var(--sp-5); }
+      .team-recovery-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
       .legacy-team-setup-actions { justify-content: flex-end; }
       .legacy-team-setup-target { min-width: 24px; min-height: 24px; }
       .legacy-team-device-list { display: grid; gap: var(--sp-4); margin-top: var(--sp-4); }

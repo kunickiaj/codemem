@@ -15,6 +15,11 @@ export function teamSetupRecoveryReason(
 		candidate.blockingReason === "team_member_removals_unavailable"
 	)
 		return "Team member removals could not be read from the coordinator. Nothing changed here. View recovery details and try again.";
+	if (
+		error === "team_setup_completion_unavailable" &&
+		candidate.blockingReason === "team_recovery_unconfirmed"
+	)
+		return "A recovery of this Team was saved but not confirmed, so the Team shares nothing yet. On a device that holds the coordinator admin secret, view recovery details and review the recovery again.";
 	switch (error) {
 		case "team_setup_completion_conflict":
 		case "team_setup_conflict":

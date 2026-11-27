@@ -1,0 +1,324 @@
+import { render } from "preact";
+import { act } from "preact/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LegacyTeamSetupSummaryResponseV1 } from "../lib/api";
+import { TeamRecoveryApiError, type TeamRecoveryPreviewV1 } from "../lib/api/team-recovery";
+import { type TeamRecoveryActions, TeamRecoveryPanel } from "./team-recovery-panel";
+
+const PREVIEW: TeamRecoveryPreviewV1 = {
+	teamId: "team-1",
+	teamName: "Engineering",
+	people: [
+		{ identityId: "identity-b", displayName: "Person B", outcome: "member" },
+		{
+			identityId: "identity-c",
+			displayName: "Person C",
+			outcome: "left_out",
+			reason: "removed_from_team",
+		},
+	],
+	devices: [
+		{ deviceId: "device-b", displayName: "Desktop", outcome: "regains_access" },
+		{
+			deviceId: "device-a",
+			displayName: "Laptop",
+			outcome: "stays_out",
+			reason: "removed_from_group",
+		},
+	],
+	projects: [
+		{ projectIdentity: "project-1", displayName: "api", outcome: "restored" },
+		{
+			projectIdentity: "project-2",
+			displayName: null,
+			outcome: "skipped",
+			reason: "sharing_changed",
+		},
+	],
+	discardedSetupAttempts: 1,
+	expectedDigest: "digest-1",
+};
+
+function summary(recoverableTeamId?: string): LegacyTeamSetupSummaryResponseV1 {
+	const candidate = {
+		candidateRef: "candidate-1",
+		displayName: "Engineering",
+		status: "stale" as const,
+		deviceCount: 2,
+		projectCount: 1,
+		unresolvedDeviceCount: 0,
+		unresolvedProjectCount: 0,
+		blockingError: "team_setup_completion_conflict" as const,
+	};
+	return {
+		version: 1,
+		candidates: [recoverableTeamId ? { ...candidate, recoverableTeamId } : candidate],
+	};
+}
+
+function actions(overrides: Partial<TeamRecoveryActions> = {}): TeamRecoveryActions {
+	return {
+		loadSummary: vi.fn().mockResolvedValue(summary("team-1")),
+		preview: vi.fn().mockResolvedValue(PREVIEW),
+		commit: vi.fn().mockResolvedValue(undefined),
+		...overrides,
+	};
+}
+
+async function mount(recovery: TeamRecoveryActions, onRecovered = vi.fn(), refreshKey = 0) {
+	const element = document.getElementById("mount");
+	if (!element) throw new Error("mount missing");
+	await act(async () => {
+		render(
+			<TeamRecoveryPanel
+				actions={recovery}
+				candidateRef="candidate-1"
+				onRecovered={onRecovered}
+				refreshKey={refreshKey}
+			/>,
+			element,
+		);
+	});
+	return onRecovered;
+}
+
+async function click(id: string) {
+	const button = document.getElementById(id);
+	if (!button) throw new Error(`button missing: ${id}`);
+	await act(async () => {
+		button.click();
+		// Let the calls the click started settle: a recovery commits, then refreshes.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+const text = (id: string) => document.getElementById(id)?.textContent ?? "";
+
+beforeEach(() => {
+	document.body.innerHTML = '<div id="mount"></div>';
+});
+
+afterEach(() => {
+	const element = document.getElementById("mount");
+	if (element) render(null, element);
+});
+
+describe("Team recovery panel", () => {
+	it("shows nothing when the summary names no Team to recover", async () => {
+		await mount(actions({ loadSummary: vi.fn().mockResolvedValue(summary()) }));
+
+		expect(document.getElementById("team-recovery-panel")).toBeNull();
+	});
+
+	it("says why the Team shares nothing: turned off, or a recovery that was not confirmed", async () => {
+		await mount(actions());
+		const turnedOff = text("team-recovery-panel");
+		const onHold = summary("team-1");
+		onHold.candidates[0] = {
+			...onHold.candidates[0],
+			blockingError: "team_setup_completion_unavailable",
+			blockingReason: "team_recovery_unconfirmed",
+		} as (typeof onHold.candidates)[number];
+		const element = document.getElementById("mount");
+		if (element) render(null, element);
+
+		await mount(actions({ loadSummary: vi.fn().mockResolvedValue(onHold) }));
+
+		expect(turnedOff).toContain("was turned off because its saved setup no longer matched");
+		expect(text("team-recovery-panel")).toContain("saved but could not be confirmed");
+		expect(text("team-recovery-panel")).not.toContain("was turned off because");
+	});
+
+	it("lists who and what comes back and what stays out before anything is recovered", async () => {
+		const recovery = actions();
+		await mount(recovery);
+
+		await click("team-recovery-review-button");
+
+		const review = text("team-recovery-review");
+		expect(review).toContain("People who become members againPerson B");
+		expect(review).toContain("Devices that receive the Team's Projects againDesktop");
+		expect(review).toContain("Projects shared with the Team againapi");
+		expect(review).toContain("People left outPerson C (removed from the Team)");
+		expect(review).toContain("Devices left outLaptop (removed from the coordinator group)");
+		expect(review).toContain(
+			"Projects not shared againproject-2 (its sharing was changed after the Team was turned off)",
+		);
+		expect(review).toContain("1 unfinished setup attempt started since the Team was turned off");
+		expect(recovery.preview).toHaveBeenCalledWith({ teamId: "team-1" });
+		expect(recovery.commit).not.toHaveBeenCalled();
+	});
+
+	it("recovers with the reviewed digest and refreshes what opened the dialog", async () => {
+		const recovery = actions();
+		const onRecovered = await mount(recovery);
+		await click("team-recovery-review-button");
+
+		await click("team-recovery-commit");
+
+		expect(recovery.commit).toHaveBeenCalledWith({ teamId: "team-1", expectedDigest: "digest-1" });
+		expect(text("team-recovery-status")).toContain("Engineering is recovered");
+		expect(onRecovered).toHaveBeenCalledTimes(1);
+		expect(document.getElementById("team-recovery-commit")).toBeNull();
+	});
+
+	it("goes back to the start without recovering when the review is cancelled", async () => {
+		const recovery = actions();
+		await mount(recovery);
+		await click("team-recovery-review-button");
+
+		await click("team-recovery-cancel");
+
+		expect(document.getElementById("team-recovery-review")).toBeNull();
+		expect(document.getElementById("team-recovery-review-button")).not.toBeNull();
+		expect(recovery.commit).not.toHaveBeenCalled();
+	});
+
+	it("names the device when a device stops the recovery, without the error code", async () => {
+		const refused = new TeamRecoveryApiError(409, "device_key_changed", {
+			deviceIds: ["device-b"],
+		});
+		await mount(actions({ preview: vi.fn().mockRejectedValue(refused) }));
+
+		await click("team-recovery-review-button");
+
+		expect(text("team-recovery-error")).toContain("now has a different key");
+		expect(text("team-recovery-error")).toContain("Device ID: device-b.");
+		expect(document.body.textContent).not.toContain("device_key_changed");
+	});
+
+	it.each([
+		[
+			"was saved and could not be confirmed in time",
+			new TeamRecoveryApiError(503, "recovery_unverified", { reason: "evidence_stale" }),
+			"shares nothing until a recovery is confirmed",
+		],
+		[
+			"was undone because the coordinator changed",
+			new TeamRecoveryApiError(409, "recovery_quarantined_again", { reason: "evidence_changed" }),
+			"the Team was turned off again",
+		],
+		[
+			"was refused because the review is out of date",
+			new TeamRecoveryApiError(409, "recovery_preview_stale"),
+			"Review it again",
+		],
+	])("asks for a new review when the recovery %s", async (_case, cause, message) => {
+		const onRecovered = await mount(actions({ commit: vi.fn().mockRejectedValue(cause) }));
+		await click("team-recovery-review-button");
+
+		await click("team-recovery-commit");
+
+		expect(text("team-recovery-error")).toContain(message);
+		expect(document.getElementById("team-recovery-review")).toBeNull();
+		expect(document.getElementById("team-recovery-review-button")).not.toBeNull();
+		expect(onRecovered).not.toHaveBeenCalled();
+	});
+
+	it("does not send a second request while one is out", async () => {
+		let finish: (preview: TeamRecoveryPreviewV1) => void = () => undefined;
+		const preview = vi.fn(
+			() => new Promise<TeamRecoveryPreviewV1>((resolve) => (finish = resolve)),
+		);
+		await mount(actions({ preview }));
+
+		await click("team-recovery-review-button");
+		await click("team-recovery-review-button");
+
+		expect(preview).toHaveBeenCalledTimes(1);
+		expect(text("team-recovery-review-button")).toBe("Checking the coordinator…");
+		await act(async () => finish(PREVIEW));
+	});
+});
+
+describe("Team recovery panel when something around the recovery fails", () => {
+	it("reads the summary again when the dialog retries, after a first read failed", async () => {
+		const loadSummary = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("offline"))
+			.mockResolvedValue(summary("team-1"));
+		const recovery = actions({ loadSummary });
+		const onRecovered = await mount(recovery);
+		expect(document.getElementById("team-recovery-panel")).toBeNull();
+
+		await mount(recovery, onRecovered, 1);
+
+		expect(loadSummary).toHaveBeenCalledTimes(2);
+		expect(document.getElementById("team-recovery-review-button")).not.toBeNull();
+	});
+
+	it("says the Team is recovered and offers to refresh again when the refresh after it fails", async () => {
+		const onRecovered = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("team_setup_refresh_failed"))
+			.mockResolvedValue(undefined);
+		const recovery = actions();
+		await mount(recovery, onRecovered);
+		await click("team-recovery-review-button");
+		await click("team-recovery-commit");
+
+		const failed = text("team-recovery-status");
+		await click("team-recovery-refresh");
+
+		expect(failed).toContain("Engineering is recovered");
+		expect(failed).toContain("Sharing couldn't be refreshed");
+		expect(text("team-recovery-status")).toContain("Close this dialog to see the Team in Sharing");
+		expect(onRecovered).toHaveBeenCalledTimes(2);
+		expect(recovery.commit).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["the answer to the commit was lost", new TeamRecoveryApiError(0, "team_recovery_failed")],
+		["the commit failed for a reason the Viewer did not name", new Error("unreadable")],
+	])(
+		"does not say nothing changed when %s, and checks the Team's status on request",
+		async (_case, cause) => {
+			const loadSummary = vi
+				.fn()
+				.mockResolvedValueOnce(summary("team-1"))
+				// After the check the summary no longer lists the setup: the recovery went through.
+				.mockResolvedValue({ version: 1, candidates: [] });
+			const onRecovered = vi.fn();
+			await mount(actions({ loadSummary, commit: vi.fn().mockRejectedValue(cause) }), onRecovered);
+			await click("team-recovery-review-button");
+			await click("team-recovery-commit");
+
+			const unknown = text("team-recovery-error");
+			await click("team-recovery-check");
+
+			expect(unknown).toContain("couldn't confirm whether the Team was recovered");
+			expect(unknown).not.toContain("Nothing changed");
+			// The summary no longer lists the setup, so the recovery went through.
+			expect(text("team-recovery-status")).toContain("no longer needs recovery");
+			expect(onRecovered).toHaveBeenCalledTimes(1);
+		},
+	);
+});
+
+describe("Team recovery panel after checking the status of an unconfirmed recovery", () => {
+	/** Commits with a lost answer, then checks the Team's status against `after`. */
+	async function checkAfterLostCommit(after: LegacyTeamSetupSummaryResponseV1) {
+		const loadSummary = vi.fn().mockResolvedValueOnce(summary("team-1")).mockResolvedValue(after);
+		const commit = vi.fn().mockRejectedValue(new TeamRecoveryApiError(0, "team_recovery_failed"));
+		await mount(actions({ loadSummary, commit }));
+		await click("team-recovery-review-button");
+		await click("team-recovery-commit");
+		await click("team-recovery-check");
+		return text("team-recovery-status");
+	}
+
+	it("says the Team no longer needs recovery once the summary no longer lists the setup", async () => {
+		const status = await checkAfterLostCommit({ version: 1, candidates: [] });
+
+		expect(status).toContain("no longer needs recovery");
+	});
+
+	it("says this device can no longer recover the Team while the summary still lists the setup", async () => {
+		// Arrange: the setup is listed without a Team to recover, as for a device that lost its admin secret.
+		const status = await checkAfterLostCommit(summary());
+
+		expect(status).toContain("This device can no longer recover this Team");
+		expect(status).toContain("coordinator admin secret");
+		expect(status).not.toContain("no longer needs recovery");
+	});
+});
