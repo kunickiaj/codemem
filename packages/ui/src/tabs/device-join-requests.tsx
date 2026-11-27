@@ -1,0 +1,322 @@
+import { useEffect, useRef, useState } from "preact/hooks";
+import {
+	loadCoordinatorAdminJoinRequests,
+	loadCoordinatorAdminStatus,
+	reviewCoordinatorAdminJoinRequest,
+} from "../lib/api/coordinator-admin";
+
+/** Most groups one Viewer asks the coordinator about for a single Devices refresh. */
+const MAX_GROUPS = 10;
+
+export interface DeviceJoinRequest {
+	requestId: string;
+	groupId: string;
+	deviceId: string;
+	displayName: string;
+	fingerprint: string;
+}
+
+export interface DeviceJoinRequestsApi {
+	/** Join requests for each group this Viewer can administer, or null when it cannot. */
+	load: (
+		signal: AbortSignal,
+	) => Promise<{ requests: DeviceJoinRequest[]; failedGroups: number } | null>;
+	review: (requestId: string, action: "approve" | "deny") => Promise<{ setupWarning: boolean }>;
+}
+
+type RawRequest = {
+	request_id?: unknown;
+	device_id?: unknown;
+	display_name?: unknown;
+	fingerprint?: unknown;
+};
+
+function text(value: unknown): string {
+	return typeof value === "string" ? value.trim() : "";
+}
+
+async function loadFromViewer(signal: AbortSignal) {
+	const status = (await loadCoordinatorAdminStatus({ signal })) as {
+		readiness?: string;
+		has_admin_secret?: boolean;
+		groups?: unknown;
+	};
+	// Approving needs the admin secret, so a device without it has nothing to review here.
+	if (status.readiness !== "ready" || status.has_admin_secret !== true) return null;
+	const groups = (Array.isArray(status.groups) ? status.groups : [])
+		.map(text)
+		.filter(Boolean)
+		.slice(0, MAX_GROUPS);
+	const results = await Promise.allSettled(
+		groups.map(async (groupId) => {
+			const payload = (await loadCoordinatorAdminJoinRequests(groupId, { signal })) as {
+				items?: unknown;
+			};
+			if (!Array.isArray(payload?.items)) throw new Error("join_requests_invalid");
+			return (payload.items as RawRequest[]).flatMap((item) => {
+				const requestId = text(item?.request_id);
+				if (!requestId) return [];
+				return [
+					{
+						requestId,
+						groupId,
+						deviceId: text(item.device_id),
+						displayName: text(item.display_name),
+						fingerprint: text(item.fingerprint),
+					},
+				];
+			});
+		}),
+	);
+	if (signal.aborted) throw new DOMException("The request was aborted", "AbortError");
+	const requests = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+	const failedGroups = results.filter((result) => result.status === "rejected").length;
+	if (groups.length > 0 && failedGroups === groups.length)
+		throw new Error("join_requests_unavailable");
+	return { requests, failedGroups };
+}
+
+export const defaultDeviceJoinRequestsApi: DeviceJoinRequestsApi = {
+	load: loadFromViewer,
+	review: async (requestId, action) => {
+		const result = (await reviewCoordinatorAdminJoinRequest(requestId, action)) as {
+			setup_warning?: unknown;
+		};
+		return { setupWarning: Boolean(result?.setup_warning) };
+	},
+};
+
+function isMissingRequest(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : "";
+	return message.includes("request_not_found") || message.includes("join request not found");
+}
+
+function requestName(request: DeviceJoinRequest): string {
+	return request.displayName || "Unnamed device";
+}
+
+function reviewMessage(
+	request: DeviceJoinRequest,
+	action: "approve" | "deny",
+	outcome: { setupWarning: boolean },
+): { text: string; tone: "success" | "warning" } {
+	const name = requestName(request);
+	if (action === "deny") return { text: `Denied ${name}.`, tone: "success" };
+	if (outcome.setupWarning) {
+		return {
+			text: `Approved ${name}, but its default group access could not be set up. Check the coordinator connection.`,
+			tone: "warning",
+		};
+	}
+	return { text: `Approved ${name}.`, tone: "success" };
+}
+
+function failureMessage(request: DeviceJoinRequest, action: "approve" | "deny", error: unknown) {
+	const name = requestName(request);
+	if (isMissingRequest(error))
+		return `The join request from ${name} no longer exists. The list was refreshed.`;
+	return `Could not ${action} ${name}. Check the coordinator connection and try again.`;
+}
+
+type Listing =
+	| { state: "loading" }
+	| { state: "hidden" }
+	| { state: "error" }
+	| { state: "ready"; requests: DeviceJoinRequest[]; failedGroups: number };
+
+type ReviewMessage = { text: string; tone: "success" | "warning" };
+
+/** Reads the requests again when Devices refreshes and whenever `reload` is called. */
+function useJoinRequestListing(api: DeviceJoinRequestsApi, refreshRevision: number) {
+	const [listing, setListing] = useState<Listing>({ state: "loading" });
+	const [reloads, setReloads] = useState(0);
+	useEffect(() => {
+		const controller = new AbortController();
+		void api.load(controller.signal).then(
+			(loaded) => {
+				if (controller.signal.aborted) return;
+				setListing(
+					loaded === null
+						? { state: "hidden" }
+						: { state: "ready", requests: loaded.requests, failedGroups: loaded.failedGroups },
+				);
+			},
+			() => {
+				if (!controller.signal.aborted) setListing({ state: "error" });
+			},
+		);
+		return () => controller.abort();
+	}, [api, refreshRevision, reloads]);
+	return { listing, reload: () => setReloads((count) => count + 1) };
+}
+
+/** Runs one review at a time and reports its result in a status that takes focus afterward. */
+function useJoinRequestReview(
+	api: DeviceJoinRequestsApi,
+	reload: () => void,
+	onReviewed?: () => unknown,
+) {
+	const [pendingId, setPendingId] = useState<string | null>(null);
+	const [message, setMessage] = useState<ReviewMessage | null>(null);
+	const statusRef = useRef<HTMLParagraphElement>(null);
+	async function review(request: DeviceJoinRequest, action: "approve" | "deny") {
+		if (pendingId) return;
+		setPendingId(request.requestId);
+		setMessage(null);
+		try {
+			const outcome = await api.review(request.requestId, action);
+			setMessage(reviewMessage(request, action, outcome));
+		} catch (error) {
+			setMessage({ text: failureMessage(request, action, error), tone: "warning" });
+		} finally {
+			setPendingId(null);
+			reload();
+			await Promise.resolve()
+				.then(() => onReviewed?.())
+				.catch(() => undefined);
+			// The reviewed row is gone, so its buttons cannot keep focus.
+			statusRef.current?.focus();
+		}
+	}
+	return { message, pendingId, review, statusRef };
+}
+
+/**
+ * Join requests from devices that want to enter a coordinator group. Only a Viewer that
+ * holds the coordinator admin secret can list or review them, so any other Viewer shows
+ * nothing here.
+ */
+export function DeviceJoinRequests({
+	api = defaultDeviceJoinRequestsApi,
+	onReviewed,
+	refreshRevision = 0,
+}: {
+	api?: DeviceJoinRequestsApi;
+	/** Refreshes Devices after a review, because an approved device joins its list. */
+	onReviewed?: () => unknown;
+	refreshRevision?: number;
+}) {
+	const { listing, reload } = useJoinRequestListing(api, refreshRevision);
+	const reviewing = useJoinRequestReview(api, reload, onReviewed);
+	if (listing.state === "hidden" || listing.state === "loading") return null;
+	if (listing.state === "error") return <JoinRequestsError onRetry={reload} />;
+	const { requests, failedGroups } = listing;
+	if (requests.length === 0 && failedGroups === 0 && !reviewing.message) return null;
+	return (
+		<JoinRequestsSection failedGroups={failedGroups} requests={requests} reviewing={reviewing} />
+	);
+}
+
+function JoinRequestsError({ onRetry }: { onRetry: () => void }) {
+	return (
+		<section aria-labelledby="devices-join-requests-heading" className="devices-join-requests">
+			<h3 id="devices-join-requests-heading">Join requests</h3>
+			<p role="status">Could not load join requests. Check the coordinator connection.</p>
+			<button className="settings-button" onClick={onRetry} type="button">
+				Retry
+			</button>
+		</section>
+	);
+}
+
+function JoinRequestsSection({
+	failedGroups,
+	requests,
+	reviewing,
+}: {
+	failedGroups: number;
+	requests: DeviceJoinRequest[];
+	reviewing: ReturnType<typeof useJoinRequestReview>;
+}) {
+	const { message, pendingId, review, statusRef } = reviewing;
+	const multipleGroups = new Set(requests.map((request) => request.groupId)).size > 1;
+	return (
+		<section aria-labelledby="devices-join-requests-heading" className="devices-join-requests">
+			<h3 id="devices-join-requests-heading">
+				Join requests{" "}
+				{requests.length > 0 ? (
+					<span className="devices-heading-count">· {requests.length}</span>
+				) : null}
+			</h3>
+			<p
+				aria-live="polite"
+				className="devices-join-requests-status"
+				data-tone={message?.tone}
+				ref={statusRef}
+				role="status"
+				tabIndex={-1}
+			>
+				{message?.text ?? ""}
+			</p>
+			{failedGroups > 0 ? (
+				<p role="status">Some join requests could not be loaded. Refresh Devices to try again.</p>
+			) : null}
+			{requests.length > 0 ? (
+				<ul className="devices-join-requests-list">
+					{requests.map((request) => (
+						<JoinRequestRow
+							busy={pendingId !== null}
+							key={`${request.groupId}:${request.requestId}`}
+							onReview={review}
+							pending={pendingId === request.requestId}
+							request={request}
+							showGroup={multipleGroups}
+						/>
+					))}
+				</ul>
+			) : null}
+		</section>
+	);
+}
+
+function JoinRequestRow({
+	busy,
+	onReview,
+	pending,
+	request,
+	showGroup,
+}: {
+	busy: boolean;
+	onReview: (request: DeviceJoinRequest, action: "approve" | "deny") => void;
+	pending: boolean;
+	request: DeviceJoinRequest;
+	showGroup: boolean;
+}) {
+	const name = requestName(request);
+	return (
+		<li className="devices-join-request">
+			<div className="devices-join-request-identity">
+				<strong>{name}</strong>
+				{showGroup ? <span className="small">Group {request.groupId}</span> : null}
+				<details className="device-sync-details">
+					<summary>Device details</summary>
+					<div className="small">Device ID {request.deviceId || "unknown"}</div>
+					{request.fingerprint ? (
+						<div className="small">Fingerprint {request.fingerprint}</div>
+					) : null}
+				</details>
+			</div>
+			<div className="devices-join-request-actions">
+				<button
+					aria-label={`Approve join request from ${name}`}
+					className="settings-save"
+					disabled={busy}
+					onClick={() => onReview(request, "approve")}
+					type="button"
+				>
+					Approve
+				</button>
+				<button
+					aria-label={`Deny join request from ${name}`}
+					className="settings-button danger"
+					disabled={busy}
+					onClick={() => onReview(request, "deny")}
+					type="button"
+				>
+					Deny
+				</button>
+				{pending ? <span className="small">Working…</span> : null}
+			</div>
+		</li>
+	);
+}

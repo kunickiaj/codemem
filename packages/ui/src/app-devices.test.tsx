@@ -1053,6 +1053,9 @@ describe("Devices app rejoin history", () => {
 		});
 		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			const request = new URL(String(input), "http://viewer.example.test");
+			// This Viewer holds no coordinator admin secret, so Devices lists no join requests.
+			if (request.pathname === "/api/coordinator/admin/status")
+				return Response.json({ readiness: "ready", has_admin_secret: false, groups: [] });
 			expect(request.pathname).toBe("/api/sync/devices/rejoin-events");
 			return Response.json({
 				scope,
@@ -1067,7 +1070,9 @@ describe("Devices app rejoin history", () => {
 			});
 		};
 		await refresh();
-		expect(fetch.mock.calls[0]?.[0]).toBe("/api/sync/devices/rejoin-events");
+		const rejoinCalls = () =>
+			fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("rejoin-events"));
+		expect(rejoinCalls()[0]).toBe("/api/sync/devices/rejoin-events");
 		const panel = document.getElementById("tab-devices");
 		const notice = () => panel?.querySelector('[aria-label="Device rejoin history"]');
 		await vi.waitFor(() =>
@@ -1075,10 +1080,64 @@ describe("Devices app rejoin history", () => {
 		);
 		act(() => notice()?.querySelector<HTMLButtonElement>("button")?.click());
 		await refresh();
-		expect(fetch.mock.calls.at(-1)?.[0]).toBe(
+		expect(rejoinCalls().at(-1)).toBe(
 			`/api/sync/devices/rejoin-events?scope=${scope}&after=${event.eventId}`,
 		);
 		expect(notice()?.textContent ?? "").not.toContain("A device rejoined by Google sign-in");
+	});
+});
+
+describe("Devices app join requests", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+
+	it("reviews a waiting device from Devices and refreshes the list", async () => {
+		const { state } = await import("./lib/state");
+		mocks.loadSyncData.mockImplementation(async () => {
+			state.lastSyncStatus = { device_id: "observer" };
+			state.lastSyncCoordinator = {
+				configured: true,
+				coordinator_url: "https://coordinator.example.test",
+			};
+			return true;
+		});
+		let waiting = [
+			{ request_id: "request-a", device_id: "new-laptop", display_name: "New laptop" },
+		];
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const request = new URL(String(input), "http://viewer.example.test");
+			if (request.pathname === "/api/coordinator/admin/status")
+				return Response.json({ readiness: "ready", has_admin_secret: true, groups: ["group-a"] });
+			if (request.pathname === "/api/coordinator/admin/join-requests")
+				return Response.json({ items: waiting, group_id: request.searchParams.get("group_id") });
+			if (request.pathname === "/api/coordinator/admin/join-requests/request-a/approve") {
+				expect(init?.method).toBe("POST");
+				waiting = [];
+				return Response.json({ ok: true });
+			}
+			return Response.json({
+				scope: "c".repeat(64),
+				localDeviceId: "observer",
+				items: [],
+				nextCursor: null,
+			});
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		const panel = document.getElementById("tab-devices");
+		await vi.waitFor(() => expect(panel?.textContent).toContain("New laptop"));
+		expect(fetch.mock.calls.map(([url]) => String(url))).toContain(
+			"/api/coordinator/admin/join-requests?group_id=group-a",
+		);
+
+		const approve = panel?.querySelector<HTMLButtonElement>(
+			'[aria-label="Approve join request from New laptop"]',
+		);
+		await act(async () => approve?.click());
+
+		await vi.waitFor(() => expect(panel?.textContent).toContain("Approved New laptop."));
+		expect(panel?.querySelector('[aria-label="Approve join request from New laptop"]')).toBeNull();
 	});
 });
 

@@ -451,7 +451,6 @@ export const state = {
 	knownProjects: [] as string[],
 	lastProjectCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
-	lastCoordinatorAdminJoinRequests: [] as CachedSyncJoinRequest[],
 	lastCoordinatorAdminDevices: [] as CachedCoordinatorAdminDevice[],
 	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],
 	lastTeamInvite: null as CachedTeamInvite | null,

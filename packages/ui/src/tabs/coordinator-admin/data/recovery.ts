@@ -1,4 +1,4 @@
-export type CoordinatorAdminSurface = "status" | "groups" | "joinRequests" | "devices";
+export type CoordinatorAdminSurface = "status" | "groups" | "devices";
 
 export type CoordinatorAdminAvailability =
 	| "unknown"
@@ -20,7 +20,6 @@ export type CoordinatorAdminRecoveryState = Record<
 const SURFACE_LABELS: Record<CoordinatorAdminSurface, string> = {
 	status: "coordinator status",
 	groups: "coordinator groups",
-	joinRequests: "join requests",
 	devices: "devices",
 };
 
@@ -32,7 +31,6 @@ export function initialCoordinatorAdminRecovery(): CoordinatorAdminRecoveryState
 	return {
 		status: initialSurface(),
 		groups: initialSurface(),
-		joinRequests: initialSurface(),
 		devices: initialSurface(),
 	};
 }

@@ -735,12 +735,14 @@ function deviceRendererActions(
 	| "enrolledDeviceBlock"
 	| "rejoinHistoryRevision"
 	| "rejoinHistoryProfile"
+	| "joinRequestsRevision"
 > {
 	return {
 		...(lifecycleAvailable ? { removalConfirmation: {}, enrolledDeviceBlock: true } : {}),
 		localDeviceId: state.lastSyncStatus?.device_id ?? undefined,
 		rejoinHistoryRevision: state.lastSyncCoordinator?.configured ? devicesLoadRevision : undefined,
 		rejoinHistoryProfile: state.lastSyncCoordinator?.coordinator_url ?? undefined,
+		joinRequestsRevision: state.lastSyncCoordinator?.configured ? devicesLoadRevision : undefined,
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),

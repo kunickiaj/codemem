@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => ({
 	renameCoordinatorAdminGroup: vi.fn(),
 	renameCoordinatorAdminDevice: vi.fn(),
 	removeCoordinatorAdminDevice: vi.fn(),
-	reviewCoordinatorAdminJoinRequest: vi.fn(),
 	showGlobalNotice: vi.fn(),
 	unarchiveCoordinatorAdminGroup: vi.fn(),
 }));
@@ -29,7 +28,6 @@ vi.mock("../../../lib/api", () => ({
 	renameCoordinatorAdminGroup: mocks.renameCoordinatorAdminGroup,
 	renameCoordinatorAdminDevice: mocks.renameCoordinatorAdminDevice,
 	removeCoordinatorAdminDevice: mocks.removeCoordinatorAdminDevice,
-	reviewCoordinatorAdminJoinRequest: mocks.reviewCoordinatorAdminJoinRequest,
 	unarchiveCoordinatorAdminGroup: mocks.unarchiveCoordinatorAdminGroup,
 }));
 
@@ -61,7 +59,6 @@ describe("coordinator admin actions", () => {
 		mocks.renameCoordinatorAdminGroup.mockReset();
 		mocks.renameCoordinatorAdminDevice.mockReset();
 		mocks.removeCoordinatorAdminDevice.mockReset();
-		mocks.reviewCoordinatorAdminJoinRequest.mockReset();
 		mocks.showGlobalNotice.mockReset();
 		mocks.unarchiveCoordinatorAdminGroup.mockReset();
 		state.coordinatorAdminTargetGroup = "";
@@ -85,10 +82,6 @@ describe("coordinator admin actions", () => {
 		coordinatorAdminState.groupPresentationAliases.clear();
 		coordinatorAdminState.deviceActionPendingId = "";
 		coordinatorAdminState.deviceActionPendingKind = "";
-		coordinatorAdminState.joinRequestsSnapshotTarget = {
-			coordinatorUrl: "https://coordinator.example",
-			groupId: "group-alpha",
-		};
 		coordinatorAdminState.devicesSnapshotTarget = {
 			coordinatorUrl: "https://coordinator.example",
 			groupId: "group-alpha",
@@ -101,7 +94,6 @@ describe("coordinator admin actions", () => {
 		coordinatorAdminState.teamSetupGuide = null;
 		completeSurfaceRefresh(coordinatorAdminState.recovery, "status");
 		completeSurfaceRefresh(coordinatorAdminState.recovery, "groups");
-		completeSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
 		completeSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 		localStorage.clear();
 	});
@@ -276,101 +268,6 @@ describe("coordinator admin actions", () => {
 		expect(reloadData).toHaveBeenCalledTimes(2);
 	});
 
-	it.each([
-		["approve", "join request not found: private-request-id"],
-		["approve", "Remote coordinator request failed (404): request_not_found"],
-		["deny", "join request not found: private-request-id"],
-		["deny", "Remote coordinator request failed (404): request_not_found"],
-	] as const)(
-		"refreshes pending requests when %s reports a missing request (%s)",
-		async (action, message) => {
-			mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(new Error(message));
-			const reloadData = vi.fn().mockResolvedValue(undefined);
-			const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
-
-			await actions.reviewJoinRequestFromAdminPanel("private-request-id", action);
-
-			expect(reloadData).toHaveBeenCalledTimes(1);
-			expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-				"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
-				"warning",
-			);
-			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
-				"private-request-id",
-			);
-		},
-	);
-
-	it.each([new Error("private coordinator detail"), "request_not_found"])(
-		"keeps recovery guidance for an unknown join-review failure (%o)",
-		async (cause) => {
-			mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(cause);
-			const reloadData = vi.fn().mockResolvedValue(undefined);
-			const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
-
-			await actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
-
-			expect(reloadData).not.toHaveBeenCalled();
-			expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-				"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
-				"warning",
-			);
-			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
-				"private coordinator detail",
-			);
-		},
-	);
-
-	it("keeps missing-request guidance when refreshing the pending list fails", async () => {
-		mocks.reviewCoordinatorAdminJoinRequest.mockRejectedValue(new Error("join request not found"));
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockRejectedValue(new Error("refresh failed")),
-		});
-
-		await expect(
-			actions.reviewJoinRequestFromAdminPanel("join-1", "approve"),
-		).resolves.toBeUndefined();
-
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"This legacy coordinator join request no longer exists. Refresh pending requests before reviewing another request.",
-			"warning",
-		);
-	});
-
-	it("reports an accurate result when a successful review cannot refresh", async () => {
-		mocks.reviewCoordinatorAdminJoinRequest.mockResolvedValue({});
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockRejectedValue(new Error("refresh failed")),
-		});
-
-		await expect(
-			actions.reviewJoinRequestFromAdminPanel("join-1", "approve"),
-		).resolves.toBeUndefined();
-
-		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
-			"Join request approved, but pending requests could not refresh. Check coordinator recovery status before reviewing another request.",
-			"warning",
-		);
-	});
-
-	it("keeps a join review result after an ordinary refresh for the same target", async () => {
-		const review = deferred<Record<string, never>>();
-		mocks.reviewCoordinatorAdminJoinRequest.mockReturnValueOnce(review.promise);
-		const reloadData = vi.fn().mockResolvedValue(undefined);
-		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
-		const action = actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
-		await vi.waitFor(() => expect(mocks.reviewCoordinatorAdminJoinRequest).toHaveBeenCalled());
-		beginCoordinatorAdminLoadGeneration();
-		review.resolve({});
-
-		await action;
-
-		expect(reloadData).toHaveBeenCalledTimes(1);
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith("Join request approved.", "success");
-	});
-
 	it("refuses coordinator mutations when required state is stale", async () => {
 		coordinatorAdminState.inviteGroup = "team-alpha";
 		failSurfaceRefresh(coordinatorAdminState.recovery, "groups");
@@ -396,10 +293,8 @@ describe("coordinator admin actions", () => {
 			reloadData: vi.fn().mockResolvedValue(undefined),
 		});
 
-		await actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
 		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", "rename");
 
-		expect(mocks.reviewCoordinatorAdminJoinRequest).not.toHaveBeenCalled();
 		expect(mocks.renameCoordinatorAdminDevice).not.toHaveBeenCalled();
 	});
 
@@ -659,22 +554,6 @@ describe("coordinator admin actions", () => {
 			"This legacy coordinator group changed or no longer exists. Refresh coordinator groups before trying another action.",
 			"warning",
 		);
-	});
-
-	it("keeps default Space grant warnings visible after approving a join request", async () => {
-		mocks.reviewCoordinatorAdminJoinRequest.mockResolvedValue({
-			setup_warning: { step: "default_space_grant", error: "grant failed" },
-		});
-		const reloadData = vi.fn().mockResolvedValue(undefined);
-		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
-
-		await actions.reviewJoinRequestFromAdminPanel("join-1", "approve");
-
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Join request approved, but default Space access needs repair.",
-			"warning",
-		);
-		expect(reloadData).toHaveBeenCalledTimes(1);
 	});
 
 	it.each([

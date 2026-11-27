@@ -18,14 +18,11 @@ export type CoordinatorAdminStatusRefreshResult = "fresh" | "failed" | "supersed
 
 function invalidateCoordinatorScopedState(): void {
 	state.lastCoordinatorAdminGroups = [];
-	state.lastCoordinatorAdminJoinRequests = [];
 	state.lastCoordinatorAdminDevices = [];
 	state.lastTeamInvite = null;
 	state.coordinatorAdminTargetGroup = "";
 	failSurfaceRefresh(coordinatorAdminState.recovery, "groups", false);
-	failSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests", false);
 	failSurfaceRefresh(coordinatorAdminState.recovery, "devices", false);
-	coordinatorAdminState.joinRequestsSnapshotTarget = null;
 	coordinatorAdminState.devicesSnapshotTarget = null;
 	coordinatorAdminState.groupRenameDrafts.clear();
 	coordinatorAdminState.groupPresentationAliases.clear();
@@ -43,7 +40,6 @@ export function beginStandaloneCoordinatorAdminStatusRefresh(): number {
 	const generation = beginCoordinatorAdminLoadGeneration();
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "status");
 	cancelSurfaceRefresh(coordinatorAdminState.recovery, "groups");
-	cancelSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
 	cancelSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 	return generation;
 }

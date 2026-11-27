@@ -12,7 +12,6 @@ import { state } from "../../lib/state";
 import { renderDevicesPanel } from "./components/devices-panel";
 import { renderGroupsPanel } from "./components/groups-panel";
 import { renderInvitesPanel } from "./components/invites-panel";
-import { renderJoinRequestsPanel } from "./components/join-requests-panel";
 import { createCoordinatorAdminActions } from "./data/actions";
 import { stableDeviceDisplayNames, stableUnnamedDeviceAliases } from "./data/device-card";
 import {
@@ -44,17 +43,13 @@ import {
 	resolveAdminTargetGroup,
 } from "./data/target-group";
 
-const {
-	createGroupFromAdminPanel,
-	runGroupAction,
-	reviewJoinRequestFromAdminPanel,
-	runDeviceAction,
-} = createCoordinatorAdminActions({
-	renderShell: () => renderShell(),
-	reloadData: async () => {
-		await loadCoordinatorAdminData();
-	},
-});
+const { createGroupFromAdminPanel, runGroupAction, runDeviceAction } =
+	createCoordinatorAdminActions({
+		renderShell: () => renderShell(),
+		reloadData: async () => {
+			await loadCoordinatorAdminData();
+		},
+	});
 
 function renderShell() {
 	const mount = document.getElementById("coordinatorAdminMount");
@@ -66,15 +61,9 @@ function renderShell() {
 	const targetGroupRecord = currentAdminTargetGroupRecord();
 	const targetArchived = Boolean(targetGroupRecord?.archived_at);
 	const groupsFresh = surfacesAreFresh(coordinatorAdminState.recovery, "status", "groups");
-	const joinRequestsMatchTarget = adminSnapshotTargetMatchesCurrent(
-		coordinatorAdminState.joinRequestsSnapshotTarget,
-	);
 	const devicesMatchTarget = adminSnapshotTargetMatchesCurrent(
 		coordinatorAdminState.devicesSnapshotTarget,
 	);
-	const joinRequestsFresh =
-		surfacesAreFresh(coordinatorAdminState.recovery, "status", "joinRequests") &&
-		joinRequestsMatchTarget;
 	const devicesFresh =
 		surfacesAreFresh(coordinatorAdminState.recovery, "status", "devices") && devicesMatchTarget;
 	const targetGroup = currentAdminTargetGroup();
@@ -84,10 +73,6 @@ function renderShell() {
 	const archivedGroupCount = availableCoordinatorGroups().filter(
 		(group) => group.archived_at,
 	).length;
-	const joinRequestCount =
-		joinRequestsMatchTarget && Array.isArray(state.lastCoordinatorAdminJoinRequests)
-			? state.lastCoordinatorAdminJoinRequests.length
-			: 0;
 	const deviceCount =
 		devicesMatchTarget && Array.isArray(state.lastCoordinatorAdminDevices)
 			? state.lastCoordinatorAdminDevices.length
@@ -101,12 +86,9 @@ function renderShell() {
 	const recoveryNotice = coordinatorAdminRecoveryNotice(coordinatorAdminState.recovery);
 	const statusKnown = surfaceHasSnapshot(coordinatorAdminState.recovery, "status");
 	const groupsKnown = surfaceHasSnapshot(coordinatorAdminState.recovery, "groups");
-	const joinRequestsKnown =
-		joinRequestsMatchTarget && surfaceHasSnapshot(coordinatorAdminState.recovery, "joinRequests");
 	const devicesKnown =
 		devicesMatchTarget && surfaceHasSnapshot(coordinatorAdminState.recovery, "devices");
 	const groupsNotApplicable = surfaceIsNotApplicable(coordinatorAdminState.recovery, "groups");
-	const joinsNotApplicable = surfaceIsNotApplicable(coordinatorAdminState.recovery, "joinRequests");
 	const devicesNotApplicable = surfaceIsNotApplicable(coordinatorAdminState.recovery, "devices");
 	render(
 		h(
@@ -218,7 +200,7 @@ function renderShell() {
 						h(
 							"strong",
 							null,
-							`${joinRequestsKnown ? joinRequestCount : joinsNotApplicable ? "Setup required" : "Unavailable"} join requests · ${devicesKnown ? deviceCount : devicesNotApplicable ? "Setup required" : "Unavailable"} devices`,
+							`${devicesKnown ? deviceCount : devicesNotApplicable ? "Setup required" : "Unavailable"} devices`,
 						),
 					),
 				),
@@ -248,7 +230,6 @@ function renderShell() {
 						tabs: [
 							{ value: "groups", label: "Coordinator groups" },
 							{ value: "invites", label: "Invites" },
-							{ value: "join-requests", label: "Join requests" },
 							{ value: "devices", label: "Devices" },
 						],
 						triggerClassName: "coordinator-admin-tab-trigger",
@@ -264,13 +245,6 @@ function renderShell() {
 						reloadData: () => void loadCoordinatorAdminData(),
 					}),
 					renderInvitesPanel({ createInvite: () => openSharingFrom("invite") }),
-					renderJoinRequestsPanel({
-						summary,
-						fresh: joinRequestsFresh,
-						snapshotMatchesTarget: joinRequestsMatchTarget,
-						reviewJoinRequest: (requestId, action) =>
-							void reviewJoinRequestFromAdminPanel(requestId, action),
-					}),
 					renderDevicesPanel({
 						summary,
 						fresh: devicesFresh,
@@ -327,15 +301,7 @@ export function loadCoordinatorAdminData(
 
 function refreshCoordinatorAdminDeviceNames(): void {
 	stableUnnamedDeviceAliases(
-		[
-			...state.lastCoordinatorAdminDevices,
-			...state.lastCoordinatorAdminJoinRequests.map((item) => ({
-				device_id:
-					String(item.device_id || "").trim() ||
-					`join-request:${String(item.request_id || "").trim()}`,
-				display_name: item.display_name,
-			})),
-		],
+		state.lastCoordinatorAdminDevices,
 		coordinatorAdminState.unnamedDeviceAliases,
 	);
 	stableDeviceDisplayNames(
@@ -361,7 +327,6 @@ async function runCoordinatorAdminLoad(generation: number, signal?: AbortSignal)
 	}
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "status");
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "groups");
-	beginSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 	renderShell();
 	const statusResult = await refreshCoordinatorAdminStatusForGeneration(generation, { signal });
@@ -401,26 +366,6 @@ async function runCoordinatorAdminLoad(generation: number, signal?: AbortSignal)
 		const snapshotTarget = currentAdminSnapshotTarget();
 		try {
 			if (!snapshotTarget) throw new Error("Missing coordinator administration target");
-			const payload = (await api.loadCoordinatorAdminJoinRequests(targetGroup || activeGroup, {
-				signal,
-			})) as {
-				items?: typeof state.lastCoordinatorAdminJoinRequests;
-			};
-			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
-			if (!Array.isArray(payload?.items)) throw new Error("Invalid join requests payload");
-			state.lastCoordinatorAdminJoinRequests = payload.items;
-			coordinatorAdminState.joinRequestsSnapshotTarget = snapshotTarget;
-			completeSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
-		} catch {
-			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
-			failSurfaceRefresh(
-				coordinatorAdminState.recovery,
-				"joinRequests",
-				adminSnapshotTargetMatchesCurrent(coordinatorAdminState.joinRequestsSnapshotTarget),
-			);
-		}
-		try {
-			if (!snapshotTarget) throw new Error("Missing coordinator administration target");
 			const devicesPayload = (await api.loadCoordinatorAdminDevices(
 				targetGroup || activeGroup,
 				true,
@@ -452,17 +397,10 @@ async function runCoordinatorAdminLoad(generation: number, signal?: AbortSignal)
 		}
 	} else if (coordinatorAdminState.recovery.status.availability === "fresh") {
 		markSurfaceNotApplicable(coordinatorAdminState.recovery, "groups");
-		markSurfaceNotApplicable(coordinatorAdminState.recovery, "joinRequests");
 		markSurfaceNotApplicable(coordinatorAdminState.recovery, "devices");
-		coordinatorAdminState.joinRequestsSnapshotTarget = null;
 		coordinatorAdminState.devicesSnapshotTarget = null;
 	} else {
 		failSurfaceRefresh(coordinatorAdminState.recovery, "groups");
-		failSurfaceRefresh(
-			coordinatorAdminState.recovery,
-			"joinRequests",
-			adminSnapshotTargetMatchesCurrent(coordinatorAdminState.joinRequestsSnapshotTarget),
-		);
 		failSurfaceRefresh(
 			coordinatorAdminState.recovery,
 			"devices",

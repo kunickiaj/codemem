@@ -1631,6 +1631,36 @@
         .removed-devices-action { align-items: flex-start; }
         .removed-devices-failure { text-align: left; }
       }
+      .devices-join-requests { display: grid; gap: var(--sp-2); margin-top: var(--sp-4); }
+      .devices-join-requests h3,
+      .devices-join-requests p { margin: 0; }
+      .devices-join-requests p { color: var(--text-secondary); font-size: var(--font-size-sm); }
+      .devices-join-requests-status:empty { display: none; }
+      .devices-join-requests-list {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        list-style: none;
+      }
+      .devices-join-request {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-4);
+        padding: var(--sp-3) var(--sp-4);
+        background: var(--surface-1);
+      }
+      .devices-join-request + .devices-join-request { border-top: 1px solid var(--border); }
+      .devices-join-request-identity { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+      .devices-join-request-actions { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-2); }
+      @media (max-width: 720px) {
+        .devices-join-request { align-items: stretch; flex-direction: column; gap: var(--sp-2); }
+        .devices-join-request-actions { flex-wrap: wrap; }
+        .devices-join-request-actions .settings-button,
+        .devices-join-request-actions .settings-save { flex: 1 1 8rem; min-height: 44px; }
+      }
       .recipient-policy-management-dialog .modal-card { width: min(720px, calc(100vw - 32px)); }
       .recipient-policy-team-settings-dialog .modal-card { width: min(440px, calc(100vw - 32px)); }
       .recipient-policy-team-settings-dialog .form-field { display: grid; gap: var(--sp-2); margin-top: var(--sp-4); }
