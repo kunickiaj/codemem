@@ -529,17 +529,62 @@ function applyDerivedDaemonState(
 /** How long a coordinator answer is served before a background refresh starts. */
 const COORDINATOR_STATUS_MAX_AGE_MS = 30_000;
 
+function discoveredDevices(snapshot: Record<string, unknown>): Record<string, unknown>[] {
+	return Array.isArray(snapshot.discovered_devices)
+		? (snapshot.discovered_devices as Record<string, unknown>[])
+		: [];
+}
+
+function expiresAtMs(device: Record<string, unknown>): number | null {
+	const parsed = Date.parse(String(device.expires_at ?? ""));
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
- * Answers the coordinator runtime does not cache either, because they need another
- * try: an unenrolled device, or a failed peer or approval lookup. The next read
- * refreshes them, still in the background.
+ * How long one coordinator answer is served, matching the coordinator runtime's own
+ * cache. Answers that need another try are refreshed on the next read: an unenrolled
+ * device, or a failed peer or approval lookup. Others are refreshed after 30 seconds,
+ * or sooner when a fresh peer's presence expires.
  */
-function coordinatorStatusMaxAgeMs(snapshot: Record<string, unknown>): number {
+function coordinatorStatusMaxAgeMs(
+	snapshot: Record<string, unknown>,
+	refreshedAtMs: number,
+): number {
 	const incomplete =
 		snapshot.presence_status === "not_enrolled" ||
 		Boolean(snapshot.lookup_error) ||
 		Boolean(snapshot.reciprocal_approval_error);
-	return incomplete ? 0 : COORDINATOR_STATUS_MAX_AGE_MS;
+	if (incomplete) return 0;
+	let deadline = refreshedAtMs + COORDINATOR_STATUS_MAX_AGE_MS;
+	for (const device of discoveredDevices(snapshot)) {
+		const expiry = device.stale ? null : expiresAtMs(device);
+		if (expiry !== null) deadline = Math.min(deadline, expiry);
+	}
+	return Math.max(0, deadline - refreshedAtMs);
+}
+
+/**
+ * Marks peers whose presence expired since the answer was fetched as stale, so a read
+ * served while the refresh runs never shows an expired peer as fresh.
+ */
+function withExpiredPeersStale(
+	snapshot: Record<string, unknown>,
+	nowMs: number,
+): Record<string, unknown> {
+	const devices = discoveredDevices(snapshot);
+	const expired = (device: Record<string, unknown>) => {
+		const expiry = expiresAtMs(device);
+		return !device.stale && expiry !== null && expiry <= nowMs;
+	};
+	if (!devices.some(expired)) return snapshot;
+	const served = devices.map((device) => (expired(device) ? { ...device, stale: true } : device));
+	const stale = served.filter((device) => device.stale).length;
+	return {
+		...snapshot,
+		discovered_devices: served,
+		fresh_peer_count: served.length - stale,
+		stale_peer_count: stale,
+	};
 }
 
 /** The coordinator fields known without asking it, shown until the first answer arrives. */
@@ -588,7 +633,9 @@ async function readCoordinatorStatus(
 		load: () => coordinatorStatusSnapshot(input.store, config),
 	});
 	return {
-		...(cached.value ?? localCoordinatorSnapshot(config)),
+		...(cached.value
+			? withExpiredPeersStale(cached.value, Date.now())
+			: localCoordinatorSnapshot(config)),
 		paired_peer_count: Number(base.statusPayload.peer_count ?? 0),
 		...refreshFields(cached),
 	};

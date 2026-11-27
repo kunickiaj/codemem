@@ -27,16 +27,23 @@ export interface BackgroundRefreshOptions<T> {
 	key: string;
 	/** Changes when the source data changed, forcing a refresh. */
 	version?: string;
-	/** How long a loaded value is served before the next refresh; may depend on the value. */
-	maxAgeMs: number | ((value: T) => number);
+	/**
+	 * How long a loaded value is served before the next refresh. A function receives
+	 * the value and when it was loaded.
+	 */
+	maxAgeMs: number | ((value: T, refreshedAtMs: number) => number);
 	load: () => Promise<T>;
 	now?: () => number;
 }
 
 const entries = new Map<string, Entry<unknown>>();
 
-function maxAge<T>(setting: number | ((value: T) => number), value: T): number {
-	return typeof setting === "number" ? setting : setting(value);
+function maxAge<T>(
+	setting: number | ((value: T, refreshedAtMs: number) => number),
+	value: T,
+	refreshedAtMs: number,
+): number {
+	return typeof setting === "number" ? setting : setting(value, refreshedAtMs);
 }
 
 /**
@@ -57,7 +64,7 @@ export function readInBackground<T>(options: BackgroundRefreshOptions<T>): Backg
 	const stale =
 		entry.refreshedAtMs == null ||
 		entry.version !== version ||
-		now() - entry.refreshedAtMs >= maxAge(options.maxAgeMs, entry.value as T);
+		now() - entry.refreshedAtMs >= maxAge(options.maxAgeMs, entry.value as T, entry.refreshedAtMs);
 	if (stale && !entry.inFlight) {
 		entry.inFlight = options
 			.load()

@@ -212,19 +212,26 @@ describe("sync status reads", () => {
 			[],
 		);
 	});
+});
 
+/** Turns on a coordinator for the test store, with a fresh device identity. */
+function enableCoordinator(): void {
+	const keysDir = join(directory, "keys");
+	vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
+	writeFileSync(
+		join(directory, "config.json"),
+		JSON.stringify({
+			sync_enabled: true,
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_group: "team-a",
+		}),
+	);
+	ensureDeviceIdentity(store.db, { keysDir });
+}
+
+describe("sync status coordinator answers", () => {
 	it("answers from memory while the coordinator is slow, then shows its answer and age", async () => {
-		const keysDir = join(directory, "keys");
-		vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
-		writeFileSync(
-			join(directory, "config.json"),
-			JSON.stringify({
-				sync_enabled: true,
-				sync_coordinator_url: "https://coord.example.test",
-				sync_coordinator_group: "team-a",
-			}),
-		);
-		ensureDeviceIdentity(store.db, { keysDir });
+		enableCoordinator();
 		const answers: Array<() => void> = [];
 		// Answer each coordinator request as the background refresh makes it.
 		const answerUntilRefreshed = async () => {
@@ -275,6 +282,73 @@ describe("sync status reads", () => {
 			expect(refreshed.coordinator.status_age_ms).toEqual(expect.any(Number));
 		} finally {
 			await answerUntilRefreshed();
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("refreshes when a discovered peer's presence expires and never serves it as fresh", async () => {
+		enableCoordinator();
+		const expiresAt = new Date(Date.now() + 400).toISOString();
+		const peer = { device_id: "peer-expiring", fingerprint: "fp-expiring", addresses: [] };
+		let held: Array<() => void> | null = null;
+		const answer = (url: string) => {
+			if (url.includes("/v1/presence")) return { ok: true, addresses: [] };
+			if (url.includes("/v1/peers")) {
+				return { items: [{ ...peer, expires_at: expiresAt, stale: false }] };
+			}
+			return { items: [] };
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				const body = JSON.stringify(answer(String(input)));
+				if (held) await new Promise<void>((resolve) => held?.push(resolve));
+				return new Response(body, { status: 200 });
+			}),
+		);
+		type Coordinator = {
+			fresh_peer_count: number;
+			stale_peer_count: number;
+			status_refreshing: boolean;
+			discovered_devices: Array<{ device_id: string; stale: boolean }>;
+		};
+		const readCoordinator = async () =>
+			((await (await app.request("/api/sync/status")).json()) as { coordinator: Coordinator })
+				.coordinator;
+		try {
+			await app.request("/api/sync/status");
+			await settleBackgroundRefreshes();
+			expect(await readCoordinator()).toMatchObject({
+				fresh_peer_count: 1,
+				discovered_devices: [{ device_id: "peer-expiring", stale: false }],
+			});
+			const callsBeforeExpiry = vi.mocked(fetch).mock.calls.length;
+
+			held = [];
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			const afterExpiry = await readCoordinator();
+
+			expect(afterExpiry).toMatchObject({
+				fresh_peer_count: 0,
+				stale_peer_count: 1,
+				status_refreshing: true,
+				discovered_devices: [{ device_id: "peer-expiring", stale: true }],
+			});
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(callsBeforeExpiry);
+		} finally {
+			const pending = held ?? [];
+			held = null;
+			let done = false;
+			const refresh = settleBackgroundRefreshes().then(() => {
+				done = true;
+			});
+			while (!done) {
+				pending.shift()?.();
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+			await refresh;
 			vi.unstubAllGlobals();
 			vi.unstubAllEnvs();
 		}
