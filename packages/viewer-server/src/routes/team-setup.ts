@@ -76,6 +76,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 	setLegacyTeamSetupProjectMapping,
 	startMaintenanceJob,
+	teamRecoveryTarget,
 	validateLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifestBinding,
 } from "@codemem/core";
@@ -1404,6 +1405,50 @@ function summaryResponse(
 		? checkedCandidateSummaries(store, read.result)
 		: localDraftCandidateSummaries(store);
 	return { version: TEAM_SETUP_VERSION, candidates, reconciliation: read.status };
+}
+
+/** The summary, with what only an admin device is told. */
+function summaryForDevice(
+	options: TeamSetupRoutesOptions,
+	read: TeamSetupReconciliationRead<SummaryReconciliationResult>,
+): LegacyTeamSetupSummaryResponseV1 | { error: LegacyTeamSetupActivationErrorCode } {
+	const store = options.getStore();
+	const summary = summaryResponse(store, read);
+	if ("error" in summary) return summary;
+	return withRecoverableTeams(store, summary, isCompletionAdmin(options));
+}
+
+/** Whether this device holds what the coordinator's admin reads need, by its configuration now. */
+function isCompletionAdmin(options: TeamSetupRoutesOptions): boolean {
+	try {
+		return readCompletionAuthorization(options) !== null;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Names, for an admin device, the Team each candidate's recovery would restore:
+ * the Team its setup completed, while that Team is disabled. Local reads only.
+ */
+function withRecoverableTeams(
+	store: MemoryStore,
+	summary: LegacyTeamSetupSummaryResponseV1,
+	admin: boolean,
+): LegacyTeamSetupSummaryResponseV1 {
+	if (!admin) return summary;
+	const disabled = store.db
+		.prepare(
+			`SELECT 1 FROM policy_teams WHERE team_id = ? AND status = 'inactive'
+			 AND migration_state = 'needs_setup' AND provenance = 'reviewed_team_candidate'`,
+		)
+		.pluck();
+	const candidates = summary.candidates.map((candidate) => {
+		const teamId = deterministicPolicyTeamId(candidate.candidateRef);
+		const recoverable = disabled.get(teamId) && teamRecoveryTarget(store.db, teamId);
+		return recoverable ? { ...candidate, recoverableTeamId: teamId } : candidate;
+	});
+	return { ...summary, candidates };
 }
 
 /**
@@ -3409,7 +3454,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	// The summary never waits for the coordinator; the background pass does that.
 	app.get("/api/sync/team-setup/v1", (c) => {
 		try {
-			const summary = summaryResponse(options.getStore(), reconciliation.read());
+			const summary = summaryForDevice(options, reconciliation.read());
 			return "error" in summary ? c.json(summary, errorStatus(summary.error)) : c.json(summary);
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);

@@ -4601,3 +4601,79 @@ describe("Team setup background check and a setup that finishes while it reads",
 		}
 	});
 });
+
+describe("Team setup summary for a Team that was disabled", () => {
+	/**
+	 * A Team this device set up, disabled by a background check, and the summary
+	 * read with this admin secret configured by then.
+	 */
+	async function disabledTeamSummary(store: MemoryStore, adminSecret: string) {
+		const setupApp = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			completionDependencies: null,
+		});
+		const draft = await readyDraftThroughSummary(store, setupApp);
+		const review = inspectLegacyTeamSetupActivation(store.db, {
+			candidateRef: CANDIDATE_REF,
+			attemptId: draft.attemptId,
+		});
+		await finishLegacyTeamSetupActivation(store.db, {
+			candidateRef: CANDIDATE_REF,
+			attemptId: draft.attemptId,
+			finishDigest: review.finishDigest,
+			confirmedAccessDeltaDigest: review.accessDeltaDigest,
+			loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+			loadProjectInventory: () => [],
+			validateLockedPreview: () => true,
+			now: NOW,
+		});
+		const conflict = async () => {
+			throw new Error("completion_conflict");
+		};
+		const config = completionConfig().readConfig();
+		let secret = config.syncCoordinatorAdminSecret;
+		const { app, check } = backgroundApp(store, {
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			readCoordinatorConfig: () => ({ ...config, syncCoordinatorAdminSecret: secret }),
+			completionDependencies: { create: conflict, get: async () => null, list: async () => [] },
+		});
+		await check().refresh();
+		secret = adminSecret;
+		const summary = await app.request("/api/sync/team-setup/v1");
+		return (await summary.json()) as {
+			candidates: Array<{ candidateRef: string; recoverableTeamId?: string }>;
+		};
+	}
+
+	it("names the Team to recover on an admin device", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const summary = await disabledTeamSummary(store, "private-admin-secret");
+
+			expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			expect(summary.candidates).toMatchObject([
+				{
+					candidateRef: CANDIDATE_REF,
+					recoverableTeamId: deterministicPolicyTeamId(CANDIDATE_REF),
+				},
+			]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("names no Team once the device is no longer an admin", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const summary = await disabledTeamSummary(store, "");
+
+			expect(summary.candidates.map((candidate) => candidate.candidateRef)).toEqual([
+				CANDIDATE_REF,
+			]);
+			expect(summary.candidates[0]).not.toHaveProperty("recoverableTeamId");
+		} finally {
+			store.close();
+		}
+	});
+});
