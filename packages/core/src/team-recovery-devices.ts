@@ -15,9 +15,10 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
  * machine holds an `included` decision for (one added through an invitation),
  * is checked against the setup group's roster as the coordinator reports it now.
  * The check needs a key this machine already trusted for the device: the key
- * the setup reviewed, or for a device added later, the key this machine pinned
- * or the key its coordinator enrollment binding was recorded for. Without one,
- * recovery stops, because nothing ties the roster's key to the device.
+ * the setup reviewed, or for a device added later, the key this machine pinned,
+ * or failing a pin, the key its coordinator enrollment binding was recorded
+ * for. Without one, recovery stops, because nothing ties the roster's key to
+ * the device.
  * - enrolled, enabled, holding that key, and reported not blocked by a block
  *   check made for that device and key: it keeps its decision;
  * - not enrolled, with a removal record for that device and key in this group:
@@ -148,16 +149,55 @@ type Verdict =
 
 /** A key this machine trusted for a device before it read the roster. */
 interface PriorKey {
-	/** Whether this machine holds any such key for the device. */
+	/** Whether this machine holds any key evidence for the device. */
 	known: boolean;
+	/** Whether that evidence vouches for the key. */
 	matches(fingerprint: string): boolean;
+	/** Whether this machine knows the device under another key. */
+	contradicts(fingerprint: string): boolean;
+}
+
+// Every coordinator group this machine has a scope, a setup or a Team link for.
+const KNOWN_GROUPS_SQL = `SELECT group_id FROM replication_scopes WHERE group_id IS NOT NULL
+	UNION SELECT group_id FROM legacy_team_setup_drafts
+	UNION SELECT group_id FROM policy_team_coordinator_links WHERE group_id <> ''`;
+
+/**
+ * Whether the device's coordinator enrollment binding was recorded for the
+ * key. A device has one binding however many groups enroll it, and the binding
+ * keeps the digest of the group that created it, so every group this machine
+ * knows is tried. A binding from a group it does not know vouches for no key.
+ */
+function bindingVouchesFor(
+	db: Database,
+	input: TeamRecoveryDevicesInput,
+	deviceId: string,
+): (fingerprint: string) => boolean {
+	const binding = db
+		.prepare(
+			`SELECT identity_id, source_fingerprint FROM identity_devices
+			 WHERE device_id = ? AND provenance = 'coordinator_enrollment'`,
+		)
+		.get(deviceId) as { identity_id: string; source_fingerprint: string | null } | undefined;
+	if (!binding?.source_fingerprint) return () => false;
+	const groupIds = new Set([
+		input.groupId,
+		...(db.prepare(KNOWN_GROUPS_SQL).pluck().all() as string[]),
+	]);
+	const identityId = binding.identity_id;
+	return (fingerprint) =>
+		[...groupIds].some(
+			(groupId) =>
+				binding.source_fingerprint ===
+				coordinatorEnrollmentBindingSource({ groupId, identityId, deviceId, fingerprint }),
+		);
 }
 
 /**
  * The key evidence this machine holds for a device added after the setup: the
- * key it pinned when it paired with the device, and the key the coordinator
- * enrollment binding was recorded for. A key matches only when every piece of
- * evidence held agrees with it.
+ * key it pinned when it paired with the device, and the key its coordinator
+ * enrollment binding was recorded for. Either one vouches for a key. A pin for
+ * another key rules a key out, because this machine saw the device use it.
  */
 function localPriorKey(db: Database, input: TeamRecoveryDevicesInput, deviceId: string): PriorKey {
 	const pin = db
@@ -168,26 +208,18 @@ function localPriorKey(db: Database, input: TeamRecoveryDevicesInput, deviceId: 
 		pin?.public_key && fingerprintPublicKey(pin.public_key) === pin.pinned_fingerprint
 			? pin.pinned_fingerprint
 			: null;
-	const binding = db
-		.prepare(
-			`SELECT identity_id, source_fingerprint FROM identity_devices
-			 WHERE device_id = ? AND provenance = 'coordinator_enrollment'`,
-		)
-		.get(deviceId) as { identity_id: string; source_fingerprint: string | null } | undefined;
-	const bound = binding?.source_fingerprint ? binding : null;
-	const boundTo = (fingerprint: string) =>
-		bound !== null &&
-		bound.source_fingerprint ===
-			coordinatorEnrollmentBindingSource({
-				groupId: input.groupId,
-				identityId: bound.identity_id,
-				deviceId,
-				fingerprint,
-			});
+	const bound = bindingVouchesFor(db, input, deviceId);
+	const hasBinding =
+		db
+			.prepare(
+				`SELECT 1 FROM identity_devices WHERE device_id = ?
+				 AND provenance = 'coordinator_enrollment' AND source_fingerprint IS NOT NULL`,
+			)
+			.get(deviceId) !== undefined;
 	return {
-		known: pinned !== null || bound !== null,
-		matches: (fingerprint) =>
-			(pinned === null || pinned === fingerprint) && (bound === null || boundTo(fingerprint)),
+		known: pinned !== null || hasBinding,
+		matches: (fingerprint) => (pinned === null ? bound(fingerprint) : pinned === fingerprint),
+		contradicts: (fingerprint) => pinned !== null && pinned !== fingerprint,
 	};
 }
 
@@ -242,8 +274,8 @@ function enrolledVerdict(
 ): Verdict {
 	const { deviceId, fingerprint } = enrolled;
 	if (isReportedBlocked(input, deviceId, fingerprint)) return { refusal: "device_blocked" };
-	if (!prior.known) return { refusal: "device_key_unverified" };
-	if (!prior.matches(fingerprint)) return { refusal: "device_key_changed" };
+	if (prior.contradicts(fingerprint)) return { refusal: "device_key_changed" };
+	if (!prior.matches(fingerprint)) return { refusal: "device_key_unverified" };
 	if (!enrolled.enabled) return { refusal: "device_disabled" };
 	// Blocking an enrolled device leaves its enrollment and writes no removal record.
 	const cleared = input.deviceBlocks.some(
@@ -291,6 +323,7 @@ function deviceVerdict(db: Database, input: TeamRecoveryDevicesInput, fact: Devi
 		return rosterVerdict(input, fact.deviceId, {
 			known: true,
 			matches: (fingerprint) => fingerprint === reviewed,
+			contradicts: (fingerprint) => fingerprint !== reviewed,
 		});
 	}
 	if (manifest) {

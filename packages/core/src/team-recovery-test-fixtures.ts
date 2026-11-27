@@ -191,12 +191,13 @@ export async function quarantinedTeam(
  * A person and their Phone that joined through a Team invitation after the
  * setup. By default the Phone's binding is the one the enrollment check
  * records, for the key the group enrolled it under. `enrolledKey: null` leaves
- * a binding that names no key.
+ * a binding that names no key. `enrolledGroupId` is the group whose enrollment
+ * created the binding, when that was another group.
  */
 export function inviteMember(
 	db: Database,
 	teamId: string,
-	options: { enrolledKey?: string | null } = {},
+	options: { enrolledKey?: string | null; enrolledGroupId?: string } = {},
 ): void {
 	insertActor(db, "identity-d");
 	db.prepare(
@@ -206,7 +207,11 @@ export function inviteMember(
 		 'invite-d', ?, ?)`,
 	).run(teamId, NOW, NOW);
 	const fingerprint = options.enrolledKey === undefined ? PHONE.fingerprint : options.enrolledKey;
-	const binding = { groupId: GROUP_ID, identityId: "identity-d", deviceId: PHONE.deviceId };
+	const binding = {
+		groupId: options.enrolledGroupId ?? GROUP_ID,
+		identityId: "identity-d",
+		deviceId: PHONE.deviceId,
+	};
 	db.prepare(
 		`INSERT INTO identity_devices(device_id, identity_id, display_name, status, provenance,
 		 revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at)

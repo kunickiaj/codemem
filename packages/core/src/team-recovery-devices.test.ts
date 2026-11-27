@@ -13,6 +13,7 @@ import {
 	blockChecks,
 	DESKTOP,
 	GROUP_ID,
+	insertScope,
 	inviteMember,
 	LAPTOP,
 	LAPTOP_REMOVAL,
@@ -321,7 +322,7 @@ describe("Team recovery plan for invitation-added devices", () => {
 		[
 			"enrolled under another key than its binding was recorded for",
 			[replaced],
-			"device_key_changed",
+			"device_key_unverified",
 		],
 		["disabled", [{ ...PHONE, enabled: false }], "device_disabled"],
 	])("refuses one that is %s", (_case, phone, reason) => {
@@ -332,16 +333,33 @@ describe("Team recovery plan for invitation-added devices", () => {
 		expect(result).toEqual({ state: "refused", reason, deviceIds: ["device-d"] });
 	});
 
-	it.each([
-		["enrolled under the binding's key but pinned here under another", PHONE.fingerprint, [PHONE]],
-		["enrolled under the pinned key but bound under another", OTHER_KEY, [PHONE]],
-	])("refuses one that is %s", (_case, enrolledKey, phone) => {
-		inviteMember(db, manifest.team_id, { enrolledKey });
-		pinDevice(db, "device-d", enrolledKey === OTHER_KEY ? PHONE.publicKey : OTHER_PUBLIC_KEY);
+	it("refuses one that is pinned here under another key than it is enrolled under", () => {
+		inviteMember(db, manifest.team_id);
+		pinDevice(db, "device-d", OTHER_PUBLIC_KEY);
 
-		const result = plan([DESKTOP, TABLET, ...phone]);
+		const result = plan([DESKTOP, TABLET, PHONE]);
 
 		expect(result).toMatchObject({ reason: "device_key_changed", deviceIds: ["device-d"] });
+	});
+
+	it.each([
+		["another group this machine knows, with no pin", "group-other", false],
+		["a group this machine does not know, with a matching pin", "group-unknown", true],
+	])("accepts one whose binding was recorded by %s", (_case, enrolledGroupId, pinned) => {
+		// Arrange: a device has one binding, and it keeps the first group's digest.
+		insertScope(db, "scope-other", "group-other");
+		inviteMember(db, manifest.team_id, { enrolledGroupId });
+		if (pinned) pinDevice(db, "device-d", PHONE.publicKey);
+
+		expect(outcomes(plan([DESKTOP, TABLET, PHONE]))["device-d"]).toBe("regains_access");
+	});
+
+	it("refuses one whose binding was recorded by a group this machine does not know, with no pin", () => {
+		inviteMember(db, manifest.team_id, { enrolledGroupId: "group-unknown" });
+
+		const result = plan([DESKTOP, TABLET, PHONE]);
+
+		expect(result).toMatchObject({ reason: "device_key_unverified", deviceIds: ["device-d"] });
 	});
 
 	it.each([
