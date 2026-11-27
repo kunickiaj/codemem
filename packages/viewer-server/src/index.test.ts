@@ -13695,7 +13695,7 @@ describe("viewer-server", () => {
 		});
 
 		it("assigns a sync peer to the local actor through the identity route", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");
@@ -16317,7 +16317,7 @@ describe("viewer-server", () => {
 		});
 
 		it("maps claimed_local_actor=true to the local actor id when no actor id is provided", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");

@@ -107,7 +107,7 @@ function getActors() {
 	return syncRoutes(() => fixture.store).request("/api/sync/actors?includeMerged=true");
 }
 
-// Merging and removing people need the admin device; these tests are about other checks.
+// Merging, removing and assigning people need the admin device; these tests are about other checks.
 const ACTOR_ROUTE_OPTIONS = {
 	readCoordinatorConfig: () =>
 		readCoordinatorSyncConfig({
@@ -118,7 +118,10 @@ const ACTOR_ROUTE_OPTIONS = {
 };
 
 function post(path: string, body: Record<string, unknown>) {
-	const options = path.startsWith("/api/sync/actors/") ? ACTOR_ROUTE_OPTIONS : {};
+	const options =
+		path.startsWith("/api/sync/actors/") || path === "/api/sync/peers/identity"
+			? ACTOR_ROUTE_OPTIONS
+			: {};
 	return syncRoutes(() => fixture.store, undefined, options).request(path, {
 		method: "POST",
 		headers: { "content-type": "application/json" },

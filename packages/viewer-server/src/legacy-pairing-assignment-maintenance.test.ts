@@ -38,8 +38,18 @@ function boundIdentity() {
 		.get(PEER);
 }
 
-async function clearClaim() {
-	return syncRoutes(() => store).request("/api/sync/peers/identity", {
+// The older route needs the admin device; these tests are about the conversion.
+const ADMIN_ROUTE_OPTIONS = {
+	readCoordinatorConfig: () =>
+		readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+			sync_coordinator_admin_secret: "fixture-admin-secret",
+		}),
+};
+
+async function clearClaim(options: Parameters<typeof syncRoutes>[2] = ADMIN_ROUTE_OPTIONS) {
+	return syncRoutes(() => store, undefined, options).request("/api/sync/peers/identity", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ peer_device_id: PEER, claimed_local_actor: false }),
@@ -152,7 +162,7 @@ describe("converting older device assignments during coordinator maintenance", (
 		expect(boundIdentity()).toBeUndefined();
 	});
 
-	it("keeps the older assignment route working on an install with no coordinator", async () => {
+	it("waits on an install with no coordinator, where the older route is refused", async () => {
 		claimPeerAsOwnDevice();
 
 		const result = await convertLegacyPairingAssignmentsOperation(store, {
@@ -169,7 +179,12 @@ describe("converting older device assignments during coordinator maintenance", (
 
 		expect(result.status).toBe("waiting");
 		expect(legacyPairingAssignmentsConverted(store.db)).toBe(false);
-		expect((await clearClaim()).status).toBe(200);
+		// Assigning a device to a person needs a coordinator and its admin secret.
+		const refused = await clearClaim({
+			readCoordinatorConfig: () => readCoordinatorSyncConfig({}),
+		});
+		expect(refused.status).toBe(403);
+		expect(store.sameActorPeerIds()).toEqual([PEER]);
 	});
 
 	it("does not ask the coordinator again once the conversion has run", async () => {

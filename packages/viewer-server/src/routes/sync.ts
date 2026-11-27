@@ -16,6 +16,7 @@ import type {
 	DeviceIdentityBindingCommitRequestV1,
 	DeviceIdentityBindingPreviewRequestV1,
 	DeviceIdentityCoordinatorEvidence,
+	DeviceIdentityInventoryInput,
 	InboundScopeRejection,
 	LegacyPairingAssignmentConversionResult,
 	MaintenanceJobSnapshot,
@@ -6528,6 +6529,54 @@ function persistPeerIdentityMutation(store: MemoryStore, body: Record<string, un
 	return assignment;
 }
 
+/**
+ * Assigns a paired device to a person through the older route. The gate checked on
+ * entry, but reading the body can outlast that, so the write checks again.
+ */
+function persistPeerIdentityIfAllowed(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	return runViewerActorMutation(store, () =>
+		canChangeRecipientAccess(readConfig)
+			? persistPeerIdentityMutation(store, body)
+			: { ...ACCESS_CHANGE_REFUSAL, status: 403 as const },
+	);
+}
+
+const BINDING_COMMIT_HTTP_STATUS: Partial<Record<string, 400 | 404 | 409>> = {
+	invalid: 400,
+	not_found: 404,
+	stale: 409,
+	conflict: 409,
+};
+
+/**
+ * Commits reviewed device bindings, or returns null when this device may no longer
+ * change access. The gate checked on entry, but the publication lock and the
+ * inventory read can outlast that, so the write transaction checks again.
+ */
+function commitBindingsIfAllowed(
+	store: MemoryStore,
+	inventory: DeviceIdentityInventoryInput,
+	request: DeviceIdentityBindingCommitRequestV1,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	return store.db
+		.transaction(() =>
+			canChangeRecipientAccess(readConfig)
+				? commitDeviceIdentityBindings(
+						store.db,
+						{ localActorId: store.actorId, localDeviceId: store.deviceId },
+						inventory,
+						request,
+					)
+				: null,
+		)
+		.immediate();
+}
+
 function createActorMutationPreflightRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 	const preflight = async (c: Context, next: () => Promise<void>) => {
@@ -7019,10 +7068,13 @@ export function installRecipientAccessChangeGate(
 	const allowed = () => canChangeRecipientAccess(readConfig);
 	// Each of these saves a choice of who receives a Project: recipient edges, review
 	// decisions and the migration that materializes them, moving held-back memories
-	// into a shared scope, and merging or removing a person, which moves or ends
-	// their devices' access. Merge and removal check again inside their writes.
+	// into a shared scope, merging or removing a person, which moves or ends their
+	// devices' access, and assigning a device to a person, which changes the Projects
+	// it receives. Merging, removing and assigning check again inside their writes.
 	for (const path of [
 		"/api/sync/recipient-policy/v1/edges/commit",
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		"/api/sync/peers/identity",
 		"/api/sync/actors/merge",
 		"/api/sync/actors/deactivate",
 		"/api/sync/recipient-policy/v1/review/resolve",
@@ -7487,18 +7539,10 @@ export function syncRoutes(
 		try {
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			ensureStableStoreIdentity(store);
-			const result = commitDeviceIdentityBindings(
-				store.db,
-				{ localActorId: store.actorId, localDeviceId: store.deviceId },
-				await localInventoryInput(store),
-				body,
-			);
-			if (result.status === "invalid") return c.json(result, 400);
-			if (result.status === "not_found") return c.json(result, 404);
-			if (result.status === "stale" || result.status === "conflict") {
-				return c.json(result, 409);
-			}
-			return c.json(result);
+			const inventory = await localInventoryInput(store);
+			const result = commitBindingsIfAllowed(store, inventory, body, readCoordinatorConfig);
+			if (!result) return c.json(ACCESS_CHANGE_REFUSAL, 403);
+			return c.json(result, BINDING_COMMIT_HTTP_STATUS[result.status] ?? 200);
 		} catch (error) {
 			if (isSqliteBusy(error)) {
 				c.header("Retry-After", "1");
@@ -8327,7 +8371,7 @@ export function syncRoutes(
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
-		const result = runViewerActorMutation(store, () => persistPeerIdentityMutation(store, body));
+		const result = persistPeerIdentityIfAllowed(store, body, readCoordinatorConfig);
 		if ("error" in result) return c.json({ error: result.error }, result.status);
 		return c.json({ ok: true, ...result });
 	});

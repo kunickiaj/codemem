@@ -1,3 +1,4 @@
+import type { CoordinatorAccess } from "../tabs/recipient-policy-team-create";
 import type { DeviceIdentityInventoryItemV1, DeviceIdentityInventoryV1 } from "./api/sync";
 
 export function deviceNeedsIdentityAttention(item: DeviceIdentityInventoryItemV1): boolean {
@@ -63,10 +64,29 @@ export function deviceIdentityAttentionItems(
 	return inventory?.items.filter(deviceNeedsIdentityAttention) ?? [];
 }
 
+const NO_COORDINATOR_RECOVERY =
+	"Identity setup needs a coordinator. Set the coordinator URL and group in Settings.";
+
+const ACCESS_RECOVERY: Record<Exclude<CoordinatorAccess, "ready">, string> = {
+	admin_secret_missing:
+		"Only a device that holds the coordinator admin secret can change device Identities. Use that device.",
+	coordinator_missing: NO_COORDINATOR_RECOVERY,
+	unknown:
+		"codemem couldn't check whether this device can change device Identities. Refresh Devices to try again.",
+};
+
+/**
+ * Whether this device may set up or change the Identity a device belongs to. That
+ * needs a coordinator and its admin secret, the same as other access changes.
+ */
 export function deviceIdentitySetupGate(
 	inventory: DeviceIdentityInventoryV1,
-	item: DeviceIdentityInventoryItemV1,
+	access: CoordinatorAccess,
 ): { blocked: boolean; recovery: string | null } {
+	if (inventory.coordinatorEvidence.safeErrorCode === "coordinator_not_configured") {
+		return { blocked: true, recovery: NO_COORDINATOR_RECOVERY };
+	}
+	if (access !== "ready") return { blocked: true, recovery: ACCESS_RECOVERY[access] };
 	if (inventory.truncated) {
 		return {
 			blocked: true,
@@ -74,12 +94,6 @@ export function deviceIdentitySetupGate(
 		};
 	}
 	if (inventory.coordinatorEvidence.availability === "available") {
-		return { blocked: false, recovery: null };
-	}
-	if (
-		inventory.coordinatorEvidence.safeErrorCode === "coordinator_not_configured" &&
-		item.isLocal
-	) {
 		return { blocked: false, recovery: null };
 	}
 	return {

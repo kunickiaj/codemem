@@ -47,6 +47,7 @@ import {
 	removalCompatibilityNotice,
 } from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
+import type { CoordinatorAccess } from "./recipient-policy-team-create";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -111,6 +112,13 @@ export interface DevicesRendererOptions {
 	/** Present when the Viewer host has mounted Remove. */
 	removalConfirmation?: Partial<DeviceRemovalConfirmationDependencies>;
 	coordinatorEnrollmentIssueCount?: number;
+	/** Whether this device may change device Identities: it needs a coordinator and its admin secret. */
+	coordinatorAccess?: CoordinatorAccess;
+}
+
+/** Hosts that don't report coordinator access leave the server's check as the only one. */
+function identityAccess(options: DevicesRendererOptions): CoordinatorAccess {
+	return options.coordinatorAccess ?? "ready";
 }
 
 function identityMutationsBlocked(options: DevicesRendererOptions): boolean {
@@ -774,11 +782,9 @@ function SetupWorkflow({
 			setErrorMessage("Only devices that require Identity setup can be reviewed here.");
 			return;
 		}
-		const blocked = selected.find((item) => deviceIdentitySetupGate(inventory, item).blocked);
-		if (blocked) {
-			setErrorMessage(
-				deviceIdentitySetupGate(inventory, blocked).recovery ?? "Identity setup is unavailable.",
-			);
+		const setupGate = deviceIdentitySetupGate(inventory, identityAccess(options));
+		if (setupGate.blocked) {
+			setErrorMessage(setupGate.recovery ?? "Identity setup is unavailable.");
 			return;
 		}
 		if (
@@ -856,7 +862,7 @@ function SetupWorkflow({
 			<ul className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 				{items.map((item, index) => {
 					const choice = choices[item.deviceId];
-					const gate = deviceIdentitySetupGate(inventory, item);
+					const gate = deviceIdentitySetupGate(inventory, identityAccess(options));
 					const setupBlocked = gate.blocked || mutationsBlocked;
 					const titleId = `device-inventory-title-${index}`;
 					return (
@@ -1123,7 +1129,7 @@ function ConfiguredRebindForm({
 	const previewReady =
 		reviewed !== null &&
 		previewMatchesBindings(reviewed.preview, reviewed.request, [item], "rebind");
-	const gate = deviceIdentitySetupGate(inventory, item);
+	const gate = deviceIdentitySetupGate(inventory, identityAccess(options));
 	const rebindBlocked = gate.blocked || identityMutationsBlocked(options);
 	const triggerId = `configured-rebind-trigger-${controlKey}`;
 	const targetIdentity =
@@ -1350,7 +1356,7 @@ function rebindMenuBlocked(
 	return (
 		!inventoryItem ||
 		!options.inventory ||
-		deviceIdentitySetupGate(options.inventory, inventoryItem).blocked ||
+		deviceIdentitySetupGate(options.inventory, identityAccess(options)).blocked ||
 		identityMutationsBlocked(options)
 	);
 }
