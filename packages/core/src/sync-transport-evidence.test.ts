@@ -163,6 +163,48 @@ describe("coordinator transport statements", () => {
 		expect(ingestCoordinatorTransportStatements(db, stranger)).toBe(0);
 		expect(readPeerTransportPolicy(db, impostor.deviceId)).toBeNull();
 	});
+});
+
+describe("coordinator refresh", () => {
+	it("keeps a later group's valid statement when an earlier group's record lacks one", async () => {
+		const db = testDb();
+		const local = mkdtempSync(join(tmpdir(), "codemem-transport-local-"));
+		cleanup.push(() => rmSync(local, { recursive: true, force: true }));
+		ensureDeviceIdentity(db, { keysDir: local });
+		const a = runtimeDevice();
+		const impostor = runtimeDevice();
+		pin(db, a);
+		const base = { device_id: a.deviceId, public_key: a.publicKey, fingerprint: a.fingerprint };
+		const forged = localTransportStatementCapability({
+			deviceId: a.deviceId,
+			fingerprint: a.fingerprint,
+			privateKey: () => loadPrivateKey(impostor.keysDir, undefined, impostor.deviceId),
+			active: true,
+		});
+		// The first group's record is stale and carries no usable statement; the second is valid.
+		const byGroup: Record<string, Record<string, unknown>[]> = {
+			"group-1": [{ ...base, stale: true, addresses: [], capabilities: forged }],
+			"group-2": [{ ...base, addresses: [], capabilities: a.statement(true) }],
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input));
+				const items = byGroup[url.searchParams.get("group_id") ?? ""] ?? [];
+				return new Response(JSON.stringify({ items }), { status: 200 });
+			}),
+		);
+		const config = readCoordinatorSyncConfig({
+			sync_enabled: true,
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-1", "group-2"],
+		});
+		const store = { db, dbPath: `:memory:-${randomUUID()}` } as unknown as MemoryStore;
+
+		await refreshAuthorizedCoordinatorPeerTrust(store, config, { keysDir: local });
+
+		expect(readPeerTransportPolicy(db, a.deviceId)).toBe("noise_required");
+	});
 
 	it("ingests statements during a coordinator peer refresh", async () => {
 		const db = testDb();

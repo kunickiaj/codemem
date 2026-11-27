@@ -98,18 +98,57 @@ function pinnedKey(db: Database, peerDeviceId: string): string | null {
 	return publicKey && row?.pinned_fingerprint?.trim() ? (row.public_key as string) : null;
 }
 
-function statementOf(peer: Record<string, unknown>): unknown {
-	const capabilities = peer.capabilities;
+/** Merged discovery records keep every group's statement here, not just the first group's. */
+const STATEMENT_CANDIDATES = "transport_statement_candidates";
+
+function statementOf(record: Record<string, unknown>): unknown {
+	const capabilities = record.capabilities;
 	if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities))
 		return undefined;
 	return (capabilities as Record<string, unknown>)[TRANSPORT_STATEMENT_CAPABILITY];
 }
 
+function statementCandidates(peer: Record<string, unknown>): unknown[] {
+	const merged = peer[STATEMENT_CANDIDATES];
+	const candidates = Array.isArray(merged) ? [...merged] : [];
+	const own = statementOf(peer);
+	if (own !== undefined) candidates.push(own);
+	return candidates;
+}
+
+/** A discovery record for the first group listing a device, with that group's statement kept. */
+export function withTransportStatementCandidates(
+	record: Record<string, unknown>,
+): Record<string, unknown> {
+	const own = statementOf(record);
+	return { ...record, [STATEMENT_CANDIDATES]: own === undefined ? [] : [own] };
+}
+
+/** Keep a later group's statement when its record merges into an earlier one. */
+export function appendTransportStatementCandidate(
+	existing: Record<string, unknown>,
+	record: Record<string, unknown>,
+): void {
+	const own = statementOf(record);
+	if (own === undefined) return;
+	const merged = existing[STATEMENT_CANDIDATES];
+	existing[STATEMENT_CANDIDATES] = [...(Array.isArray(merged) ? merged : []), own];
+}
+
+function listsNoise(
+	statements: readonly unknown[],
+	pinned: { deviceId: string; publicKey: string },
+): boolean {
+	return statements.some((statement) =>
+		verifyTransportStatement(statement, pinned)?.features.includes(DIRECT_NOISE_FEATURE),
+	);
+}
+
 /**
- * Promote discovered peers whose own signed statement lists Noise. The
- * statement is checked against the key this store already pinned for the
- * device, never against the key in the listing. A listing that omits or breaks
- * the statement changes nothing. Returns how many peers were promoted.
+ * Promote discovered peers whose own signed statement lists Noise. Every
+ * group's statement is checked against the key this store already pinned for
+ * the device, never against the key in the listing. A listing that omits or
+ * breaks statements changes nothing. Returns how many peers were promoted.
  */
 export function ingestCoordinatorTransportStatements(
 	db: Database,
@@ -118,12 +157,10 @@ export function ingestCoordinatorTransportStatements(
 	let promoted = 0;
 	for (const peer of peers) {
 		const deviceId = typeof peer.device_id === "string" ? peer.device_id.trim() : "";
-		const statement = statementOf(peer);
-		if (!deviceId || statement === undefined) continue;
+		const statements = statementCandidates(peer);
+		if (!deviceId || statements.length === 0) continue;
 		const publicKey = pinnedKey(db, deviceId);
-		if (!publicKey) continue;
-		const content = verifyTransportStatement(statement, { deviceId, publicKey });
-		if (!content?.features.includes(DIRECT_NOISE_FEATURE)) continue;
+		if (!publicKey || !listsNoise(statements, { deviceId, publicKey })) continue;
 		if (promotePeerToNoiseRequired(db, deviceId, "transport_statement")) promoted += 1;
 	}
 	return promoted;

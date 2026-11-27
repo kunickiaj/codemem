@@ -45,8 +45,10 @@ import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPrivateKey, loadPublicKey } from "./sync-identity.js";
 import { updatePeerAddresses } from "./sync-peer-addresses.js";
 import {
+	appendTransportStatementCandidate,
 	ingestCoordinatorTransportStatements,
 	localTransportStatementCapability,
+	withTransportStatementCandidates,
 } from "./sync-transport-evidence.js";
 
 export {
@@ -356,7 +358,7 @@ export async function lookupCoordinatorPeers(
 			const existing = merged.get(key);
 			if (!existing) {
 				merged.set(key, {
-					...record,
+					...withTransportStatementCandidates(record),
 					addresses: mergeAddresses([], freshAddresses),
 					coordinator_id: baseUrl,
 					groups: [groupId],
@@ -381,6 +383,7 @@ function mergeCoordinatorPeerGroup(
 ): void {
 	existing.addresses = mergeAddresses(stringList(existing.addresses), freshAddresses);
 	existing.groups = mergeStringLists(stringList(existing.groups), [groupId]);
+	appendTransportStatementCandidate(existing, record);
 	const wasStale = Boolean(existing.stale);
 	const isStale = Boolean(record.stale);
 	existing.fresh_groups = mergeStringLists(

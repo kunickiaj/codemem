@@ -104,6 +104,45 @@ describe("sync peer transport policy", () => {
 		expect(readPeerTransportPolicy(db, "peer-a")).toBe("noise_required");
 	});
 
+	it("keeps noise_required when the pairing row is replaced", () => {
+		const db = testDb();
+		insertTestPeer(db, "peer-a");
+		promotePeerToNoiseRequired(db, "peer-a", "pairing_payload");
+		// The trigger's default insert runs under the outer statement's REPLACE policy.
+		for (const verb of ["INSERT OR REPLACE", "REPLACE"]) {
+			db.prepare(
+				`${verb} INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+				 VALUES ('peer-a', 'key', 'fp', '2026-11-27T00:00:00.000Z')`,
+			).run();
+			expect(policyRow(db, "peer-a")).toEqual({
+				policy: "noise_required",
+				source: "pairing_payload",
+			});
+		}
+		db.prepare(
+			`INSERT OR REPLACE INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+			 VALUES ('peer-new', 'key', 'fp', '2026-11-27T00:00:00.000Z')`,
+		).run();
+		expect(readPeerTransportPolicy(db, "peer-new")).toBe("legacy_plaintext");
+	});
+
+	it("refuses to demote by replacing or re-inserting the policy row", () => {
+		const db = testDb();
+		insertTestPeer(db, "peer-a");
+		promotePeerToNoiseRequired(db, "peer-a", "pairing_payload");
+		for (const verb of ["INSERT OR REPLACE", "REPLACE", "INSERT OR IGNORE"]) {
+			const demote = () =>
+				db
+					.prepare(
+						`${verb} INTO sync_peer_transport_policy(peer_device_id, policy, source, recorded_at)
+						 VALUES ('peer-a', 'legacy_plaintext', 'attempt', '2026-11-27T00:00:00.000Z')`,
+					)
+					.run();
+			expect(demote).toThrow(/cannot be demoted/);
+			expect(readPeerTransportPolicy(db, "peer-a")).toBe("noise_required");
+		}
+	});
+
 	it("can promote a device this store has not paired yet", () => {
 		const db = testDb();
 		expect(promotePeerToNoiseRequired(db, "peer-later", "transport_statement")).toBe(true);

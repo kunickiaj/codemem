@@ -24,6 +24,7 @@ export type PeerTransportPolicySource =
 const TABLE = "sync_peer_transport_policy";
 const INSERT_TRIGGER = "sync_peer_transport_policy_default_after_insert";
 const DEMOTION_TRIGGER = "sync_peer_transport_policy_no_demotion";
+const REPLACE_DEMOTION_TRIGGER = "sync_peer_transport_policy_no_replace_demotion";
 
 /**
  * One row per peer device. No foreign key and no delete trigger: removing a
@@ -42,14 +43,28 @@ CREATE TABLE IF NOT EXISTS ${TABLE} (
 CREATE TRIGGER IF NOT EXISTS ${INSERT_TRIGGER}
 AFTER INSERT ON sync_peers
 BEGIN
-	INSERT OR IGNORE INTO ${TABLE} (peer_device_id, policy, source, recorded_at)
-	VALUES (NEW.peer_device_id, 'legacy_plaintext', 'pairing', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+	-- A trigger statement inherits the outer statement's conflict policy, so an
+	-- outer INSERT OR REPLACE would turn OR IGNORE into a replace. Insert only
+	-- when no row exists, so no conflict can arise.
+	INSERT INTO ${TABLE} (peer_device_id, policy, source, recorded_at)
+	SELECT NEW.peer_device_id, 'legacy_plaintext', 'pairing', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+	WHERE NOT EXISTS (SELECT 1 FROM ${TABLE} WHERE peer_device_id = NEW.peer_device_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS ${DEMOTION_TRIGGER}
 BEFORE UPDATE OF policy ON ${TABLE}
 WHEN OLD.policy = 'noise_required' AND NEW.policy <> 'noise_required'
 BEGIN
+	SELECT RAISE(ABORT, 'sync peer transport policy cannot be demoted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS ${REPLACE_DEMOTION_TRIGGER}
+BEFORE INSERT ON ${TABLE}
+WHEN NEW.policy <> 'noise_required' AND EXISTS (
+	SELECT 1 FROM ${TABLE} WHERE peer_device_id = NEW.peer_device_id AND policy = 'noise_required'
+)
+BEGIN
+	-- INSERT OR REPLACE deletes the old row without an update, so check inserts too.
 	SELECT RAISE(ABORT, 'sync peer transport policy cannot be demoted');
 END;
 `;
@@ -66,11 +81,11 @@ function schemaComplete(db: Database): boolean {
 	const count = db
 		.prepare(
 			`SELECT COUNT(*) FROM sqlite_master
-			 WHERE (type = 'table' AND name = ?) OR (type = 'trigger' AND name IN (?, ?))`,
+			 WHERE (type = 'table' AND name = ?) OR (type = 'trigger' AND name IN (?, ?, ?))`,
 		)
 		.pluck()
-		.get(TABLE, INSERT_TRIGGER, DEMOTION_TRIGGER);
-	return count === 3;
+		.get(TABLE, INSERT_TRIGGER, DEMOTION_TRIGGER, REPLACE_DEMOTION_TRIGGER);
+	return count === 4;
 }
 
 function hasUnrecordedPeer(db: Database): boolean {
@@ -98,9 +113,12 @@ export function ensureSyncPeerTransportPolicySchema(db: Database): void {
 	db.transaction(() => {
 		db.exec(SCHEMA_SQL);
 		db.prepare(
-			`INSERT OR IGNORE INTO ${TABLE} (peer_device_id, policy, source, recorded_at)
-			 SELECT peer_device_id, 'legacy_plaintext', 'migration', ?
-			 FROM sync_peers`,
+			`INSERT INTO ${TABLE} (peer_device_id, policy, source, recorded_at)
+			 SELECT peer.peer_device_id, 'legacy_plaintext', 'migration', ?
+			 FROM sync_peers AS peer
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM ${TABLE} AS policy WHERE policy.peer_device_id = peer.peer_device_id
+			 )`,
 		).run(new Date().toISOString());
 	}).immediate();
 }
