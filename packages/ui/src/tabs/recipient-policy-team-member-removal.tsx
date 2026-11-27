@@ -38,9 +38,23 @@ const ERRORS: Partial<Record<string, string>> = {
 		"The coordinator couldn't record the removal. Nothing changed. Try again.",
 };
 
+/** The commit's answer was lost or unreadable, so the removal may have been recorded. */
+const COMMIT_OUTCOME_UNKNOWN =
+	"codemem couldn't confirm whether the removal was recorded. Close this dialog to refresh Sharing, then check the Team before trying again.";
+
+function errorCode(cause: unknown): string {
+	return cause instanceof api.TeamMemberRemovalApiError ? cause.errorCode : "";
+}
+
 function errorMessage(cause: unknown): string {
-	const code = cause instanceof api.TeamMemberRemovalApiError ? cause.errorCode : "";
-	return ERRORS[code] ?? "The removal couldn't be completed. Nothing changed. Try again.";
+	return (
+		ERRORS[errorCode(cause)] ?? "The removal couldn't be completed. Nothing changed. Try again."
+	);
+}
+
+/** A commit with no known refusal code may have been recorded before its answer was lost. */
+function commitOutcomeUnknown(cause: unknown): boolean {
+	return !ERRORS[errorCode(cause)];
 }
 
 const STILL_OPEN: ReadonlySet<TeamInvitationRevokeResult> = new Set(["unknown"]);
@@ -72,27 +86,32 @@ function useTeamMemberRemoval(input: {
 	const [chosen, setChosen] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
+	// Set when a commit's outcome is unknown: closing then refreshes Sharing.
+	const [maybeRemoved, setMaybeRemoved] = useState(false);
 
-	const run = async (work: () => Promise<void>) => {
+	const run = async (work: () => Promise<void>, options: { committing?: boolean } = {}) => {
 		if (busy) return;
 		setBusy(true);
 		setError("");
 		try {
 			await work();
 		} catch (cause) {
-			setError(errorMessage(cause));
+			const unknown = options.committing === true && commitOutcomeUnknown(cause);
+			if (unknown) setMaybeRemoved(true);
+			setError(unknown ? COMMIT_OUTCOME_UNKNOWN : errorMessage(cause));
 		} finally {
 			setBusy(false);
 		}
 	};
 	const close = () => {
 		if (busy) return;
-		const finished = step.kind === "done";
+		const refresh = step.kind === "done" || maybeRemoved;
 		setOpen(false);
 		setStep({ kind: "choose" });
 		setChosen("");
 		setError("");
-		if (finished) void onRemoved?.();
+		setMaybeRemoved(false);
+		if (refresh) void onRemoved?.();
 	};
 	const handlers = {
 		onBack: () => setStep({ kind: "choose" }),
@@ -105,7 +124,9 @@ function useTeamMemberRemoval(input: {
 				setStep({ kind: "review", preview, revoke });
 			}),
 		onRemove: (current: ReviewState) =>
-			run(async () => setStep(await commitReviewed(actions, teamId, current))),
+			run(async () => setStep(await commitReviewed(actions, teamId, current)), {
+				committing: true,
+			}),
 		onRetry: (current: DoneState) =>
 			run(async () => setStep(await retryFailedRevokes(actions, teamId, current))),
 		onToggle: (current: ReviewState, inviteId: string) => setStep(toggled(current, inviteId)),
@@ -350,7 +371,11 @@ function ReviewStep({
 					can rejoin only through a new Team invitation, as a new person.
 				</p>
 				<DeviceList devices={preview.devices} />
-				<InvitationChoices onToggle={(inviteId) => onToggle(step, inviteId)} step={step} />
+				<InvitationChoices
+					busy={busy}
+					onToggle={(inviteId) => onToggle(step, inviteId)}
+					step={step}
+				/>
 				<Status busy={busy} busyText={`Removing ${preview.displayName}…`} error={error} />
 			</div>
 			<div className="modal-footer">
@@ -385,9 +410,11 @@ function DeviceList({ devices }: { devices: api.TeamMemberRemovalPreview["device
 }
 
 function InvitationChoices({
+	busy,
 	onToggle,
 	step,
 }: {
+	busy: boolean;
 	onToggle: (inviteId: string) => void;
 	step: Extract<Step, { kind: "review" }>;
 }) {
@@ -405,6 +432,7 @@ function InvitationChoices({
 				<label className="form-field form-field--inline" key={invite.inviteId}>
 					<input
 						checked={step.revoke.has(invite.inviteId)}
+						disabled={busy}
 						onChange={() => onToggle(invite.inviteId)}
 						type="checkbox"
 					/>

@@ -103,4 +103,22 @@ describe("Team member removal API", () => {
 		respond(503, {});
 		await expect(loadTeamGroupConflicts()).rejects.toThrow("team_group_conflicts_unavailable");
 	});
+
+	it("gives up on a conflict-list read that stalls past the shared read deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(() => new Promise<Response>(() => undefined)),
+			);
+			const read = loadTeamGroupConflicts();
+			const rejection = expect(read).rejects.toThrow("team_group_conflicts_unavailable");
+
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			await rejection;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

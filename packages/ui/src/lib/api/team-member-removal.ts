@@ -2,7 +2,7 @@
  * coordinator group is a conflict. Answers are checked before use, and only
  * known error codes reach the UI. */
 
-import { readJsonPayload } from "./internal";
+import { fetchJson, readJsonPayload } from "./internal";
 
 export const TEAM_MEMBER_REMOVAL_ERROR_CODES = [
 	"invalid_input",
@@ -187,15 +187,23 @@ export async function retryTeamInvitationRevokes(input: {
 	return invitations;
 }
 
-/** Teams whose coordinator group is a conflict. Throws when the list cannot be read. */
+/**
+ * Teams whose coordinator group is a conflict. Throws when the list cannot be
+ * read, including when it takes longer than the shared read deadline.
+ */
 export async function loadTeamGroupConflicts(
 	options: { signal?: AbortSignal } = {},
 ): Promise<string[]> {
-	const response = await fetch("/api/sync/recipient-policy/v1/team-coordinator-link-conflicts", {
-		signal: options.signal,
-	});
-	const { payload } = await readJsonPayload<unknown>(response);
-	if (!response.ok || !isObject(payload) || !Array.isArray(payload.teamIds))
+	let payload: unknown;
+	try {
+		payload = await fetchJson<unknown>(
+			"/api/sync/recipient-policy/v1/team-coordinator-link-conflicts",
+			{ signal: options.signal },
+		);
+	} catch {
+		throw new Error("team_group_conflicts_unavailable");
+	}
+	if (!isObject(payload) || !Array.isArray(payload.teamIds))
 		throw new Error("team_group_conflicts_unavailable");
 	return payload.teamIds.filter(isText);
 }

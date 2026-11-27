@@ -172,7 +172,7 @@ describe("removing a member from a Team", () => {
 	it.each([
 		["removal_preview_stale", "Something changed since you reviewed this removal."],
 		["team_link_conflict", "This Team's coordinator group is unclear, so removals are paused."],
-		["team_member_removal_failed", "The removal couldn't be completed. Nothing changed."],
+		["coordinator_unavailable", "The coordinator couldn't record the removal. Nothing changed."],
 	] as const)("explains a refused removal: %s", async (code, message) => {
 		const removal = actions({
 			commit: vi.fn().mockRejectedValue(new TeamMemberRemovalApiError(409, code)),
@@ -184,5 +184,48 @@ describe("removing a member from a Team", () => {
 
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(message);
 		expect(button("Remove Casey").disabled).toBe(false);
+	});
+
+	it("does not promise nothing changed when the commit's answer is lost, and refreshes on close", async () => {
+		const removal = actions({
+			commit: vi
+				.fn()
+				.mockRejectedValue(new TeamMemberRemovalApiError(0, "team_member_removal_failed")),
+		});
+		const onRemoved = mount(removal);
+		choose("Casey");
+		await press("Review removal");
+		await press("Remove Casey");
+
+		const alert = document.querySelector('[role="alert"]')?.textContent ?? "";
+		expect(alert).toContain("couldn't confirm whether the removal was recorded");
+		expect(alert).not.toContain("Nothing changed");
+		act(() => button("Back").click());
+		act(() => button("Cancel").click());
+		expect(onRemoved).toHaveBeenCalledOnce();
+	});
+
+	it("locks the invitation choices while the removal is being sent", async () => {
+		let finish: (value: unknown) => void = () => undefined;
+		const removal = actions({
+			commit: vi.fn(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve;
+					}),
+			) as TeamMemberRemovalActions["commit"],
+		});
+		mount(removal);
+		choose("Casey");
+		await press("Review removal");
+
+		act(() => button("Remove Casey").click());
+
+		const boxes = [...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+		expect(boxes.map((box) => box.disabled)).toEqual([true, true]);
+		await act(async () => {
+			finish({ appliedHere: true, invitations: [] });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
 	});
 });
