@@ -1,14 +1,14 @@
 /**
  * Who may run the Viewer for a database, and how a start reports whether it got
  * there. The database's Viewer lock (see `viewer-writer-lock.ts` in core) is the
- * only authority: the process that holds it records itself as the owner, writes
- * the PID record once it serves, and is the one `serve stop` stops.
+ * only authority: the process that holds it records itself as the owner and
+ * writes the PID record once it serves. The owner record only informs messages;
+ * no stop or restart signals a process because the record names it.
  */
 import type { ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
 import {
 	acquireViewerWriterLock,
-	canonicalViewerDbPath,
 	readViewerWriterLockOwner,
 	type ViewerWriterLock,
 	ViewerWriterLockHeldError,
@@ -16,34 +16,10 @@ import {
 	ViewerWriterLockUnavailableError,
 } from "@codemem/core";
 
-export interface ViewerLockOwnerChecks {
-	isProcessRunning(pid: number): boolean;
-	processStartIdentity(pid: number): string | null;
-	readProcessCommand(pid: number): string | null;
-	isViewerCommand(command: string): boolean;
-	isLockHeld(dbPath: string): boolean;
-}
-
-/**
- * The recorded lock owner, only while that exact process still holds the lock:
- * same pid and start time, a Viewer command line, and the lock is held now. A
- * stale record from an exited holder, or a reused pid, never verifies.
- */
-export function verifiedViewerLockOwner(
-	dbPath: string,
-	checks: ViewerLockOwnerChecks,
-): ViewerWriterLockOwner | null {
-	const owner = readViewerWriterLockOwner(dbPath);
-	if (!owner?.started || owner.db_path !== canonicalViewerDbPath(dbPath)) return null;
-	if (!checks.isProcessRunning(owner.pid)) return null;
-	if (checks.processStartIdentity(owner.pid) !== owner.started) return null;
-	const command = checks.readProcessCommand(owner.pid);
-	if (!command || !checks.isViewerCommand(command)) return null;
-	return checks.isLockHeld(dbPath) ? owner : null;
-}
-
-export interface ViewerLockClaimDependencies extends ViewerLockOwnerChecks {
+export interface ViewerLockClaimDependencies {
+	/** Whether a codemem Viewer answers at the recorded holder's address. */
 	isLiveViewer(owner: ViewerWriterLockOwner): Promise<boolean>;
+	isLockHeld(dbPath: string): boolean;
 	sleep(ms: number): Promise<void>;
 }
 
@@ -54,15 +30,36 @@ export type ViewerLockClaim =
 /** How long a start waits for a holder that is not serving, such as one shutting down. */
 export const VIEWER_LOCK_WAIT_MS = 10_000;
 
-function heldMessage(dbPath: string, owner: ViewerWriterLockOwner | null): string {
-	if (!owner) {
-		return `Another process holds the viewer lock for ${dbPath}. Stop the other codemem viewer, or use a separate database.`;
-	}
-	return `codemem viewer pid ${owner.pid} holds ${dbPath} but is not answering at ${owner.host}:${owner.port}. Stop it with \`codemem service stop\`, then start again.`;
-}
-
 function unavailableMessage(error: ViewerWriterLockUnavailableError): string {
 	return `Cannot create the viewer lock at ${error.path} (${error.code}). Check that ${dirname(error.path)} exists and is writable.`;
+}
+
+/**
+ * What the lock's owner record says about the holder, and how to stop it. The
+ * record is a hint: nothing here checks that the recorded process still holds
+ * the lock, so nothing acts on it.
+ */
+export function viewerLockHolderHint(
+	owner: ViewerWriterLockOwner | null,
+	platform: NodeJS.Platform = process.platform,
+): string {
+	if (!owner) {
+		return "No holder was recorded. If it is a running codemem viewer, stop it with `codemem serve stop` using the same --db-path and --port; otherwise end the process that holds the lock.";
+	}
+	const started = owner.started ? `, started ${owner.started}` : "";
+	const kill = platform === "win32" ? `taskkill /PID ${owner.pid}` : `kill ${owner.pid}`;
+	return `Recorded holder (unverified): pid ${owner.pid}${started}, port ${owner.port}. If it is a running codemem viewer, stop it with \`codemem serve stop\` using the same --db-path and --port ${owner.port}; otherwise end that process (\`${kill}\`).`;
+}
+
+function heldMessage(
+	dbPath: string,
+	owner: ViewerWriterLockOwner | null,
+	answering: boolean,
+): string {
+	const holder = answering
+		? `Another codemem viewer is already using ${dbPath}.`
+		: `Another process holds the viewer lock for ${dbPath}.`;
+	return `${holder} ${viewerLockHolderHint(owner)} To run another viewer, give it its own database.`;
 }
 
 /** One attempt: the claim's result, or null while another process holds the lock. */
@@ -79,9 +76,10 @@ function tryClaim(dbPath: string, target: { host: string; port: number }): Viewe
 }
 
 /**
- * Takes the database's Viewer lock and records this process as its owner. A live
- * Viewer refuses the start at once. Any other holder, such as a Viewer still
- * shutting down, gets `waitMs` to release it.
+ * Takes the database's Viewer lock and records this process as its owner. When a
+ * Viewer answers at the recorded holder's address, the start is refused at once.
+ * Any other holder, such as a Viewer still shutting down, gets `waitMs` to
+ * release it.
  */
 export async function claimViewerWriterLock(
 	dbPath: string,
@@ -93,14 +91,14 @@ export async function claimViewerWriterLock(
 	for (;;) {
 		const attempt = tryClaim(dbPath, target);
 		if (attempt) return attempt;
-		const owner = verifiedViewerLockOwner(dbPath, dependencies);
+		const owner = readViewerWriterLockOwner(dbPath);
+		// A Viewer answering at the recorded address will not release the lock soon.
 		if (owner && (await dependencies.isLiveViewer(owner))) {
-			return {
-				status: "refused",
-				message: `Another codemem viewer is already using ${dbPath} (pid ${owner.pid} at ${owner.host}:${owner.port}). Stop it with \`codemem service stop\`, or use a separate database for another viewer.`,
-			};
+			return { status: "refused", message: heldMessage(dbPath, owner, true) };
 		}
-		if (Date.now() >= deadline) return { status: "refused", message: heldMessage(dbPath, owner) };
+		if (Date.now() >= deadline) {
+			return { status: "refused", message: heldMessage(dbPath, owner, false) };
+		}
 		await dependencies.sleep(options.pollMs ?? 250);
 	}
 }

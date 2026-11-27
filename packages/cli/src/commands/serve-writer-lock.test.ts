@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isViewerWriterLockHeld } from "@codemem/core";
@@ -10,8 +11,12 @@ import {
 	stopHolder,
 } from "../../../core/src/viewer-writer-lock-test-holder.js";
 import { runServeInvocation, stopExistingViewer, viewerLockDependencies } from "./serve.js";
-import { resolveStopRestartInvocation } from "./serve-invocation.js";
-import { claimViewerWriterLock, waitForViewerStartup } from "./viewer-lock-claim.js";
+import { resolveServeInvocation, resolveStopRestartInvocation } from "./serve-invocation.js";
+import {
+	claimViewerWriterLock,
+	viewerLockHolderHint,
+	waitForViewerStartup,
+} from "./viewer-lock-claim.js";
 
 let directory: string;
 let dbPath: string;
@@ -22,11 +27,33 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "codemem-serve-lock-"));
 	dbPath = join(directory, "mem.sqlite");
 	previousExitCode = process.exitCode;
+	process.exitCode = undefined;
 	vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 });
 
+/** Everything the command printed. */
+function printed(): string {
+	return vi
+		.mocked(process.stdout.write)
+		.mock.calls.map(([chunk]) => String(chunk))
+		.join("");
+}
+
+function freePort(): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const server = net.createServer();
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			const port = typeof address === "object" && address ? address.port : 0;
+			server.close(() => resolve(port));
+		});
+	});
+}
+
 afterEach(async () => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	process.exitCode = previousExitCode;
 	await Promise.all(holders.splice(0).map(stopHolder));
 	chmodSync(directory, 0o700);
@@ -58,10 +85,10 @@ describe("claiming the Viewer lock", () => {
 			isLiveViewer: async (owner) => owner.pid === holder.pid,
 		});
 
-		expect(claim).toEqual({
-			status: "refused",
-			message: expect.stringContaining(`Another codemem viewer is already using ${dbPath}`),
-		});
+		expect(claim).toEqual({ status: "refused", message: expect.any(String) });
+		const message = claim.status === "refused" ? claim.message : "";
+		expect(message).toContain(`Another codemem viewer is already using ${dbPath}.`);
+		expect(message).toContain(`Recorded holder (unverified): pid ${holder.pid}, started `);
 		expect(Date.now() - started).toBeLessThan(2_000);
 	});
 
@@ -85,10 +112,12 @@ describe("claiming the Viewer lock", () => {
 			waitMs: 300,
 		});
 
-		expect(claim).toEqual({
-			status: "refused",
-			message: expect.stringContaining(`codemem viewer pid ${holder.pid} holds ${dbPath}`),
-		});
+		expect(claim).toEqual({ status: "refused", message: expect.any(String) });
+		const message = claim.status === "refused" ? claim.message : "";
+		expect(message).toContain(`Another process holds the viewer lock for ${dbPath}.`);
+		expect(message).toContain(`Recorded holder (unverified): pid ${holder.pid}, started `);
+		expect(message).toContain(`port ${UNSERVED.port}`);
+		expect(message).toContain(`\`kill ${holder.pid}\``);
 	});
 
 	it.skipIf(process.getuid?.() === 0)(
@@ -108,20 +137,63 @@ describe("claiming the Viewer lock", () => {
 	);
 });
 
+describe("refusing a start while the lock is held", () => {
+	it("gives a bare `codemem serve` the recorded holder and how to stop it", async () => {
+		const viewerPort = await freePort();
+		const address = { host: "127.0.0.1", port: viewerPort };
+		const holder = await holdViewerLockInAnotherProcess(dbPath, {
+			owner: address,
+			answerAsViewer: address,
+		});
+		holders.push(holder);
+		// The foreground start sets these for the store it would open.
+		vi.stubEnv("CODEMEM_DB", process.env.CODEMEM_DB);
+		vi.stubEnv("CODEMEM_CONFIG", process.env.CODEMEM_CONFIG);
+		const startPort = String(await freePort());
+		// A start that got the lock would run a whole Viewer in this test process.
+		expect(isViewerWriterLockHeld(dbPath)).toBe(true);
+
+		await runServeInvocation(
+			resolveServeInvocation(undefined, { dbPath, host: "127.0.0.1", port: startPort }),
+			{ nativeRuntimeAllowsServeStart: async () => true, stopExistingViewer },
+		);
+
+		expect(process.exitCode).toBe(1);
+		expect(printed()).toContain(`Another codemem viewer is already using ${dbPath}.`);
+		expect(printed()).toContain(`Recorded holder (unverified): pid ${holder.pid}, started `);
+		expect(printed()).toContain(`port ${viewerPort}`);
+		expect(holder.exitCode).toBeNull();
+	});
+
+	it("says how to end the recorded holder on each platform", () => {
+		const owner = { pid: 4321, started: "", db_path: dbPath, host: "127.0.0.1", port: 38_888 };
+
+		expect(viewerLockHolderHint(owner, "darwin")).toContain("(`kill 4321`)");
+		expect(viewerLockHolderHint(owner, "linux")).toContain("(`kill 4321`)");
+		expect(viewerLockHolderHint(owner, "win32")).toContain("(`taskkill /PID 4321`)");
+		// Without `ps`, as on Windows, no start time is recorded and none is shown.
+		expect(viewerLockHolderHint(owner, "win32")).toContain("pid 4321, port 38888.");
+		expect(viewerLockHolderHint(null, "win32")).toContain("No holder was recorded.");
+	});
+});
+
 describe("stopping and restarting the Viewer by its lock", () => {
-	it("stops a Viewer that holds the lock but never started serving", async () => {
+	it("never signals the recorded lock holder, and reports it as unverified", async () => {
 		const holder = await viewerLikeHolder();
 
 		await runServeInvocation(
 			resolveStopRestartInvocation("stop", { dbPath, host: "127.0.0.1", port: "38902" }),
-			{
-				nativeRuntimeAllowsServeStart: async () => true,
-				stopExistingViewer,
-			},
+			{ nativeRuntimeAllowsServeStart: async () => true, stopExistingViewer },
 		);
 
-		expect(holder.signalCode).toBe("SIGTERM");
-		expect(isViewerWriterLockHeld(dbPath)).toBe(false);
+		expect(holder.exitCode).toBeNull();
+		expect(holder.signalCode).toBeNull();
+		expect(isViewerWriterLockHeld(dbPath)).toBe(true);
+		expect(printed()).toContain(
+			`The database is locked by another process (pid ${holder.pid}, unverified).`,
+		);
+		expect(printed()).not.toContain("No background viewer found");
+		expect(process.exitCode).toBe(1);
 	});
 
 	it("starts the new Viewer only after the stopped one releases the lock", async () => {
