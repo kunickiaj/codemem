@@ -22,23 +22,22 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { type DatabaseFileIdentity, isDatabaseFileUnchanged } from "../database-file-identity.js";
-import { readLocalIdentityGenerationMarker } from "../local-identity-generation.js";
 import type { PackArtifacts, PackAssemblyRequest } from "../pack.js";
 import { packArtifactMemoryIds } from "../pack-memory-ids.js";
-import type { StoreHandle } from "../search.js";
 import { SemanticIdentityChangedError } from "../semantic/semantic-executor-seam.js";
-import { captureProof } from "../semantic/semantic-worker-executor.js";
+import {
+	assertProofUnchanged,
+	captureDeliveryProof,
+	type PackDeliveryStore,
+} from "./pack-delivery-proof.js";
 import type {
 	PackWorkerData,
 	PackWorkerJob,
-	PackWorkerProof,
 	PackWorkerReply,
 	PackWorkerRequest,
 } from "./pack-worker-protocol.js";
 
-export interface PackWorkerStore extends StoreHandle {
-	hasCurrentIdentity(): boolean;
-	onIdentityChanged?(listener: () => void): () => void;
+export interface PackWorkerStore extends PackDeliveryStore {
 	/** Which of these memories may be delivered to the current Identity: visible and not forgotten. */
 	deliverableMemoryIds(memoryIds: readonly number[]): Set<number>;
 	/** The file the store's connection opened, identified when it opened it. */
@@ -314,28 +313,6 @@ function mayDeliver(store: PackWorkerStore, artifacts: PackArtifacts): boolean {
 	return ids.every((id) => deliverable.has(id));
 }
 
-/**
- * Who this thread is now. Throws when a switch has committed in the store to another
- * Identity than this process runs as: the configuration may not name the new one yet, and
- * until it does the process still looks current to itself.
- */
-function captureDeliveryProof(store: PackWorkerStore): PackWorkerProof {
-	const proof: PackWorkerProof = {
-		...captureProof(store),
-		identityGeneration: readLocalIdentityGenerationMarker(store.db),
-	};
-	if (proof.identityGeneration && proof.identityGeneration.actorId !== proof.actorId) {
-		throw new SemanticIdentityChangedError();
-	}
-	return proof;
-}
-
-function assertProofUnchanged(store: PackWorkerStore, proof: PackWorkerProof): void {
-	if (JSON.stringify(captureDeliveryProof(store)) !== JSON.stringify(proof)) {
-		throw new SemanticIdentityChangedError();
-	}
-}
-
 /** The path must still lead to the file the store's connection opened. */
 function assertStoreFileUnchanged(opened: DatabaseFileIdentity): void {
 	if (!isDatabaseFileUnchanged(opened)) throw new SemanticIdentityChangedError();
@@ -347,10 +324,7 @@ export function createPackWorkerExecutor(options: PackWorkerOptions): PackWorker
 	const opened = store.databaseFile();
 	if (!opened) throw new Error("pack_worker_file_required");
 	const client = new PackWorkerClient({
-		createWorker:
-			options.createWorker ??
-			((events) =>
-				startPackWorkerThread({ dbPath: opened.path, fileIdentity: opened.fileIdentity }, events)),
+		createWorker: options.createWorker ?? ((events) => startPackWorkerThread({ opened }, events)),
 		readinessMs: options.readinessMs ?? 10_000,
 		requestMs: options.requestMs ?? 10_000,
 		maxPending: options.maxPending ?? 8,
@@ -367,13 +341,14 @@ export function createPackWorkerExecutor(options: PackWorkerOptions): PackWorker
 			const proof = captureDeliveryProof(store);
 			assertStoreFileUnchanged(opened);
 			const artifacts = await client.run({ proof, request }, executionOptions?.signal);
-			// Checked whether or not the worker answered: after an Identity change the caller
-			// must not assemble and deliver this request under the new Identity either.
-			assertProofUnchanged(store, proof);
+			const deliverable = artifacts !== null && mayDeliver(store, artifacts);
+			// Read last, after the check of what the pack names: a switch that commits while
+			// that check runs must still refuse the pack. Read whether or not the worker
+			// answered, so that a failed request is not served under a new Identity either.
 			assertStoreFileUnchanged(opened);
+			assertProofUnchanged(store, proof);
 			if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
-			if (!artifacts || !mayDeliver(store, artifacts)) return null;
-			return artifacts;
+			return deliverable ? artifacts : null;
 		},
 		async close() {
 			await client.close();

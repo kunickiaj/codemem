@@ -52,6 +52,11 @@ function getDrizzle(db: Database) {
 export interface StoreHandle {
 	semanticSearchAsync?: PackSemanticExecutor["search"];
 	/**
+	 * Take a hold on who a pack request is for, before anything is retrieved for it. Null
+	 * or absent when the store does not hold requests to an Identity.
+	 */
+	beginPackDelivery?(): import("./pack-worker/pack-delivery-proof.js").PackDeliveryGuard | null;
+	/**
 	 * Assemble a pack away from this thread and check that it may be delivered. Resolves to
 	 * null when the store does not do that or could not, and the caller assembles it itself.
 	 */

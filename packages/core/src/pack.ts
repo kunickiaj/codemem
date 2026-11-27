@@ -20,6 +20,7 @@ import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
 import { fusePackCandidates } from "./pack-fusion.js";
+import type { PackDeliveryGuard } from "./pack-worker/pack-delivery-proof.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
@@ -2863,21 +2864,24 @@ function assembleOnThisThread(
 }
 
 /**
- * The synchronous half of an async pack build. A store that assembles packs off its own
- * thread does so here. It has then already checked that the pack may be delivered, and
- * usage is recorded on this thread. Otherwise, or when it declines, the pack is assembled
- * here as before.
+ * The synchronous half of an async pack build, and its delivery.
+ *
+ * A store that assembles packs off its own thread does so here, and has then checked what
+ * the pack names. Otherwise, or when it declines, the pack is assembled on this thread.
+ * Either way the request's hold on its Identity is checked last, after every read the pack
+ * depends on, and usage is recorded only for a pack that passed.
  */
 async function assembleRetrievedPack(
 	store: StoreHandle,
 	request: PackAssemblyRequest,
-	options: { recordUsage: boolean; signal?: AbortSignal },
+	options: { recordUsage: boolean; signal?: AbortSignal; delivery: PackDeliveryGuard | null },
 ): Promise<PackArtifacts> {
 	const offThread = await store.assemblePackOffThread?.(request, { signal: options.signal });
 	options.signal?.throwIfAborted();
-	if (!offThread) return assembleOnThisThread(store, request, options);
-	if (options.recordUsage) recordPackUsage(store, offThread.response.metrics);
-	return offThread;
+	const artifacts = offThread ?? assembleOnThisThread(store, request, { recordUsage: false });
+	options.delivery?.assertCurrent();
+	if (options.recordUsage) recordPackUsage(store, artifacts.response.metrics);
+	return artifacts;
 }
 
 export function buildMemoryPack(
@@ -2963,6 +2967,8 @@ export async function buildMemoryPackAsync(
 	executionOptions?: SemanticExecutionOptions,
 ): Promise<PackResponse> {
 	executionOptions?.signal?.throwIfAborted();
+	// Taken before anything is retrieved, and checked last before delivery.
+	const delivery = store.beginPackDelivery?.() ?? null;
 	// Run semantic search (returns [] when embeddings unavailable)
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
@@ -2989,7 +2995,7 @@ export async function buildMemoryPackAsync(
 			{ context, limit, tokenBudget, filters, renderOptions, automaticContext },
 			semResults,
 		),
-		{ recordUsage: true, signal: executionOptions?.signal },
+		{ recordUsage: true, signal: executionOptions?.signal, delivery },
 	);
 	return artifacts.response;
 }
@@ -3005,6 +3011,8 @@ export async function buildMemoryPackWithTraceAsync(
 	executionOptions?: SemanticExecutionOptions,
 ): Promise<PackArtifacts> {
 	executionOptions?.signal?.throwIfAborted();
+	// Taken before anything is retrieved, and checked last before delivery.
+	const delivery = store.beginPackDelivery?.() ?? null;
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
@@ -3030,7 +3038,7 @@ export async function buildMemoryPackWithTraceAsync(
 			{ context, limit, tokenBudget, filters, renderOptions, automaticContext },
 			semResults,
 		),
-		{ recordUsage: true, signal: executionOptions?.signal },
+		{ recordUsage: true, signal: executionOptions?.signal, delivery },
 	);
 }
 
@@ -3045,6 +3053,8 @@ export async function buildMemoryPackTraceAsync(
 	executionOptions?: SemanticExecutionOptions,
 ): Promise<PackTrace> {
 	executionOptions?.signal?.throwIfAborted();
+	// Taken before anything is retrieved, and checked last before delivery.
+	const delivery = store.beginPackDelivery?.() ?? null;
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
@@ -3070,7 +3080,7 @@ export async function buildMemoryPackTraceAsync(
 			{ context, limit, tokenBudget, filters, renderOptions, automaticContext },
 			semResults,
 		),
-		{ recordUsage: false, signal: executionOptions?.signal },
+		{ recordUsage: false, signal: executionOptions?.signal, delivery },
 	);
 	return artifacts.trace;
 }

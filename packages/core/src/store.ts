@@ -69,6 +69,7 @@ import {
 	buildMemoryPackWithTrace,
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
+import { beginPackDelivery, type PackDeliveryGuard } from "./pack-worker/pack-delivery-proof.js";
 import {
 	createPackWorkerExecutor,
 	type PackWorkerExecutor,
@@ -418,6 +419,7 @@ export class MemoryStore {
 	private readonly vectorWriteAbort = new AbortController();
 	private semanticExecutor: PackSemanticExecutor | undefined;
 	private packWorkerEnabled = false;
+	private identityChanges = 0;
 	private packWorker: PackWorkerExecutor | undefined;
 	private vectorIndexMaintenance: VectorIndexMaintenance | undefined;
 	private readonly pendingSemanticSearches = new Set<Promise<SemanticSearchResult[]>>();
@@ -553,7 +555,13 @@ export class MemoryStore {
 		return () => this.identityChangeListeners.delete(listener);
 	}
 
+	/** How many times this process has changed its Identity. */
+	identityChangeCount(): number {
+		return this.identityChanges;
+	}
+
 	private notifyIdentityChanged(): void {
+		this.identityChanges += 1;
 		for (const listener of this.identityChangeListeners) {
 			try {
 				listener();
@@ -3496,6 +3504,16 @@ export class MemoryStore {
 	 */
 	enablePackWorker(): void {
 		this.packWorkerEnabled = true;
+	}
+
+	/**
+	 * See {@link StoreHandle.beginPackDelivery}. A process that answers requests while it
+	 * builds packs holds each request to the Identity it began under.
+	 */
+	beginPackDelivery(): PackDeliveryGuard | null {
+		// A closing or closed store refuses the build itself, with its own error.
+		if (!this.packWorkerEnabled || this.semanticClosing || this.closed) return null;
+		return beginPackDelivery(this);
 	}
 
 	/** See {@link StoreHandle.assemblePackOffThread}. */

@@ -551,20 +551,25 @@ is unchanged. Other processes assemble packs on their own thread, as before.
   `recent` and its ownership checks. It learns who is asking from the request
   alone: the actor ID, the device ID and the device's public key. It is started
   with an empty environment and reads no configuration or key file.
-- **What the main thread checks before delivery.** Before asking, it captures
-  the Identity, the device key and the Identity generation persisted in the
-  store. A local Identity switch commits that generation in the store before the
-  configuration names the new Identity, so a request is refused when the
-  generation names another Identity than the process runs as. When the worker
-  answers, or fails, the main thread checks that all three are unchanged; if
-  not, the request fails and nothing is delivered. The worker makes the same
+- **Who the pack is for.** The Viewer takes a proof for each pack request
+  before it retrieves anything: the Identity, the device key and the Identity
+  generation persisted in the store. A local Identity switch commits that
+  generation in the store before the configuration names the new Identity, so a
+  request is refused when the generation names another Identity than the
+  process runs as. The proof is read again as the last step before delivery,
+  after the pack is assembled and its memories are checked, whether the worker
+  assembled it or the main thread did. If anything changed, the request fails,
+  nothing is delivered and no usage is recorded. The worker makes the same
   generation check on its own connection and refuses a request that does not
   match.
-- **Which file.** The store identifies its file by device and inode when it
-  opens its connection. The worker opens the same path later, so it compares
+- **Which file.** The store identifies its file when it opens its connection:
+  device and inode of the database file, and of its write-ahead log when there
+  is one, read as bigints. The worker opens the same path later, so it compares
   the path with that identity before and after it opens, and the main thread
   compares again before asking and before delivery. A file replaced at the path
-  fails the request.
+  fails the request. Not covered: a process that can write to the store's
+  directory putting another file at the path only for the instant of the
+  worker's open. Such a process can already read and change the store.
 - **Which memories.** The main thread lists every memory the pack and its
   trace name, from tables in `pack-memory-ids.ts` that have an entry for each
   field of a pack. A field added without an entry does not compile, and a pack

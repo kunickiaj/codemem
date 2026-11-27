@@ -1,11 +1,11 @@
+import type { DatabaseFileIdentity } from "../database-file-identity.js";
 import type { LocalIdentityGenerationMarker } from "../local-identity-generation.js";
 import type { PackArtifacts, PackAssemblyRequest } from "../pack.js";
 import type { RuntimeProof } from "../semantic/semantic-worker-protocol.js";
 
 /** What the worker is started with: the store file as the store identified it at open. */
 export interface PackWorkerData {
-	dbPath: string;
-	fileIdentity: string;
+	opened: DatabaseFileIdentity;
 }
 
 /**

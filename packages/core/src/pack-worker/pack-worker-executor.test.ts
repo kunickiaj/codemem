@@ -361,13 +361,14 @@ describe("a local Identity switch that committed in the store only", () => {
 	});
 
 	it("is refused by the worker too, whose connection sees another generation than the proof", async () => {
-		const file = store.databaseFile();
+		const opened = store.databaseFile();
+		if (!opened) throw new Error("the store did not identify its file");
 		const replies: PackWorkerReply[] = [];
 		executor = createPackWorkerExecutor({
 			store,
 			createWorker: (events) =>
 				startPackWorkerThread(
-					{ dbPath: file?.path ?? "", fileIdentity: file?.fileIdentity ?? "" },
+					{ opened },
 					{
 						...events,
 						message(reply) {
@@ -386,6 +387,73 @@ describe("a local Identity switch that committed in the store only", () => {
 		expect(replies).toContainEqual({ type: "error", id: 1, code: "refused" });
 		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
 	}, 30_000);
+
+	it("refuses a pack when the switch commits while its memories are checked for delivery", async () => {
+		const real = assemblePackArtifacts(store, request());
+		const worker = fakeWorker((message) => ({ type: "result", id: message.id, artifacts: real }));
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+		const check = store.deliverableMemoryIds.bind(store);
+		vi.spyOn(store, "deliverableMemoryIds").mockImplementation((ids) => {
+			const deliverable = check(ids);
+			commitSwitchInStore("local:switched-to");
+			return deliverable;
+		});
+
+		const outcome = await outcomeOf(executor.assemble(request()));
+
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+	});
+
+	it("refuses a pack assembled on this thread after the worker was given up", async () => {
+		const failing = fakeWorker((message) => ({
+			type: "error",
+			id: message.id,
+			code: "assembly_failed",
+		}));
+		executor = createPackWorkerExecutor({
+			store,
+			createWorker: failing.createWorker,
+			warn: () => {},
+		});
+		const worker = executor;
+		store.enablePackWorker();
+		vi.spyOn(store, "assemblePackOffThread").mockImplementation((packRequest, options) =>
+			worker.assemble(packRequest, options),
+		);
+		const build = () =>
+			store.buildMemoryPackWithTraceAsync(fixture.query, 10, 2000, {
+				project: "mixed-domain-fixture",
+			});
+		// Three failures: the worker is no longer asked, and this thread assembles each pack.
+		for (let attempt = 0; attempt < 4; attempt++) await build();
+		const askedBeforeSwitch = failing.posted.length;
+
+		commitSwitchInStore("local:switched-to");
+		const outcome = await outcomeOf(build());
+
+		expect(askedBeforeSwitch).toBe(3);
+		expect(failing.posted).toHaveLength(3);
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+		expect(usageRows()).toBe(4);
+	});
+
+	it("refuses a pack this thread assembles after a switch committed during the request", async () => {
+		store.enablePackWorker();
+		// The worker declines, and the switch commits before this thread assembles the pack.
+		vi.spyOn(store, "assemblePackOffThread").mockImplementation(async () => {
+			commitSwitchInStore("local:switched-to");
+			return null;
+		});
+
+		const outcome = await outcomeOf(
+			store.buildMemoryPackWithTraceAsync(fixture.query, 10, 2000, {
+				project: "mixed-domain-fixture",
+			}),
+		);
+
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+		expect(usageRows()).toBe(0);
+	});
 
 	it("refuses before asking the worker when the switch had already committed", async () => {
 		const real = assemblePackArtifacts(store, request());

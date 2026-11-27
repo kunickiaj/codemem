@@ -6,7 +6,7 @@
  * decides whether the pack is delivered.
  */
 import { parentPort, workerData } from "node:worker_threads";
-import { databaseFileAt } from "../database-file-identity.js";
+import { isDatabaseFileUnchanged } from "../database-file-identity.js";
 import { connectReadOnly } from "../db.js";
 import {
 	type LocalIdentityGenerationMarker,
@@ -21,19 +21,15 @@ const MAX_JOB_BYTES = 4 * 1024 * 1024;
 
 if (!parentPort) throw new Error("pack_worker_parent_required");
 const port = parentPort;
-const { dbPath, fileIdentity } = workerData as PackWorkerData;
-/** Whether the path leads to the file the store identified when it opened its connection. */
-function isStoreFile(): boolean {
-	const file = databaseFileAt(dbPath);
-	return file !== null && file.path === dbPath && file.fileIdentity === fileIdentity;
-}
-
-// Checked on both sides of the open: a file replaced in between would otherwise be read as
-// the store's, and its row IDs would pass for the store's.
-if (!isStoreFile()) throw new Error("pack_worker_file_changed");
-const db = connectReadOnly(dbPath);
+const { opened } = workerData as PackWorkerData;
+// The path must lead to the file, and the write-ahead log, that the store identified when it
+// opened its connection. Checked on both sides of the open: a file replaced before it would
+// otherwise be read as the store's, and its row IDs would pass for the store's. A file put
+// there only for the instant of the open is not caught; see database-file-identity.ts.
+if (!isDatabaseFileUnchanged(opened)) throw new Error("pack_worker_file_changed");
+const db = connectReadOnly(opened.path);
 try {
-	if (!isStoreFile()) throw new Error("pack_worker_file_changed");
+	if (!isDatabaseFileUnchanged(opened)) throw new Error("pack_worker_file_changed");
 	db.pragma("query_only = ON");
 } catch (error) {
 	db.close();
