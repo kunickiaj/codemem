@@ -5407,15 +5407,19 @@ function rejectUnauthorizedInboundBatch(
 	const scopeId = named.has(failure.scopeId) ? failure.scopeId : options.scopeId;
 	if (reason !== failure.reason || scopeId !== failure.scopeId)
 		logWithheldScopeDenial(failure.reason, failure.scopeId);
-	return c.json(
-		syncScopeResetRequiredPayload(
-			getSyncResetState(context.db),
-			reason,
-			LOCAL_SYNC_CAPABILITY,
-			scopeId,
-		),
-		409,
-	);
+	// A push has no use for a reset boundary, and the default stream's is not the peer's to see.
+	return c.json(peerFacingScopeReset(reason, scopeId), 409);
+}
+
+/** A scope refusal that tells the peer nothing about this device's default stream. */
+function peerFacingScopeReset(reason: SyncScopeResetReason, scopeId: string | null) {
+	return {
+		error: "reset_required",
+		reset_required: true,
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		reason,
+		scope_id: scopeId,
+	} as const;
 }
 
 /** Records locally what a scope denial withheld from the peer's answer. */
@@ -5569,16 +5573,7 @@ function syncScopeResetResponse(
 		logWithheldScopeDenial(preciseReason, c.req.query(SYNC_SCOPE_QUERY_PARAM) ?? null);
 	if (syncChannelPeerPin !== undefined) {
 		// An unauthorized scope must not disclose the legacy default boundary.
-		return c.json(
-			{
-				error: "reset_required",
-				reset_required: true,
-				sync_capability: LOCAL_SYNC_CAPABILITY,
-				reason,
-				scope_id: null,
-			},
-			409,
-		);
+		return c.json(peerFacingScopeReset(reason, null), 409);
 	}
 	return c.json(
 		syncScopeResetRequiredPayload(getSyncResetState(store.db), reason, LOCAL_SYNC_CAPABILITY, null),

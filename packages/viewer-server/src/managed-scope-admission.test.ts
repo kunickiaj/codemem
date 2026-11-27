@@ -6,6 +6,7 @@ import {
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
 	getSyncResetState,
+	LOCAL_SYNC_CAPABILITY,
 	loadPublicKey,
 	MemoryStore,
 	recordAccessCleanupOp,
@@ -435,7 +436,7 @@ describe("origin cleanup after managed membership revocation", () => {
 
 describe("unknown scope rejection does not allocate caller-selected reset boundaries", () => {
 	it.each(["legacy", "unsupported"])(
-		"rejects repeated authenticated %s pushes using only the fixed global reset boundary",
+		"rejects repeated authenticated %s pushes without disclosing the default reset boundary",
 		async (mode) => {
 			// Arrange: preserve every existing per-scope boundary and any initialized global row.
 			const existingScopes = root.store.db
@@ -463,14 +464,14 @@ describe("unknown scope rejection does not allocate caller-selected reset bounda
 				const payload = await response.json();
 				const currentBoundary = getSyncResetState(root.store.db);
 				globalBoundary ??= currentBoundary;
-				// Assert: echo the offending ID, but return the same fixed global boundary each time.
+				// Assert: echo the offending ID, and nothing about the default stream.
 				expect(response.status).toBe(409);
-				expect(payload).toMatchObject({
+				expect(payload).toEqual({
 					error: "reset_required",
 					reset_required: true,
+					sync_capability: LOCAL_SYNC_CAPABILITY,
 					reason: "missing_scope",
 					scope_id: scopeId,
-					...globalBoundary,
 				});
 				expect(currentBoundary).toEqual(globalBoundary);
 				expect(
