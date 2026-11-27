@@ -428,8 +428,8 @@ export interface DeviceBlocksAndRemovals {
 	keyRemoved: string[];
 	/**
 	 * The IDs it reports removed by ID or by key, without saying that the key sent
-	 * was removed or is still enrolled. An old removal under another key reads
-	 * like this, and so does an answer from a coordinator that sends no key evidence.
+	 * was removed or is still enrolled. Every removal reads like this when the
+	 * coordinator sends no key evidence.
 	 */
 	removedUnattributed: string[];
 }

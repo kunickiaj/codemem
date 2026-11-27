@@ -70,7 +70,7 @@ export interface TeamRecoveryDeviceRemoval {
  *   say that the key sent was removed or is still enrolled. That clears
  *   nothing and refuses nothing for good: the check can be asked again.
  * - `none`: it reports no removal, or reports the key sent still enrolled. A
- *   device removed long ago under another key and enrolled again reads so.
+ *   device removed from another group under an older key reads so.
  * Only `none` clears the device.
  */
 export interface TeamRecoveryDeviceBlockCheck {
