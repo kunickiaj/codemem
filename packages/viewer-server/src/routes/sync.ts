@@ -3852,14 +3852,46 @@ function ensureStableStoreIdentityForRead(store: MemoryStore): string {
 	return deviceId;
 }
 
+const DEVICE_IDENTITY_UNAVAILABLE = {
+	device_identity_missing:
+		"This device's sync identity isn't set up yet. Nothing changed. Open Devices once to finish setting it up, then try again.",
+	device_identity_ambiguous:
+		"This database has more than one device identity, so codemem can't tell which device the change is for. Nothing changed. Report this as a codemem issue.",
+} as const;
+
+class DeviceIdentityUnavailableError extends Error {
+	constructor(readonly code: keyof typeof DEVICE_IDENTITY_UNAVAILABLE) {
+		super(code);
+	}
+}
+
 /**
- * This device's ID for analysis only: it creates no keys or device row and adopts
- * no pending capture. A store without one device row uses the ID it opened with.
+ * The one device identity this store already has and runs as. Mapping changes
+ * analyze and write for the same device, so they never create or adopt an
+ * identity or pick one of several: each would change which device the confirmed
+ * guardrails were for. A store that still runs as the placeholder device has not
+ * adopted its identity yet; loading Devices does that.
  */
-function localDeviceIdForRead(store: MemoryStore): string {
+function requireExistingDeviceIdentity(store: MemoryStore): string {
 	const rows = store.db.prepare("SELECT device_id FROM sync_device LIMIT 2").pluck().all();
+	if (rows.length === 0 || store.deviceId === "local") {
+		throw new DeviceIdentityUnavailableError("device_identity_missing");
+	}
 	const [only] = rows;
-	return rows.length === 1 && typeof only === "string" && only ? only : store.deviceId;
+	if (rows.length > 1 || only !== store.deviceId) {
+		throw new DeviceIdentityUnavailableError("device_identity_ambiguous");
+	}
+	return store.deviceId;
+}
+
+/** Thrown inside a mapping write when the guardrails no longer match what was confirmed. */
+class MappingGuardrailsChangedError extends Error {
+	constructor(
+		readonly warnings: ProjectScopeGuardrailWarning[],
+		readonly missing: ProjectScopeGuardrailWarning[],
+	) {
+		super("guardrail_confirmation_required");
+	}
 }
 
 function ensureStableStoreDeviceIdentity(store: MemoryStore): string {
@@ -6203,7 +6235,7 @@ async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 		if (!body) return c.json({ error: "invalid json" }, 400);
 		const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
 		releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-		const deviceId = localDeviceIdForRead(store);
+		const deviceId = requireExistingDeviceIdentity(store);
 		const warnings = analyzeProjectScopeMappingDeletionGuardrails(store.db, id, deviceId);
 		const missing = missingGuardrailConfirmations(warnings, confirmedGuardrailTokens);
 		if (missing.length > 0) {
@@ -6217,10 +6249,15 @@ async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 				409,
 			);
 		}
-		const deleted = deleteProjectMappingAndWakePolicies(store, id, confirmedGuardrailTokens);
+		const deleted = deleteProjectMappingAndWakePolicies(
+			store,
+			deviceId,
+			id,
+			confirmedGuardrailTokens,
+		);
 		return c.json({ ok: true, deleted });
 	} catch (error) {
-		return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
+		return mappingChangeError(c, error);
 	} finally {
 		releasePublicationMutation?.();
 	}
@@ -6381,16 +6418,34 @@ function wakeRecipientPolicyProjects(
 	wakeRecipientPoliciesForProjectIdentities(store.db, [...new Set(projectIdentities)], now);
 }
 
+/**
+ * The guardrails, computed again inside the write for the device it writes for,
+ * must need no confirmation beyond the ones the request carries.
+ */
+function requireConfirmedGuardrails(
+	store: MemoryStore,
+	deviceId: string,
+	mappingInputs: Array<ReturnType<typeof parseViewerProjectMappingInput>>,
+	confirmedGuardrailTokens: string[],
+): void {
+	const warnings = analyzeProjectScopeMappingChangesGuardrails(
+		store.db,
+		mappingInputs.map((input) => ({ ...input, deviceId })),
+	).flatMap((analysis) => analysis.warnings);
+	const missing = missingGuardrailConfirmations(warnings, confirmedGuardrailTokens);
+	if (missing.length > 0) throw new MappingGuardrailsChangedError(warnings, missing);
+}
+
 function saveProjectMappingsAndWakePolicies(
 	store: MemoryStore,
+	deviceId: string,
 	mappingInputs: Array<ReturnType<typeof parseViewerProjectMappingInput>>,
+	confirmedGuardrailTokens: string[],
 ) {
-	// A refused save must not create this device's identity first.
-	requireNarrowingWhenGated(store, mappingInputs);
-	const deviceId = ensureStableStoreDeviceIdentity(store);
 	return store.db
 		.transaction(() => {
 			requireNarrowingWhenGated(store, mappingInputs);
+			requireConfirmedGuardrails(store, deviceId, mappingInputs, confirmedGuardrailTokens);
 			const before = policyWakeMappings(store);
 			const previousMappings = existingRequestedMappings(before, mappingInputs);
 			const writableScopeIds = new Set(
@@ -6420,12 +6475,10 @@ function saveProjectMappingsAndWakePolicies(
 
 function deleteProjectMappingAndWakePolicies(
 	store: MemoryStore,
+	deviceId: string,
 	mappingId: number,
 	confirmedGuardrailTokens: string[],
 ): boolean {
-	// A refused removal must not create this device's identity first.
-	requireAdminWhenGated();
-	const deviceId = ensureStableStoreDeviceIdentity(store);
 	return store.db
 		.transaction(() => {
 			requireAdminWhenGated();
@@ -6927,6 +6980,17 @@ function edgeCommitResponse(c: Context, result: ReturnType<typeof commitRecipien
 function accessRefusalOr(c: Context, message: string, status: 400 | 404) {
 	if (message === ACCESS_CHANGE_REFUSAL.error) return c.json(ACCESS_CHANGE_REFUSAL, 403);
 	return c.json({ error: message }, status);
+}
+
+/** A mapping change refused for this device's identity, its guardrails, or its authority. */
+function mappingChangeError(c: Context, error: unknown) {
+	if (error instanceof DeviceIdentityUnavailableError) {
+		return c.json({ error: error.code, message: DEVICE_IDENTITY_UNAVAILABLE[error.code] }, 409);
+	}
+	if (error instanceof MappingGuardrailsChangedError) {
+		return c.json(mappingGuardrailChallenge(error.warnings, error.missing), 409);
+	}
+	return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
 }
 
 function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig): boolean {
@@ -8519,7 +8583,7 @@ export function syncRoutes(
 			const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
 			const mappingInput = parseViewerProjectMappingInput(body);
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-			const deviceId = localDeviceIdForRead(store);
+			const deviceId = requireExistingDeviceIdentity(store);
 			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
 				...mappingInput,
 				deviceId,
@@ -8542,10 +8606,15 @@ export function syncRoutes(
 			if (missingConfirmations.length > 0) {
 				return c.json(mappingGuardrailChallenge(analysis.warnings, missingConfirmations), 409);
 			}
-			const [mapping] = saveProjectMappingsAndWakePolicies(store, [mappingInput]);
+			const [mapping] = saveProjectMappingsAndWakePolicies(
+				store,
+				deviceId,
+				[mappingInput],
+				confirmedGuardrailTokens,
+			);
 			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
 		} catch (error) {
-			return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
+			return mappingChangeError(c, error);
 		} finally {
 			releasePublicationMutation?.();
 		}
@@ -8559,16 +8628,17 @@ export function syncRoutes(
 		try {
 			const mappingInputs = parseViewerProjectMappingInputs(body);
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-			const deviceId = localDeviceIdForRead(store);
+			const deviceId = requireExistingDeviceIdentity(store);
 			const verdict = bulkProjectMappingVerdict(store, mappingInputs, deviceId);
 			if (verdict.refusal) return c.json(verdict.refusal.body, verdict.refusal.status);
 			return c.json({
 				ok: true,
-				mappings: saveProjectMappingsAndWakePolicies(store, mappingInputs),
+				// The bulk save accepts no confirmations, so any guardrail needing one refuses it.
+				mappings: saveProjectMappingsAndWakePolicies(store, deviceId, mappingInputs, []),
 				guardrail_warnings: verdict.warnings,
 			});
 		} catch (error) {
-			return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
+			return mappingChangeError(c, error);
 		} finally {
 			releasePublicationMutation?.();
 		}
@@ -8582,7 +8652,7 @@ export function syncRoutes(
 		if (!body) return c.json({ error: "invalid json" }, 400);
 		try {
 			const mappingInputs = parseViewerProjectMappingInputs(body);
-			const deviceId = localDeviceIdForRead(store);
+			const deviceId = requireExistingDeviceIdentity(store);
 			const verdict = bulkProjectMappingVerdict(store, mappingInputs, deviceId);
 			return c.json({
 				ok: true,
@@ -8591,7 +8661,7 @@ export function syncRoutes(
 				guardrail_warnings: verdict.warnings,
 			});
 		} catch (error) {
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			return mappingChangeError(c, error);
 		}
 	});
 

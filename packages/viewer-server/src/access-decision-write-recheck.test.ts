@@ -12,6 +12,25 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 
+const teamQueue = vi.hoisted(() => ({ joined: (_teamId: string) => {} }));
+
+// Passes through, and reports each request that joins a Team queue.
+vi.mock("@codemem/core", async (importOriginal) => {
+	const core = await importOriginal<typeof import("@codemem/core")>();
+	return {
+		...core,
+		serializeRecipientPolicyTeamMutation: <T>(
+			db: Parameters<typeof core.serializeRecipientPolicyTeamMutation>[0],
+			teamId: string,
+			operation: () => Promise<T>,
+		) => {
+			const queued = core.serializeRecipientPolicyTeamMutation(db, teamId, operation);
+			teamQueue.joined(teamId);
+			return queued;
+		},
+	};
+});
+
 const NOW = "2026-11-27T12:00:00.000Z";
 const REFUSAL = { error: "access_change_needs_admin_device" };
 
@@ -230,13 +249,19 @@ it("refuses an edge commit for a Team when the admin secret goes while it waits 
 		await held;
 	});
 	await started;
+	const requestQueued = new Promise<void>((resolve) => {
+		teamQueue.joined = (teamId) => {
+			if (teamId === "team-a") resolve();
+		};
+	});
 	// The body is read at once; only the Team queue stands between the gate and the write.
 	const pending = app.request("/api/sync/recipient-policy/v1/edges/commit", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(EDGE_TO_TEAM),
 	});
-	await new Promise((resolve) => setTimeout(resolve, 10));
+	await requestQueued;
+	teamQueue.joined = () => {};
 	adminSecret = "";
 	release();
 	await queue;
@@ -247,6 +272,28 @@ it("refuses an edge commit for a Team when the admin secret goes while it waits 
 	expect(await response.json()).toEqual(REFUSAL);
 	expect(accessState()).toEqual(before);
 });
+
+let mappingId: number;
+let before: ReturnType<typeof accessState>;
+
+/** A widening save, removal or preview of the mapping `mappingId`. */
+function mappingRequest(method: string, path: string) {
+	const repoint = {
+		id: mappingId,
+		workspace_identity: "git:x",
+		project_pattern: "git:other",
+		scope_id: "local-default",
+		priority: 10,
+	};
+	if (method === "DELETE") return app.request(path.replace("ID", String(mappingId)), { method });
+	const body =
+		path.endsWith("/bulk") || path.endsWith("/check") ? { mappings: [repoint] } : repoint;
+	return app.request(path, {
+		method,
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
 
 describe("on a store whose device identity and local person do not exist yet", () => {
 	beforeEach(() => {
@@ -269,6 +316,8 @@ describe("on a store whose device identity and local person do not exist yet", (
 			 VALUES (?, 'discovery', 'Pending', 'Pending', ?, ?, 'local-default', 'shared', 1, 'local', 'local:local')`)
 			.run(session, NOW, NOW);
 		expect(store.deviceId).toBe("local");
+		mappingId = insertLocalMapping("git:x");
+		before = accessState();
 	});
 
 	it.each([
@@ -300,60 +349,185 @@ describe("on a store whose device identity and local person do not exist yet", (
 	});
 
 	it.each([
-		["one mapping", "/api/sync/sharing-domains/project-mappings", false],
-		["several mappings", "/api/sync/sharing-domains/project-mappings/bulk", true],
-	])(
-		"refuses a widening save of %s without creating this device's identity",
-		async (_label, path, bulk) => {
-			const id = insertLocalMapping("git:x");
-			const mapping = {
-				id,
-				workspace_identity: "git:x",
-				project_pattern: "git:other",
-				scope_id: "local-default",
-				priority: 10,
-			};
-			const before = accessState();
+		["a save", "PUT", "/api/sync/sharing-domains/project-mappings"],
+		["a bulk save", "PUT", "/api/sync/sharing-domains/project-mappings/bulk"],
+		["a removal", "DELETE", "/api/sync/sharing-domains/project-mappings/ID"],
+		["a bulk preview", "POST", "/api/sync/sharing-domains/project-mappings/bulk/check"],
+	])("refuses %s with the next step and creates no identity", async (_label, method, path) => {
+		const response = await mappingRequest(method, path);
 
-			const response = await sendWhileSecretIsRemoved(
-				"PUT",
-				path,
-				bulk ? { mappings: [mapping] } : mapping,
-			);
-
-			expect(response.status).toBe(403);
-			expect(accessState()).toEqual(before);
-		},
-	);
-
-	it("refuses removing a mapping without creating this device's identity", async () => {
-		const id = insertLocalMapping("git:x");
-		const before = accessState();
-
-		const response = await sendWhileSecretIsRemoved(
-			"DELETE",
-			`/api/sync/sharing-domains/project-mappings/${id}`,
-			{},
-		);
-
-		expect(response.status).toBe(403);
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "device_identity_missing",
+			message:
+				"This device's sync identity isn't set up yet. Nothing changed. Open Devices once to finish setting it up, then try again.",
+		});
 		expect(accessState()).toEqual(before);
 	});
 
-	it("previews a bulk mapping save without creating this device's identity", async () => {
-		const before = accessState();
+	it.each([
+		["a save", "PUT", "/api/sync/sharing-domains/project-mappings"],
+		["a removal", "DELETE", "/api/sync/sharing-domains/project-mappings/ID"],
+	])(
+		"writes nothing when authority goes between the checks of %s",
+		async (_label, method, path) => {
+			// The write's own check is the first to see the secret gone.
+			app = createApp({
+				storeFactory: () => store,
+				readCoordinatorConfig: () =>
+					readCoordinatorSyncConfig({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_groups: ["group-admin"],
+						sync_coordinator_admin_secret: store.db.inTransaction ? "" : "fixture-admin-secret",
+					}),
+			});
 
-		const response = await app.request("/api/sync/sharing-domains/project-mappings/bulk/check", {
-			method: "POST",
+			const response = await mappingRequest(method, path);
+
+			expect(response.status).not.toBe(200);
+			expect(accessState()).toEqual(before);
+		},
+	);
+});
+
+describe("on a store with more than one device identity", () => {
+	beforeEach(() => {
+		// A second row: a writer that picked one of them could write for another device.
+		store.db
+			.prepare(`INSERT INTO sync_device(device_id, public_key, fingerprint, created_at)
+			 VALUES ('other-device', 'ssh-ed25519 other', ?, ?)`)
+			.run("f".repeat(64), NOW);
+		mappingId = insertLocalMapping("git:x");
+		before = accessState();
+	});
+
+	it.each([
+		["a save", "PUT", "/api/sync/sharing-domains/project-mappings"],
+		["a removal", "DELETE", "/api/sync/sharing-domains/project-mappings/ID"],
+	])("refuses %s and writes nothing", async (_label, method, path) => {
+		const response = await mappingRequest(method, path);
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: "device_identity_ambiguous" });
+		expect(accessState()).toEqual(before);
+	});
+
+	it("refuses a save confirmed for the device it analyzed when another would be written for", async () => {
+		// Nothing needs confirming for the analyzed device, so only the write's device decides.
+		const response = await app.request("/api/sync/sharing-domains/project-mappings", {
+			method: "PUT",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				mappings: [
-					{ workspace_identity: "git:new", project_pattern: "git:new", scope_id: "local-default" },
-				],
+				workspace_identity: "git:new",
+				project_pattern: "git:new",
+				scope_id: "local-default",
 			}),
 		});
 
-		expect(response.status).toBe(200);
+		expect(response.status).toBe(409);
+		expect(accessState()).toEqual(before);
+	});
+});
+
+it("refuses a save whose guardrails change between the review and the write", async () => {
+	const id = insertLocalMapping("git:x");
+	const before = accessState();
+	let moved = false;
+	// Inside the write, the mapping moves to another scope, so keeping it now needs confirming.
+	app = createApp({
+		storeFactory: () => store,
+		readCoordinatorConfig: () => {
+			if (store.db.inTransaction && !moved) {
+				moved = true;
+				store.db
+					.prepare("UPDATE project_scope_mappings SET scope_id = 'other-scope' WHERE id = ?")
+					.run(id);
+			}
+			return readCoordinatorSyncConfig({
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_groups: ["group-admin"],
+				sync_coordinator_admin_secret: "fixture-admin-secret",
+			});
+		},
+	});
+
+	const response = await app.request("/api/sync/sharing-domains/project-mappings", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			id,
+			workspace_identity: "git:x",
+			project_pattern: "git:x",
+			scope_id: "local-default",
+			priority: 10,
+		}),
+	});
+
+	expect(moved).toBe(true);
+	expect(response.status).toBe(409);
+	expect(await response.json()).toMatchObject({ error: "guardrail_confirmation_required" });
+	expect(accessState()).toEqual(before);
+});
+
+describe("on a store opened as a different device than its one identity", () => {
+	beforeEach(() => {
+		const dbPath = store.dbPath;
+		store.close();
+		// The store runs as another device than the identity row it holds.
+		vi.stubEnv("CODEMEM_DEVICE_ID", "configured-elsewhere");
+		store = new MemoryStore(dbPath);
+		expect(store.deviceId).toBe("configured-elsewhere");
+		mappingId = insertLocalMapping("git:x");
+		before = accessState();
+	});
+
+	it.each([
+		["a save", "PUT", "/api/sync/sharing-domains/project-mappings"],
+		["a removal", "DELETE", "/api/sync/sharing-domains/project-mappings/ID"],
+	])("refuses %s and writes nothing", async (_label, method, path) => {
+		const response = await mappingRequest(method, path);
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: "device_identity_ambiguous" });
+		expect(accessState()).toEqual(before);
+	});
+});
+
+describe("on a store that has not adopted the identity it now holds", () => {
+	beforeEach(() => {
+		store.close();
+		vi.unstubAllEnvs();
+		rmSync(directory, { recursive: true, force: true });
+		openStore({ withDeviceIdentity: false });
+		// Another path created the identity after this store opened; adopting it moves captures.
+		const session = Number(
+			store.db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, user, tool_version) VALUES (?, '/tmp/p', 'p', 'u', 't')",
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		store.db
+			.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+			 scope_id, visibility, active, origin_device_id, actor_id)
+			 VALUES (?, 'discovery', 'Pending', 'Pending', ?, ?, 'local-default', 'shared', 1, 'local', 'local:local')`)
+			.run(session, NOW, NOW);
+		ensureDeviceIdentity(store.db, { keysDir });
+		expect(store.deviceId).toBe("local");
+		mappingId = insertLocalMapping("git:x");
+		before = accessState();
+	});
+
+	it.each([
+		["a save", "PUT", "/api/sync/sharing-domains/project-mappings"],
+		["a removal", "DELETE", "/api/sync/sharing-domains/project-mappings/ID"],
+		["a bulk preview", "POST", "/api/sync/sharing-domains/project-mappings/bulk/check"],
+	])("refuses %s without adopting it", async (_label, method, path) => {
+		const response = await mappingRequest(method, path);
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: "device_identity_missing" });
+		expect(store.deviceId).toBe("local");
 		expect(accessState()).toEqual(before);
 	});
 });

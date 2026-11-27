@@ -4566,6 +4566,29 @@ describe("Projects inventory controller collision subscriptions", () => {
 });
 
 describe("Projects inventory controller async state", () => {
+	it.each([
+		[
+			"device_identity_missing",
+			"This device's sync identity isn't set up yet. Nothing changed. Open Devices once to finish setting it up, then try again.",
+		],
+		[
+			"device_identity_ambiguous",
+			"This database has more than one device identity, so codemem can't tell which device the change is for. Nothing changed. Report this as a codemem issue.",
+		],
+	])("explains a Space change refused with %s", async (code, message) => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(new Error(code));
+		initProjectsTab(() => {});
+		await loadProjectsData();
+
+		await getProjectsInventoryController().callbacks.saveProjectScope(
+			project().workspace_identity,
+			"exampleco-work",
+		);
+
+		expect(showGlobalNotice).toHaveBeenCalledWith(message, "warning");
+	});
+
 	it("notifies subscribers when an async save requires confirmation", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(

@@ -110,6 +110,9 @@ function snapshot() {
 }
 
 function mutate(mutation: Mutation) {
+	// Space changes use the identity this Viewer already adopted, which Devices does on load;
+	// reassigning a Project still adopts it itself.
+	if (mutation !== "reassign") store.adoptEnsuredDeviceIdentity(deviceId);
 	const app = syncRoutes(() => store);
 	let path = "/api/sync/sharing-domains/project-mappings";
 	let method = "PUT";
