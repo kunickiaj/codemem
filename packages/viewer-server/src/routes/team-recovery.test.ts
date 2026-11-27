@@ -56,7 +56,7 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 	const actions: TeamRecoveryEvidenceActions = {
 		listDevices: async () => listed,
 		listDeviceRemovals: async () => [LAPTOP_REMOVAL],
-		blockedDeviceIds: async () => [],
+		blockedDeviceIds: async () => ({ blocked: [], removed: [] }),
 		getCompletion: async () => manifest,
 		listMemberRemovals: async () => [],
 		readGroupBinding: async (teamId) => ({ team_id: teamId, state: "unbound" }),
@@ -239,7 +239,12 @@ describe("Team recovery commit route after its first transaction", () => {
 	it.each([
 		[
 			"409 when the read after the commit shows a newly blocked device",
-			{ blockedDeviceIds: async () => ["device-b"] },
+			{ blockedDeviceIds: async () => ({ blocked: ["device-b"], removed: [] }) },
+			[409, { error: "recovery_quarantined_again", reason: "evidence_changed" }],
+		],
+		[
+			"409 when the block check after the commit reports a device removed since the roster was read",
+			{ blockedDeviceIds: async () => ({ blocked: [], removed: ["device-b"] }) },
 			[409, { error: "recovery_quarantined_again", reason: "evidence_changed" }],
 		],
 		[
@@ -364,6 +369,32 @@ describe("Team recovery routes when the device stops being an admin mid-request"
 			).toBe(true);
 		},
 	);
+
+	it("answers 403 and leaves the Team as it is when the read after the commit also fails", async () => {
+		// Arrange: the admin secret is cleared while the second roster read is out, and that read fails.
+		const digest = (await app().post("preview", {}))[1].expectedDigest;
+		let rosterReads = 0;
+		let changed: Partial<Config> = {};
+		const actions = coordinator({
+			listDevices: (groupId, deadlineMs) => {
+				rosterReads += 1;
+				if (rosterReads === 1) return coordinator().listDevices(groupId, deadlineMs);
+				changed = { syncCoordinatorAdminSecret: "" };
+				return Promise.reject(new Error("coordinator_unavailable"));
+			},
+		});
+
+		const response = await app({ actions, changedConfig: () => changed }).post("commit", {
+			expectedDigest: digest,
+		});
+
+		expect(response).toEqual([
+			403,
+			{ error: "recovery_unverified", reason: "admin_authority_changed" },
+		]);
+		expect(teamState()).toBe("active:completed");
+		expect(count("policy_team_recovery_holds")).toBe(1);
+	});
 
 	it("gives no preview when the admin secret is cleared during its read", async () => {
 		const response = await changingDuringRead(1, { syncCoordinatorAdminSecret: "" }).post(

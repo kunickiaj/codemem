@@ -408,12 +408,14 @@ function isEvidenceStale(startedAtMs: number, nowMs: number): boolean {
 
 /**
  * Acts on the second read, in one transaction, and only for the recovery it
- * verified: its hold must still be the Team's. A verified read lifts the hold,
- * unless it is older than the evidence limit by now, where waiting for the
- * write lock counts, or this machine may no longer recover the Team. Then the
- * hold stays for a retry. A read that failed or
- * showed a change quarantines the Team and leaves the hold on it, so that only
- * another recovery makes the Team active again.
+ * verified: its hold must still be the Team's. A machine that may no longer
+ * recover the Team changes nothing here, whatever the read showed: the hold
+ * stays and the Team keeps serving nothing, for an administrator to try again.
+ * Otherwise a read that failed or showed a change quarantines the Team and
+ * leaves the hold on it, so that only another recovery makes the Team active
+ * again. A verified read lifts the hold, unless it is older than the evidence
+ * limit by now, where waiting for the write lock counts. Then the hold stays
+ * for a retry.
  */
 function settleRecovery(
 	db: Database,
@@ -424,6 +426,7 @@ function settleRecovery(
 	const { teamId, candidateRef } = plan.preview;
 	const hold = { teamId, recoveryId };
 	if (!isTeamRecoveryHeldBy(db, hold)) return { state: "superseded" };
+	if (!second.authorized) return { state: "unverified", reason: "admin_authority_changed" };
 	if (second.reread !== "verified") {
 		recordTeamRecoveryHoldReason(db, { ...hold, reason: second.reread });
 		quarantineLegacyTeamSetupPolicyInTransaction(db, { candidateRef, teamId });
@@ -434,7 +437,6 @@ function settleRecovery(
 		.get(teamId);
 	// Something else disabled the Team meanwhile. Its hold stays, so only a recovery reopens it.
 	if (!active) return { state: "quarantined_again", reason: "disabled_before_verification" };
-	if (!second.authorized) return { state: "unverified", reason: "admin_authority_changed" };
 	if (second.stale) return { state: "unverified", reason: "evidence_stale" };
 	liftTeamRecoveryHold(db, hold);
 	// Verified: from here recipient policy reads the Team as active, so its Projects reconcile.

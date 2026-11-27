@@ -810,14 +810,17 @@ describe("Team recovery whose read after the commit is too old to act on", () =>
 
 describe("Team recovery when this machine stops being allowed to recover the Team", () => {
 	/** A context whose authority ends while its `during`th read is out. */
-	function losingAuthorityDuringRead(during: number) {
+	function losingAuthorityDuringRead(during: number, second = evidence()) {
 		let reads = 0;
 		return {
 			nowMs: () => CLOCK_MS,
 			stillAuthorized: () => reads < during,
 			readEvidence: (): Promise<TeamRecoveryEvidenceReading> => {
 				reads += 1;
-				return Promise.resolve({ evidence: evidence(), startedAtMs: CLOCK_MS });
+				return Promise.resolve({
+					evidence: reads === 1 ? evidence() : second,
+					startedAtMs: CLOCK_MS,
+				});
 			},
 		};
 	}
@@ -842,4 +845,20 @@ describe("Team recovery when this machine stops being allowed to recover the Tea
 		expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
 		expect(scopedRead(db, "device-b").state).toBe("policy_denied");
 	});
+
+	it.each([
+		["cannot be read", () => evidence(undefined, { roster: { status: "unavailable" } })],
+		["shows a surviving device blocked", () => blocked("device-b")],
+	])(
+		"changes nothing about the Team when that happens and the read after the commit %s",
+		async (_case, second) => {
+			const result = await commit(reviewedDigest(), losingAuthorityDuringRead(2, second()));
+
+			// Assert: the Team is not quarantined by a machine that may no longer act on it. It stays held.
+			expect(result).toEqual({ state: "unverified", reason: "admin_authority_changed" });
+			expect(teamState()).toBe("active:completed");
+			expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+			expect(refused("device-b")).toBe(true);
+		},
+	);
 });
