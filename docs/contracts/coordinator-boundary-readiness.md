@@ -165,9 +165,11 @@ downgraded device sends. The record is removed before the presence is stored. If
 the removal fails, the request fails and no presence is stored, so the device
 tries again and an older build is never left with a record that says it is ready.
 
-After a discard the coordinator accepts a first legacy sequence again. For
-version 2 it retains the last accepted sequence and refresh revision for the
-generation, so a delayed report cannot restore discarded evidence.
+After a discard the coordinator accepts a first legacy sequence again. In the
+same transaction as the discard it clears the group's active generation, even
+if the device had no inventory. No v2 report for that generation can be
+written or used after that point. All affected devices must report for a new
+preparation.
 
 ## What a reader of the records must do
 
@@ -227,8 +229,11 @@ starts a preparation.
 
 `getVerifiedBoundaryReadiness` checks the same audience, generation and key
 while reading the binding, header and Projects in one transaction. Legacy
-replacement and discard break the record ID match. A future cutover must
-repeat these checks in its own deciding transaction. A successful response to
+replacement and discard break the record ID match. Before publishing the
+binding, the writer checks the number of stored Projects against the number
+accepted. A short write rolls back the replacement. A future cutover must
+repeat the binding checks in its own deciding transaction and check the filter
+value explicitly: `complete` describes the inventory only. A successful response to
 the device does not authorize a cutover or grant access.
 
 Tables `coordinator_boundary_readiness` (one row per group and device) and

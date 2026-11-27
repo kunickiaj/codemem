@@ -598,6 +598,8 @@ async function preparation(w: World) {
 function registerVerifiedRecords(test: BoundaryReadinessTest) {
 	registerSignerChanges(test);
 	registerSequenceFloor(test);
+	registerDowngradeOrdering(test);
+	registerInventoryRollback(test);
 	registerPreparationChanges(test);
 }
 
@@ -666,20 +668,88 @@ function registerSequenceFloor(test: BoundaryReadinessTest) {
 		await put(w, { sequence: 3, projects: [] });
 		expect(await verified()).toBeNull();
 	});
-	test("a discard removes the inventory without resetting the signed sequence floor", async ({
+	test("a downgrade after a higher sequence commits withdraws it and requires a new preparation", async ({
 		fixture,
 	}) => {
 		const w = await world(fixture);
 		const { binding, verified } = await preparation(w);
-		await put(w, { binding, sequence: 4 });
-		await w.store.discardBoundaryReadiness(w);
-		for (const sequence of [3, 4])
-			expect(await put(w, { binding, sequence })).toEqual({ kind: "stale", sequence: 4 });
-		expect(await verified()).toBeNull();
+		expect(await put(w, { binding, sequence: 4 })).toMatchObject({ kind: "stored" });
 		expect(await put(w, { binding: { ...binding, revision: 5 }, sequence: 5 })).toEqual({
 			kind: "binding_mismatch",
 		});
 		expect(await put(w, { binding, sequence: 5 })).toMatchObject({ kind: "stored" });
+		expect(await verified()).toMatchObject({ sequence: 5 });
+		await w.store.discardBoundaryReadiness(w);
+		expect(await verified()).toBeNull();
+		expect(await put(w, { binding, sequence: 6 })).toEqual({ kind: "binding_mismatch" });
+		const next = await preparation(w);
+		expect(await put(w, { binding: next.binding, sequence: 6 })).toMatchObject({ kind: "stored" });
+		expect(await verified()).toBeNull();
+	});
+}
+
+function registerDowngradeOrdering(test: BoundaryReadinessTest) {
+	test("a downgrade before an in-flight higher sequence commits fences even the first inventory", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		const access = w.store.listDeviceScopeMemberships.bind(w.store);
+		const discard = vi
+			.spyOn(w.store, "listDeviceScopeMemberships")
+			.mockImplementationOnce(async (...args) => {
+				const memberships = await access(...args);
+				expect(await w.store.discardBoundaryReadiness(w)).toBe(false);
+				return memberships;
+			});
+		try {
+			expect(await put(w, { binding, sequence: 8 })).toEqual({ kind: "binding_mismatch" });
+			expect(await verified()).toBeNull();
+			expect(await stored(w)).toBeNull();
+		} finally {
+			discard.mockRestore();
+		}
+	});
+	test("a failed downgrade fence rolls back deletion of the inventory", async ({ fixture }) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		await put(w, { binding });
+		await w.exec(
+			"CREATE TRIGGER reject_discard BEFORE UPDATE OF readiness_generation ON groups BEGIN SELECT RAISE(ABORT,'injected_failure'); END",
+		);
+		try {
+			await expect(w.store.discardBoundaryReadiness(w)).rejects.toThrow();
+			expect(await verified()).toMatchObject({ sequence: 1, projects: [project(w)] });
+		} finally {
+			await w.exec("DROP TRIGGER reject_discard");
+		}
+	});
+}
+
+function registerInventoryRollback(test: BoundaryReadinessTest) {
+	test("a short Project insert rolls back the replacement header, inventory and binding", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		await put(w, { binding });
+		const previous = await verified();
+		expect(previous).toMatchObject({ sequence: 1, projects: [project(w)] });
+		await w.exec(
+			"CREATE TRIGGER skip_project BEFORE INSERT ON coordinator_boundary_readiness_projects WHEN NEW.own_rows_in_source=13 BEGIN SELECT RAISE(IGNORE); END",
+		);
+		try {
+			const projects = [
+				project(w, { own_rows_in_source: 2 }),
+				project(w, { boundary_scope_id: OTHER_BOUNDARY, own_rows_in_source: 13 }),
+			];
+			await expect(put(w, { binding, sequence: 2, projects })).rejects.toThrow();
+			expect(await verified()).toEqual(previous);
+			expect(await stored(w)).toMatchObject({ sequence: 1, projects: [project(w)] });
+		} finally {
+			await w.exec("DROP TRIGGER skip_project");
+		}
+		expect(await put(w, { binding, sequence: 2 })).toMatchObject({ kind: "stored" });
 	});
 }
 

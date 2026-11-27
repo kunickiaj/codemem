@@ -377,6 +377,13 @@ const READ_HEADER_SQL = `SELECT sequence, record_id, omitted_projects,
 const READ_ENROLLED_SQL = `SELECT COUNT(*) AS enrolled FROM enrolled_devices
 	WHERE group_id = ? AND device_id = ? AND enabled = 1`;
 
+// Only the winning header owns this inventory. A SQL error rolls back the whole batch
+// on both stores; checking the returned insert receipt would be too late.
+const ASSERT_PROJECT_COUNT_SQL = `SELECT CASE WHEN ${HEADER_HAS_RECORD_ID_SQL}
+	AND (SELECT COUNT(*) FROM coordinator_boundary_readiness_projects
+	     WHERE group_id=? AND device_id=?) != ? THEN json('boundary_readiness_incomplete')
+	ELSE 1 END AS complete`;
+
 const READ_PROJECTS_SQL = `SELECT source_scope_id, boundary_scope_id, state,
 		own_rows_in_source, own_rows_in_boundary
 	FROM coordinator_boundary_readiness_projects
@@ -480,6 +487,11 @@ function writeStatements(
 		},
 		{ sql: READ_HEADER_SQL, values: device, read: true },
 		{ sql: READ_ENROLLED_SQL, values: device, read: true },
+		{
+			sql: ASSERT_PROJECT_COUNT_SQL,
+			values: [...device, recordId, ...device, sorted.accepted.length],
+			read: true,
+		},
 	];
 	if (input.binding)
 		statements.push(
@@ -558,7 +570,7 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 		return this.whenStoragePresent<PutBoundaryReadinessResult>(
 			async () => {
 				const sorted = await this.sortProjects(input);
-				const { accepted, rejected } = sorted;
+				const { rejected } = sorted;
 				const recordId = globalThis.crypto.randomUUID();
 				const statements = writeStatements(
 					input,
@@ -569,12 +581,9 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 				const results = await this.backend.batch(statements);
 				if (results.length !== statements.length) throw new Error("boundary_readiness_incomplete");
 				const header = resultRows<HeaderRow>(results[3])[0];
-				const denial = classifyBinding(input, recordId, results[6]);
+				const denial = classifyBinding(input, recordId, results.at(-1));
 				if (denial) return denial;
 				if (header?.record_id === recordId) {
-					if (resultChanges(results[2]) !== accepted.length) {
-						throw new Error("boundary_readiness_incomplete");
-					}
 					return { kind: "stored", sequence: header.sequence, rejected };
 				}
 				const enrolled = resultRows<{ enrolled: number }>(results[4])[0]?.enrolled ?? 0;
@@ -649,8 +658,13 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 			const results = await this.backend.batch([
 				{ sql: DISCARD_PROJECTS_SQL, values: device },
 				{ sql: DISCARD_HEADER_SQL, values: device },
+				// A signed report may still be in flight even if this device has no header yet.
+				{
+					sql: "UPDATE groups SET readiness_generation=NULL WHERE group_id=? AND readiness_generation IS NOT NULL",
+					values: [input.groupId],
+				},
 			]);
-			if (results.length !== 2) throw new Error("boundary_readiness_incomplete");
+			if (results.length !== 3) throw new Error("boundary_readiness_incomplete");
 			return resultChanges(results[1]) > 0;
 		}, false);
 	}
