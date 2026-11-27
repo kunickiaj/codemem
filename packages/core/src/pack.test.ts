@@ -419,6 +419,40 @@ describe("automatic metadata and generic candidate bounds", () => {
 		expect(response.pack_text).not.toContain("Out of historical supplemental window");
 	});
 });
+function insertCoordinatorScope(scopeId: string): void {
+	const now = new Date().toISOString();
+	store.db
+		.prepare(
+			`INSERT OR REPLACE INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
+		)
+		.run(scopeId, scopeId, now, now);
+}
+
+async function grantScopeToLocalDevice(scopeId: string): Promise<void> {
+	insertCoordinatorScope(scopeId);
+	grantedScopeIds.push(scopeId);
+	await refreshManagedScopeFixture(store.db, {
+		keysDir: join(tmpDir, "keys"),
+		deviceId: store.deviceId,
+		scopeIds: grantedScopeIds,
+	});
+}
+
+function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
+	const now = new Date().toISOString();
+	const info = store.db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+			 VALUES (?, 'discovery', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+		)
+		.run(sessionId, title, bodyText, now, now, scopeId);
+	return Number(info.lastInsertRowid);
+}
+
 describe("buildMemoryPack", () => {
 	usePackFixture();
 	it.each([false, true])(
@@ -454,40 +488,6 @@ describe("buildMemoryPack", () => {
 			);
 		},
 	);
-
-	function insertCoordinatorScope(scopeId: string): void {
-		const now = new Date().toISOString();
-		store.db
-			.prepare(
-				`INSERT OR REPLACE INTO replication_scopes(
-					scope_id, label, kind, authority_type, coordinator_id, group_id,
-					membership_epoch, status, created_at, updated_at
-				 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
-			)
-			.run(scopeId, scopeId, now, now);
-	}
-
-	async function grantScopeToLocalDevice(scopeId: string): Promise<void> {
-		insertCoordinatorScope(scopeId);
-		grantedScopeIds.push(scopeId);
-		await refreshManagedScopeFixture(store.db, {
-			keysDir: join(tmpDir, "keys"),
-			deviceId: store.deviceId,
-			scopeIds: grantedScopeIds,
-		});
-	}
-
-	function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
-		const now = new Date().toISOString();
-		const info = store.db
-			.prepare(
-				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
-				 VALUES (?, 'discovery', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
-			)
-			.run(sessionId, title, bodyText, now, now, scopeId);
-		return Number(info.lastInsertRowid);
-	}
 
 	function semanticCandidate(
 		id: number,
@@ -1930,6 +1930,41 @@ describe("buildMemoryPack", () => {
 // Artifact-class trace diagnostic + relevance-first default ordering
 // (codemem-ovk2.13: salvaged from the scrapped #1302, no derived-fact boost)
 // ---------------------------------------------------------------------------
+
+describe("buildMemoryPack delta after access changes", () => {
+	usePackFixture();
+
+	it("never names a forgotten memory or one whose access ended in the next pack's delta", async () => {
+		// Arrange: a first pack names four memories.
+		await grantScopeToLocalDevice("scope-a");
+		const kept = insertScopedMemory("scope-a", "Delta kept", "delta regression body");
+		const forgotten = insertScopedMemory("scope-a", "Delta forgotten", "delta regression body");
+		await grantScopeToLocalDevice("scope-b");
+		const ended = insertScopedMemory("scope-b", "Delta access ended", "delta regression body");
+		const first = buildMemoryPack(store, "delta regression", 10);
+		expect(first.item_ids).toEqual(expect.arrayContaining([kept, forgotten, ended]));
+
+		// Act: one memory is forgotten and the device loses access to the other's scope.
+		store.forget(forgotten);
+		grantedScopeIds = ["scope-a"];
+		await refreshManagedScopeFixture(store.db, {
+			keysDir: join(tmpDir, "keys"),
+			deviceId: store.deviceId,
+			scopeIds: grantedScopeIds,
+		});
+		const second = buildMemoryPack(store, "delta regression", 10);
+
+		// Assert: the previous pack is not used as a baseline, so neither ID is reported.
+		expect(second.item_ids).toContain(kept);
+		expect(second.metrics.pack_delta_available).toBe(false);
+		for (const id of [forgotten, ended]) {
+			expect(second.item_ids).not.toContain(id);
+			expect(second.metrics.removed_ids).not.toContain(id);
+			expect(second.metrics.retained_ids).not.toContain(id);
+			expect(second.metrics.added_ids).not.toContain(id);
+		}
+	});
+});
 
 describe("buildMemoryPack artifact_class trace + relevance ordering", () => {
 	let tmpDir: string;
