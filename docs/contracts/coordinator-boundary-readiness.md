@@ -241,13 +241,15 @@ enrollment or removal checks the actual number of enrolled rows.
 | `/v1/admin/join-requests/approve` | The request's group in the same transaction as the approved enrollment. A failed confirmation rolls back the write. Denial does not write enrollment. |
 | Team, add-device and Project acceptance via `/v1/join` | The invitation's group on fresh insert or update, and on repair of a missing identity during retry. Grant-only recovery does not invalidate it. On D1 the fresh acceptance clears the one matching group even if its generation is already NULL, so the next bootstrap statement still sees the enrollment winner's `changes()` value. |
 | Owner enrollment (`/v1/auth/owner-attempts/finalize`) | Each grant group pinned by the finalized attempt, after the enrollment count matches the number of grants. |
-| Device claim completion, including first link (`/v1/auth/link-attempts/:attemptId/finalize`) | Groups whose pinned enrollment had no identity. This applies both to a new ownership binding and to reuse of an existing binding. |
-| Device rebind (`/v1/auth/rebind-attempts/:attemptId/finalize`) | The device's enrolled groups in the winning attempt. A self-bind invalidates only groups whose enrollment had no identity. |
+| Device claim completion, including first link (`/v1/auth/link-attempts/:attemptId/finalize`) | A new ownership binding invalidates every enrolled group for that device. Reusing a binding invalidates only groups where the claim filled a missing enrollment identity. |
+| Device rebind and self-bind (`/v1/auth/rebind-attempts/:attemptId/finalize`) | Every enrolled group for the device in the winning attempt, even when every enrollment already names the identity. |
 | Device rejoin (`/v1/auth/rejoin-attempts/:attemptId/finalize`) | The groups restored by the winning receipt. |
 | Legacy `/v1/admin/devices/remove` and local single removal | The removed enrollment's group, identified by this transaction's tombstone. |
 | `/v1/admin/devices/removal` and local expanded removal | Each group with a tombstone written by this removal, including groups reached through another enrollment of the same key. A preview does not invalidate anything. |
 | `/v1/admin/devices/key-id-fill`, peer removal lookup, and SQLite startup | Groups containing rows of the filled page that still match the captured row ID, public key and derived key ID. A page that writes nothing invalidates nothing. |
 | Group archive and unarchive (`/v1/admin/groups/archive`, `/v1/admin/groups/unarchive`) | The group whose archive state changed. A group name change has no effect. |
+| Team member removal and Team-to-group binding | The named group when the removal or binding is inserted. This includes the first binding created while minting a Team invitation. A replay or conflicting binding does not clear a new preparation. |
+| Scope membership grant and revoke | The scope's current group when the mutation writes an audit row. Legacy memberships may inherit that group. A replay or a revoke with no matching membership does not clear a preparation. |
 
 Older admin clients call these same coordinator paths. An older **coordinator
 binary** that writes the database directly does not clear the column. A later

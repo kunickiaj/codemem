@@ -38,6 +38,74 @@ export function registerReadinessWriterTests(run: Run) {
 	registerRemovalWrites(run);
 	registerJoinApproval(run);
 	registerWriterBoundaries(run);
+	registerMembershipWriters(run);
+}
+
+async function arrangeScopedDevice(f: Fixture, scopeId: string) {
+	const { groupId } = f.input;
+	await f.store.createGroup(groupId);
+	await f.store.enrollDevice(groupId, f.input);
+	await f.store.createScope({
+		scopeId,
+		label: "Scope",
+		groupId,
+		authorityType: "coordinator",
+		membershipEpoch: 1,
+	});
+}
+
+function registerMembershipWriters(run: Run) {
+	for (const action of ["remove Team member", "bind Team", "grant scope", "revoke scope"] as const)
+		it(`recipient change: ${action} clears only its group, and a replay preserves a fresh preparation`, () =>
+			run(async (f) => {
+				const { groupId, deviceId } = f.input;
+				const teamId = `${groupId}-team`;
+				const scopeId = `${groupId}-scope`;
+				await arrangeScopedDevice(f, scopeId);
+				const grant = () =>
+					f.store.grantScopeMembership({
+						scopeId,
+						deviceId,
+						effectId: `grant-${groupId}`,
+						membershipEpoch: 1,
+					});
+				if (action === "revoke scope") {
+					await grant();
+					// Legacy members inherit their group's identity from the scope.
+					await f.exec(
+						"UPDATE coordinator_scope_memberships SET group_id=NULL WHERE scope_id=? AND device_id=?",
+						scopeId,
+						deviceId,
+					);
+				}
+				const write = {
+					"remove Team member": () =>
+						f.store.recordTeamMemberRemoval({ teamId, groupId, identityId: "member" }),
+					"bind Team": () => f.store.bindTeamGroup({ teamId, groupId }),
+					"grant scope": grant,
+					"revoke scope": () =>
+						f.store.revokeScopeMembership({
+							scopeId,
+							deviceId,
+							effectId: `revoke-${groupId}`,
+							membershipEpoch: 2,
+						}),
+				}[action];
+				await preparedWrite(f, write, []);
+				await f.exec("UPDATE groups SET readiness_generation='again' WHERE group_id=?", groupId);
+				await write();
+				if (action === "revoke scope")
+					expect(
+						await f.store.revokeScopeMembership({
+							scopeId,
+							deviceId: "missing",
+							effectId: `absent-${groupId}`,
+						}),
+					).toBe(false);
+				expect(await f.rows("groups")).toContainEqual(
+					expect.objectContaining({ group_id: groupId, readiness_generation: "again" }),
+				);
+			}));
 }
 
 function registerWriterBoundaries(run: Run) {

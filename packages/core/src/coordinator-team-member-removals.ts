@@ -1,4 +1,5 @@
 import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
+import { INVALIDATE_CHANGED_GROUP } from "./coordinator-readiness-invalidation.js";
 import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
 
 /*
@@ -295,8 +296,9 @@ export class TeamMemberRemovalOperations implements CoordinatorTeamMemberRemoval
 				},
 				{ sql: REMOVAL_SQL, values: key, read: true },
 				{ sql: GROUP_EXISTS_SQL, values: [input.groupId], read: true },
+				{ sql: INVALIDATE_CHANGED_GROUP, values: [input.groupId] },
 			]);
-			if (results.length !== 3) throw new Error("team_member_removal_incomplete");
+			if (results.length !== 4) throw new Error("team_member_removal_incomplete");
 			const [row] = resultRows(results[1]);
 			if (row === undefined) {
 				const present = resultRows<{ present: number }>(results[2])[0]?.present;

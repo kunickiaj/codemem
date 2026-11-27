@@ -1,4 +1,5 @@
 import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
+import { INVALIDATE_CHANGED_GROUP } from "./coordinator-readiness-invalidation.js";
 import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
 
 /*
@@ -211,15 +212,16 @@ export class TeamGroupBindingOperations implements CoordinatorTeamGroupBindingSt
 			const now = new Date(this.clock()).toISOString();
 			const results = await this.backend.batch([
 				{ sql: CLAIM_SQL, values: [teamId, groupId, now, teamId, teamId, groupId] },
+				{ sql: INVALIDATE_CHANGED_GROUP, values: [groupId] },
 				{
 					sql: boundTeamInviteInsertSql(input.insertSql),
 					values: [...input.values, teamId, groupId],
 				},
 				{ sql: BINDING_SQL, values: [teamId], read: true },
 			]);
-			if (results.length !== 3) throw new Error("team_group_binding_incomplete");
-			if (changes(results[1]) === 1) return;
-			const bound = rows<{ group_id: string }>(results[2])[0];
+			if (results.length !== 4) throw new Error("team_group_binding_incomplete");
+			if (changes(results[2]) === 1) return;
+			const bound = rows<{ group_id: string }>(results[3])[0];
 			if (bound && bound.group_id !== groupId) throw new Error("team_bound_to_other_group");
 			if (!bound) throw new Error("team_binding_conflict");
 			throw new Error("team_group_binding_incomplete");
@@ -264,8 +266,9 @@ export class TeamGroupBindingOperations implements CoordinatorTeamGroupBindingSt
 				{ sql: ADMIN_BIND_SQL, values: [teamId, groupId, now, groupId, teamId] },
 				{ sql: BINDING_SQL, values: [teamId], read: true },
 				{ sql: GROUP_EXISTS_SQL, values: [groupId], read: true },
+				{ sql: INVALIDATE_CHANGED_GROUP, values: [groupId] },
 			]);
-			if (results.length !== 3) throw new Error("team_group_binding_incomplete");
+			if (results.length !== 4) throw new Error("team_group_binding_incomplete");
 			const bound = rows<{ group_id: string }>(results[1])[0];
 			if (!bound) {
 				if (rows<{ present: number }>(results[2])[0]?.present === 0)

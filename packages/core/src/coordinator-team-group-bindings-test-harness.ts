@@ -88,6 +88,26 @@ export function registerTeamGroupBindingContract(test: TeamGroupBindingTest): vo
 }
 
 function registerMintBindings(test: TeamGroupBindingTest): void {
+	test("recipient change: only a winning invitation Team binding invalidates its group", async ({
+		fixture: f,
+	}) => {
+		const w = await world(f);
+		const [a, b] = w.groups;
+		const prepare = () =>
+			f.exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id IN (?,?)", a, b);
+		const active = (id: string) =>
+			f.count(
+				"SELECT count(*) AS n FROM groups WHERE group_id=? AND readiness_generation='prepared'",
+				id,
+			);
+		await prepare();
+		await mint(w, a);
+		expect([await active(a), await active(b)]).toEqual([0, 1]);
+		await prepare();
+		await mint(w, a);
+		await expect(mint(w, b)).rejects.toThrow("team_bound_to_other_group");
+		expect([await active(a), await active(b)]).toEqual([1, 1]);
+	});
 	test("binds a Team ID to the group of its first Team invitation", async ({ fixture }) => {
 		const w = await world(fixture);
 		const [a] = w.groups;

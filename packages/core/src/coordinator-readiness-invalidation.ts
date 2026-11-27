@@ -10,6 +10,12 @@ export const CLEAR_CHANGED_GROUP = `UPDATE groups SET readiness_generation = NUL
 WHERE group_id = ? AND changes() = 1`;
 export const INVALIDATE_CHANGED_GROUP = `${CLEAR_CHANGED_GROUP} AND readiness_generation IS NOT NULL`;
 
+/** The immediately preceding audit insert identifies a winning membership write.
+ * Legacy membership rows may not store a group; authorization uses the scope's group. */
+export const INVALIDATE_CHANGED_SCOPE_GROUP = `UPDATE groups SET readiness_generation = NULL
+WHERE changes() = 1 AND readiness_generation IS NOT NULL
+AND group_id = (SELECT group_id FROM coordinator_scopes WHERE scope_id = ?)`;
+
 export const INVALIDATE_FILLED_KEYS = `UPDATE groups SET readiness_generation = NULL
 WHERE readiness_generation IS NOT NULL AND changes() > 0 AND group_id IN (
  SELECT e.group_id FROM json_each(?) j JOIN enrolled_devices e ON e.rowid=json_extract(j.value,'$.row_id')

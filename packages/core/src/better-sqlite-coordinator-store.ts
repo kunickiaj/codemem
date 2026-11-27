@@ -325,6 +325,7 @@ import { selectDeviceListingCapabilities } from "./coordinator-presence-capabili
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
 	INVALIDATE_CHANGED_GROUP,
+	INVALIDATE_CHANGED_SCOPE_GROUP,
 	INVALIDATE_FILLED_KEYS,
 	READINESS_GENERATION_PRESENT,
 	READINESS_PREPARATIONS_SCHEMA,
@@ -515,6 +516,7 @@ function insertMembershipAuditSync(
 		input.current.manifest_hash,
 		input.createdAt,
 	);
+	db.prepare(INVALIDATE_CHANGED_SCOPE_GROUP).run(input.current.scope_id);
 }
 
 function getMembershipEffectReceiptSync(

@@ -317,10 +317,10 @@ export function deviceClaimBindingStatements(
 				},
 				assertChanges(1),
 			];
-	if (plan.nullCount > 0)
+	if (!plan.existingBinding || plan.nullCount > 0)
 		writes.push({
 			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
- (SELECT json_extract(value,'$.groupId') FROM json_each(?) WHERE json_extract(value,'$.identityId') IS NULL)`,
+ (SELECT json_extract(value,'$.groupId') FROM json_each(?) ${plan.existingBinding ? "WHERE json_extract(value,'$.identityId') IS NULL" : ""})`,
 			values: [plan.enrollments],
 		});
 	if (!options.winning) return writes;

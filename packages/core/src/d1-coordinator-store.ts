@@ -253,6 +253,7 @@ import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.
 import {
 	CLEAR_CHANGED_GROUP,
 	INVALIDATE_CHANGED_GROUP,
+	INVALIDATE_CHANGED_SCOPE_GROUP,
 } from "./coordinator-readiness-invalidation.js";
 import {
 	readRecipientOwnerConsistency,
@@ -585,12 +586,13 @@ function prepareRevokeEffectReceipt(
 
 async function runAuditedBatch(
 	db: D1DatabaseLike,
+	scopeId: string,
 	statements: D1PreparedStatementLike[],
 ): Promise<unknown[]> {
 	if (!db.batch) {
 		throw new Error("D1 batch support is required for audited scope membership changes.");
 	}
-	return await db.batch(statements);
+	return await db.batch([...statements, db.prepare(INVALIDATE_CHANGED_SCOPE_GROUP).bind(scopeId)]);
 }
 
 function batchResultChanges(result: unknown): number {
@@ -4335,7 +4337,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		}
 		const now = nowISO();
 		const write = membershipGrantStatement(normalized, { effectId, now });
-		await runAuditedBatch(this.db, [
+		await runAuditedBatch(this.db, normalized.scopeId, [
 			this.db.prepare(write.sql).bind(...write.values),
 			prepareGrantEffectReceipt(this.db, {
 				effectId,
@@ -4434,7 +4436,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			createdAt: now,
 		});
 		try {
-			await runAuditedBatch(this.db, [updateStatement, receiptStatement, auditStatement]);
+			await runAuditedBatch(this.db, scopeId, [updateStatement, receiptStatement, auditStatement]);
 		} catch (err) {
 			const current = await this.getScopeMembership(scopeId, deviceId);
 			if (

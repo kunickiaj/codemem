@@ -368,8 +368,7 @@ function statements(
 		assertWrite(winner, a.start_authority_json ? fields.nullCount : count),
 		{
 			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL
- AND group_id IN (SELECT json_extract(value,'$.groupId') FROM json_each(?) WHERE json_extract(value,'$.deviceId') = ?
- ${a.start_authority_json ? "AND json_extract(value,'$.identityId') IS NULL" : ""})
+ AND group_id IN (SELECT json_extract(value,'$.groupId') FROM json_each(?) WHERE json_extract(value,'$.deviceId') = ?)
  AND EXISTS (SELECT 1 FROM ${ATTEMPT} WHERE ${WINNER})`,
 			values: [fields.enrollments, a.device_id, ...winner],
 		},
