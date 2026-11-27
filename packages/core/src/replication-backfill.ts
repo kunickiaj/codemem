@@ -22,6 +22,12 @@
  * The position is stored by `replication-backfill-state.ts`. Callers run slices with a time
  * limit: the sync pass a short one on each tick, the maintenance worker longer passes that
  * finish a full check of an existing store.
+ *
+ * Only a sync pass begins a check. A memory with no import key and no op has never left
+ * this device, and sharing its Project moves it without asking any other device. Once it
+ * has an op, sharing has to treat it as held by every device of its sharing domain and
+ * waits for each of them. So a store that does not sync keeps such memories as they are,
+ * and the maintenance worker only finishes what a sync pass could not.
  */
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Statement } from "better-sqlite3";
@@ -79,6 +85,12 @@ export interface ReplicationBackfillSliceOptions {
 	 * that serves requests passes false: the slice is skipped and the next one does the work.
 	 */
 	waitForWriteLock?: boolean;
+	/**
+	 * Whether the slice works only when an earlier one stopped with rows still to check. The
+	 * maintenance worker passes true. It runs whether or not the store syncs, so it must not
+	 * be what gives a memory its first op.
+	 */
+	onlyContinue?: boolean;
 }
 
 export interface ReplicationBackfillSliceResult {
@@ -304,6 +316,7 @@ function initialState(recheckFrom: string): BackfillState {
 		blockedLegacyKeys: 0,
 		reportedBlockedLegacyKeys: 0,
 		initialPassComplete: false,
+		unfinished: false,
 		newestCheckedRows: [],
 	};
 }
@@ -350,7 +363,7 @@ function hasWork(db: Database, timing: SliceTiming, localDeviceId: string): bool
 	const marksLowered =
 		state.checkedThroughId !== stored.checkedThroughId ||
 		state.legacyKeysTriedThroughId !== stored.legacyKeysTriedThroughId;
-	if (marksLowered || !stored.initialPassComplete) return true;
+	if (marksLowered || !stored.initialPassComplete || stored.unfinished) return true;
 	const newRow = db.prepare("SELECT 1 FROM memory_items WHERE id > ? LIMIT 1");
 	if (newRow.get(state.checkedThroughId)) return true;
 	const context = sliceContext(db, state, timing, { localDeviceId, dryRun: true });
@@ -381,6 +394,7 @@ function runLockedSlice(
 	const newDone = checkNewRows(context);
 	if (newDone) state.initialPassComplete = true;
 	context.result.complete = changedDone && newDone;
+	state.unfinished = !context.result.complete;
 
 	saveBackfillState(db, state, { newestMemoryId, warn: options.warn });
 	return context.result;
@@ -432,6 +446,7 @@ export function runReplicationBackfillSlice(
 		outOfTime: (shareOfLimit) =>
 			Boolean(options.signal?.aborted) || clock() - started >= maxRuntimeMs * shareOfLimit,
 	};
+	if (options.onlyContinue && !readBackfillState(db)?.unfinished) return idle;
 	if (!hasWork(db, timing, localDeviceId)) return idle;
 
 	const result = withWriteLock(db, options.waitForWriteLock ?? true, () =>
@@ -462,9 +477,10 @@ export async function runReplicationBackfillPass(
 }
 
 /**
- * Runs the backfill in the maintenance worker, so the first full check of an existing store
- * and the regular check for new rows both happen outside the process that serves requests.
- * It shares the retention runners' timer and failure handling.
+ * Finishes in the maintenance worker a check that a sync pass began and could not finish in
+ * its slice, so the first full check of an existing store happens outside the process that
+ * serves requests. It does nothing until a sync pass leaves such a check behind. It shares
+ * the retention runners' timer and failure handling.
  */
 export class ReplicationBackfillRunner extends PeriodicRetentionRunner {
 	protected readonly label = "Replication backfill";
@@ -473,7 +489,8 @@ export class ReplicationBackfillRunner extends PeriodicRetentionRunner {
 	constructor(options: PeriodicRetentionRunnerOptions = {}) {
 		super({
 			initialDelayMs: 15_000,
-			// Sync passes run every two minutes by default; new rows get their op before the next.
+			// Sync passes run every two minutes by default. A check one of them left unfinished
+			// is picked up before the next.
 			idleIntervalMs: 60_000,
 			backlogIntervalMs: 5_000,
 			...options,
@@ -482,7 +499,11 @@ export class ReplicationBackfillRunner extends PeriodicRetentionRunner {
 	}
 
 	protected async runPass(db: Database): Promise<RetentionPassOutcome> {
-		const result = await runReplicationBackfillPass(db, { signal: this.signal, warn: this.warn });
+		const result = await runReplicationBackfillPass(db, {
+			signal: this.signal,
+			warn: this.warn,
+			onlyContinue: true,
+		});
 		return {
 			// The shared runner logs a pass that changed rows.
 			purged: result.opsCreated + result.keysMigrated,

@@ -6,7 +6,7 @@
  * row reads `running` during the first full check of a store and `completed` afterwards.
  * The pass writes it while holding the write lock, so the sync pass and the maintenance
  * worker, which run slices from separate processes, never overwrite each other's progress
- * or a recheck request.
+ * or a recheck request. A store no sync pass has checked has no row.
  */
 import type { Database } from "./db.js";
 import {
@@ -36,6 +36,11 @@ export interface BackfillState {
 	reportedBlockedLegacyKeys: number;
 	/** Whether every existing memory has been checked once. */
 	initialPassComplete: boolean;
+	/**
+	 * Whether the last slice stopped with rows still to check. The maintenance worker works
+	 * only while this is set, so it finishes a check a sync pass began and never begins one.
+	 */
+	unfinished: boolean;
 	/**
 	 * The newest checked memories, newest first. SQLite reuses the ID of a deleted newest
 	 * row, so a slice compares these with the store to notice checked rows that were deleted
@@ -68,6 +73,7 @@ export function readBackfillState(db: Database): BackfillState | null {
 		blockedLegacyKeys: finiteInteger(metadata.blocked_legacy_keys),
 		reportedBlockedLegacyKeys: finiteInteger(metadata.reported_blocked_legacy_keys),
 		initialPassComplete: metadata.initial_pass_complete === true,
+		unfinished: metadata.unfinished === true,
 		newestCheckedRows: rowIdentitiesFrom(metadata.newest_checked_rows),
 	};
 }
@@ -94,6 +100,7 @@ function stateMetadata(state: BackfillState): Record<string, unknown> {
 		blocked_legacy_keys: state.blockedLegacyKeys,
 		reported_blocked_legacy_keys: state.reportedBlockedLegacyKeys,
 		initial_pass_complete: state.initialPassComplete,
+		unfinished: state.unfinished,
 		newest_checked_rows: state.newestCheckedRows,
 	};
 }
@@ -135,7 +142,8 @@ export function saveBackfillState(
  * Have the backfill check every memory for a missing op again, from the lowest ID. Called
  * when replication ops are pruned: a memory whose current op was removed gets a new one, as
  * it did when each sync pass read every memory. A store that has not been checked yet needs
- * nothing, because its first check covers every row.
+ * nothing, because its first check covers every row. The recheck begins with the next sync
+ * pass, like any other check.
  */
 export function requestReplicationBackfillRecheck(db: Database): void {
 	const state = readBackfillState(db);
