@@ -1114,6 +1114,7 @@ export {
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
 export { normalizeProjectLabel } from "./project-label.js";
+export { readLocalProjectMigrationReport } from "./project-migration-report.js";
 export type { ResumeProjectScopeSyncResult } from "./project-scope-resume.js";
 export { resumeProjectScopeSync } from "./project-scope-resume.js";
 export type {

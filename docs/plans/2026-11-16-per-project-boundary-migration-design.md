@@ -1,6 +1,6 @@
 # Per-Project boundary migration design
 
-**Status:** Merged as the design of record on 2026-11-17, built around the experience the owner approved that day. Approval to start implementation is still pending. This document changes no production code.
+**Status:** The approved 0.50 scope below supersedes the November 16 proposal where they differ. Only the historical fixtures and local report are in the first implementation slice.
 
 **Date:** 2026-11-16
 
@@ -10,7 +10,19 @@
 
 **Source read at:** commit `f6137e97e`. Every file reference below is to that commit.
 
-## Summary
+## Approved 0.50 scope (November 27)
+
+Teams, verified identities, device-to-person binding and person recipients require a coordinator. A never-coordinated install keeps basic device pairing and its existing filters. Pairing alone grants no Project memories. Rows held for legacy review and local-only rows stay local. These installs need no migration, readiness record, Team setup or identity recovery. Losing access to a configured coordinator or clearing its URL does not turn managed data into peer-only data.
+
+1. **Historical fixtures and local report.** Inspect tagged database shapes from schema 6 through beta.4 and fresh installs. Report candidate counts, source splits and local restrictions. Do not publish readiness or change access.
+2. **Authenticated readiness and serving fence.** Every affected sender and receiver must attest to the same generation with its enrolled key. Devices report applicable filters as `none`, `present` or `unknown`. A restriction keeps legacy enforcement and creates one review item. Missing evidence waits. Before conversion, stop issuing legacy-readable proofs for the group, drain in-flight refreshes and serving requests, and invalidate each device's cached source and boundary proofs before it acknowledges. Current peers must use fresh key- and generation-bound authorization on both direct and relay paths. Keep local history readable. Cutover requires tests with real old binaries against transitioned stores that had valid cached proofs, offline and after a legacy refresh attempt. Test old-to-old and both mixed-version directions. Two restored pre-cutover backups can still exchange previously disclosed history.
+3. **Single-source commit and adoption.** Automate only Projects with equivalent effective admission, including for Projects left in the source. Preserve exclusions, holds and removals. Each author moves its own rows in resumable batches. Leftover rows require both source and Project admission for operations and snapshots.
+4. **Rollback and review.** Require the same manager and generation for single-source rollback. Respect later revocations. People already deactivated when a hold starts retain their effective access pending review. Later deactivations revoke immediately. Split sources and Projects requiring attachment stay in review.
+5. **Join retirement and rollout.** Retire the default grant per fully converted group once future joins have explicit rules. Keep the legacy reader for unconverted groups. Run report mode on the owner's devices for at least seven days, migrate one selected Project, then run enabled for at least 14 days before changing stable defaults.
+
+Areas 2–5 require security review. Automatic filter conversion, detailed per-sender filter collection, attachment/detachment, multi-source rollback and physical removal of legacy filter storage and settings are outside 0.50.
+
+## November 16 proposal
 
 ### What a person sees
 
