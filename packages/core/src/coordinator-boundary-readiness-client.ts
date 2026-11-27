@@ -2,6 +2,7 @@ import {
 	collectGroupReadiness,
 	type GroupReadinessRequest,
 } from "./boundary-readiness-device-evidence.js";
+import { isBoundaryReadinessGeneration } from "./boundary-readiness-generation.js";
 import {
 	BOUNDARY_READINESS_MAX_BODY_BYTES,
 	type BoundaryReadinessProject,
@@ -48,7 +49,9 @@ function failed(reason: Failure): SubmitBoundaryReadinessResult {
 	return { kind: "failed", reason };
 }
 
-function requestUrl(input: SubmitBoundaryReadinessInput): string | null {
+function requestUrl(
+	input: Pick<SubmitBoundaryReadinessInput, "coordinatorUrl" | "groupId">,
+): string | null {
 	try {
 		const base = new URL(buildBaseUrl(input.coordinatorUrl));
 		if (base.protocol !== "https:" && base.protocol !== "http:") return null;
@@ -186,10 +189,7 @@ export async function submitGroupBoundaryReadiness(
 	input: GroupReadinessRequest,
 ): Promise<SubmitBoundaryReadinessResult> {
 	if (
-		typeof input.groupGeneration !== "string" ||
-		!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
-			input.groupGeneration,
-		) ||
+		!isBoundaryReadinessGeneration(input.groupGeneration) ||
 		!Number.isSafeInteger(input.sequence) ||
 		input.sequence < 1 ||
 		!Number.isSafeInteger(input.refreshRevision) ||
@@ -198,11 +198,11 @@ export async function submitGroupBoundaryReadiness(
 		!isId(input.groupId)
 	)
 		return failed("invalid_input");
+	const url = requestUrl(input);
+	if (!url?.startsWith("https://")) return failed("invalid_input");
 	try {
 		const evidence = collectGroupReadiness(input);
 		if (!evidence) return failed("inventory_unavailable");
-		const url = requestUrl(evidence);
-		if (!url?.startsWith("https://")) return failed("invalid_input");
 		const keyId = await ed25519KeyId(evidence.publicKey);
 		if (!keyId) return failed("signing_failed");
 		return sendRecord(evidence, url, groupRecord(evidence, keyId), evidence.publicKey);

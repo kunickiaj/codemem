@@ -6,6 +6,8 @@ import type { GroupReadinessRequest } from "./boundary-readiness-device-evidence
 import { submitGroupBoundaryReadiness } from "./coordinator-boundary-readiness-client.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { connect, type Database } from "./db.js";
+import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
+import { cacheScope, cacheWireSnapshot } from "./scope-membership-cache-test-fixtures.js";
 import { verifySignature } from "./sync-auth.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
@@ -26,6 +28,22 @@ let deviceId: string;
 let publicKey: string;
 let acknowledgement: Record<string, unknown>;
 let configPath: string;
+
+async function refresh(catalog: object, members?: object) {
+	transport.mockResolvedValueOnce(
+		Response.json({ version: 1, items: members ? [cacheScope()] : [], ...catalog }),
+	);
+	if (members)
+		transport.mockResolvedValueOnce(Response.json({ ...cacheWireSnapshot(), ...members }));
+	const result = await refreshScopeMembershipCache(db, {
+		remoteUrl: authority,
+		groupIds: [group],
+		keysDir: input.keysDir,
+		dbPath: input.dbPath,
+	});
+	expect(result.status).toBe("refreshed");
+	transport.mockClear();
+}
 
 beforeEach(async () => {
 	directory = mkdtempSync(join(tmpdir(), "group-readiness-"));
@@ -51,7 +69,7 @@ beforeEach(async () => {
 	[deviceId] = ensureDeviceIdentity(db, { keysDir });
 	publicKey = loadPublicKey(keysDir) ?? "";
 	db.prepare(`INSERT INTO scope_membership_cache_state(coordinator_id, group_id,last_refresh_at,last_success_at,updated_at,refresh_revision)
-		VALUES(?,?,'now','now','now',9)`).run(authority, group);
+		VALUES(?,?,'now','now','now',8)`).run(authority, group);
 	input = {
 		dbPath,
 		keysDir,
@@ -74,6 +92,7 @@ beforeEach(async () => {
 	};
 	transport.mockReset().mockImplementation(async () => Response.json(acknowledgement));
 	vi.stubGlobal("fetch", transport);
+	await refresh({ group_generation: generation });
 });
 
 afterEach(() => {
@@ -93,6 +112,41 @@ function sent() {
 	const headers = new Headers(init.headers);
 	return { body, bodyBytes, init, headers, target };
 }
+
+it.each([
+	[
+		"prior-generation catalogue",
+		{ group_generation: "dad7131c-493b-4979-98a6-eef2339801aa" },
+		undefined,
+	],
+	["legacy catalogue", {}, undefined],
+	[
+		"mixed-generation refresh",
+		{ group_generation: generation },
+		{ group_generation: "dad7131c-493b-4979-98a6-eef2339801aa" },
+	],
+] as const)(
+	"sends nothing after a %s even at its exact revision",
+	async (_label, catalog, members) => {
+		await refresh(catalog, members);
+		expect(await submitGroupBoundaryReadiness({ ...input, refreshRevision: 10 })).toEqual({
+			kind: "failed",
+			reason: "inventory_unavailable",
+		});
+		expect(transport).not.toHaveBeenCalled();
+	},
+);
+
+it("an older writer refreshing without a generation cannot preserve the prior observation", async () => {
+	db.exec(
+		"UPDATE scope_membership_cache_state SET last_refresh_at='later', last_success_at='later', updated_at='later'",
+	);
+	expect(await submitGroupBoundaryReadiness(input)).toEqual({
+		kind: "failed",
+		reason: "inventory_unavailable",
+	});
+	expect(transport).not.toHaveBeenCalled();
+});
 
 it("signs the device's generation, local refresh, sequence, filter evidence and fitted inventory together", async () => {
 	db.exec(`INSERT INTO replication_scopes(scope_id,label,kind,authority_type,coordinator_id,group_id,created_at,updated_at)

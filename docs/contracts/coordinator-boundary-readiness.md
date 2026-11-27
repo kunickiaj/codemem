@@ -20,6 +20,15 @@ refresh finishes before collection, the device must collect again. A revision
 identifies a local cache update. It does not prove that the coordinator still
 authorizes a device.
 
+The refresh records `group_generation` only if the signed GET to the configured
+HTTPS coordinator returns that generation on the catalogue and every member
+snapshot. Redirects are refused. An older coordinator that omits the generation
+still supports ordinary sync, but its responses cannot supply readiness.
+The cache updates the observed generation in the same transaction as the
+membership data and revision. A legacy writer that refreshes the cache clears
+the observation. The sender must read both the requested revision and the
+matching stored generation before it can sign.
+
 The request uses the existing signed POST and includes these fields alongside
 `sequence`, `omitted_projects` and `projects`:
 
@@ -38,6 +47,13 @@ Pairings can cross groups, so the scan covers the whole device. Missing storage
 or malformed evidence gives `unknown` unless another source already shows a
 restriction. No filter list travels in the request. A device with zero locally
 authored rows still reports its restrictions.
+
+The future sender must read configuration and environment fallbacks **in the
+process that serves sync requests**, using the same config path and overrides
+as that process. A CLI or background process with a different environment
+cannot attest to the serving process's filters. Any nonempty stored list counts
+as a restriction, including a whitespace-only include list that blocks sharing
+during provisioning.
 
 An empty `projects` list does not say that the device cannot receive a Project.
 The coordinator must derive the affected receivers from admission and request

@@ -42,17 +42,19 @@ function snapshot(
 	coordinatorId: string,
 	groupId: string,
 	refreshRevision: number,
+	requestedGeneration: string,
 ) {
 	const identity = localIdentity(db);
 	if (!identity) return null;
 	// A newly configured or never-refreshed group can look like a group with
 	// zero Projects. Only an inventory built after a successful refresh counts.
 	const cache = db
-		.prepare(`SELECT 1 FROM scope_membership_cache_state WHERE coordinator_id = ?
-		AND group_id = ? AND refresh_revision = ? AND last_success_at = last_refresh_at
+		.prepare(`SELECT observed_group_generation FROM scope_membership_cache_state WHERE coordinator_id = ?
+		AND group_id = ? AND refresh_revision = ? AND observed_group_generation = ? AND last_success_at = last_refresh_at
 		AND length(last_success_at) > 0 AND last_error IS NULL`)
-		.get(coordinatorId, groupId, refreshRevision);
-	if (!cache) return null;
+		.pluck()
+		.get(coordinatorId, groupId, refreshRevision, requestedGeneration);
+	if (typeof cache !== "string") return null;
 	const inventory = buildBoundaryReadinessInventory(db, {
 		coordinatorId,
 		groupId,
@@ -60,6 +62,7 @@ function snapshot(
 	});
 	return {
 		...inventory,
+		groupGeneration: cache,
 		deviceId: identity.device_id,
 		publicKey: identity.public_key,
 		filterEvidence: readBoundaryFilterEvidence(db, config),
@@ -83,14 +86,22 @@ export function collectGroupReadiness(input: GroupReadinessRequest) {
 	const db = connectReadOnly(input.dbPath);
 	try {
 		const evidence = db
-			.transaction(() => snapshot(db, config, coordinatorUrl, input.groupId, input.refreshRevision))
+			.transaction(() =>
+				snapshot(
+					db,
+					config,
+					coordinatorUrl,
+					input.groupId,
+					input.refreshRevision,
+					input.groupGeneration,
+				),
+			)
 			.deferred();
 		if (!evidence) return null;
 		return {
 			...evidence,
 			coordinatorUrl,
 			groupId: input.groupId,
-			groupGeneration: input.groupGeneration,
 			refreshRevision: input.refreshRevision,
 			sequence: input.sequence,
 			dbPath: input.dbPath,

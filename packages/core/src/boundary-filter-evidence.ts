@@ -8,8 +8,10 @@ function listEvidence(raw: unknown): BoundaryFilterEvidence {
 	if (typeof raw !== "string") return "unknown";
 	try {
 		const list: unknown = JSON.parse(raw);
-		if (!Array.isArray(list) || !list.every((item) => typeof item === "string")) return "unknown";
-		return list.some((item) => item.trim()) ? "present" : "none";
+		if (!Array.isArray(list)) return "unknown";
+		// Provisioning passes the stored strings to syncProjectAllowedByFilters
+		// unchanged. Even an include list containing only whitespace restricts it.
+		return list.length ? "present" : "none";
 	} catch {
 		return "unknown";
 	}
