@@ -3,6 +3,7 @@ import type {
 	LegacyTeamSetupDraftView,
 	LegacyTeamSetupErrorReason,
 } from "@codemem/core";
+import type { TeamSetupReconciliationStatus } from "./team-setup-reconciliation.js";
 
 export interface LegacyTeamSetupCandidateSummaryV1 {
 	candidateRef: string;
@@ -27,6 +28,8 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 export interface LegacyTeamSetupSummaryResponseV1 {
 	version: 1;
 	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
+	/** How current the coordinator check behind `candidates` is; older clients ignore it. */
+	reconciliation?: TeamSetupReconciliationStatus;
 }
 
 export type LegacyTeamSetupActionBlockedReasonV1 =

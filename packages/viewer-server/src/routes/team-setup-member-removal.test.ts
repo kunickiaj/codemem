@@ -12,7 +12,7 @@ import {
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deterministicPolicyTeamId } from "../../../core/src/recipient-policy-identifiers.js";
-import { teamSetupRoutes } from "./team-setup.js";
+import { teamSetupRoutesReconcilingOnRead as teamSetupRoutes } from "./team-setup-test-fixtures.js";
 
 const NOW = "2026-09-01T12:00:00.000Z";
 const COORDINATOR = "https://coordinator.example.invalid";

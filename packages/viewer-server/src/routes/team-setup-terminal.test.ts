@@ -21,7 +21,8 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { readPeerRemovalCheckState } from "../../../core/src/peer-removal-check-state.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
-import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
+import { __teamSetupTestHooks } from "./team-setup.js";
+import { teamSetupRoutesReconcilingOnRead as teamSetupRoutes } from "./team-setup-test-fixtures.js";
 
 const COORDINATOR_ID = "https://coordinator.example.test";
 const GROUP_ID = "group-alpha";
@@ -685,7 +686,7 @@ describe("Team setup terminal migration routing", () => {
 				.run(NOW, NOW);
 			const response = await targetApp.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(target.db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(1);
 		} finally {
 			source.close();
@@ -893,7 +894,7 @@ describe("Team setup terminal migration routing", () => {
 			});
 			const response = await app.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(list).toHaveBeenCalledOnce();
 			expect(create).not.toHaveBeenCalled();
 		} finally {
@@ -956,7 +957,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const response = await app.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(create).toHaveBeenCalledOnce();
 			expect(publicationStartedDuringCreate).toBe(false);
 			expect(teamStartedDuringCreate).toBe(false);
@@ -1045,7 +1046,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const response = await app.request("/api/sync/team-setup/v1");
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ version: 1, candidates: [] });
+			expect(await response.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(get).toHaveBeenCalledWith(
 				expect.objectContaining({
 					groupId: GROUP_ID,
@@ -2495,7 +2496,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const summary = await app.request("/api/sync/team-setup/v1");
 			expect(summary.status).toBe(200);
-			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+			expect(await summary.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.attemptId).toBe(draft.attemptId);
 			expect(
 				store.db
@@ -2525,7 +2526,7 @@ describe("Team setup terminal migration routing", () => {
 
 			const summary = await app.request("/api/sync/team-setup/v1");
 			expect(summary.status).toBe(200);
-			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+			expect(await summary.json()).toMatchObject({ version: 1, candidates: [] });
 			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.attemptId).toBe(newerAttemptId);
 			expect(
 				store.db

@@ -195,6 +195,16 @@ export interface AppOptions extends SyncAppOptions {
 	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
+	/**
+	 * How often Team setup checks completions with the coordinator in the background.
+	 * Unset, a check runs only when a summary read finds the last one old.
+	 */
+	teamSetupReconciliationIntervalMs?: number;
+	/** Receives the Team setup background check; for tests. */
+	onTeamSetupReconciliation?: (reconciliation: {
+		refresh: () => Promise<void>;
+		settle: () => Promise<void>;
+	}) => void;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	/** Supplied by the foreground host to serialize Remove cleanup with refreshes. */
 	createDeviceRemovalRefreshHooks?: DeviceRemovalRefreshHooksFactory;
@@ -434,6 +444,8 @@ export function createApp(opts?: AppOptions) {
 			registerSummaryInvalidator: (invalidate) => {
 				invalidateTeamSetupSummary = invalidate;
 			},
+			registerReconciliation: (reconciliation) =>
+				startTeamSetupReconciliation(reconciliation, opts),
 		}),
 	);
 	app.route("/", updateStatusRoutes({ getUpdateStatus: opts?.getUpdateStatus }));
@@ -441,6 +453,17 @@ export function createApp(opts?: AppOptions) {
 	registerStaticRoutes(app);
 
 	return app;
+}
+
+function startTeamSetupReconciliation(
+	reconciliation: { refresh: () => Promise<void>; settle: () => Promise<void> } & {
+		startPeriodic: (intervalMs: number) => void;
+	},
+	opts: AppOptions | undefined,
+): void {
+	opts?.onTeamSetupReconciliation?.(reconciliation);
+	const intervalMs = opts?.teamSetupReconciliationIntervalMs;
+	if (intervalMs) reconciliation.startPeriodic(intervalMs);
 }
 
 /** Preserve the public server options while transport adapters use the narrower factory. */

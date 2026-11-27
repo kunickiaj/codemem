@@ -42,6 +42,10 @@ import {
 	type LegacyTeamConfiguredGroupSnapshotLoader,
 	TEAM_SETUP_ROUTE_PREFIX,
 } from "./routes/team-setup.js";
+import {
+	reconcileBeforeSummaryReads,
+	type SettleableReconciliation,
+} from "./routes/team-setup-test-fixtures.js";
 
 const TOKEN_PROVENANCE_BASE = {
 	token_unit: "tokens",
@@ -703,8 +707,14 @@ function createTestApp(opts?: {
 		teamSetupCompletionDependencies: opts?.teamSetupCompletionDependencies ?? null,
 		readCoordinatorConfig: opts?.readCoordinatorConfig,
 		renameCoordinatorGroup: opts?.renameCoordinatorGroup,
+		onTeamSetupReconciliation: (registered: SettleableReconciliation) => {
+			teamSetupReconciliation = registered;
+		},
 	};
-	const app = createApp(appOptions);
+	let teamSetupReconciliation: SettleableReconciliation | null = null;
+	// Team setup checks the coordinator in the background; these tests read its
+	// summary after one pass, as the summary used to reconcile before answering.
+	const app = reconcileBeforeSummaryReads(createApp(appOptions), () => teamSetupReconciliation);
 
 	const syncApp = createSyncApp({
 		storeFactory,
@@ -2893,7 +2903,7 @@ describe("viewer-server", () => {
 				);
 				const pendingAfterFinish = await app.request("/api/sync/team-setup/v1");
 				expect(pendingAfterFinish.status).toBe(200);
-				expect(await pendingAfterFinish.json()).toEqual({ version: 1, candidates: [] });
+				expect(await pendingAfterFinish.json()).toMatchObject({ version: 1, candidates: [] });
 				store.db
 					.prepare(
 						`DELETE FROM project_recipients
@@ -2904,7 +2914,7 @@ describe("viewer-server", () => {
 				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(0);
 				const reconciledSummary = await app.request("/api/sync/team-setup/v1");
 				expect(reconciledSummary.status).toBe(200);
-				expect(await reconciledSummary.json()).toEqual({ version: 1, candidates: [] });
+				expect(await reconciledSummary.json()).toMatchObject({ version: 1, candidates: [] });
 				expect(store.db.prepare("SELECT COUNT(*) FROM project_recipients").pluck().get()).toBe(1);
 				expect(
 					store.db

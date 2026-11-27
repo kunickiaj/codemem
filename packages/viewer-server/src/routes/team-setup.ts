@@ -23,6 +23,7 @@ import {
 	claimRecipientPolicyActorMutations,
 	claimRecipientPolicyPublicationMutation,
 	clearLegacyTeamSetupDeviceDecision,
+	completeMaintenanceJob,
 	containLegacyTeamSetupCompletionConflict,
 	coordinatorCreateLegacyTeamCompletionAction,
 	coordinatorGetLegacyTeamCompletionAction,
@@ -72,10 +73,17 @@ import {
 	setLegacyTeamSetupDeviceAssignment,
 	setLegacyTeamSetupDeviceDecision,
 	setLegacyTeamSetupProjectMapping,
+	startMaintenanceJob,
 	validateLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifestBinding,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
+import {
+	createTeamSetupReconciliation,
+	type TeamSetupReconciliation,
+	type TeamSetupReconciliationOutcome,
+	type TeamSetupReconciliationRead,
+} from "./team-setup-reconciliation.js";
 import {
 	type LegacyTeamSetupCandidateSummaryV1,
 	type LegacyTeamSetupDetailResponseV1,
@@ -345,6 +353,10 @@ export interface TeamSetupRoutesOptions {
 	completionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	registerSummaryInvalidator?: (invalidate: () => void) => void;
+	/** Receives the background reconciliation, so the service can start it and tests can await it. */
+	registerReconciliation?: (
+		reconciliation: TeamSetupReconciliation<SummaryReconciliationResult>,
+	) => void;
 }
 
 export interface LegacyTeamCompletionDependencies {
@@ -1004,22 +1016,119 @@ function pendingCandidateSummaries(
 	});
 }
 
-async function reconcileSummaryCandidates(
+/** What one background reconciliation pass found: the roster and each group's blocker. */
+interface SummaryReconciliationResult {
+	groups: LegacyTeamConfiguredGroupSnapshot[];
+	blockers: Map<string, CompletionBlocker>;
+}
+
+const TEAM_SETUP_RECONCILIATION_JOB = "team_setup_reconciliation";
+
+/**
+ * One background pass: load the roster, wait for any draft or finish route already
+ * changing one of its candidates, then reconcile. Access changes inside take the
+ * same per-candidate claim as those routes, so the two never overlap.
+ */
+async function runSummaryReconciliation(
 	store: MemoryStore,
-	groups: LegacyTeamConfiguredGroupSnapshot[],
+	load: () => Promise<LegacyTeamConfiguredGroupSnapshot[]>,
 	reconcile: (
 		store: MemoryStore,
 		groups: LegacyTeamCandidateGroupDescriptor[],
 		options: CompletionReconciliationOptions,
 	) => Promise<void>,
-): Promise<LegacyTeamSetupSummaryResponseV1> {
+): Promise<SummaryReconciliationResult> {
+	const groups = await load();
+	await Promise.all(
+		groups.map((group) =>
+			candidateMutationSettled(store.db, legacyTeamCandidateId(group.coordinatorId, group.groupId)),
+		),
+	);
 	readPureCandidateViews(store, groups);
-	const blockingErrors = new Map<string, CompletionBlocker>();
-	await reconcile(store, groups, summaryReconciliationOptions(blockingErrors));
-	return {
-		version: TEAM_SETUP_VERSION,
-		candidates: pendingCandidateSummaries(store, groups, blockingErrors),
-	};
+	const blockers = new Map<string, CompletionBlocker>();
+	await reconcile(store, groups, summaryReconciliationOptions(blockers));
+	return { groups, blockers };
+}
+
+/** Candidates with an unfinished local draft, listed before the coordinator was ever checked. */
+function localDraftCandidateSummaries(
+	store: MemoryStore,
+): LegacyTeamSetupPendingCandidateSummaryV1[] {
+	const candidateRefs = store.db
+		.prepare(
+			`SELECT DISTINCT candidate_id FROM legacy_team_setup_drafts
+			 WHERE state <> 'completed' AND superseded_at IS NULL ORDER BY candidate_id`,
+		)
+		.pluck()
+		.all() as string[];
+	return candidateRefs.flatMap((candidateRef) => {
+		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+		if (!draft || draft.state === "completed" || hasCompletedLegacyTeamSetup(store, candidateRef)) {
+			return [];
+		}
+		const summary = candidateSummary(candidateFromDraft(draft));
+		return summary.status === "ready" ? [] : [summary as LegacyTeamSetupPendingCandidateSummaryV1];
+	});
+}
+
+/**
+ * The summary from the last reconciliation pass, read from local state only. With
+ * nothing checked yet and the latest check failed, the answer is that failure, as
+ * when the summary checked inline.
+ */
+function summaryResponse(
+	store: MemoryStore,
+	read: TeamSetupReconciliationRead<SummaryReconciliationResult>,
+): LegacyTeamSetupSummaryResponseV1 | { error: LegacyTeamSetupActivationErrorCode } {
+	if (!read.result && read.status.error_code) {
+		return { error: read.status.error_code as LegacyTeamSetupActivationErrorCode };
+	}
+	const candidates = read.result
+		? pendingCandidateSummaries(store, read.result.groups, read.result.blockers)
+		: localDraftCandidateSummaries(store);
+	return { version: TEAM_SETUP_VERSION, candidates, reconciliation: read.status };
+}
+
+/** The background check behind the summary, refreshed again whenever setup state changes. */
+function createSummaryReconciliation(
+	options: TeamSetupRoutesOptions,
+	loadSnapshots: ReturnType<typeof createCachedSnapshotLoader>,
+	reconcile: Parameters<typeof runSummaryReconciliation>[2],
+): TeamSetupReconciliation<SummaryReconciliationResult> {
+	const reconciliation = createTeamSetupReconciliation({
+		run: () => runSummaryReconciliation(options.getStore(), loadSnapshots, reconcile),
+		errorCode: (error) => teamSetupFailure(error, "background GET /api/sync/team-setup/v1").code,
+		record: (outcome) => recordReconciliationOutcome(options.getStore(), outcome),
+	});
+	options.registerReconciliation?.(reconciliation);
+	options.registerSummaryInvalidator?.(() => {
+		loadSnapshots.invalidate();
+		void reconciliation.refresh();
+	});
+	return reconciliation;
+}
+
+/** Shows each pass on the Health tab; a coordinator outage is not a failed job. */
+function recordReconciliationOutcome(
+	store: MemoryStore,
+	outcome: TeamSetupReconciliationOutcome,
+): void {
+	const checkedAt =
+		outcome.checkedAtMs === null ? null : new Date(outcome.checkedAtMs).toISOString();
+	const message = outcome.ok
+		? "Checked Team setup with the coordinator"
+		: `Could not check Team setup with the coordinator (${outcome.errorCode}); showing the last check`;
+	// One transaction, so status never shows the row as pending.
+	store.db.transaction(() => {
+		startMaintenanceJob(store.db, {
+			kind: TEAM_SETUP_RECONCILIATION_JOB,
+			title: "Team setup check",
+			status: "pending",
+			message,
+			metadata: { last_checked_at: checkedAt, last_error_code: outcome.errorCode },
+		});
+		completeMaintenanceJob(store.db, TEAM_SETUP_RECONCILIATION_JOB, { message });
+	})();
 }
 
 function readPureCandidateViews(
@@ -2416,7 +2525,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		}
 	}
 	const loadedSummarySnapshots = createLoadedSummarySnapshotCache(loadedSnapshots, options);
-	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
+	const reconciliation = createSummaryReconciliation(
+		options,
+		loadedSummarySnapshots,
+		reconcileCompletions,
+	);
 	const completionDependencies =
 		options.completionDependencies === undefined
 			? defaultCompletionDependencies
@@ -2957,18 +3070,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		return { coordinatorId: row.coordinator_id, groupId: row.group_id };
 	}
 
-	app.get("/api/sync/team-setup/v1", async (c) => {
-		let groups: LegacyTeamConfiguredGroupSnapshot[];
+	// The summary never waits for the coordinator; the background pass does that.
+	app.get("/api/sync/team-setup/v1", (c) => {
 		try {
-			groups = await loadedSummarySnapshots();
-		} catch (error) {
-			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
-			return c.json({ error: failure.code }, failure.status);
-		}
-		try {
-			const store = options.getStore();
-			const response = await reconcileSummaryCandidates(store, groups, reconcileCompletions);
-			return c.json(response);
+			const summary = summaryResponse(options.getStore(), reconciliation.read());
+			return "error" in summary ? c.json(summary, errorStatus(summary.error)) : c.json(summary);
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
 			return c.json({ error: failure.code }, failure.status);
