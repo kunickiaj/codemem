@@ -73,7 +73,7 @@ export function isPersonSettingsDialogOpen(): boolean {
 	return document.getElementById(DIALOG_ID) !== null;
 }
 const ACCESS_CHANGE_REASON =
-	"Merging or removing a person changes who receives Projects. Only a device with the coordinator admin secret can make that change. Use that device.";
+	"Only a device with the coordinator admin secret can rename, merge or remove a person. Use that device.";
 
 const REFRESH_REASON =
 	"Sharing could not refresh, so changes are paused. Close this dialog and refresh Sharing.";
@@ -411,7 +411,8 @@ function usePersonSettingsState({
 		void onChanged?.();
 	};
 	const saveName = () => {
-		const invalid = disabled ? REFRESH_REASON : personNameProblem(draft);
+		// Renaming changes a person, which needs the admin device like merging or removing.
+		const invalid = blockedReason ?? personNameProblem(draft);
 		if (invalid) {
 			setError(invalid);
 			return;
@@ -628,7 +629,10 @@ function PersonSettingsBody({
 				<button
 					className="settings-button sync-dialog-confirm"
 					disabled={
-						busy || settings.disabled || !settings.draft.trim() || settings.draft.trim() === name
+						busy ||
+						Boolean(blockedReason) ||
+						!settings.draft.trim() ||
+						settings.draft.trim() === name
 					}
 					onClick={settings.saveName}
 					type="button"

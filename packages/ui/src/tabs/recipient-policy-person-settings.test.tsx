@@ -217,16 +217,15 @@ describe("person settings removal", () => {
 		expect(onChanged).toHaveBeenCalledOnce();
 	});
 
-	it("disables merge and removal with a plain reason on a device without the admin secret", () => {
+	it("disables renaming, merging and removal with a plain reason on a device without the admin secret", () => {
 		mount({ accessChangesAllowed: false });
 
 		expect(button("Remove Brian from all sharing").disabled).toBe(true);
 		expect(mergeSelect().disabled).toBe(true);
-		expect(button("Save name").disabled).toBe(true);
 		type(nameInput(), "Brian Smith");
-		expect(button("Save name").disabled).toBe(false);
+		expect(button("Save name").disabled).toBe(true);
 		expect(document.body.textContent).toContain(
-			"Only a device with the coordinator admin secret can make that change. Use that device.",
+			"Only a device with the coordinator admin secret can rename, merge or remove a person. Use that device.",
 		);
 	});
 });

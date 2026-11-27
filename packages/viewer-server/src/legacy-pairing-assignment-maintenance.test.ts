@@ -113,6 +113,35 @@ describe("converting older device assignments during coordinator maintenance", (
 		expect(boundIdentity()).toBe(store.actorId);
 	});
 
+	it("writes nothing when the admin secret is removed while the evidence is fetched", async () => {
+		claimPeerAsOwnDevice();
+		const admin = {
+			actor_id: "identity-local",
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+			sync_coordinator_admin_secret: "fixture-admin-secret",
+		};
+		for (const name of ["URL", "GROUP", "GROUPS", "ADMIN_SECRET"]) {
+			vi.stubEnv(`CODEMEM_SYNC_COORDINATOR_${name}`, undefined);
+		}
+		writeFileSync(join(directory, "config.json"), JSON.stringify(admin));
+
+		const result = await convertLegacyPairingAssignmentsOperation(store, {
+			loadCoordinatorEvidence: async (config) => {
+				expect(config.syncCoordinatorAdminSecret).toBe("fixture-admin-secret");
+				writeFileSync(
+					join(directory, "config.json"),
+					JSON.stringify({ ...admin, sync_coordinator_admin_secret: "" }),
+				);
+				return available();
+			},
+		});
+
+		expect(result).toEqual({ status: "waiting", waitingReason: "coordinator_authority_changed" });
+		expect(boundIdentity()).toBeUndefined();
+		expect(legacyPairingAssignmentsConverted(store.db)).toBe(false);
+	});
+
 	it("changes nothing while the configured coordinator cannot be read", async () => {
 		claimPeerAsOwnDevice();
 

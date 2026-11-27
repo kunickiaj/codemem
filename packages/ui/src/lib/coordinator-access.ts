@@ -19,3 +19,17 @@ export function coordinatorAccessFromStatus(
 	}
 	return "coordinator_missing";
 }
+
+const PEOPLE_CHANGE_BLOCKED: Record<Exclude<CoordinatorAccess, "ready">, string> = {
+	coordinator_missing:
+		"Adding or changing people needs a coordinator. Set the coordinator URL and group in Settings.",
+	admin_secret_missing:
+		"Only a device that holds the coordinator admin secret can add or change people. Use that device.",
+	unknown:
+		"codemem couldn't check whether this device can add or change people. Refresh to try again.",
+};
+
+/** Why this device may not add or change people, or null when it may. */
+export function peopleChangeBlockedReason(access: CoordinatorAccess): string | null {
+	return access === "ready" ? null : PEOPLE_CHANGE_BLOCKED[access];
+}

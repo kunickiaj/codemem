@@ -1,6 +1,10 @@
 /* People card — people, devices, sharing review, legacy device claims. */
 
 import * as api from "../../lib/api";
+import {
+	coordinatorAccessFromStatus,
+	peopleChangeBlockedReason,
+} from "../../lib/coordinator-access";
 import { clearFieldError, friendlyError, markFieldError } from "../../lib/form";
 import { handlePrimaryActionKeyboard } from "../../lib/keyboard";
 import { showGlobalNotice } from "../../lib/notice";
@@ -43,7 +47,10 @@ export function renderSyncActors() {
 	const actorMeta = document.getElementById("syncActorsMeta");
 	if (!actorList) return;
 	hideSkeleton("syncActorsSkeleton");
-	setPeopleCreateControlsDisabled(false);
+	const blockedReason = peopleChangeBlockedReason(
+		coordinatorAccessFromStatus({ status: "fulfilled", value: state.lastCoordinatorAdminStatus }),
+	);
+	setPeopleCreateControlsDisabled(blockedReason !== null);
 
 	const actorVisibility: VisiblePeopleResult = deriveVisiblePeopleActors({
 		actors: state.lastSyncActors,
@@ -58,10 +65,12 @@ export function renderSyncActors() {
 		if (actorVisibility.hiddenLocalDuplicateCount > 0) {
 			actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? "entry is" : "entries are"} hidden here until reviewed in Needs attention.`;
 		}
+		if (blockedReason) actorMeta.textContent += ` ${blockedReason}`;
 	}
 
 	renderSyncActorsList(actorList, {
 		actors,
+		canManagePeople: blockedReason === null,
 		hiddenLocalDuplicateCount: actorVisibility.hiddenLocalDuplicateCount,
 		onRename: async (actorId, nextName) => {
 			await api.renameActor(actorId, nextName);

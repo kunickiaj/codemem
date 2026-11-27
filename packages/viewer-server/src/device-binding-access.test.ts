@@ -239,6 +239,65 @@ it("refuses a binding commit when the admin secret is removed during the invento
 	await expectRefused(f, await post(f, `${BINDINGS}/commit`, body), before);
 });
 
+describe.each([
+	["adding a person", "/api/sync/actors", { display_name: "Teammate" }],
+	[
+		"renaming a person",
+		"/api/sync/actors/rename",
+		{ actor_id: "person-b", display_name: "Renamed" },
+	],
+])("%s", (_label, path, body) => {
+	function peopleFixture() {
+		const f = bindingFixture();
+		f.store.db
+			.prepare(`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			VALUES ('person-b', 'Person B', 0, 'active', ?, ?)`)
+			.run(NOW, NOW);
+		return f;
+	}
+
+	it.each([
+		["a device without the admin secret", MEMBER],
+		["a device with no coordinator", {}],
+	])("refuses %s and changes nothing", async (_device, config) => {
+		const f = peopleFixture();
+		configure(config);
+		const before = accessState(f.store);
+
+		await expectRefused(f, await post(f, path, body), before);
+	});
+
+	it("allows the admin device", async () => {
+		const f = peopleFixture();
+
+		const response = await post(f, path, body);
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ display_name: body.display_name });
+	});
+
+	it("refuses before creating this device's person", async () => {
+		const f = peopleFixture();
+		f.store.db.prepare("DELETE FROM actors WHERE is_local = 1").run();
+		configure({});
+		const before = accessState(f.store);
+
+		await expectRefused(f, await post(f, path, body), before);
+	});
+
+	it("checks authority again inside the write", async () => {
+		const f = peopleFixture();
+		const before = accessState(f.store);
+		const app = createApp({
+			storeFactory: () => f.store,
+			readCoordinatorConfig: () =>
+				readCoordinatorSyncConfig(f.store.db.inTransaction ? MEMBER : ADMIN),
+		});
+
+		await expectRefused(f, await post({ ...f, app }, path, body), before);
+	});
+});
+
 describe("pairing and sync on a device with no coordinator", () => {
 	it("completes a sync pass with a paired device that cannot be assigned to a person", async () => {
 		configure({});
@@ -261,6 +320,12 @@ describe("pairing and sync on a device with no coordinator", () => {
 			body: JSON.stringify({ peer_device_id: sourceId, claimed_local_actor: true }),
 		});
 		expect(assign.status).toBe(403);
+		const addPerson = await receiverApp.request("/api/sync/actors", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ display_name: "Teammate" }),
+		});
+		expect(addPerson.status).toBe(403);
 
 		vi.stubEnv("CODEMEM_KEYS_DIR", source.keysDir);
 		const sourceApp = createSyncApp({ storeFactory: () => source.store });
