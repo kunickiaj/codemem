@@ -1703,6 +1703,53 @@ class TeamSetupFinishError extends Error {
 	}
 }
 
+/**
+ * Records the group's Team member removals, then applies the coordinator's
+ * winning completion, whether this request published it or recovered it after
+ * a lost response. A removal recorded on another admin device must be known
+ * before the completion runs. When the removals cannot be read, nothing is
+ * applied here; reconciliation applies the published winner later.
+ */
+async function applyFinishWinnerAfterRemovals(
+	{
+		store,
+		dependencies,
+		config,
+	}: {
+		store: MemoryStore;
+		dependencies: LegacyTeamCompletionDependencies;
+		config: ReturnType<typeof readCoordinatorSyncConfig>;
+	},
+	input: Parameters<typeof applyLegacyTeamSetupCompletionManifestAndReturnActivation>[1],
+) {
+	const list = dependencies.listTeamMemberRemovals;
+	if (list) {
+		let removals: CoordinatorTeamMemberRemoval[];
+		try {
+			removals = await list({
+				groupId: input.groupId,
+				remoteUrl: buildBaseUrl(config.syncCoordinatorUrl),
+				adminSecret: config.syncCoordinatorAdminSecret,
+				timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+			});
+		} catch (error) {
+			throw new TeamSetupFinishError(
+				"team_setup_completion_unavailable",
+				"team_member_removals_unavailable",
+				false,
+				error,
+			);
+		}
+		applyTeamMemberRemovals(store.db, {
+			coordinatorId: input.coordinatorId,
+			groupId: input.groupId,
+			removals,
+			now: new Date().toISOString(),
+		});
+	}
+	return applyLegacyTeamSetupCompletionManifestAndReturnActivation(store.db, input);
+}
+
 interface TeamSetupFinishFailureDetails {
 	reason?: LegacyTeamSetupErrorReason;
 	cause: string;
@@ -3588,8 +3635,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								new Error("coordinator roster unavailable"),
 							);
 						}
-						const result = await applyLegacyTeamSetupCompletionManifestAndReturnActivation(
-							store.db,
+						const result = await applyFinishWinnerAfterRemovals(
+							{ store, dependencies: completionDependencies, config },
 							{
 								coordinatorId: group.coordinatorId,
 								groupId: group.groupId,
