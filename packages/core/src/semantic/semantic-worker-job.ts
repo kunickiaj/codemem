@@ -1,17 +1,20 @@
-import { statSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
 import { load } from "sqlite-vec";
+import { type DatabaseFileIdentity, isDatabaseFileUnchanged } from "../database-file-identity.js";
 import { connectReadOnly } from "../db.js";
 import type { RankInput, WorkerRequest } from "./semantic-worker-protocol.js";
 import { rankWorkerInput } from "./semantic-worker-ranking.js";
 
 if (!parentPort) throw new Error("semantic_worker_parent_required");
 const port = parentPort;
-const { dbPath, fileIdentity } = workerData as { dbPath: string; fileIdentity: string };
-const stat = statSync(dbPath);
-if (`${stat.dev}:${stat.ino}` !== fileIdentity) throw new Error("semantic_worker_file_changed");
-const db = connectReadOnly(dbPath);
+const { opened } = workerData as { opened: DatabaseFileIdentity };
+// The path must lead to the file, and the write-ahead log, that the store identified when it
+// opened its connection. Checked on both sides of the open, as the pack worker does; a file
+// put there only for the instant of the open is not caught (see database-file-identity.ts).
+if (!isDatabaseFileUnchanged(opened)) throw new Error("semantic_worker_file_changed");
+const db = connectReadOnly(opened.path);
 try {
+	if (!isDatabaseFileUnchanged(opened)) throw new Error("semantic_worker_file_changed");
 	load(db);
 	db.pragma("query_only = ON");
 	db.prepare("SELECT vec_version()").get();

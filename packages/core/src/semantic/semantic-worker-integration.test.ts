@@ -1,4 +1,5 @@
-import { existsSync, renameSync } from "node:fs";
+import { copyFileSync, existsSync, renameSync, rmSync } from "node:fs";
+import { Worker } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../coordinator-ed25519-key-id-test-fixtures.js";
 import { connect, loadSqliteVec } from "../db.js";
@@ -224,6 +225,66 @@ describe("real semantic worker identity and lifecycle", () => {
 		expect(await first).toEqual({ error: expect.any(SemanticIdentityChangedError) });
 		expect(await queued).toEqual({ error: expect.any(SemanticIdentityChangedError) });
 		expect(getClient).toHaveBeenCalledTimes(1);
+	});
+
+	it("refuses a search when the file was replaced after the store opened it and before first use", async () => {
+		// Arrange: a complete copy of the store, with different inode, takes the store's path
+		// after the store's connection opened the original and before any semantic search.
+		const path = f.store.dbPath;
+		f.store.db.pragma("wal_checkpoint(TRUNCATE)");
+		const replacement = `${path}.fixture-replacement`;
+		const original = `${path}.fixture-original`;
+		copyFileSync(path, replacement);
+		renameSync(path, original);
+		renameSync(replacement, path);
+
+		// Act
+		try {
+			// As the store does on its first semantic search: create the executor, then search.
+			const outcome = await Promise.resolve()
+				.then(() => f.openExecutor().search(request))
+				.then(
+					(value) => ({ value }),
+					(error: unknown) => ({ error }),
+				);
+
+			// Assert: the executor compares with the file the store opened, not the one at the path now.
+			expect(outcome).toEqual({ error: expect.any(SemanticIdentityChangedError) });
+		} finally {
+			rmSync(path, { force: true });
+			renameSync(original, path);
+		}
+	});
+
+	it("starts no worker on a file other than the one the store opened", async () => {
+		// Arrange: the worker is handed the store's identity, then the path is replaced.
+		const path = f.store.dbPath;
+		const opened = f.store.databaseFile();
+		f.store.db.pragma("wal_checkpoint(TRUNCATE)");
+		const original = `${path}.fixture-original`;
+		copyFileSync(path, `${path}.fixture-replacement`);
+		renameSync(path, original);
+		renameSync(`${path}.fixture-replacement`, path);
+
+		// Act
+		try {
+			const worker = new Worker(new URL("./semantic-worker-entry.ts", import.meta.url), {
+				workerData: { opened },
+				env: {},
+				execArgv: [],
+			});
+			const started = await new Promise<string>((resolve) => {
+				worker.once("message", (reply: { type: string }) => resolve(reply.type));
+				worker.once("error", (error) => resolve(error.message));
+			});
+			await worker.terminate();
+
+			// Assert
+			expect(started).toBe("semantic_worker_file_changed");
+		} finally {
+			rmSync(path, { force: true });
+			renameSync(original, path);
+		}
 	});
 
 	it("does not recreate a missing database or deliver keyword success after its file disappears", async () => {

@@ -1,6 +1,6 @@
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { statSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { type DatabaseFileIdentity, isDatabaseFileUnchanged } from "../database-file-identity.js";
 import { type Database, isEmbeddingDisabled } from "../db.js";
 import {
 	type EmbeddingClient,
@@ -37,10 +37,16 @@ import {
 	type VectorCatalog,
 } from "./validated-vector-index.js";
 
+/** What the executor reads of the store to tell who is asking. */
+type IdentityStore = StoreHandle & {
+	hasCurrentIdentity(): boolean;
+	onIdentityChanged?(listener: () => void): () => void;
+};
+
 export interface SemanticWorkerOptions {
-	store: StoreHandle & {
-		hasCurrentIdentity(): boolean;
-		onIdentityChanged?(listener: () => void): () => void;
+	store: IdentityStore & {
+		/** The file the store's connection opened, identified when it opened it. */
+		databaseFile(): DatabaseFileIdentity | null;
 	};
 	getClient?: () => Promise<EmbeddingClient | null>;
 	queueOptions?: Omit<QueueOptions, "createWorker">;
@@ -48,12 +54,20 @@ export interface SemanticWorkerOptions {
 	createWorker?: QueueOptions["createWorker"];
 }
 
-function fileIdentity(path: string): string {
-	const stat = statSync(path);
-	if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid())) {
+/**
+ * The file the store opened, which the worker must open too. It is the identity the store
+ * took when it opened its connection, not one taken now: a file put at the path since then
+ * would otherwise be read by the worker as the store. The file must belong to this user.
+ */
+function storeDatabaseFile(store: SemanticWorkerOptions["store"]): DatabaseFileIdentity {
+	const opened = store.databaseFile();
+	if (!opened) throw new Error("semantic_worker_file_required");
+	assertDatabaseIdentity(opened);
+	const owner = statSync(opened.path, { bigint: true }).uid;
+	if (process.getuid && owner !== BigInt(process.getuid())) {
 		throw new Error("semantic_worker_owned_file_required");
 	}
-	return `${stat.dev}:${stat.ino}`;
+	return opened;
 }
 
 function assertCommittedStore(db: Database): void {
@@ -81,13 +95,13 @@ function cloneRequest(input: Parameters<PackSemanticExecutor["search"]>[0]) {
 
 type RuntimeIdentity = Pick<RuntimeProof, "actorId" | "deviceId">;
 
-function captureIdentity(store: SemanticWorkerOptions["store"]): RuntimeIdentity {
+function captureIdentity(store: IdentityStore): RuntimeIdentity {
 	if (!store.hasCurrentIdentity()) throw new SemanticIdentityChangedError();
 	return { actorId: store.actorId, deviceId: store.deviceId };
 }
 
 export function captureProof(
-	store: SemanticWorkerOptions["store"],
+	store: IdentityStore,
 	identity = captureIdentity(store),
 ): RuntimeProof {
 	const context = store.scopeResolutionDeviceContext?.();
@@ -97,14 +111,14 @@ export function captureProof(
 	};
 }
 
-function assertIdentity(store: SemanticWorkerOptions["store"], proof: RuntimeProof): void {
+function assertIdentity(store: IdentityStore, proof: RuntimeProof): void {
 	const current = captureIdentity(store);
 	if (current.actorId !== proof.actorId || current.deviceId !== proof.deviceId) {
 		throw new SemanticIdentityChangedError();
 	}
 }
 
-function assertProof(store: SemanticWorkerOptions["store"], proof: RuntimeProof): void {
+function assertProof(store: IdentityStore, proof: RuntimeProof): void {
 	if (JSON.stringify(captureProof(store)) !== JSON.stringify(proof))
 		throw new SemanticIdentityChangedError();
 }
@@ -112,24 +126,16 @@ function assertProof(store: SemanticWorkerOptions["store"], proof: RuntimeProof)
 function assertCompletion(
 	store: SemanticWorkerOptions["store"],
 	proof: RuntimeProof,
-	dbPath: string,
-	identity: string,
+	opened: DatabaseFileIdentity,
 ): void {
 	assertProof(store, proof);
-	assertDatabaseIdentity(store, dbPath, identity);
+	assertDatabaseIdentity(opened);
 }
 
-function assertDatabaseIdentity(
-	store: SemanticWorkerOptions["store"],
-	dbPath: string,
-	identity: string,
-): void {
-	try {
-		if (realpathSync(store.db.name) === dbPath && fileIdentity(dbPath) === identity) return;
-	} catch {
-		// Removal/replacement cannot become a successful keyword-only delivery.
-	}
-	throw new SemanticIdentityChangedError();
+/** The path must still lead to the file, and the write-ahead log, the store opened. */
+function assertDatabaseIdentity(opened: DatabaseFileIdentity): void {
+	// Removal or replacement must not become a successful keyword-only delivery.
+	if (!isDatabaseFileUnchanged(opened)) throw new SemanticIdentityChangedError();
 }
 
 function readyCatalog(db: Database): VectorCatalog | null {
@@ -158,14 +164,14 @@ function matchingCatalog(db: Database, state: SearchState): VectorCatalog | null
 	return catalog?.generationId === state.generationId ? catalog : null;
 }
 
-function transport(dbPath: string, identity: string, events: WorkerEvents) {
+function transport(opened: DatabaseFileIdentity, events: WorkerEvents) {
 	const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
 	// These two static sibling files are separate build entries, not Vite browser-worker assets.
 	const entryName =
 		extension === "ts" ? "./semantic-worker-entry.ts" : "./semantic-worker-entry.js";
 	const entry = new URL(entryName, import.meta.url);
 	const worker = new Worker(entry, {
-		workerData: { dbPath, fileIdentity: identity },
+		workerData: { opened },
 		// The named protocol supplies model/public proof; do not inherit profile settings or credentials.
 		env: {},
 		// A worker inherits its parent's execArgv unless given its own, which would carry preload
@@ -193,24 +199,19 @@ function warnSemanticCircuitOpen(code: SemanticWorkerErrorCode): void {
 }
 
 function createWorkerOwner(options: SemanticWorkerOptions) {
-	const { store } = options;
-	if (!isAbsolute(store.db.name) || store.db.name === ":memory:") {
-		throw new Error("semantic_worker_file_required");
-	}
-	const dbPath = realpathSync(store.db.name);
-	const identity = fileIdentity(dbPath);
+	const opened = storeDatabaseFile(options.store);
 	const queue = createSemanticWorkerQueue({
 		...options.queueOptions,
 		onCircuitOpen: options.queueOptions?.onCircuitOpen ?? warnSemanticCircuitOpen,
-		createWorker: options.createWorker ?? ((events) => transport(dbPath, identity, events)),
+		createWorker: options.createWorker ?? ((events) => transport(opened, events)),
 	});
-	return { dbPath, identity, queue };
+	return { opened, queue };
 }
 
 /** Owner must await close() before closing its writable store. */
 export function createSemanticExecutor(options: SemanticWorkerOptions): PackSemanticExecutor {
 	const { store } = options;
-	const { dbPath, identity, queue } = createWorkerOwner(options);
+	const { opened, queue } = createWorkerOwner(options);
 	let generation = 0;
 	const unsubscribe = store.onIdentityChanged?.(() => {
 		generation++;
@@ -219,7 +220,7 @@ export function createSemanticExecutor(options: SemanticWorkerOptions): PackSema
 		async search(input, executionOptions) {
 			const requestIdentity = captureIdentity(store);
 			const requestGeneration = generation;
-			assertDatabaseIdentity(store, dbPath, identity);
+			assertDatabaseIdentity(opened);
 			if (isEmbeddingDisabled() || input.query.trim().length < 3 || !currentCatalog(store.db)) {
 				return [];
 			}
@@ -239,7 +240,7 @@ export function createSemanticExecutor(options: SemanticWorkerOptions): PackSema
 					const embedding = await prepareEmbedding(options, request.query, state);
 					assertIdentity(store, proof);
 					if (!embedding) return null;
-					assertDatabaseIdentity(store, dbPath, identity);
+					assertDatabaseIdentity(opened);
 					return {
 						...request,
 						generationId: state.generationId,
@@ -253,7 +254,7 @@ export function createSemanticExecutor(options: SemanticWorkerOptions): PackSema
 					(error: unknown) => ({ error }),
 				);
 			// Check both outcomes: identity changes must not become keyword delivery on timeout/crash.
-			assertCompletion(store, proof, dbPath, identity);
+			assertCompletion(store, proof, opened);
 			if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
 			if ("error" in outcome) throw outcome.error;
 			return revalidateOutput(store, outcome.output, state, request, proof);

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -15,6 +15,7 @@ import {
 	resolveEmbeddingVectorIdentityLabel,
 	storeVectors,
 } from "./index.js";
+import { SemanticIdentityChangedError } from "./semantic/semantic-executor-seam.js";
 import { createFixture } from "./semantic/semantic-ranking.test-helper.js";
 import { readCatalog } from "./semantic/validated-vector-index-state.js";
 
@@ -467,6 +468,45 @@ describe("default semantic retrieval through the public core entrypoint", () => 
 		expect(results).toEqual([]);
 		expect(embed).not.toHaveBeenCalled();
 		expect(prepare.mock.calls.some(([sql]) => /vec_distance_l2\s*\(/i.test(sql))).toBe(false);
+	});
+});
+
+describe("default semantic worker store file", () => {
+	it("refuses the first search when another file took the store's path after it opened", async () => {
+		// Arrange: replace the file between the store's open and its first semantic search.
+		const current = openStore("file");
+		await seed(current);
+		current.db.pragma("wal_checkpoint(TRUNCATE)");
+		const path = current.dbPath;
+		copyFileSync(path, `${path}.replacement`);
+		renameSync(path, `${path}.original`);
+		renameSync(`${path}.replacement`, path);
+		const posted = vi.spyOn(Worker.prototype, "postMessage");
+
+		// Act
+		const outcome = await current.semanticSearchAsync(input).then(
+			(value) => ({ value }),
+			(error: unknown) => ({ error }),
+		);
+
+		// Assert
+		expect(outcome).toEqual({ error: expect.any(SemanticIdentityChangedError) });
+		expect(posted).not.toHaveBeenCalled();
+	});
+
+	it("ranks on the store's own connection when its file changed while it opened", async () => {
+		// Arrange: no identity was taken at open, so no worker connection could be checked.
+		const current = openStore("file");
+		const id = await seed(current);
+		vi.spyOn(current, "databaseFile").mockReturnValue(null);
+		const posted = vi.spyOn(Worker.prototype, "postMessage");
+
+		// Act
+		const results = await current.semanticSearchAsync(input);
+
+		// Assert
+		expect(results.map((row) => row.id)).toEqual([id]);
+		expect(posted).not.toHaveBeenCalled();
 	});
 });
 
