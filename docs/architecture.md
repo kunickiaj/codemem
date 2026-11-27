@@ -551,12 +551,26 @@ is unchanged. Other processes assemble packs on their own thread, as before.
   `recent` and its ownership checks. It learns who is asking from the request
   alone: the actor ID, the device ID and the device's public key. It is started
   with an empty environment and reads no configuration or key file.
-- **What the main thread checks before delivery.** It captures the Identity,
-  the device key and the store file's identity before asking. When the worker
-  answers, or fails, it checks that all three are unchanged; if not, the request
-  fails and nothing is delivered. It then checks, with one query under the
-  current Identity, that every memory the pack or its trace names is visible.
-  If one is not, the pack is assembled again on the main thread.
+- **What the main thread checks before delivery.** Before asking, it captures
+  the Identity, the device key and the Identity generation persisted in the
+  store. A local Identity switch commits that generation in the store before the
+  configuration names the new Identity, so a request is refused when the
+  generation names another Identity than the process runs as. When the worker
+  answers, or fails, the main thread checks that all three are unchanged; if
+  not, the request fails and nothing is delivered. The worker makes the same
+  generation check on its own connection and refuses a request that does not
+  match.
+- **Which file.** The store identifies its file by device and inode when it
+  opens its connection. The worker opens the same path later, so it compares
+  the path with that identity before and after it opens, and the main thread
+  compares again before asking and before delivery. A file replaced at the path
+  fails the request.
+- **Which memories.** The main thread lists every memory the pack and its
+  trace name, from tables in `pack-memory-ids.ts` that have an entry for each
+  field of a pack. A field added without an entry does not compile, and a pack
+  with a field the tables do not know has no list. With one query under the
+  current Identity it checks that each listed memory is visible, active and not
+  deleted. If one is not, the pack is assembled again on the main thread.
 - **Writes.** The worker writes nothing. The main thread records the pack in
   `usage_events` after the checks, and the route records the retrieval ledger
   as before.

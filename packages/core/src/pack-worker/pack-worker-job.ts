@@ -5,9 +5,13 @@
  * configuration, environment or key file, and it cannot write. The thread that asked
  * decides whether the pack is delivered.
  */
-import { statSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
+import { databaseFileAt } from "../database-file-identity.js";
 import { connectReadOnly } from "../db.js";
+import {
+	type LocalIdentityGenerationMarker,
+	readLocalIdentityGenerationMarker,
+} from "../local-identity-generation.js";
 import { createMemoryReadHandle } from "../memory-reads.js";
 import { assemblePackArtifacts } from "../pack.js";
 import type { PackWorkerData, PackWorkerJob, PackWorkerRequest } from "./pack-worker-protocol.js";
@@ -18,14 +22,44 @@ const MAX_JOB_BYTES = 4 * 1024 * 1024;
 if (!parentPort) throw new Error("pack_worker_parent_required");
 const port = parentPort;
 const { dbPath, fileIdentity } = workerData as PackWorkerData;
-const stat = statSync(dbPath);
-if (`${stat.dev}:${stat.ino}` !== fileIdentity) throw new Error("pack_worker_file_changed");
+/** Whether the path leads to the file the store identified when it opened its connection. */
+function isStoreFile(): boolean {
+	const file = databaseFileAt(dbPath);
+	return file !== null && file.path === dbPath && file.fileIdentity === fileIdentity;
+}
+
+// Checked on both sides of the open: a file replaced in between would otherwise be read as
+// the store's, and its row IDs would pass for the store's.
+if (!isStoreFile()) throw new Error("pack_worker_file_changed");
 const db = connectReadOnly(dbPath);
 try {
+	if (!isStoreFile()) throw new Error("pack_worker_file_changed");
 	db.pragma("query_only = ON");
 } catch (error) {
 	db.close();
 	throw error;
+}
+
+function sameGeneration(
+	a: LocalIdentityGenerationMarker | null,
+	b: LocalIdentityGenerationMarker | null,
+): boolean {
+	return a?.generation === b?.generation && a?.actorId === b?.actorId;
+}
+
+/** Whether this connection sees the Identity generation the request was made under. */
+function generationMatches(job: PackWorkerJob): boolean {
+	return sameGeneration(readLocalIdentityGenerationMarker(db), job.proof.identityGeneration);
+}
+
+function validGeneration(marker: unknown): boolean {
+	if (marker === null) return true;
+	const candidate = marker as Partial<LocalIdentityGenerationMarker> | undefined;
+	return (
+		Number.isSafeInteger(candidate?.generation) &&
+		typeof candidate?.actorId === "string" &&
+		candidate.actorId.trim().length > 0
+	);
 }
 
 function validateJob(job: PackWorkerJob): void {
@@ -36,6 +70,7 @@ function validateJob(job: PackWorkerJob): void {
 		typeof proof.deviceId !== "string" ||
 		!proof.deviceId.trim() ||
 		(proof.expectedPublicKey !== undefined && typeof proof.expectedPublicKey !== "string") ||
+		!validGeneration(proof.identityGeneration) ||
 		typeof request?.context !== "string" ||
 		!Number.isFinite(request.limit) ||
 		!Array.isArray(request.semanticResults) ||
@@ -63,8 +98,17 @@ port.on("message", (message: PackWorkerRequest) => {
 			port.postMessage({ type: "error", id: message.id, code: "expired" });
 			return;
 		}
+		if (!generationMatches(message.job)) {
+			port.postMessage({ type: "error", id: message.id, code: "refused" });
+			return;
+		}
 		const store = createMemoryReadHandle(db, message.job.proof);
 		const artifacts = assemblePackArtifacts(store, message.job.request);
+		// A switch that committed while the pack was assembled may have changed what it read.
+		if (!generationMatches(message.job)) {
+			port.postMessage({ type: "error", id: message.id, code: "refused" });
+			return;
+		}
 		port.postMessage({ type: "result", id: message.id, artifacts });
 	} catch {
 		port.postMessage({ type: "error", id: message.id, code: "assembly_failed" });

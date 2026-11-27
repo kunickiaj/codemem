@@ -1,9 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../coordinator-ed25519-key-id-test-fixtures.js";
+import { ensureLocalIdentitySwitchSchema } from "../local-identity-switch.js";
 import { assemblePackArtifacts, type PackArtifacts, type PackAssemblyRequest } from "../pack.js";
+import { packArtifactMemoryIds } from "../pack-memory-ids.js";
 import { refreshTestScopeRows } from "../scope-membership-cache-test-fixtures.js";
 import { isSemanticIdentityChangedError } from "../semantic/semantic-executor-seam.js";
 import { MemoryStore } from "../store.js";
@@ -13,9 +15,9 @@ import {
 	type PackWorkerEvents,
 	type PackWorkerExecutor,
 	type PackWorkerTransport,
-	packMemoryIds,
+	startPackWorkerThread,
 } from "./pack-worker-executor.js";
-import type { PackWorkerRequest } from "./pack-worker-protocol.js";
+import type { PackWorkerReply, PackWorkerRequest } from "./pack-worker-protocol.js";
 
 let dir: string;
 let store: MemoryStore;
@@ -61,6 +63,51 @@ function fakeWorker(reply: (message: PackWorkerRequest & { type: "assemble" }) =
 	return { posted, createWorker };
 }
 
+/** A memory of this device in the default scope and its own project, found by `deltaonly`. */
+function memoryInItsOwnProject(): number {
+	const session = store.db
+		.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, user, tool_version, metadata_json)
+			 VALUES ('2026-04-03T00:00:00.000Z', '/tmp/delta', 'delta-project', 'test-user', 'test', '{}')`,
+		)
+		.run();
+	const memory = store.db
+		.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, tags_text, active, created_at,
+				updated_at, metadata_json, rev, visibility, scope_id, import_key
+			 ) VALUES (?, 'discovery', 'Delta project memory', 'deltaonly context', 0.9, '', 1,
+				'2026-04-03T00:00:01.000Z', '2026-04-03T00:00:01.000Z', '{}', 1, 'shared',
+				'local-default', 'fixture-memory-delta')`,
+		)
+		.run(session.lastInsertRowid);
+	return Number(memory.lastInsertRowid);
+}
+
+/** A pack that names only the memory in its own project. */
+function ownProjectRequest(): PackAssemblyRequest {
+	return request({ context: "deltaonly", filters: { project: "delta-project" } });
+}
+
+/** What a local Identity switch commits in the store before the configuration follows. */
+function commitSwitchInStore(actorId: string): void {
+	ensureLocalIdentitySwitchSchema(store.db);
+	store.db
+		.prepare(
+			`INSERT INTO local_identity_generation (id, generation, actor_id, updated_at)
+			 VALUES (1, 1, ?, '2026-04-03T00:00:00.000Z')
+			 ON CONFLICT(id) DO UPDATE SET generation = generation + 1, actor_id = excluded.actor_id`,
+		)
+		.run(actorId);
+}
+
+function outcomeOf(pending: Promise<unknown>): Promise<unknown> {
+	return pending.then(
+		(delivered) => delivered,
+		(error: unknown) => error,
+	);
+}
+
 beforeEach(async () => {
 	previousConfig = process.env.CODEMEM_CONFIG;
 	dir = mkdtempSync(join(tmpdir(), "codemem-pack-worker-"));
@@ -93,7 +140,9 @@ describe("a pack assembled in the worker thread", () => {
 		expect(fromWorker).toEqual(fromThisThread);
 		expect(fromWorker?.response.item_ids.toSorted()).toEqual(fixture.visibleIds.toSorted());
 		expect(fromWorker?.response.pack_text).not.toContain(fixture.unauthorizedTitle);
-		expect(packMemoryIds(fromWorker as PackArtifacts)).not.toContain(fixture.unauthorizedId);
+		expect(packArtifactMemoryIds(fromWorker as PackArtifacts)).not.toContain(
+			fixture.unauthorizedId,
+		);
 	}, 30_000);
 
 	it("reads as the Identity in the request, without the device key when none is given", async () => {
@@ -228,11 +277,171 @@ describe("delivery checks on this thread", () => {
 					actorId: store.actorId,
 					deviceId: store.deviceId,
 					expectedPublicKey: CANONICAL_PUBLIC_KEY,
+					identityGeneration: null,
 				},
 				request: request(),
 			},
 		});
 	});
+});
+
+describe("a memory forgotten while the worker assembled the pack", () => {
+	it("is not delivered", async () => {
+		const real = assemblePackArtifacts(store, request());
+		const worker = fakeWorker((message) => {
+			store.forget(fixture.personalId);
+			return { type: "result", id: message.id, artifacts: real };
+		});
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+
+		expect(real.response.item_ids).toContain(fixture.personalId);
+		expect(await executor.assemble(request())).toBeNull();
+	});
+
+	it("is not delivered when only the trace names it", async () => {
+		const ownProjectId = memoryInItsOwnProject();
+		const real = assemblePackArtifacts(store, ownProjectRequest());
+		const withTrimmed: PackArtifacts = structuredClone(real);
+		withTrimmed.trace.assembly.trimmed_ids.push(fixture.personalId);
+		const worker = fakeWorker((message) => {
+			store.forget(fixture.personalId);
+			return { type: "result", id: message.id, artifacts: withTrimmed };
+		});
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+
+		expect(real.response.item_ids).toEqual([ownProjectId]);
+		expect(await executor.assemble(ownProjectRequest())).toBeNull();
+	});
+
+	it("is not among the memories the store calls deliverable", () => {
+		store.forget(fixture.personalId);
+
+		const deliverable = store.deliverableMemoryIds(fixture.allIds);
+
+		expect([...deliverable]).toEqual([fixture.authorizedId]);
+		// `get` still returns the forgotten memory to its owner.
+		expect(store.get(fixture.personalId)?.active).toBe(0);
+	});
+});
+
+describe("a memory named only in the change from the previous pack", () => {
+	it("keeps the pack back when access to it ended before delivery", async () => {
+		const ownProjectId = memoryInItsOwnProject();
+		const real = assemblePackArtifacts(store, ownProjectRequest());
+		const withRemoved: PackArtifacts = structuredClone(real);
+		// The previous pack had the coordinator-scope memory; this one does not.
+		withRemoved.response.metrics.removed_ids.push(fixture.authorizedId);
+		const worker = fakeWorker((message) => {
+			store.db
+				.prepare("DELETE FROM scope_memberships WHERE scope_id = ?")
+				.run(fixture.authorizedScopeId);
+			return { type: "result", id: message.id, artifacts: withRemoved };
+		});
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+
+		expect(real.response.item_ids).toEqual([ownProjectId]);
+		expect(await executor.assemble(ownProjectRequest())).toBeNull();
+	});
+});
+
+describe("a local Identity switch that committed in the store only", () => {
+	it("refuses a pack that was in flight when the switch committed", async () => {
+		const real = assemblePackArtifacts(store, request());
+		const worker = fakeWorker((message) => {
+			// The configuration still names the old Identity, so the process looks current.
+			commitSwitchInStore("local:switched-to");
+			return { type: "result", id: message.id, artifacts: real };
+		});
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+
+		const outcome = await outcomeOf(executor.assemble(request()));
+
+		expect(store.hasCurrentIdentity()).toBe(true);
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+	});
+
+	it("is refused by the worker too, whose connection sees another generation than the proof", async () => {
+		const file = store.databaseFile();
+		const replies: PackWorkerReply[] = [];
+		executor = createPackWorkerExecutor({
+			store,
+			createWorker: (events) =>
+				startPackWorkerThread(
+					{ dbPath: file?.path ?? "", fileIdentity: file?.fileIdentity ?? "" },
+					{
+						...events,
+						message(reply) {
+							replies.push(reply);
+							events.message(reply);
+						},
+					},
+				),
+		});
+
+		const pending = outcomeOf(executor.assemble(request()));
+		// The proof is captured and the thread is still starting when the switch commits.
+		commitSwitchInStore("local:switched-to");
+		const outcome = await pending;
+
+		expect(replies).toContainEqual({ type: "error", id: 1, code: "refused" });
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+	}, 30_000);
+
+	it("refuses before asking the worker when the switch had already committed", async () => {
+		const real = assemblePackArtifacts(store, request());
+		const worker = fakeWorker((message) => ({ type: "result", id: message.id, artifacts: real }));
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+		commitSwitchInStore("local:switched-to");
+
+		const outcome = await outcomeOf(executor.assemble(request()));
+
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+		expect(worker.posted).toEqual([]);
+	});
+
+	it("sends the worker the generation the store has persisted", async () => {
+		commitSwitchInStore(store.actorId);
+		const real = assemblePackArtifacts(store, request());
+		const worker = fakeWorker((message) => ({ type: "result", id: message.id, artifacts: real }));
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
+
+		const delivered = await executor.assemble(request());
+
+		expect(delivered).toEqual(real);
+		expect(worker.posted[0]).toMatchObject({
+			job: { proof: { identityGeneration: { generation: 1, actorId: store.actorId } } },
+		});
+	});
+});
+
+describe("a store file replaced after the store opened it", () => {
+	it("refuses the pack: the worker would read another database with the same memory IDs", async () => {
+		const otherDir = mkdtempSync(join(tmpdir(), "codemem-pack-worker-other-"));
+		const otherPath = join(otherDir, "mem.sqlite");
+		const other = new MemoryStore(otherPath, { keysDir: join(otherDir, "keys") });
+		seedMixedScopeFixture(other.db, other.deviceId);
+		await refreshTestScopeRows(other.db, { [other.deviceId]: CANONICAL_PUBLIC_KEY });
+		other.db
+			.prepare("UPDATE memory_items SET title = 'Replacement ' || id, body_text = ?")
+			.run(`${fixture.query} replacement contents`);
+		other.db.pragma("wal_checkpoint(TRUNCATE)");
+		await other.closeAsync();
+		// The store keeps its file open. The path now leads to the other database.
+		renameSync(otherPath, store.dbPath);
+		rmSync(`${store.dbPath}-wal`, { force: true });
+		rmSync(`${store.dbPath}-shm`, { force: true });
+		rmSync(otherDir, { recursive: true, force: true });
+		store.enablePackWorker();
+
+		const outcome = await outcomeOf(
+			store.buildMemoryPackWithTraceAsync(fixture.query, 10, 2000, {
+				project: "mixed-domain-fixture",
+			}),
+		);
+
+		expect(isSemanticIdentityChangedError(outcome)).toBe(true);
+		expect(JSON.stringify(outcome)).not.toContain("Replacement");
+	}, 30_000);
 });
 
 describe("a worker that cannot do the work", () => {
@@ -252,6 +461,25 @@ describe("a worker that cannot do the work", () => {
 		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker });
 
 		expect(await executor.assemble(request())).toBeNull();
+	});
+
+	it("stops using a worker after three packs in a row that it could not assemble", async () => {
+		const warn = vi.fn();
+		let asked = 0;
+		// Two refusals first. They are answers about the request and do not count.
+		const worker = fakeWorker((message) => ({
+			type: "error",
+			id: message.id,
+			code: asked++ < 2 ? "refused" : "assembly_failed",
+		}));
+		executor = createPackWorkerExecutor({ store, createWorker: worker.createWorker, warn });
+
+		const outcomes = [];
+		for (let attempt = 0; attempt < 7; attempt++) outcomes.push(await executor.assemble(request()));
+
+		expect(outcomes).toEqual([null, null, null, null, null, null, null]);
+		expect(worker.posted.filter((message) => message.type === "assemble")).toHaveLength(5);
+		expect(warn).toHaveBeenCalledTimes(1);
 	});
 
 	it("replaces a worker that does not answer in time, then stops using it", async () => {

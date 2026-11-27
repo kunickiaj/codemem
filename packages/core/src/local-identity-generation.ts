@@ -28,6 +28,27 @@ export function readLocalIdentityGeneration(db: Database): string | null {
 	}
 }
 
+/** The persisted marker of the last switch: how many there were and the Identity it set. */
+export interface LocalIdentityGenerationMarker {
+	generation: number;
+	actorId: string;
+}
+
+/** The whole marker, or null when this device never switched. Read-only, like the above. */
+export function readLocalIdentityGenerationMarker(
+	db: Database,
+): LocalIdentityGenerationMarker | null {
+	try {
+		const row = db
+			.prepare("SELECT generation, actor_id FROM local_identity_generation WHERE id = 1")
+			.get() as { generation: number; actor_id: string } | undefined;
+		return row ? { generation: row.generation, actorId: row.actor_id } : null;
+	} catch (error) {
+		if (error instanceof Error && error.message.includes("no such table")) return null;
+		throw error;
+	}
+}
+
 export function assertLocalIdentityCurrent(db: Database, actorId: string): void {
 	const current = readLocalIdentityGeneration(db);
 	if (current !== null && current !== actorId) throw new LocalIdentitySupersededError();

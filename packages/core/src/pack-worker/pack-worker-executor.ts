@@ -7,30 +7,31 @@
  *
  * Who may see what is decided twice. The worker reads as the Identity in the proof this
  * thread captured before asking. When the reply arrives, this thread checks that its
- * Identity, its device key and its store file are still the ones it captured, and that
- * every memory the pack names is visible to that Identity now. A pack that fails the first
- * check is never delivered. One that fails the second is assembled again on this thread.
+ * Identity, its device key, the Identity generation persisted in the store and the store
+ * file are still the ones it captured, and that every memory the pack names is visible to
+ * that Identity and not forgotten. A pack that fails the first check is never delivered.
+ * One that fails the second is assembled again on this thread.
+ *
+ * The store file is the one the store identified when it opened its connection. The worker
+ * opens the same path later, so both sides compare the path with that identity.
  *
  * The worker is an optimisation: when it cannot start, fails or is too slow, the caller
  * assembles the pack itself, as it did before.
  */
-import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import { type DatabaseFileIdentity, isDatabaseFileUnchanged } from "../database-file-identity.js";
+import { readLocalIdentityGenerationMarker } from "../local-identity-generation.js";
 import type { PackArtifacts, PackAssemblyRequest } from "../pack.js";
+import { packArtifactMemoryIds } from "../pack-memory-ids.js";
 import type { StoreHandle } from "../search.js";
 import { SemanticIdentityChangedError } from "../semantic/semantic-executor-seam.js";
-import {
-	assertCompletion,
-	assertDatabaseIdentity,
-	captureProof,
-	fileIdentity,
-} from "../semantic/semantic-worker-executor.js";
+import { captureProof } from "../semantic/semantic-worker-executor.js";
 import type {
 	PackWorkerData,
 	PackWorkerJob,
+	PackWorkerProof,
 	PackWorkerReply,
 	PackWorkerRequest,
 } from "./pack-worker-protocol.js";
@@ -38,8 +39,10 @@ import type {
 export interface PackWorkerStore extends StoreHandle {
 	hasCurrentIdentity(): boolean;
 	onIdentityChanged?(listener: () => void): () => void;
-	/** Which of these memories the store's current Identity may see. */
-	visibleMemoryIds(memoryIds: readonly number[]): Set<number>;
+	/** Which of these memories may be delivered to the current Identity: visible and not forgotten. */
+	deliverableMemoryIds(memoryIds: readonly number[]): Set<number>;
+	/** The file the store's connection opened, identified when it opened it. */
+	databaseFile(): DatabaseFileIdentity | null;
 }
 
 export interface PackWorkerTransport {
@@ -114,7 +117,8 @@ function workerEntry(): { url: URL; execArgv: string[] } | null {
 	return { url, execArgv: ["--import", loader, ...conditionFlags(process.execArgv)] };
 }
 
-function startWorkerThread(
+/** Start the worker thread for the store file. Null when this process cannot start one. */
+export function startPackWorkerThread(
 	workerData: PackWorkerData,
 	events: PackWorkerEvents,
 ): PackWorkerTransport | null {
@@ -263,20 +267,32 @@ class PackWorkerClient {
 			return;
 		}
 		entry.finish(null);
+		// A refusal is the worker working: its view of the store did not match the proof.
+		if (reply.code === "refused") return;
+		this.countFailure("could not assemble a pack");
+		if (!this.usable) this.dropWorker();
 	}
 
-	/** Drop the worker thread. Waiting packs go back to their callers. */
+	/** Drop the worker thread after it failed. Waiting packs go back to their callers. */
 	private fail(what: string): void {
+		this.dropWorker();
+		this.countFailure(what);
+	}
+
+	private dropWorker(): void {
 		const transport = this.transport;
 		this.transport = null;
 		this.ready = null;
 		this.finishAll();
 		void transport?.terminate().catch(() => undefined);
+	}
+
+	private countFailure(what: string): void {
 		if (this.closed) return;
 		this.consecutiveFailures += 1;
 		if (this.consecutiveFailures === MAX_CONSECUTIVE_FAILURES) {
 			this.options.warn(
-				`codemem: the prompt pack worker ${what} ${MAX_CONSECUTIVE_FAILURES} times in a row; packs are assembled on the main thread until restart.`,
+				`codemem: the prompt pack worker ${what}, the last of ${MAX_CONSECUTIVE_FAILURES} failures in a row; packs are assembled on the main thread until restart.`,
 			);
 		}
 	}
@@ -286,53 +302,55 @@ class PackWorkerClient {
 	}
 }
 
-function addIds(into: Set<number>, ids: readonly unknown[] | undefined): void {
-	for (const id of ids ?? []) into.add(Number(id));
+/**
+ * Whether the pack may go to the store's current Identity: every memory it or its trace
+ * names is visible to that Identity and not forgotten. A pack with no complete inventory
+ * of the memories it names may not.
+ */
+function mayDeliver(store: PackWorkerStore, artifacts: PackArtifacts): boolean {
+	const ids = packArtifactMemoryIds(artifacts);
+	if (!ids) return false;
+	const deliverable = store.deliverableMemoryIds(ids);
+	return ids.every((id) => deliverable.has(id));
 }
 
-/** Every memory a pack names, in what is delivered and in its trace. */
-export function packMemoryIds(artifacts: PackArtifacts): number[] {
-	const ids = new Set<number>();
-	const { response, trace } = artifacts;
-	addIds(ids, response.item_ids);
-	addIds(
-		ids,
-		response.items.map((item) => item.id),
-	);
-	addIds(
-		ids,
-		trace.retrieval.candidates.map((candidate) => candidate.id),
-	);
-	addIds(ids, trace.assembly.deduped_ids);
-	addIds(ids, trace.assembly.trimmed_ids);
-	for (const group of trace.assembly.collapsed_groups) addIds(ids, [group.kept, ...group.dropped]);
-	for (const cluster of trace.assembly.compressed_clusters) {
-		addIds(ids, [cluster.representative_id, ...cluster.compressed_ids]);
+/**
+ * Who this thread is now. Throws when a switch has committed in the store to another
+ * Identity than this process runs as: the configuration may not name the new one yet, and
+ * until it does the process still looks current to itself.
+ */
+function captureDeliveryProof(store: PackWorkerStore): PackWorkerProof {
+	const proof: PackWorkerProof = {
+		...captureProof(store),
+		identityGeneration: readLocalIdentityGenerationMarker(store.db),
+	};
+	if (proof.identityGeneration && proof.identityGeneration.actorId !== proof.actorId) {
+		throw new SemanticIdentityChangedError();
 	}
-	for (const section of Object.values(trace.assembly.sections)) addIds(ids, section);
-	return [...ids];
+	return proof;
 }
 
-/** Whether the store's current Identity may see every memory the pack names. */
-function everyMemoryVisible(store: PackWorkerStore, artifacts: PackArtifacts): boolean {
-	const ids = packMemoryIds(artifacts);
-	if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) return false;
-	const visible = store.visibleMemoryIds(ids);
-	return ids.every((id) => visible.has(id));
+function assertProofUnchanged(store: PackWorkerStore, proof: PackWorkerProof): void {
+	if (JSON.stringify(captureDeliveryProof(store)) !== JSON.stringify(proof)) {
+		throw new SemanticIdentityChangedError();
+	}
+}
+
+/** The path must still lead to the file the store's connection opened. */
+function assertStoreFileUnchanged(opened: DatabaseFileIdentity): void {
+	if (!isDatabaseFileUnchanged(opened)) throw new SemanticIdentityChangedError();
 }
 
 /** The owner must await close() before closing its store. */
 export function createPackWorkerExecutor(options: PackWorkerOptions): PackWorkerExecutor {
 	const { store } = options;
-	if (!isAbsolute(store.db.name) || store.db.name === ":memory:") {
-		throw new Error("pack_worker_file_required");
-	}
-	const dbPath = realpathSync(store.db.name);
-	const identity = fileIdentity(dbPath);
+	const opened = store.databaseFile();
+	if (!opened) throw new Error("pack_worker_file_required");
 	const client = new PackWorkerClient({
 		createWorker:
 			options.createWorker ??
-			((events) => startWorkerThread({ dbPath, fileIdentity: identity }, events)),
+			((events) =>
+				startPackWorkerThread({ dbPath: opened.path, fileIdentity: opened.fileIdentity }, events)),
 		readinessMs: options.readinessMs ?? 10_000,
 		requestMs: options.requestMs ?? 10_000,
 		maxPending: options.maxPending ?? 8,
@@ -346,14 +364,15 @@ export function createPackWorkerExecutor(options: PackWorkerOptions): PackWorker
 		async assemble(request, executionOptions) {
 			if (!client.usable) return null;
 			const requestGeneration = generation;
-			const proof = captureProof(store);
-			assertDatabaseIdentity(store, dbPath, identity);
+			const proof = captureDeliveryProof(store);
+			assertStoreFileUnchanged(opened);
 			const artifacts = await client.run({ proof, request }, executionOptions?.signal);
 			// Checked whether or not the worker answered: after an Identity change the caller
 			// must not assemble and deliver this request under the new Identity either.
-			assertCompletion(store, proof, dbPath, identity);
+			assertProofUnchanged(store, proof);
+			assertStoreFileUnchanged(opened);
 			if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
-			if (!artifacts || !everyMemoryVisible(store, artifacts)) return null;
+			if (!artifacts || !mayDeliver(store, artifacts)) return null;
 			return artifacts;
 		},
 		async close() {

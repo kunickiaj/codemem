@@ -48,7 +48,7 @@ export interface SemanticWorkerOptions {
 	createWorker?: QueueOptions["createWorker"];
 }
 
-export function fileIdentity(path: string): string {
+function fileIdentity(path: string): string {
 	const stat = statSync(path);
 	if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid())) {
 		throw new Error("semantic_worker_owned_file_required");
@@ -109,7 +109,7 @@ function assertProof(store: SemanticWorkerOptions["store"], proof: RuntimeProof)
 		throw new SemanticIdentityChangedError();
 }
 
-export function assertCompletion(
+function assertCompletion(
 	store: SemanticWorkerOptions["store"],
 	proof: RuntimeProof,
 	dbPath: string,
@@ -119,7 +119,7 @@ export function assertCompletion(
 	assertDatabaseIdentity(store, dbPath, identity);
 }
 
-export function assertDatabaseIdentity(
+function assertDatabaseIdentity(
 	store: SemanticWorkerOptions["store"],
 	dbPath: string,
 	identity: string,
