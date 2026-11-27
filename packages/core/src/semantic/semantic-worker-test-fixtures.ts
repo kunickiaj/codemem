@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -243,9 +243,8 @@ export function resultBarrier(store: MemoryStore, options: { pauseFirstOnly?: bo
 	let released = false;
 	let output: RankOutput | null | undefined;
 	const createWorker: NonNullable<SemanticWorkerOptions["createWorker"]> = (events) => {
-		const stat = statSync(store.dbPath);
 		const worker = new Worker(new URL("./semantic-worker-entry.ts", import.meta.url), {
-			workerData: { dbPath: store.dbPath, fileIdentity: `${stat.dev}:${stat.ino}` },
+			workerData: { opened: store.databaseFile() },
 			env: {},
 			execArgv: [],
 		});

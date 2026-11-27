@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { databaseFileAt } from "./database-file-identity.js";
 import { loadSqliteVec } from "./db.js";
 import {
 	chunkText,
@@ -61,9 +62,8 @@ function sourceHash(db: Database.Database, id: number): string {
 
 // Exercise the real worker entrypoint with numerical inputs, never an embedding runtime.
 async function workerRank(path: string, input: RankInput): Promise<Neighbor[]> {
-	const stat = statSync(path);
 	const worker = new Worker(new URL("./semantic/semantic-worker-entry.ts", import.meta.url), {
-		workerData: { dbPath: path, fileIdentity: `${stat.dev}:${stat.ino}` },
+		workerData: { opened: databaseFileAt(path) },
 		env: {
 			NODE_COMPILE_CACHE: compileCacheDirectory,
 			...(process.env.NODE_DISABLE_COMPILE_CACHE === undefined

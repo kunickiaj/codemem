@@ -2275,7 +2275,9 @@ export class MemoryStore {
 		const override = getSemanticExecutorOverride(this);
 		if (override) return override.search(input, executionOptions);
 		// In-memory databases cannot be reopened by a worker; preserve their inline compatibility.
-		if (this.db.name === ":memory:" || this.db.name === "") {
+		// Neither can a file that changed while the store opened it: there is no identity a
+		// worker's connection could be checked against, so the store's own connection reads.
+		if (this.db.name === ":memory:" || this.db.name === "" || !this.databaseFile()) {
 			return semanticSearch(
 				this.db,
 				input.query,
