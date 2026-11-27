@@ -157,9 +157,27 @@ describe("applying a coordinator Team setup on a fresh admin machine", () => {
 	});
 
 	it("applies nothing and disables nothing when the removals cannot be read", async () => {
-		await app(target, manifest, async () => {
+		const routes = app(target, manifest, async () => {
 			throw new Error("Remote coordinator request failed (503): team_member_removal_unavailable");
-		}).request(`/api/sync/team-setup/v1/${CANDIDATE}`);
+		});
+
+		const detail = await routes.request(`/api/sync/team-setup/v1/${CANDIDATE}`);
+		const summary = await routes.request("/api/sync/team-setup/v1");
+
+		// The reads name the cause, so the Viewer can explain it.
+		expect(await detail.json()).toEqual({
+			error: "team_setup_completion_unavailable",
+			reason: "team_member_removals_unavailable",
+		});
+		expect(await summary.json()).toMatchObject({
+			candidates: [
+				{
+					candidateRef: CANDIDATE,
+					blockingError: "team_setup_completion_unavailable",
+					blockingReason: "team_member_removals_unavailable",
+				},
+			],
+		});
 
 		expect(getLegacyTeamSetupDraft(target.db, CANDIDATE)?.state).not.toBe("completed");
 		expect(memberships(target)).toEqual([]);

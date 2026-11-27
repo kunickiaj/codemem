@@ -296,10 +296,12 @@ interface CompletionBlocker {
 
 /** The safe cause behind a retryable completion failure, when one is known. */
 function completionFailureReason(error: unknown): LegacyTeamSetupErrorReason | undefined {
-	const removalsUnavailable = errorChain(error).some(
-		(item) => item instanceof LegacyTeamSetupDeviceRemovalsUnavailableError,
-	);
-	return removalsUnavailable ? "device_removals_unavailable" : undefined;
+	const chain = errorChain(error);
+	if (chain.some((item) => item instanceof LegacyTeamSetupDeviceRemovalsUnavailableError))
+		return "device_removals_unavailable";
+	if (chain.some((item) => item instanceof TeamMemberRemovalsUnavailableError))
+		return "team_member_removals_unavailable";
+	return undefined;
 }
 
 function completionBlocker(error: unknown): CompletionBlocker {

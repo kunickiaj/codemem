@@ -1217,6 +1217,17 @@ describe("Projects cached recipient presentation", () => {
 		);
 	});
 
+	it("says Team member removals could not be read when that is why a Team is blocked", () => {
+		expect(
+			teamSetupRecoveryReason({
+				blockingError: "team_setup_completion_unavailable",
+				blockingReason: "team_member_removals_unavailable",
+			}),
+		).toBe(
+			"Team member removals could not be read from the coordinator. Nothing changed here. View recovery details and try again.",
+		);
+	});
+
 	it("keeps ordinary setup wording for a Team without a blocker beside a blocked Team", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());

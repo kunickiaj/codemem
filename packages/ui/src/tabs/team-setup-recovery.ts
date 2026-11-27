@@ -10,6 +10,11 @@ export function teamSetupRecoveryReason(
 		candidate.blockingReason === "device_removals_unavailable"
 	)
 		return "Device removal records could not be read from the coordinator. Nothing changed. View recovery details and try again.";
+	if (
+		error === "team_setup_completion_unavailable" &&
+		candidate.blockingReason === "team_member_removals_unavailable"
+	)
+		return "Team member removals could not be read from the coordinator. Nothing changed here. View recovery details and try again.";
 	switch (error) {
 		case "team_setup_completion_conflict":
 		case "team_setup_conflict":
