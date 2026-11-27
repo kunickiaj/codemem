@@ -271,6 +271,26 @@ function bindableEnrollments(
 }
 
 /**
+ * The source fingerprint of a binding this reconciler wrote for a device, from
+ * that group's enrollment of it under that key. A binding that carries it was
+ * recorded for exactly that key.
+ */
+export function coordinatorEnrollmentBindingSource(binding: {
+	groupId: string;
+	identityId: string;
+	deviceId: string;
+	fingerprint: string;
+}): string {
+	const { groupId, identityId, deviceId, fingerprint } = binding;
+	return coordinatorEnrollmentDigest("coordinator-identity-device-source-v1", {
+		groupId,
+		identityId,
+		deviceId,
+		fingerprint,
+	});
+}
+
+/**
  * Binds a device that the current snapshot lists and that has no active binding.
  * A binding that device removal ended is reused, because the coordinator holds
  * this enrollment now. A snapshot that omits the device never reaches this write.
@@ -297,10 +317,7 @@ function bindEnrolledDevice(
 		provenance: "coordinator_enrollment",
 		revision: coordinatorEnrollmentDigest("coordinator-identity-device-revision-v1", stableBinding),
 		migrationState: "user_managed",
-		sourceFingerprint: coordinatorEnrollmentDigest(
-			"coordinator-identity-device-source-v1",
-			stableBinding,
-		),
+		sourceFingerprint: coordinatorEnrollmentBindingSource(stableBinding),
 		idempotencyKey: coordinatorEnrollmentDigest(
 			"coordinator-identity-device-idempotency-v1",
 			stableBinding,
