@@ -139,16 +139,21 @@ function retryLabel(loading: boolean, refresh: boolean): string {
 	return refresh ? "Retry loading current setup" : "Retry";
 }
 
-/** The setup's global error with its retry, and the Team recovery beside the recovery details. */
+/**
+ * The setup's global error with its retry, and the Team recovery: beside the
+ * recovery details of a setup that could not be loaded, or on its own for a
+ * setup that loads while its Team is on hold.
+ */
 function GlobalError(props: {
 	busy: boolean;
-	error: NonNullable<ReturnType<typeof globalError>>;
+	error: ReturnType<typeof globalError>;
 	loading: boolean;
 	onRetry: () => void;
 	recoveryMode: boolean;
 	recoveryPanel?: ComponentChildren;
 }) {
 	const { busy, error, loading, recoveryMode } = props;
+	if (!error) return <>{props.recoveryPanel}</>;
 	return (
 		<div
 			className="legacy-team-setup-error legacy-team-setup-recovery"
@@ -237,16 +242,14 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 						Review device ownership and Project access before this Team can be used for sharing.
 					</p>
 					{loading && !view ? <p role="status">Loading the latest Team setup details…</p> : null}
-					{error ? (
-						<GlobalError
-							busy={globalBusy}
-							error={error}
-							loading={loading}
-							onRetry={props.onRetry}
-							recoveryMode={recoveryMode}
-							recoveryPanel={props.recoveryPanel}
-						/>
-					) : null}
+					<GlobalError
+						busy={globalBusy}
+						error={error}
+						loading={loading}
+						onRetry={props.onRetry}
+						recoveryMode={recoveryMode}
+						recoveryPanel={props.recoveryPanel}
+					/>
 					{itemRecoveryRequired ? (
 						<div className="legacy-team-setup-error" id="legacy-team-setup-item-errors">
 							{itemErrors.map((item) => (

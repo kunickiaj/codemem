@@ -204,22 +204,38 @@ function RecoveryReview({ preview }: { preview: TeamRecoveryPreviewV1 }) {
 	);
 }
 
+const TURNED_OFF_INTRO =
+	"This Team was turned off because its saved setup no longer matched the coordinator. Recovery turns it back on with the people, devices and Projects of that setup, and leaves out every device that was removed from the coordinator group since.";
+const UNCONFIRMED_INTRO =
+	"A recovery of this Team was saved but could not be confirmed, so the Team shares nothing yet. Review the recovery again to finish it.";
+
 type Step =
 	| { kind: "idle" }
 	| { kind: "review"; preview: TeamRecoveryPreviewV1 }
 	| { kind: "recovered"; teamName: string };
 
+interface RecoverableTeam {
+	teamId: string;
+	/** A recovery was saved and not confirmed: the Team is on, on hold, and shares nothing. */
+	unconfirmed: boolean;
+}
+
 /** The Team the candidate's recovery would restore, once the summary names one. */
-function useRecoverableTeamId(candidateRef: string, actions: TeamRecoveryActions): string | null {
-	const [teamId, setTeamId] = useState<string | null>(null);
+function useRecoverableTeam(
+	candidateRef: string,
+	actions: TeamRecoveryActions,
+): RecoverableTeam | null {
+	const [team, setTeam] = useState<RecoverableTeam | null>(null);
 	useEffect(() => {
 		let current = true;
-		setTeamId(null);
+		setTeam(null);
 		actions
 			.loadSummary()
 			.then((summary) => {
 				const candidate = summary.candidates.find((item) => item.candidateRef === candidateRef);
-				if (current) setTeamId(candidate?.recoverableTeamId ?? null);
+				const teamId = candidate?.recoverableTeamId;
+				const unconfirmed = candidate?.blockingReason === "team_recovery_unconfirmed";
+				if (current) setTeam(teamId ? { teamId, unconfirmed } : null);
 			})
 			// Without the summary there is no Team to offer, and Retry above still works.
 			.catch(() => undefined);
@@ -227,7 +243,7 @@ function useRecoverableTeamId(candidateRef: string, actions: TeamRecoveryActions
 			current = false;
 		};
 	}, [actions, candidateRef]);
-	return teamId;
+	return team;
 }
 
 /** The recovery's steps and the calls behind them. */
@@ -296,10 +312,10 @@ function PanelButton(props: { busy: boolean; id: string; label: string; onClick:
  */
 export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 	const [actions] = useState(() => ({ ...defaultActions, ...props.actions }));
-	const teamId = useRecoverableTeamId(props.candidateRef, actions);
-	const recovery = useTeamRecovery(teamId, actions, props.onRecovered);
+	const team = useRecoverableTeam(props.candidateRef, actions);
+	const recovery = useTeamRecovery(team?.teamId ?? null, actions, props.onRecovered);
 	const { step, busy, error } = recovery;
-	if (!teamId) return null;
+	if (!team) return null;
 	if (step.kind === "recovered")
 		return (
 			<section className="team-recovery-panel" id="team-recovery-panel">
@@ -316,11 +332,7 @@ export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 			id="team-recovery-panel"
 		>
 			<strong>Recover this Team</strong>
-			<p className="small">
-				This Team was turned off because its saved setup no longer matched the coordinator. Recovery
-				turns it back on with the people, devices and Projects of that setup, and leaves out every
-				device that was removed from the coordinator group since.
-			</p>
+			<p className="small">{team.unconfirmed ? UNCONFIRMED_INTRO : TURNED_OFF_INTRO}</p>
 			{error ? (
 				<p aria-live="assertive" id="team-recovery-error" role="alert">
 					{error}

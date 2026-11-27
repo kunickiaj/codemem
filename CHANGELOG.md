@@ -4,7 +4,7 @@
 
 ### Added
 
-- A Team that was turned off after devices were removed from its coordinator group can be recovered. On a device that holds the coordinator admin secret, **View recovery details** now offers **Recover this Team**: **Review recovery** lists the people, devices and Projects that come back and what stays out, and **Recover Team** turns the Team back on. Removed devices and people stay out, including a removed device that is enrolled again later. Recovery reads the coordinator again after it saves, and the Team shares nothing until that read confirms it. Before, such a Team stayed off, and setting it up again failed. The Viewer routes are `POST /api/sync/recipient-policy/v1/teams/:teamId/recovery/preview` and `.../recovery/commit`.
+- A Team that was turned off after devices were removed from its coordinator group can be recovered. On a device that holds the coordinator admin secret, **View recovery details** now offers **Recover this Team**: **Review recovery** lists the people, devices and Projects that come back and what stays out, and **Recover Team** turns the Team back on. Removed devices and people stay out, including a removed device that is enrolled again later. Recovery reads the coordinator again after it saves, and the Team shares nothing until that read confirms it. A Team whose recovery could not be confirmed keeps showing **Needs recovery** and can be reviewed again. Before, such a Team stayed off, and setting it up again failed. The Viewer routes are `POST /api/sync/recipient-policy/v1/teams/:teamId/recovery/preview` and `.../recovery/commit`.
 
 ### Changed
 

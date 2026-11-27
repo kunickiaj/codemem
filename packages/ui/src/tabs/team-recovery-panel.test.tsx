@@ -103,6 +103,25 @@ describe("Team recovery panel", () => {
 		expect(document.getElementById("team-recovery-panel")).toBeNull();
 	});
 
+	it("says why the Team shares nothing: turned off, or a recovery that was not confirmed", async () => {
+		await mount(actions());
+		const turnedOff = text("team-recovery-panel");
+		const onHold = summary("team-1");
+		onHold.candidates[0] = {
+			...onHold.candidates[0],
+			blockingError: "team_setup_completion_unavailable",
+			blockingReason: "team_recovery_unconfirmed",
+		} as (typeof onHold.candidates)[number];
+		const element = document.getElementById("mount");
+		if (element) render(null, element);
+
+		await mount(actions({ loadSummary: vi.fn().mockResolvedValue(onHold) }));
+
+		expect(turnedOff).toContain("was turned off because its saved setup no longer matched");
+		expect(text("team-recovery-panel")).toContain("saved but could not be confirmed");
+		expect(text("team-recovery-panel")).not.toContain("was turned off because");
+	});
+
 	it("lists who and what comes back and what stays out before anything is recovered", async () => {
 		const recovery = actions();
 		await mount(recovery);

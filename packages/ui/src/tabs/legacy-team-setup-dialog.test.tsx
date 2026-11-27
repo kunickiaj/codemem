@@ -3779,14 +3779,46 @@ describe("Team recovery in the Team setup dialog", () => {
 		expect(recovery.preview).not.toHaveBeenCalled();
 	});
 
-	it("does not look for a Team to recover while setup details load normally", async () => {
-		const recovery = { loadSummary: vi.fn(), preview: vi.fn(), commit: vi.fn() };
+	it("offers the recovery for a setup that loads while its Team is on hold", async () => {
+		// Arrange: the setup reads as completed, and the summary lists it for another recovery.
+		const candidate = {
+			candidateRef: "opaque-candidate",
+			displayName: "Engineering",
+			status: "stale" as const,
+			deviceCount: 1,
+			projectCount: 0,
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			blockingError: "team_setup_completion_unavailable" as const,
+			blockingReason: "team_recovery_unconfirmed" as const,
+			recoverableTeamId: "team-1",
+		};
+		const recovery = {
+			loadSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [candidate] }),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
 		setup({ loadDetail: vi.fn().mockResolvedValue(detail()), recovery });
 
-		await vi.waitFor(() => expect(document.querySelector("#legacyTeamSetupDialog")).not.toBeNull());
+		await vi.waitFor(() => button("Review recovery"));
+
+		expect(document.getElementById("legacy-team-setup-global-error")).toBeNull();
+		expect(document.getElementById("team-recovery-panel")?.textContent).toContain(
+			"could not be confirmed",
+		);
+	});
+
+	it("adds nothing to a setup whose Team needs no recovery", async () => {
+		const recovery = {
+			loadSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [] }),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
+		setup({ loadDetail: vi.fn().mockResolvedValue(detail()), recovery });
+
+		await vi.waitFor(() => expect(recovery.loadSummary).toHaveBeenCalled());
 		await act(async () => undefined);
 
-		expect(recovery.loadSummary).not.toHaveBeenCalled();
 		expect(document.getElementById("team-recovery-panel")).toBeNull();
 	});
 });
