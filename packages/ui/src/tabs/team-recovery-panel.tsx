@@ -225,7 +225,9 @@ interface RecoverableTeam {
 /**
  * The Team the candidate's recovery would restore, read from the summary again
  * whenever `refreshKey` changes or `reload` is called. `offered` says whether
- * this panel was ever given a Team, so that one no longer named reads as done.
+ * this panel was ever given a Team. `listed` says whether the summary still
+ * lists the setup: a setup that needs no recovery is not listed, while one this
+ * device may not recover is listed without a Team to recover.
  */
 function useRecoverableTeam(
 	candidateRef: string,
@@ -234,6 +236,7 @@ function useRecoverableTeam(
 ) {
 	const [team, setTeam] = useState<RecoverableTeam | null>(null);
 	const [offered, setOffered] = useState(false);
+	const [listed, setListed] = useState(true);
 	const [reloads, setReloads] = useState(0);
 	useEffect(() => {
 		let current = true;
@@ -247,6 +250,7 @@ function useRecoverableTeam(
 				const teamId = candidate?.recoverableTeamId;
 				const unconfirmed = candidate?.blockingReason === "team_recovery_unconfirmed";
 				setTeam(teamId ? { teamId, unconfirmed } : null);
+				setListed(candidate !== undefined);
 				if (teamId) setOffered(true);
 			})
 			// The last answer stays. Retry in the dialog, or Check status here, reads it again.
@@ -255,7 +259,7 @@ function useRecoverableTeam(
 			current = false;
 		};
 	}, [actions, candidateRef, refreshKey, reloads]);
-	return { team, offered, reload: () => setReloads((count) => count + 1) };
+	return { team, offered, listed, reload: () => setReloads((count) => count + 1) };
 }
 
 /** Whether a failed commit may have gone through: no answer, an unreadable one, or no known refusal. */
@@ -371,6 +375,9 @@ function RecoveredStatus(props: {
 
 const NO_LONGER_NEEDED =
 	"This Team no longer needs recovery. Close this dialog to see it in Sharing.";
+// The summary names a Team to recover only for an admin device configured for the setup's coordinator and group.
+const NOT_RECOVERABLE_HERE =
+	"This device can no longer recover this Team. Use a device that holds the coordinator admin secret and is configured for the Team's coordinator group.";
 const OUTCOME_UNKNOWN =
 	"codemem couldn't confirm whether the Team was recovered. It may already be sharing its Projects again. Check its status before trying again.";
 
@@ -420,7 +427,7 @@ function RecoveryActions(props: {
  */
 export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 	const [actions] = useState(() => ({ ...defaultActions, ...props.actions }));
-	const { team, offered, reload } = useRecoverableTeam(
+	const { team, offered, listed, reload } = useRecoverableTeam(
 		props.candidateRef,
 		actions,
 		props.refreshKey,
@@ -429,7 +436,9 @@ export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 	const { step, busy, error } = recovery;
 	if (step.kind === "recovered")
 		return <RecoveredStatus onRefresh={recovery.refresh} step={step} />;
-	if (!team) return offered ? <NoLongerNeeded /> : null;
+	if (!team && !offered) return null;
+	// A summary that still lists the setup without a Team to recover keeps it from this device only.
+	if (!team) return <PanelStatus text={listed ? NOT_RECOVERABLE_HERE : NO_LONGER_NEEDED} />;
 	// Checking the status refreshes what the dialog was opened from and reads the summary again.
 	const checkStatus = () => {
 		recovery.reset();
@@ -455,11 +464,11 @@ export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 	);
 }
 
-function NoLongerNeeded() {
+function PanelStatus({ text }: { text: string }) {
 	return (
 		<section className="team-recovery-panel" id="team-recovery-panel">
 			<p id="team-recovery-status" role="status">
-				{NO_LONGER_NEEDED}
+				{text}
 			</p>
 		</section>
 	);

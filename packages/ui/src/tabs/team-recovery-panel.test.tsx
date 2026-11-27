@@ -276,7 +276,8 @@ describe("Team recovery panel when something around the recovery fails", () => {
 			const loadSummary = vi
 				.fn()
 				.mockResolvedValueOnce(summary("team-1"))
-				.mockResolvedValue(summary());
+				// After the check the summary no longer lists the setup: the recovery went through.
+				.mockResolvedValue({ version: 1, candidates: [] });
 			const onRecovered = vi.fn();
 			await mount(actions({ loadSummary, commit: vi.fn().mockRejectedValue(cause) }), onRecovered);
 			await click("team-recovery-review-button");
@@ -287,9 +288,37 @@ describe("Team recovery panel when something around the recovery fails", () => {
 
 			expect(unknown).toContain("couldn't confirm whether the Team was recovered");
 			expect(unknown).not.toContain("Nothing changed");
-			// The summary no longer names the Team, so the recovery went through.
+			// The summary no longer lists the setup, so the recovery went through.
 			expect(text("team-recovery-status")).toContain("no longer needs recovery");
 			expect(onRecovered).toHaveBeenCalledTimes(1);
 		},
 	);
+});
+
+describe("Team recovery panel after checking the status of an unconfirmed recovery", () => {
+	/** Commits with a lost answer, then checks the Team's status against `after`. */
+	async function checkAfterLostCommit(after: LegacyTeamSetupSummaryResponseV1) {
+		const loadSummary = vi.fn().mockResolvedValueOnce(summary("team-1")).mockResolvedValue(after);
+		const commit = vi.fn().mockRejectedValue(new TeamRecoveryApiError(0, "team_recovery_failed"));
+		await mount(actions({ loadSummary, commit }));
+		await click("team-recovery-review-button");
+		await click("team-recovery-commit");
+		await click("team-recovery-check");
+		return text("team-recovery-status");
+	}
+
+	it("says the Team no longer needs recovery once the summary no longer lists the setup", async () => {
+		const status = await checkAfterLostCommit({ version: 1, candidates: [] });
+
+		expect(status).toContain("no longer needs recovery");
+	});
+
+	it("says this device can no longer recover the Team while the summary still lists the setup", async () => {
+		// Arrange: the setup is listed without a Team to recover, as for a device that lost its admin secret.
+		const status = await checkAfterLostCommit(summary());
+
+		expect(status).toContain("This device can no longer recover this Team");
+		expect(status).toContain("coordinator admin secret");
+		expect(status).not.toContain("no longer needs recovery");
+	});
 });
