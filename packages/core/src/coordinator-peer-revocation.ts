@@ -118,10 +118,11 @@ function sentIds(value: unknown[], sent: Set<string>): string[] {
 }
 
 /**
- * The IDs whose sent key the coordinator reports still enabled, or none. Only
- * IDs this device sent a key for count, every one must also be enrolled, and
- * an ID the evidence calls both removed and enabled discards the evidence. A
- * broken evidence answer costs only the evidence, never the reply.
+ * The IDs whose sent key the coordinator reports still enabled, or none. Every
+ * entry of both lists must be an ID this device sent a key for, every enabled
+ * one must also be enrolled, and no ID may be both removed and enabled;
+ * otherwise the whole evidence is discarded. A broken evidence answer costs
+ * only the evidence, never the reply.
  */
 function keyEnrolledIds(
 	value: unknown,
@@ -134,10 +135,13 @@ function keyEnrolledIds(
 	const keyed = new Set(
 		entries.filter((entry) => entry.public_key).map((entry) => entry.device_id),
 	);
-	const removedKeys = new Set(sentIds(evidence.removed, keyed));
-	const enabledKeys = sentIds(evidence.enrolled, keyed);
-	if (enabledKeys.some((id) => removedKeys.has(id) || !enrolled.includes(id))) return [];
-	return enabledKeys;
+	// Every entry must be an ID this device sent with a key; one stray entry voids it all.
+	const strict = (list: unknown[]): list is string[] =>
+		list.every((id) => typeof id === "string" && keyed.has(id));
+	if (!strict(evidence.removed) || !strict(evidence.enrolled)) return [];
+	const removedKeys = new Set(evidence.removed);
+	if (evidence.enrolled.some((id) => removedKeys.has(id) || !enrolled.includes(id))) return [];
+	return evidence.enrolled;
 }
 
 /** A reply without all three arrays and the integer is invalid, and the caller keeps every pairing. */

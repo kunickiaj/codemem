@@ -537,6 +537,12 @@ describe("coordinator removal lookup with key evidence", () => {
 		["the coordinator sends no key evidence", undefined],
 		["the key evidence is malformed", { removed: "peer-a" }],
 		["the key evidence contradicts itself", { removed: ["peer-a"], enrolled: ["peer-a"] }],
+		["the enabled list mixes types", { removed: [], enrolled: ["peer-a", 7] }],
+		[
+			"the enabled list names a device this machine did not send",
+			{ removed: [], enrolled: ["peer-a", "stranger"] },
+		],
+		["the removed list mixes types", { removed: [null], enrolled: ["peer-a"] }],
 	])("removes a device listed as removed and enrolled when %s", async (_label, keyEvidence) => {
 		stubCoordinator(() =>
 			valid({ removed: ["peer-a"], enrolled: ["peer-a"], key_evidence: keyEvidence }),
