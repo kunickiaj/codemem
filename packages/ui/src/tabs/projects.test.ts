@@ -1153,6 +1153,57 @@ describe("Projects cached recipient presentation", () => {
 		expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		{
+			reconciliation: {
+				state: "never",
+				refreshing: true,
+				checked_at: null,
+				age_ms: null,
+				error_code: null,
+			},
+			text: "Not checked with the coordinator yet",
+		},
+		{
+			reconciliation: {
+				state: "stale",
+				refreshing: false,
+				checked_at: "2026-08-11T11:48:00.000Z",
+				age_ms: 12 * 60_000,
+				error_code: "team_setup_roster_unavailable",
+			},
+			text: "Last checked with the coordinator 12 min ago",
+		},
+	] as const)(
+		"keeps Finish available and says when Team setup was checked: $reconciliation.state",
+		async ({ reconciliation, text }) => {
+			vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
+			vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+			vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
+				version: 1,
+				candidates: [
+					{
+						candidateRef: "opaque-candidate-ref",
+						displayName: "Example Team",
+						status: "in_progress",
+						deviceCount: 2,
+						projectCount: 1,
+						unresolvedDeviceCount: 1,
+						unresolvedProjectCount: 0,
+					},
+				],
+				reconciliation: { ...reconciliation },
+			});
+
+			initProjectsTab(() => {}, { onOpenTeamSetup: vi.fn() });
+			await loadProjectsData();
+
+			const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
+			expect(entry?.querySelector("button")?.textContent).toBe("Finish setting up this Team");
+			expect(entry?.textContent).toContain(text);
+		},
+	);
+
 	it("shows a Team that needs recovery with the Sharing blocker text and a recovery action", async () => {
 		const onOpenTeamSetup = vi.fn();
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());

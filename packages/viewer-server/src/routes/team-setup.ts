@@ -1089,7 +1089,7 @@ function summaryResponse(
 	return { version: TEAM_SETUP_VERSION, candidates, reconciliation: read.status };
 }
 
-/** The background check behind the summary, refreshed again whenever setup state changes. */
+/** The background check behind the summary, refreshed again when coordinator settings change. */
 function createSummaryReconciliation(
 	options: TeamSetupRoutesOptions,
 	loadSnapshots: ReturnType<typeof createCachedSnapshotLoader>,
