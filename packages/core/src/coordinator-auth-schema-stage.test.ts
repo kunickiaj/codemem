@@ -183,6 +183,8 @@ const names = (db: Database.Database) =>
 		({ name }) => name,
 	);
 const current = () => chainThrough(numbered.at(-1) as string);
+/** Every numbered migration a baseline records: all but 0053, which only apply records. */
+const baselined = numbered.filter((name) => name !== TEAM_GROUP_BINDING_MIGRATION_NAME);
 const fromWorkerSchema = () => {
 	const db = new Database(":memory:");
 	databases.push(db);
@@ -202,11 +204,11 @@ describe("ledger baseline of migrations after the last auth stage", () => {
 		db.exec("DROP TRIGGER coordinator_device_rejoin_audit_no_delete");
 		db.exec(ledger);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db)).toEqual(numbered.filter((name) => name !== DEVICE_REJOIN_MIGRATION_NAME));
+		expect(names(db)).toEqual(baselined.filter((name) => name !== DEVICE_REJOIN_MIGRATION_NAME));
 
 		apply(db, DEVICE_REJOIN_MIGRATION_NAME);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db).toSorted()).toEqual(numbered);
+		expect(names(db).toSorted()).toEqual(baselined);
 	});
 
 	it("does not baseline Team member removal storage until its delete guard exists", () => {
@@ -215,26 +217,37 @@ describe("ledger baseline of migrations after the last auth stage", () => {
 		db.exec(ledger);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
 		expect(names(db)).toEqual(
-			numbered.filter((name) => name !== TEAM_MEMBER_REMOVAL_MIGRATION_NAME),
+			baselined.filter((name) => name !== TEAM_MEMBER_REMOVAL_MIGRATION_NAME),
 		);
 
 		apply(db, TEAM_MEMBER_REMOVAL_MIGRATION_NAME);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db).toSorted()).toEqual(numbered);
+		expect(names(db).toSorted()).toEqual(baselined);
 	});
 
-	it("does not baseline Team group binding storage until its delete guard exists", () => {
-		const db = current();
-		db.exec("DROP TRIGGER coordinator_team_group_binding_no_delete");
+	it("never baselines 0053, so migrations apply runs its backfill", () => {
+		// A database created from schema.sql has the binding table, but no backfill ran.
+		const db = fromWorkerSchema();
+		db.exec(`INSERT INTO groups(group_id, created_at) VALUES ('group-a', 't');
+			INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at, invite_kind, policy_team_id)
+			VALUES ('prior', 'group-a', 'prior-token', 'auto_admit', 'later', 't', 'team_member', 'team-a')`);
 		db.exec(ledger);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
 		expect(names(db)).toEqual(
 			numbered.filter((name) => name !== TEAM_GROUP_BINDING_MIGRATION_NAME),
 		);
+		expect(db.prepare("SELECT COUNT(*) FROM coordinator_team_group_bindings").pluck().get()).toBe(
+			0,
+		);
 
 		apply(db, TEAM_GROUP_BINDING_MIGRATION_NAME);
+
+		expect(
+			db.prepare("SELECT team_id, group_id FROM coordinator_team_group_bindings").all(),
+		).toEqual([{ team_id: "team-a", group_id: "group-a" }]);
+		// A second baseline still leaves 0053 for apply, which records it.
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db).toSorted()).toEqual(numbered);
+		expect(names(db)).toEqual(baselined);
 	});
 
 	it.each([
@@ -275,7 +288,7 @@ describe("guarded ledger baseline", () => {
 		expect(qualificationObjects(db)).toEqual(qualificationObjects(current()));
 		db.exec(ledger);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db)).toEqual(numbered);
+		expect(names(db)).toEqual(baselined);
 	});
 
 	it("requires qualification storage repair before baselining an older Worker schema", () => {
@@ -295,7 +308,7 @@ describe("guarded ledger baseline", () => {
 		apply(db, "0035_add_owner_enrollment_qualifications.sql");
 		expect(everything(db)).toEqual(repaired);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db)).toEqual(numbered);
+		expect(names(db)).toEqual(baselined);
 	});
 
 	it("pins every table and column through V2 without excluding auth tables", () => {
@@ -328,7 +341,7 @@ describe("guarded ledger baseline", () => {
 		db.exec(coordinatorAuthStageBaselineSql("current"));
 		db.exec(coordinatorAuthStageBaselineSql("current"));
 		// Assert: from 0001, so no later apply replays earlier migrations.
-		expect(names(db)).toEqual(numbered);
+		expect(names(db)).toEqual(baselined);
 		expect(coordinatorD1BaselineMigrations("v2")).toEqual(
 			numbered.slice(0, numbered.indexOf(authorityCutover) + 1),
 		);
@@ -345,7 +358,7 @@ describe("guarded ledger baseline", () => {
 		expect(names(db)).toEqual(numbered.slice(0, numbered.indexOf(accountUnlink) + 1));
 		for (const name of numbered.filter((n) => n > accountUnlink)) apply(db, name);
 		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db)).toEqual(numbered);
+		expect(names(db)).toEqual(baselined);
 	});
 
 	it.each([

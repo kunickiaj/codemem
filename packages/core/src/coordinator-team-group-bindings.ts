@@ -73,8 +73,20 @@ export const TEAM_GROUP_BINDING_SCHEMA_SQL = `${SCHEMA_OBJECTS.map(
 	(object) => `${ifNotExists(object.sql)};`,
 ).join("\n\n")}\n`;
 
-/** Migration 0053: the objects, then the backfill. */
-export const TEAM_GROUP_BINDING_MIGRATION_SQL = `${TEAM_GROUP_BINDING_SCHEMA_SQL}\n${TEAM_GROUP_BINDING_BACKFILL_SQL};\n`;
+/**
+ * Fails, through the NOT NULL group, when a Team ID whose Team invitations all
+ * came from one group is still unbound after the backfill. Writes nothing
+ * otherwise, so Wrangler records 0053 only after a complete backfill.
+ */
+export const TEAM_GROUP_BINDING_BACKFILL_CHECK_SQL = `INSERT INTO ${BINDINGS} (team_id, group_id, bound_at, source)
+SELECT 'team_group_backfill_incomplete', NULL, '', 'backfill' WHERE EXISTS (
+ SELECT 1 FROM coordinator_invites AS invite
+ WHERE invite.invite_kind = 'team_member' AND invite.policy_team_id IS NOT NULL
+ GROUP BY invite.policy_team_id HAVING COUNT(DISTINCT invite.group_id) = 1
+ AND NOT EXISTS (SELECT 1 FROM ${BINDINGS} AS binding WHERE binding.team_id = invite.policy_team_id))`;
+
+/** Migration 0053: the objects, the backfill, then the check that the backfill is complete. */
+export const TEAM_GROUP_BINDING_MIGRATION_SQL = `${TEAM_GROUP_BINDING_SCHEMA_SQL}\n${TEAM_GROUP_BINDING_BACKFILL_SQL};\n\n${TEAM_GROUP_BINDING_BACKFILL_CHECK_SQL};\n`;
 
 export const TEAM_GROUP_BINDING_MIGRATION_NAME = "0053_add_team_group_bindings.sql";
 

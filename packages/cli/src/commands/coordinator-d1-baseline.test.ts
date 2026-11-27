@@ -41,15 +41,15 @@ it("says that each migration after 0047 is recorded only when its objects exist"
 		"0050_add_boundary_readiness.sql",
 		"0051_add_device_rejoin.sql",
 		"0052_add_team_member_removals.sql",
-		"0053_add_team_group_bindings.sql",
 	];
 	const unconditional = coordinatorD1BaselineMigrations("current").length - conditional.length;
 	expect(current?.[0]).toBe(
 		`-- Records ${unconditional} migrations, 0001_init.sql through 0047_add_account_unlink.sql, in the existing d1_migrations ledger`,
 	);
-	expect(current?.slice(2, 4)).toEqual([
+	expect(current?.slice(2, 5)).toEqual([
 		`-- Also records ${conditional.join(" and ")}, each only when the objects it adds already exist.`,
 		"-- A migration without them stays unrecorded, and wrangler d1 migrations apply runs it.",
+		"-- Never records 0053_add_team_group_bindings.sql, even when its objects exist: wrangler d1 migrations apply runs it, including its data steps.",
 	]);
 	expect(prior?.[0]).toMatch(/ through 0046_\S+, in the existing d1_migrations ledger$/u);
 	for (const name of conditional) expect(prior?.join("\n")).not.toContain(name);

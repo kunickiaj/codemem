@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initializeBaseSchema } from "./better-sqlite-coordinator-store.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
+	TEAM_GROUP_BINDING_BACKFILL_CHECK_SQL,
 	TEAM_GROUP_BINDING_BACKFILL_SQL,
 	TEAM_GROUP_BINDING_MIGRATION_NAME,
 	TEAM_GROUP_BINDING_MIGRATION_SQL,
@@ -38,8 +39,11 @@ it("ships the same SQL in SQLite, migration 0053, and the Worker schema", () => 
 	);
 	// Every statement creates a new object, except the backfill, which only adds bindings.
 	const statements = migration.trim().split("\n\n");
-	expect(statements.at(-1)).toBe(`${TEAM_GROUP_BINDING_BACKFILL_SQL};`);
-	for (const statement of statements.slice(0, -1))
+	expect(statements.slice(-2)).toEqual([
+		`${TEAM_GROUP_BINDING_BACKFILL_SQL};`,
+		`${TEAM_GROUP_BINDING_BACKFILL_CHECK_SQL};`,
+	]);
+	for (const statement of statements.slice(0, -2))
 		expect(statement).toMatch(/^CREATE (TABLE|INDEX|TRIGGER) IF NOT EXISTS /u);
 });
 
@@ -162,6 +166,22 @@ describe("migration 0053 on a database from an earlier release", () => {
 			{ team_id: "team-one", group_id: "group-a", bound_at: "2026-01-01", source: "backfill" },
 		]);
 		expect(snapshot()).toEqual(before);
+	});
+
+	it("fails, and binds nothing, when the backfill leaves a Team of one group unbound", () => {
+		// A guard that skips one Team's binding stands in for a backfill that missed it.
+		db.exec(`CREATE TABLE coordinator_team_group_bindings (
+			team_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, bound_at TEXT NOT NULL,
+			source TEXT NOT NULL CHECK (source IN ('invitation', 'backfill', 'admin')));
+			CREATE TRIGGER skip_team_one BEFORE INSERT ON coordinator_team_group_bindings
+			WHEN NEW.team_id = 'team-one' BEGIN SELECT RAISE(IGNORE); END`);
+
+		expect(() => db.transaction(() => db.exec(TEAM_GROUP_BINDING_MIGRATION_SQL))()).toThrow(
+			/NOT NULL constraint failed: coordinator_team_group_bindings\.group_id/u,
+		);
+		expect(db.prepare("SELECT COUNT(*) FROM coordinator_team_group_bindings").pluck().get()).toBe(
+			0,
+		);
 	});
 
 	it("is installed the same way when the SQLite coordinator opens the file", () => {

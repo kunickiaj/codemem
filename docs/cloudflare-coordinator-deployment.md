@@ -330,7 +330,8 @@ installs the same storage, and runs the same backfill, when it opens its file.
 
 The migration also binds existing Teams. Each Team whose Team invitations all came from one group is bound to
 that group. A Team whose Team invitations came from more than one group stays unbound, and the migration changes
-no other row. Before applying it, you can count such Teams on a copy of the database:
+no other row. The migration then checks that every Team of one group is bound, and fails without being recorded
+if one is not, so a later `migrations apply` runs it again. Before applying it, you can count such Teams on a copy of the database:
 
 ```sql
 SELECT COUNT(*) FROM (SELECT policy_team_id FROM coordinator_invites
@@ -829,10 +830,10 @@ every migration from `0001` and fail on the first change that already exists. Re
    `0046` for `prior_extension`, `0047` for `current`). For `current` it also records `0048` when the device removal
    storage that `0048` adds already exists, `0049` when its enrollment triggers already exist,
    `0050` when its readiness record storage already exists, `0051` when its rejoin storage already exists,
-   `0052` when every object of its Team member removal storage exists with the shipped definition, and `0053` when
-   every object of its Team group binding storage exists with the shipped definition. Each is checked on its own.
-   A baseline does not run the backfill of `0053`. A Team whose Team invitations all came from one group is then
-   read as `unbound` until its next Team invitation binds it.
+   and `0052` when every object of its Team member removal storage exists with the shipped definition. Each is
+   checked on its own. It never records `0053`, even when its objects exist, because `0053` also binds existing
+   Teams and checks that it bound every Team whose invitations came from one group. The next `migrations apply`
+   runs `0053` on top of the existing objects and records it only when that check passes.
    A migration whose objects are missing stays unrecorded and the next
    `migrations apply` runs it. The statement requires that stage's auth readiness checks to pass and
    checks table and column names for the remaining earlier tables, including controller attestations and sign-in
