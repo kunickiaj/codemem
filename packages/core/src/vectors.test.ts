@@ -2202,6 +2202,34 @@ describe("memory_vectors bootstrap on fresh databases", () => {
 		}
 	});
 
+	it("reads semantic-index counts from the validated catalog without scanning vector rows", async () => {
+		const store = new MemoryStore(join(tmpDir, "vectors-catalog-counts.sqlite"));
+		try {
+			const sessionId = insertTestSession(store.db);
+			const kept = store.remember(sessionId, "discovery", "kept memory", "indexed body text");
+			const retired = store.remember(sessionId, "discovery", "retired memory", "another body");
+			await store.flushPendingVectorWrites();
+			store.db.prepare("UPDATE memory_items SET active = 0 WHERE id = ?").run(retired);
+			const prepare = vi.spyOn(store.db, "prepare");
+
+			const diagnostics = getSemanticIndexDiagnostics(store.db);
+
+			expect(kept).toBeGreaterThan(0);
+			expect(diagnostics).toMatchObject({
+				semantic_search_model: "test-model",
+				embeddable_memory_count: 1,
+				indexed_memory_count: 1,
+				pending_memory_count: 0,
+			});
+			const vectorScans = prepare.mock.calls
+				.map(([sql]) => String(sql))
+				.filter((sql) => /\b(FROM|JOIN)\s+"?memory_vectors"?\b/iu.test(sql));
+			expect(vectorScans).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("bootstraps the core schema even when sqlite-vec cannot load", () => {
 		const scratch = new Database(":memory:");
 		const loadSpy = vi.spyOn(databaseRuntimePrimitives, "loadSqliteVec").mockImplementation(() => {

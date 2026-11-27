@@ -1,4 +1,6 @@
 import {
+	coordinatorEnabled,
+	coordinatorStatusGeneration,
 	coordinatorStatusSnapshot,
 	getCoordinatorEnrollmentReconciliationIssueSummary,
 	getSemanticIndexDiagnostics,
@@ -13,6 +15,7 @@ import {
 import { count, eq, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { safeJsonList } from "../helpers.js";
+import { type BackgroundValue, readInBackground } from "./background-refresh.js";
 import { overallSyncHealth, readPeerSyncHealth } from "./sync-health.js";
 
 export type SyncRuntimeStatus = {
@@ -523,18 +526,85 @@ function applyDerivedDaemonState(
 	statusBlock.daemon_state = state;
 }
 
-async function readJoinRequests(
+/** How long a coordinator answer is served before a background refresh starts. */
+const COORDINATOR_STATUS_MAX_AGE_MS = 30_000;
+
+/**
+ * Answers the coordinator runtime does not cache either, because they need another
+ * try: an unenrolled device, or a failed peer or approval lookup. The next read
+ * refreshes them, still in the background.
+ */
+function coordinatorStatusMaxAgeMs(snapshot: Record<string, unknown>): number {
+	const incomplete =
+		snapshot.presence_status === "not_enrolled" ||
+		Boolean(snapshot.lookup_error) ||
+		Boolean(snapshot.reciprocal_approval_error);
+	return incomplete ? 0 : COORDINATOR_STATUS_MAX_AGE_MS;
+}
+
+/** The coordinator fields known without asking it, shown until the first answer arrives. */
+function localCoordinatorSnapshot(config: SyncConfig): Record<string, unknown> {
+	return {
+		enabled: true,
+		configured: true,
+		sync_enabled: config.syncEnabled,
+		coordinator_url: config.syncCoordinatorUrl,
+		groups: config.syncCoordinatorGroups,
+		presence_status: "unknown",
+		presence_error: null,
+		advertised_addresses: [],
+		fresh_peer_count: 0,
+		stale_peer_count: 0,
+		discovered_peer_count: 0,
+		discovered_devices: [],
+	};
+}
+
+/** When the served answer was fetched, so readers can tell how current it is. */
+function refreshFields(value: BackgroundValue<unknown>): Record<string, unknown> {
+	return {
+		status_refreshed_at: value.refreshedAt,
+		status_age_ms: value.ageMs,
+		status_refreshing: value.refreshing,
+		status_refresh_error: value.error,
+	};
+}
+
+/**
+ * The coordinator status, from memory. Asking the coordinator takes several network
+ * round trips and a write transaction, so a background task refreshes the answer and
+ * this read never waits for it.
+ */
+async function readCoordinatorStatus(
 	input: SyncStatusInput,
-	config: SyncConfig,
-): Promise<Record<string, unknown>[]> {
+	base: BaseStatus,
+): Promise<Record<string, unknown>> {
+	const { config } = base;
+	if (!coordinatorEnabled(config)) return coordinatorStatusSnapshot(input.store, config);
+	const cached = readInBackground({
+		key: `coordinator-status|${input.store.dbPath}`,
+		version: coordinatorStatusGeneration(input.store, config),
+		maxAgeMs: coordinatorStatusMaxAgeMs,
+		load: () => coordinatorStatusSnapshot(input.store, config),
+	});
+	return {
+		...(cached.value ?? localCoordinatorSnapshot(config)),
+		paired_peer_count: Number(base.statusPayload.peer_count ?? 0),
+		...refreshFields(cached),
+	};
+}
+
+function readJoinRequests(input: SyncStatusInput, config: SyncConfig): Record<string, unknown>[] {
 	if (!input.includeJoinRequests || !input.showDiagnostics || !config.syncCoordinatorAdminSecret) {
 		return [];
 	}
-	try {
-		return await listCoordinatorJoinRequests(config);
-	} catch {
-		return [];
-	}
+	const cached = readInBackground({
+		key: `coordinator-join-requests|${input.store.dbPath}`,
+		version: `${config.syncCoordinatorUrl}|${config.syncCoordinatorGroups.join(",")}`,
+		maxAgeMs: COORDINATOR_STATUS_MAX_AGE_MS,
+		load: () => listCoordinatorJoinRequests(config),
+	});
+	return cached.value ?? [];
 }
 
 function addSyncHealth(
@@ -561,7 +631,7 @@ export async function buildSyncStatusResponse(
 	input: SyncStatusInput,
 ): Promise<Record<string, unknown>> {
 	const base = readBaseStatus(input);
-	const coordinatorSnapshot = await coordinatorStatusSnapshot(input.store, base.config);
+	const coordinatorSnapshot = await readCoordinatorStatus(input, base);
 	const coordinator = traceSync("coordinator", () =>
 		input.operations.redactCoordinatorStatus(coordinatorSnapshot, input.showDiagnostics),
 	);
@@ -595,7 +665,7 @@ export async function buildSyncStatusResponse(
 	const recipientPolicyReconciliation = traceSync("recipientPolicyReconciliation", () =>
 		input.operations.listRecipientPolicyReconciliationStatus(input.store),
 	);
-	const joinRequests = await readJoinRequests(input, base.config);
+	const joinRequests = readJoinRequests(input, base.config);
 	applyDerivedDaemonState(base, peers, attempts, failedPeerIds, statusBlock);
 	const syncHealth = addSyncHealth(base, peers, statusBlock);
 	const response: Record<string, unknown> = {

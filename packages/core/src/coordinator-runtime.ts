@@ -1188,6 +1188,19 @@ function indexReciprocalApprovalsByPeer(
 	return indexed;
 }
 
+/**
+ * A number that changes whenever an action invalidates the coordinator status, such
+ * as a reciprocal approval. Callers that keep their own copy of the status use it to
+ * refresh that copy.
+ */
+export function coordinatorStatusGeneration(
+	store: PresenceStoreLike,
+	config: CoordinatorSyncConfig,
+): string {
+	const cacheKey = coordinatorStatusCacheKey(store, config);
+	return `${cacheKey}#${coordinatorStatusCacheGenerations.get(cacheKey) ?? 0}`;
+}
+
 export async function coordinatorStatusSnapshot(
 	store: MemoryStore,
 	config: CoordinatorSyncConfig,

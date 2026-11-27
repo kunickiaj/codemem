@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initTestSchema, MemoryStore } from "@codemem/core";
+import { ensureDeviceIdentity, initTestSchema, MemoryStore } from "@codemem/core";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../index.js";
+import { settleBackgroundRefreshes } from "./background-refresh.js";
 
 let directory: string;
 let previousConfig: string | undefined;
@@ -194,5 +195,88 @@ describe("sync status attempt limits", () => {
 				),
 			),
 		).toBe(false);
+	});
+});
+
+describe("sync status reads", () => {
+	it("reads without writing to the store", async () => {
+		await app.request("/api/sync/status");
+		const prepare = vi.spyOn(store.db, "prepare");
+		const exec = vi.spyOn(store.db, "exec");
+
+		const response = await app.request("/api/sync/status");
+
+		expect(response.status).toBe(200);
+		const statements = [...prepare.mock.calls, ...exec.mock.calls].map(([sql]) => String(sql));
+		expect(statements.filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql))).toEqual(
+			[],
+		);
+	});
+
+	it("answers from memory while the coordinator is slow, then shows its answer and age", async () => {
+		const keysDir = join(directory, "keys");
+		vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
+		writeFileSync(
+			join(directory, "config.json"),
+			JSON.stringify({
+				sync_enabled: true,
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_group: "team-a",
+			}),
+		);
+		ensureDeviceIdentity(store.db, { keysDir });
+		const answers: Array<() => void> = [];
+		// Answer each coordinator request as the background refresh makes it.
+		const answerUntilRefreshed = async () => {
+			let done = false;
+			const refresh = settleBackgroundRefreshes().then(() => {
+				done = true;
+			});
+			while (!done) {
+				answers.shift()?.();
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+			await refresh;
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				(input: RequestInfo | URL) =>
+					new Promise<Response>((resolve) => {
+						const url = String(input);
+						const body = url.includes("/v1/presence") ? { ok: true, addresses: [] } : { items: [] };
+						answers.push(() => resolve(new Response(JSON.stringify(body), { status: 200 })));
+					}),
+			),
+		);
+		try {
+			const response = await Promise.race([
+				app.request("/api/sync/status"),
+				new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+			]);
+
+			if (!response) throw new Error("sync status waited for the coordinator");
+			const { coordinator } = (await response.json()) as { coordinator: Record<string, unknown> };
+			expect(coordinator).toMatchObject({
+				presence_status: "unknown",
+				status_refreshed_at: null,
+				status_refreshing: true,
+			});
+
+			await answerUntilRefreshed();
+			const refreshed = (await (await app.request("/api/sync/status")).json()) as {
+				coordinator: Record<string, unknown>;
+			};
+			expect(refreshed.coordinator).toMatchObject({
+				presence_status: "posted",
+				status_refreshing: false,
+			});
+			expect(refreshed.coordinator.status_refreshed_at).toEqual(expect.any(String));
+			expect(refreshed.coordinator.status_age_ms).toEqual(expect.any(Number));
+		} finally {
+			await answerUntilRefreshed();
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
 	});
 });

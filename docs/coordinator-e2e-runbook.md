@@ -271,6 +271,8 @@ codemem sync attempts --limit 10
 curl "http://127.0.0.1:38888/api/sync/status?includeDiagnostics=1"
 ```
 
+The `coordinator` block in that response comes from memory. The Viewer asks the coordinator in the background, at most every 30 seconds, and right away after an approval or a failed lookup. `status_refreshed_at` and `status_age_ms` say how old the answer is, and `status_refreshing` is true while a new one is on its way. Right after the Viewer starts, the first read shows `presence_status: "unknown"` until that first answer arrives.
+
 ## Common failure modes
 
 ### Invite imports but join times out

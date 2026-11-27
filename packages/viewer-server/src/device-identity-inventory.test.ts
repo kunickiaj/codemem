@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import { generateDeviceKey } from "../../cloudflare-coordinator-worker/test/device-rejoin-ceremony-fixture.js";
 import { readCoordinatorSyncConfig } from "../../core/src/coordinator-sync-config.js";
 import { verifySignature } from "../../core/src/sync-auth.js";
+import { settleBackgroundRefreshes } from "./application/background-refresh.js";
 import { createApp } from "./index.js";
 
 function testStore(): { store: MemoryStore; cleanup: () => void } {
@@ -127,6 +128,9 @@ it.each([
 				});
 			else expect(row).not.toHaveProperty("rejoin");
 			expect(JSON.stringify(items)).not.toContain(discovered.publicKey);
+			// Coordinator status is refreshed in the background; wait for that refresh.
+			await app.request("/api/sync/status");
+			await settleBackgroundRefreshes();
 			const status = await app.request("/api/sync/status");
 			expect(status.status).toBe(200);
 			const { coordinator } = await status.json<{
