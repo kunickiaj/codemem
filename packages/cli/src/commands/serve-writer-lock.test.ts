@@ -1,10 +1,11 @@
 import type { ChildProcess } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isViewerWriterLockHeld } from "@codemem/core";
+import { canonicalViewerDbPath, isViewerWriterLockHeld } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	holdViewerLockInAnotherProcess,
@@ -17,6 +18,7 @@ import {
 	viewerLockHolderHint,
 	waitForViewerStartup,
 } from "./viewer-lock-claim.js";
+import { readProcessIdentity } from "./viewer-stop-verification.js";
 
 let directory: string;
 let dbPath: string;
@@ -216,6 +218,497 @@ describe("stopping and restarting the Viewer by its lock", () => {
 
 		expect(startViewer).toHaveBeenCalledOnce();
 		expect(lockHeldAtStart).toEqual([false]);
+	});
+});
+
+type HolderOptions = Parameters<typeof holdViewerLockInAnotherProcess>[1];
+
+/**
+ * A Viewer stand-in answering at a free port, with a codemem Viewer's command line. It
+ * holds the lock of `database` and records itself as its owner unless `lock` is false,
+ * as a Viewer from before the lock does.
+ */
+async function viewerServing(database: string, options: HolderOptions = {}) {
+	const address = { host: "127.0.0.1", port: await freePort() };
+	const holder = await holdViewerLockInAnotherProcess(database, {
+		...(options?.lock === false ? {} : { owner: address }),
+		...options,
+		answerAsViewer: address,
+		extraArgs: ["codemem", "serve", "start", "--foreground", ...(options?.extraArgs ?? [])],
+	});
+	holders.push(holder);
+	return { holder, address };
+}
+
+/** A Viewer from before the lock that serves this database: listening, reporting it, holding it open. */
+function preLockViewer(options: HolderOptions = {}) {
+	return viewerServing(dbPath, {
+		lock: false,
+		profileDbPath: dbPath,
+		openFile: dbPath,
+		...options,
+	});
+}
+
+/** Where `name` is on this machine's PATH. */
+function commandPath(name: string): string {
+	return spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf-8" }).stdout.trim();
+}
+
+/** A PATH with `ps` and, when given, an `lsof` replaced by `script` (a shell script body). */
+function pathWithLsof(script: string | null, options: { executable?: boolean } = {}) {
+	const bin = mkdtempSync(join(directory, "bin-"));
+	symlinkSync(commandPath("ps"), join(bin, "ps"));
+	if (script !== null) {
+		writeFileSync(join(bin, "lsof"), `#!/bin/sh\n${script}\n`);
+		chmodSync(join(bin, "lsof"), options.executable === false ? 0o644 : 0o755);
+	}
+	return bin;
+}
+
+const quick = { gracefulMs: 300, forceMs: 2000 };
+
+describe("confirming a Viewer that holds this database's lock", () => {
+	it.each(["stop", "restart"] as const)(
+		"%s never signals a Viewer on the port that serves another database",
+		async (mode) => {
+			// Arrange: the Viewer at the port serves database B, and the command names A.
+			const other = join(directory, "other.sqlite");
+			const { holder, address } = await viewerServing(other, { profileDbPath: other });
+			const startViewer = vi.fn(async () => {});
+
+			// Act
+			await runServeInvocation(
+				resolveStopRestartInvocation(mode, {
+					dbPath,
+					host: address.host,
+					port: String(address.port),
+				}),
+				{ nativeRuntimeAllowsServeStart: async () => true, stopExistingViewer, startViewer },
+			);
+
+			// Assert
+			expect(holder.exitCode).toBeNull();
+			expect(holder.signalCode).toBeNull();
+			expect(startViewer).not.toHaveBeenCalled();
+			expect(printed()).toContain(
+				`The viewer at ${address.host}:${address.port} (pid ${holder.pid}) could not be confirmed to serve ${dbPath}: `,
+			);
+			expect(printed()).toContain("Nothing was stopped.");
+			expect(process.exitCode).toBe(1);
+		},
+	);
+
+	it("stops the Viewer on the port that holds this database's lock, reached through a symlink", async () => {
+		const { holder, address } = await viewerServing(dbPath);
+		const link = join(directory, "link.sqlite");
+		symlinkSync(dbPath, link);
+		const exited = new Promise((resolve) => holder.once("exit", resolve));
+
+		const result = await stopExistingViewer(link, address);
+
+		expect(result).toEqual({ stopped: true, pid: holder.pid });
+		await exited;
+		expect(holder.signalCode).toBe("SIGTERM");
+	});
+
+	/** Rewrites this database's lock owner record, as a stale or copied record would read. */
+	function forgeOwner(change: Record<string, unknown>) {
+		const path = `${canonicalViewerDbPath(dbPath)}.viewer-lock.owner`;
+		const owner = JSON.parse(readFileSync(path, "utf-8"));
+		writeFileSync(path, JSON.stringify({ ...owner, ...change }));
+	}
+
+	it.each([
+		["another start time", { started: "Thu Jan  1 00:00:00 2026" }],
+		["another database", { db_path: "/elsewhere/other.sqlite" }],
+	])("never signals a Viewer whose owner record shows %s", async (_label, change) => {
+		const { holder, address } = await viewerServing(dbPath);
+		forgeOwner(change);
+
+		const result = await stopExistingViewer(dbPath, address);
+
+		expect(result.refused?.pid).toBe(holder.pid);
+		expect(result.refused?.reason).toContain("lock record");
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it("never signals a Viewer named by an owner record whose lock nobody holds", async () => {
+		// Arrange: the Viewer locks another database; this database's record names it anyway.
+		const other = join(directory, "other.sqlite");
+		const { holder, address } = await viewerServing(other);
+		const record = JSON.parse(
+			readFileSync(`${canonicalViewerDbPath(other)}.viewer-lock.owner`, "utf-8"),
+		);
+		writeFileSync(
+			`${canonicalViewerDbPath(dbPath)}.viewer-lock.owner`,
+			JSON.stringify({ ...record, db_path: canonicalViewerDbPath(dbPath) }),
+		);
+
+		const result = await stopExistingViewer(dbPath, address);
+
+		expect(isViewerWriterLockHeld(dbPath)).toBe(false);
+		expect(result.refused?.pid).toBe(holder.pid);
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it("never signals a Viewer from before the lock while another process holds this database's lock", async () => {
+		await viewerServing(dbPath);
+		const preLock = await viewerServing(join(directory, "named.sqlite"), {
+			lock: false,
+			profileDbPath: dbPath,
+			openFile: dbPath,
+		});
+
+		const result = await stopExistingViewer(dbPath, preLock.address);
+
+		expect(result.refused).toMatchObject({
+			pid: preLock.holder.pid,
+			reason: "another process holds the database's lock",
+		});
+		expect(preLock.holder.signalCode).toBeNull();
+	});
+
+	it("never signals the Viewer of another database in the same folder through the shared PID record", async () => {
+		const other = join(directory, "other.sqlite");
+		const { holder, address } = await viewerServing(other, { profileDbPath: other });
+		writeFileSync(join(directory, "viewer.pid"), JSON.stringify({ pid: holder.pid, ...address }));
+
+		// Nothing answers at the port the command names, so the record is tried.
+		const result = await stopExistingViewer(dbPath, { host: "127.0.0.1", port: await freePort() });
+
+		expect(result).toMatchObject({ stopped: false, pid: null, refused: { pid: holder.pid } });
+		expect(holder.signalCode).toBeNull();
+	});
+});
+
+describe("choosing and signalling a Viewer that holds this database's lock", () => {
+	it("never signals a lock holder that is not the listener its PID record names", async () => {
+		// Arrange: the lock holder serves nothing; a Viewer for this database listens at the
+		// port its record gives.
+		const lockHolder = await holdViewerLockInAnotherProcess(dbPath, {
+			owner: UNSERVED,
+			extraArgs: ["codemem", "serve", "start", "--foreground"],
+		});
+		holders.push(lockHolder);
+		const listener = await viewerServing(join(directory, "listener.sqlite"), {
+			lock: false,
+			profileDbPath: dbPath,
+			openFile: dbPath,
+		});
+		writeFileSync(
+			join(directory, "viewer.pid"),
+			JSON.stringify({ pid: lockHolder.pid, ...listener.address }),
+		);
+
+		// Act
+		const result = await stopExistingViewer(dbPath, { host: "127.0.0.1", port: await freePort() });
+
+		// Assert
+		expect(result.refused).toMatchObject({
+			pid: lockHolder.pid,
+			reason: `it is not the process listening on port ${listener.address.port}`,
+		});
+		expect(lockHolder.signalCode).toBeNull();
+	});
+
+	it("leaves an unrelated process on the port alone and reports no Viewer", async () => {
+		// Arrange: it answers like a Viewer, but its command line is not a codemem Viewer's.
+		const address = { host: "127.0.0.1", port: await freePort() };
+		const unrelated = await holdViewerLockInAnotherProcess(join(directory, "x.sqlite"), {
+			lock: false,
+			answerAsViewer: address,
+		});
+		holders.push(unrelated);
+
+		// Act
+		const result = await stopExistingViewer(dbPath, address);
+
+		// Assert
+		expect(result).toEqual({ stopped: false, pid: null });
+		expect(unrelated.signalCode).toBeNull();
+	});
+
+	it("force-stops a stuck Viewer that still holds this database's lock", async () => {
+		const { holder, address } = await viewerServing(dbPath, { onSigterm: "ignore" });
+		const exited = new Promise((resolve) => holder.once("exit", resolve));
+
+		const result = await stopExistingViewer(dbPath, address, quick);
+
+		await exited;
+		expect(result).toEqual({ stopped: true, pid: holder.pid });
+		expect(holder.signalCode).toBe("SIGKILL");
+	});
+
+	it("keeps to the lock proof before SIGKILL, even when the open-database proof would pass", async () => {
+		// Arrange: on SIGTERM it releases the lock but keeps listening, reporting and holding
+		// the database open, which would satisfy the proof for a Viewer from before the lock.
+		const { holder, address } = await viewerServing(dbPath, {
+			profileDbPath: dbPath,
+			openFile: dbPath,
+			onSigterm: "release-lock",
+		});
+
+		// Act
+		const result = await stopExistingViewer(dbPath, address, quick);
+
+		// Assert
+		expect(result).toEqual({ stopped: false, pid: holder.pid });
+		expect(holder.signalCode).toBeNull();
+	});
+});
+
+describe("confirming a Viewer from before the lock", () => {
+	it("stops one that listens on the port, reports this database and has it open", async () => {
+		const { holder, address } = await preLockViewer();
+
+		const result = await stopExistingViewer(dbPath, address);
+
+		expect(result).toEqual({ stopped: true, pid: holder.pid });
+	});
+
+	it("counts the write-ahead log as having the database open", async () => {
+		const { holder, address } = await preLockViewer({ openFile: `${dbPath}-wal` });
+
+		const result = await stopExistingViewer(dbPath, address);
+
+		expect(result).toEqual({ stopped: true, pid: holder.pid });
+	});
+
+	it.each([
+		[
+			"a foreign Viewer with both databases open",
+			{
+				profileDbPath: join("{dir}", "other.sqlite"),
+				openFile: [join("{dir}", "other.sqlite"), "{db}"],
+			},
+			"it reports another database",
+		],
+		[
+			"one that reports no database",
+			{ profileDbPath: undefined },
+			"it did not report which database it serves",
+		],
+		[
+			"one that does not have it open",
+			{ openFile: join("{dir}", "other.sqlite") },
+			"it does not have the database open",
+		],
+	])("refuses %s", async (_label, change, reason) => {
+		// Arrange: paths are filled in once the test folder exists.
+		const fill = (value: string) => value.replace("{dir}", directory).replace("{db}", dbPath);
+		const options: HolderOptions = {};
+		if ("profileDbPath" in change)
+			options.profileDbPath =
+				change.profileDbPath === undefined ? undefined : fill(change.profileDbPath);
+		if ("openFile" in change) options.openFile = [change.openFile].flat().map(fill);
+		const { holder, address } = await preLockViewer(options);
+
+		// Act
+		const result = await stopExistingViewer(dbPath, address);
+
+		// Assert
+		expect(result.refused).toEqual({ pid: holder.pid, ...address, reason });
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it("never signals a process that has this database open but is not the listener its record names", async () => {
+		// Arrange: a CLI-like process holds the database open and a Viewer for this database
+		// answers at the port the record gives, but that process is not the one listening.
+		const listener = await preLockViewer();
+		const bystander = await holdViewerLockInAnotherProcess(dbPath, {
+			lock: false,
+			openFile: dbPath,
+			extraArgs: ["codemem", "serve", "start", "--foreground"],
+		});
+		holders.push(bystander);
+		writeFileSync(
+			join(directory, "viewer.pid"),
+			JSON.stringify({ pid: bystander.pid, ...listener.address }),
+		);
+
+		// Act
+		const result = await stopExistingViewer(dbPath, { host: "127.0.0.1", port: await freePort() });
+
+		// Assert
+		expect(result.refused).toMatchObject({
+			pid: bystander.pid,
+			reason: `it is not the process listening on port ${listener.address.port}`,
+		});
+		expect(bystander.signalCode).toBeNull();
+		expect(listener.holder.signalCode).toBeNull();
+	});
+
+	it("stops the listener, never another process its answer names", async () => {
+		// Arrange: a CLI-like process holds the database open, and the Viewer's stats answer
+		// names it instead of the Viewer.
+		const bystander = await holdViewerLockInAnotherProcess(dbPath, {
+			lock: false,
+			openFile: dbPath,
+			extraArgs: ["codemem", "serve", "start", "--foreground"],
+		});
+		holders.push(bystander);
+		const { holder, address } = await preLockViewer({ reportedPid: bystander.pid });
+
+		// Act
+		const result = await stopExistingViewer(dbPath, address);
+
+		// Assert
+		expect(result).toEqual({ stopped: true, pid: holder.pid });
+		expect(bystander.signalCode).toBeNull();
+	});
+
+	it("does not count a file lsof marks as deleted", async () => {
+		// Arrange: Linux names a file removed while open with a " (deleted)" suffix.
+		const { holder, address } = await preLockViewer();
+		const canonical = canonicalViewerDbPath(dbPath);
+		const bin = pathWithLsof(
+			`case "$*" in *-iTCP*) echo ${holder.pid} ;; *) printf 'p${holder.pid}\\nn${canonical} (deleted)\\n' ;; esac`,
+		);
+		vi.stubEnv("PATH", bin);
+
+		// Act
+		const result = await stopExistingViewer(dbPath, address);
+
+		// Assert
+		expect(result.refused?.reason).toBe("it does not have the database open");
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it("force-stops a stuck one that still has this database open", async () => {
+		const { holder, address } = await preLockViewer({ onSigterm: "ignore" });
+		const exited = new Promise((resolve) => holder.once("exit", resolve));
+
+		const result = await stopExistingViewer(dbPath, address, quick);
+
+		await exited;
+		expect(result).toEqual({ stopped: true, pid: holder.pid });
+		expect(holder.signalCode).toBe("SIGKILL");
+	});
+
+	it.each(["port", "record"] as const)(
+		"does not force-stop one that closed this database before the escalation (found by %s)",
+		async (via) => {
+			// Arrange: on SIGTERM it closes the database and keeps running.
+			const { holder, address } = await preLockViewer({ onSigterm: "close-file" });
+			let target = address;
+			if (via === "record") {
+				writeFileSync(
+					join(directory, "viewer.pid"),
+					JSON.stringify({ pid: holder.pid, ...address }),
+				);
+				target = { host: "127.0.0.1", port: await freePort() };
+			}
+
+			// Act
+			const result = await stopExistingViewer(dbPath, target, quick);
+
+			// Assert
+			expect(result).toEqual({ stopped: false, pid: holder.pid });
+			expect(holder.signalCode).toBeNull();
+		},
+	);
+});
+
+describe("refusing when the process list cannot be read", () => {
+	it.each([
+		["is missing", null, {}, "lsof is not installed or not on PATH"],
+		[
+			"cannot be executed",
+			"exit 0",
+			{ executable: false },
+			"lsof could not be run (permission denied)",
+		],
+		[
+			"does not answer in time",
+			`${commandPath("sleep")} 5`,
+			{},
+			"lsof did not answer within 2000 ms",
+		],
+		[
+			"fails",
+			"echo 'lsof: no permission' >&2; exit 1",
+			{},
+			"lsof failed with status 1: lsof: no permission",
+		],
+	] as const)(
+		"refuses on macOS and Linux when lsof %s",
+		async (_label, script, options, reason) => {
+			const { holder, address } = await preLockViewer();
+			vi.stubEnv("PATH", pathWithLsof(script, options));
+
+			const result = await stopExistingViewer(dbPath, address);
+
+			expect(result.refused).toEqual({ pid: holder.pid, ...address, reason });
+			expect(holder.signalCode).toBeNull();
+		},
+	);
+
+	it("refuses a Viewer found through its PID record when lsof cannot run", async () => {
+		// Arrange: nothing answers at the port the command names, so the record is tried.
+		const { holder, address } = await preLockViewer();
+		writeFileSync(join(directory, "viewer.pid"), JSON.stringify({ pid: holder.pid, ...address }));
+		const elsewhere = { host: "127.0.0.1", port: await freePort() };
+		vi.stubEnv("PATH", pathWithLsof(null));
+
+		// Act
+		const result = await stopExistingViewer(dbPath, elsewhere);
+
+		// Assert
+		expect(result.refused).toEqual({
+			pid: holder.pid,
+			...address,
+			reason: "lsof is not installed or not on PATH",
+		});
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it("stops on port and command line alone only on native Windows, where nothing else can be read", async () => {
+		// Arrange: no lsof. The Viewer has another database open and reports it.
+		const other = join(directory, "other.sqlite");
+		const { holder, address } = await preLockViewer({ profileDbPath: other, openFile: other });
+		vi.stubEnv("PATH", pathWithLsof(null));
+
+		// Act
+		const onLinux = await stopExistingViewer(dbPath, address, { platform: "linux" });
+		const onWindows = await stopExistingViewer(dbPath, address, { platform: "win32" });
+
+		// Assert
+		expect(onLinux.refused?.reason).toBe("lsof is not installed or not on PATH");
+		expect(onWindows).toEqual({ stopped: true, pid: holder.pid });
+	});
+});
+
+describe("binding each signal to the verified process", () => {
+	/** Reads the real identity, except that from read `from` on the pid names another process. */
+	function replacedFrom(from: number) {
+		let reads = 0;
+		return (pid: number) => {
+			reads += 1;
+			if (reads >= from) return { started: "Thu Jan  1 00:00:00 2026", command: "/usr/bin/vim" };
+			return readProcessIdentity(pid);
+		};
+	}
+
+	it("sends nothing when the pid names another process between verification and SIGTERM", async () => {
+		// Reads: choosing the candidate, verification, then right before SIGTERM.
+		const { holder, address } = await preLockViewer();
+
+		const result = await stopExistingViewer(dbPath, address, { readIdentity: replacedFrom(3) });
+
+		expect(result.refused?.reason).toBe(
+			"its process changed or stopped serving the database before it could be signalled",
+		);
+		expect(holder.signalCode).toBeNull();
+	});
+
+	it("does not SIGKILL when the pid names another process between SIGTERM and SIGKILL", async () => {
+		const { holder, address } = await preLockViewer({ onSigterm: "ignore" });
+
+		await stopExistingViewer(dbPath, address, { ...quick, readIdentity: replacedFrom(4) });
+
+		expect(holder.signalCode).toBeNull();
+		expect(holder.exitCode).toBeNull();
 	});
 });
 

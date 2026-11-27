@@ -446,6 +446,8 @@ If needed, restart viewer + plugin flow:
 codemem service restart
 ```
 
+A restart stops the running viewer only when it can confirm that the viewer serves this database; see [Start, stop, or restart the local service](user-guide.md#start-stop-or-restart-the-local-service). A viewer from 0.50.0-beta.3 or earlier is confirmed by the database its profile reports and the database file it has open, so the plugin's restart after an automatic update still replaces it on macOS and Linux when `lsof` is installed. Without `lsof`, the restart reports why it stopped nothing.
+
 If you override the viewer bind, keep the plugin and viewer aligned on the same target:
 
 ```bash

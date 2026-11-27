@@ -71,11 +71,19 @@ function freePort(): Promise<number> {
 }
 
 /** A running beta.3 Viewer started through the symlink: it answers, holds no lock, and wrote its record beside the link. */
-async function beta3Viewer(): Promise<{ viewer: ChildProcess; port: number }> {
+/**
+ * A Viewer from a release before the lock, started without `--db-path`. A stop tells which
+ * database it serves from the database file it has open: by default this one.
+ */
+async function beta3Viewer(
+	options: { openFile?: string } = {},
+): Promise<{ viewer: ChildProcess; port: number }> {
 	const port = await freePort();
 	const viewer = await holdViewerLockInAnotherProcess(linkedDbPath, {
 		lock: false,
 		answerAsViewer: { host: "127.0.0.1", port },
+		openFile: options.openFile ?? linkedDbPath,
+		profileDbPath: linkedDbPath,
 		extraArgs: ["codemem", "serve", "start", "--foreground"],
 	});
 	processes.push(viewer);
@@ -211,5 +219,26 @@ describe("a running Viewer from before the database lock", () => {
 		expect(viewer.signalCode).toBe("SIGTERM");
 		expect(printed()).toContain(`Stopped viewer (pid ${viewer.pid})`);
 		expect(existsSync(legacyPidPath)).toBe(false);
+	});
+
+	it("is left running by `serve stop` when it has another database open", async () => {
+		// Arrange
+		const { viewer, port } = await beta3Viewer({ openFile: join(directory, "other.sqlite") });
+
+		// Act
+		await runServeInvocation(
+			resolveStopRestartInvocation("stop", {
+				dbPath: linkedDbPath,
+				host: "127.0.0.1",
+				port: String(port),
+			}),
+			{ nativeRuntimeAllowsServeStart: allowNativeRuntime, stopExistingViewer },
+		);
+
+		// Assert
+		expect(viewer.signalCode).toBeNull();
+		expect(printed()).toContain(`(pid ${viewer.pid}) could not be confirmed to serve`);
+		expect(existsSync(legacyPidPath)).toBe(true);
+		expect(process.exitCode).toBe(1);
 	});
 });
