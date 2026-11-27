@@ -304,18 +304,27 @@ Team, stays open to them. A removal applies only in the Team's own coordinator g
 its completed setup, from the group an admin device created it for in the Viewer, and from the group the
 coordinator bound it to, which each enrollment check reads with `GET /v1/admin/team-group-bindings`. An accepted
 invitation is never evidence of a Team's group, and it grants its Team only when the Team's group is the
-invitation's group. When these sources disagree, or the coordinator holds no group for a Team and nothing else
-names one, the Team's group is a conflict. Then no removal applies to it, its invitations grant nothing, the
-Viewer's removal step refuses it and lists it as a warning, and the device refuses every other member's devices
-the scopes that hold the Team's Projects until the conflict is resolved, for example by binding the Team with
-`POST /v1/admin/team-group-bindings`. Devices of the admin device's own person keep their access. A record for
-any other Team is kept without effect and reported. The Viewer also reads the list before it applies a
+invitation's group. A Team that the coordinator has not bound yet, with nothing else naming a group, has no group:
+no removal applies to it and its invitations grant nothing, but its current access stays. When the sources
+disagree, or nothing names a group and the coordinator reports Team invitations for it from more than one group,
+the Team's group is a conflict. Then no new removal applies to it, its invitations grant nothing, the Viewer's
+removal step refuses it and lists it as a warning, and the device refuses the scopes that hold the Team's Projects
+to every device of a current or former member until the conflict is resolved, for example by binding the Team with
+`POST /v1/admin/team-group-bindings`. A removal the device already enforced keeps applying during a conflict.
+Devices of the admin device's own person keep their access. A record for any other Team is kept without effect and
+reported.
+
+A Team invitation goes only through the Team's own group, because the first one binds the Team on the coordinator
+for good. When the Team's group is known on the admin device and differs from the configured group, or is a
+conflict, the Viewer refuses the invitation with `409 team_group_mismatch` or `409 team_link_conflict` and sends
+nothing to the coordinator. The Viewer also reads the list before it applies a
 Team setup that another admin device completed. If that read fails, it applies nothing in that pass and leaves the
 Team as it is.
 
 If the removal list or the Team bindings cannot be read, for any reason, the Viewer still reconciles enrolled
 devices but grants no Team access from an accepted invitation in that check, and reports each invitation it held
-back. A not-found
+back. A removal list that was read still applies to every Team whose group the device already knows, even when the
+bindings cannot be read. A not-found
 answer counts as a failure, because the coordinator exposes nothing that proves it predates removals. A coordinator
 from before 0052, or a Worker deployed without the migration, therefore holds back new Team members on upgraded
 admin devices until the migration and Worker are in place. That is why the migration goes in before the Worker.

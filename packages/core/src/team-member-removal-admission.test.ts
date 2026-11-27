@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { listAuthorizedScopesForPeer, parseSyncScopeRequest } from "./sync-scope-protocol.js";
+import { isTeamMemberRemoved, recordTeamGroupBindings } from "./team-member-removal-lookup.js";
 import { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 import { linkTeamToCoordinatorGroup } from "./team-member-removal-test-fixtures.js";
 import { initTestSchema } from "./test-utils.js";
@@ -374,6 +375,49 @@ describe("sync admission while the Team's coordinator group is a conflict", () =
 		expect(advertised(STAYING)).not.toContain("shared-scope");
 		db.prepare("DELETE FROM policy_team_coordinator_links").run();
 		expect(admitted("shared-scope", STAYING)).toBe(true);
+	});
+
+	it("keeps refusing a removed member after a conflicting binding arrives, without a cache refresh", () => {
+		remove();
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+
+		conflict();
+
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+		expect(admitted("team-scope", REMOVED)).toBe(false);
+		expect(isTeamMemberRemoved(db, team, "identity-removed")).toBe(true);
+	});
+
+	it("refuses a former member's device during a conflict even without an enforced removal", () => {
+		// Revoked here some other way, while the device keeps its cached scope membership.
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'revoked' WHERE identity_id = 'identity-removed'",
+		).run();
+		expect(isTeamMemberRemoved(db, team, "identity-removed")).toBe(false);
+
+		conflict();
+
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+	});
+
+	it("keeps a Team's access when its coordinator reports it not bound yet", () => {
+		// An existing Team with no local evidence of its group, as after an upgrade.
+		db.prepare("DELETE FROM legacy_team_setup_completions").run();
+		recordTeamGroupBindings(db, {
+			coordinatorId: COORDINATOR,
+			bindings: [{ team_id: team, state: "unbound" }],
+			now: NOW,
+		});
+
+		expect(admitted("shared-scope", STAYING)).toBe(true);
+		expect(advertised(STAYING)).toContain("shared-scope");
+
+		recordTeamGroupBindings(db, {
+			coordinatorId: COORDINATOR,
+			bindings: [{ team_id: team, state: "conflict" }],
+			now: NOW,
+		});
+		expect(admitted("shared-scope", STAYING)).toBe(false);
 	});
 
 	it("keeps this device's own person, and scopes without the Team's Projects", async () => {

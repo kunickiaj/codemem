@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
 import { connect } from "./db.js";
 import { createRecipientPolicyTeam } from "./recipient-policy-team-create.js";
+import { ensurePolicyTeamMemberRemovalsTable } from "./schema-bootstrap.js";
 import {
 	type CoordinatorTeamGroupBindingReport,
 	isTeamMemberRemoved,
@@ -145,12 +146,40 @@ describe("a Team's coordinator group", () => {
 		});
 		const unread = await reconcile("group-a", "team-invited", { bindings: "not read" });
 
-		expect(teamCoordinatorLinkState(db, "team-invited")).toEqual({ state: "conflict" });
+		// Not bound yet: no group, so nothing applies and nothing grants, but no conflict.
+		expect(teamCoordinatorLinkState(db, "team-invited")).toEqual({ state: "none" });
+		expect(teamCoordinatorLinkConflicts(db)).toEqual([]);
 		expect(member("team-invited")).toBe(0);
-		expect(codes(result)).toEqual(["team_group_conflict"]);
+		expect(codes(result)).toEqual(["team_group_unverified"]);
 		expect(codes(unread)).toEqual(["team_group_bindings_unavailable"]);
 	});
 
+	it("applies a fresh removal to a Team with a known group when the bindings cannot be read", async () => {
+		createTeam("team-known", "group-a");
+
+		const result = await reconcile("group-a", "team-known", {
+			bindings: "not read",
+			removals: [{ identity: "identity-removed" }],
+		});
+
+		expect(isTeamMemberRemoved(db, "team-known", "identity-removed")).toBe(true);
+		expect(member("team-known")).toBe(0);
+		expect(codes(result)).toEqual(["team_group_bindings_unavailable"]);
+	});
+
+	it("is a conflict only when the coordinator reports Team invitations from more than one group", async () => {
+		createTeam("team-shared");
+
+		const result = await reconcile("group-a", "team-shared", {
+			bindings: [{ team_id: "team-shared", state: "conflict" }],
+		});
+
+		expect(teamCoordinatorLinkState(db, "team-shared")).toEqual({ state: "conflict" });
+		expect(codes(result)).toEqual(["team_group_conflict"]);
+	});
+});
+
+describe("a Team's coordinator group when evidence disagrees or is missing", () => {
 	it("holds back an invitation from another group than the Team's", async () => {
 		createTeam("team-other", "group-b");
 
@@ -162,7 +191,7 @@ describe("a Team's coordinator group", () => {
 		expect(codes(result)).toEqual(["team_group_unverified"]);
 	});
 
-	it("is a conflict when the group recorded at creation disagrees with the binding, and then nothing applies", async () => {
+	it("is a conflict when the group recorded at creation disagrees with the binding: no new removal applies, and enforced ones stay", async () => {
 		createTeam("team-claimed", "group-a");
 		applyTeamMemberRemovals(db, {
 			coordinatorId: COORDINATOR,
@@ -183,12 +212,17 @@ describe("a Team's coordinator group", () => {
 
 		const result = await reconcile("group-b", "team-claimed", {
 			bindings: [bound("team-claimed", "group-b")],
+			removals: [{ identity: "identity-invited" }],
 		});
 
 		expect(teamCoordinatorLinkState(db, "team-claimed")).toEqual({ state: "conflict" });
 		expect(teamCoordinatorLinkConflicts(db)).toEqual(["team-claimed"]);
-		expect(isTeamMemberRemoved(db, "team-claimed", "identity-removed")).toBe(false);
-		expect(codes(result)).toEqual(["team_group_conflict"]);
+		expect(isTeamMemberRemoved(db, "team-claimed", "identity-removed")).toBe(true);
+		expect(isTeamMemberRemoved(db, "team-claimed", "identity-invited")).toBe(false);
+		expect(codes(result).toSorted()).toEqual([
+			"team_group_conflict",
+			"team_member_removal_other_group",
+		]);
 		expect(await preview("team-claimed")).toEqual({
 			state: "rejected",
 			error: "team_link_conflict",
@@ -262,5 +296,27 @@ describe("Teams whose binding an enrollment check reads", () => {
 				invitedTeamIds: ["team-invited", "team-created"],
 			}),
 		).toEqual(["team-created", "team-invited"]);
+	});
+});
+
+describe("removals enforced before enforcement was recorded", () => {
+	it("count as enforced when the Team's completed setup came from their group", () => {
+		const team = linkTeamToCoordinatorGroup(db, {
+			candidateId: "candidate-a",
+			coordinatorId: COORDINATOR,
+			groupId: "group-a",
+		});
+		db.exec("DROP TABLE policy_team_member_removal_enforcements");
+		const insert = db.prepare(`INSERT INTO policy_team_member_removals(coordinator_id, group_id,
+		 team_id, identity_id, removal_seq, removed_at, removed_by_device_id, recorded_at)
+		 VALUES (?, ?, ?, ?, 1, ?, NULL, ?)`);
+		insert.run(COORDINATOR, "group-a", team, "identity-setup-group", NOW, NOW);
+		insert.run(COORDINATOR, "group-b", team, "identity-other-group", NOW, NOW);
+
+		ensurePolicyTeamMemberRemovalsTable(db);
+
+		expect(
+			db.prepare("SELECT identity_id FROM policy_team_member_removal_enforcements").pluck().all(),
+		).toEqual(["identity-setup-group"]);
 	});
 });

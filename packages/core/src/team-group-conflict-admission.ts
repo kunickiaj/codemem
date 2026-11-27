@@ -4,11 +4,12 @@ import { teamCoordinatorLinkConflicts } from "./team-member-removal-lookup.js";
 
 /*
  * Sync admission for a Team whose coordinator group is a conflict: its groups
- * disagree, or its coordinator holds no group for it and nothing here names
- * one. This machine cannot tell which group's removals apply to such a Team, so
- * it serves no one access through the Team: a device bound to a Team member is
- * refused every scope that holds one of the Team's Projects. This device, and
- * every device of this device's own person, keep their access.
+ * disagree, or nothing here names one and its coordinator reports Team
+ * invitations from more than one group. This machine cannot tell which group's
+ * removals apply to such a Team, so it serves no one access through the Team:
+ * a device bound to a person who is or was a Team member is refused every
+ * scope that holds one of the Team's Projects. This device, and every device of
+ * this device's own person, keep their access.
  *
  * The decision reads current state on every request. It lifts once the Team's
  * group is resolved, for example when an admin binds the Team on the
@@ -23,11 +24,11 @@ const SAME_PERSON_SQL = `SELECT 1 FROM identity_devices AS device
 	WHERE device.device_id = ? AND device.status = 'active'
 	  AND local.device_id = ? AND local.status = 'active' LIMIT 1`;
 
-// The device is bound to a current member of the Team.
+// The device is bound to a person who is, or was, a member of the Team, in
+// any membership state: a revoked member's cached access must not return.
 const TEAM_MEMBER_DEVICE_SQL = `SELECT 1 FROM identity_devices AS device
 	JOIN policy_team_memberships AS member ON member.identity_id = device.identity_id
-	WHERE device.device_id = ? AND member.team_id = ?
-	  AND member.status IN ('active', 'reviewed_active') LIMIT 1`;
+	WHERE device.device_id = ? AND member.team_id = ? LIMIT 1`;
 
 function conflictedTeams(db: Database): string[] {
 	try {

@@ -367,9 +367,10 @@ function teamGroupRefusal(
  * removals, then returns the accepted Team invitations that still grant: the
  * Team's group is this group, and the person was not removed. A removed person
  * stays removed, whichever invitation they hold, so each of theirs is reported
- * instead. Without a fresh removal list and binding read, every invitation is
- * held back and reported, because this machine may not know of a removal or of
- * the Team's group yet.
+ * instead. A fresh removal list applies to every Team whose group is already
+ * known, even when the bindings cannot be read. Without both reads, every
+ * invitation is held back and reported, because this machine may not know of
+ * a removal or of the Team's group yet.
  */
 function applyRemovalsBeforeInvites(
 	db: Database,
@@ -378,17 +379,20 @@ function applyRemovalsBeforeInvites(
 	issue: (kind: "team_membership", referenceId: unknown, code: string) => void,
 ): CoordinatorConsumedTeamInvite[] {
 	const { coordinatorId, groupId, teamMemberRemovals: removals, teamGroupBindings } = input;
+	if (teamGroupBindings)
+		recordTeamGroupBindings(db, { coordinatorId, bindings: teamGroupBindings, now });
+	if (removals) {
+		const applied = applyTeamMemberRemovals(db, { coordinatorId, groupId, removals, now });
+		// A removal for a Team whose group is not this group has no effect here.
+		for (const ignored of applied.ignored)
+			issue("team_membership", ignored.teamId, "team_member_removal_other_group");
+	}
 	if (!removals || !teamGroupBindings) {
 		const code = removals ? "team_group_bindings_unavailable" : "team_member_removals_unavailable";
 		for (const invite of input.consumedTeamInvites)
 			issue("team_membership", invite.invite_id, code);
 		return [];
 	}
-	recordTeamGroupBindings(db, { coordinatorId, bindings: teamGroupBindings, now });
-	const applied = applyTeamMemberRemovals(db, { coordinatorId, groupId, removals, now });
-	// A removal for a Team this group did not set up has no effect here.
-	for (const ignored of applied.ignored)
-		issue("team_membership", ignored.teamId, "team_member_removal_other_group");
 	return input.consumedTeamInvites.filter((invite) => {
 		if (invite.group_id !== groupId) return true;
 		const refusal = teamGroupRefusal(db, input, invite);

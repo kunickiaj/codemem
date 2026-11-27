@@ -1775,6 +1775,7 @@ export {
 	type CoordinatorTeamGroupBindingReport,
 	teamCoordinatorLinkConflicts,
 	teamIdsForBindingRead,
+	teamInvitationGroup,
 } from "./team-member-removal-lookup.js";
 export { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 export {

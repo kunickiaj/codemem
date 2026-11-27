@@ -51,13 +51,14 @@ interface LinkCandidate {
 /**
  * Recorded group sources. `team_create`: an admin device created the Team for
  * its one configured group. `coordinator_binding`: the Team's coordinator
- * reported the group the Team is bound to. `coordinator_unbound`: the
- * coordinator reported no binding, and the row names no group.
+ * reported the group the Team is bound to. `coordinator_conflict`: the
+ * coordinator holds no binding and more than one group has Team invitations
+ * for the Team, and the row names no group.
  */
 export type TeamCoordinatorLinkSource =
 	| "team_create"
 	| "coordinator_binding"
-	| "coordinator_unbound";
+	| "coordinator_conflict";
 
 /**
  * Every group that claims the Team: its completed setups, the group recorded
@@ -66,32 +67,32 @@ export type TeamCoordinatorLinkSource =
 function linkCandidates(
 	db: Database,
 	teamId: string,
-): { candidates: LinkCandidate[]; reportedUnbound: boolean } {
+): { candidates: LinkCandidate[]; reportedConflict: boolean } {
 	const recorded = db
 		.prepare(
 			"SELECT coordinator_id, group_id, source FROM policy_team_coordinator_links WHERE team_id = ?",
 		)
 		.all(teamId) as Array<{ coordinator_id: string; group_id: string; source: string }>;
-	const groups = recorded.filter((row) => row.source !== "coordinator_unbound");
+	const groups = recorded.filter((row) => row.source !== "coordinator_conflict");
 	return {
 		candidates: [...completedSetupGroups(db, teamId), ...groups].map((row) => ({
 			coordinatorId: row.coordinator_id,
 			groupId: row.group_id,
 		})),
-		reportedUnbound: groups.length < recorded.length,
+		reportedConflict: groups.length < recorded.length,
 	};
 }
 
 function stateOf(
 	candidates: readonly LinkCandidate[],
-	reportedUnbound: boolean,
+	reportedConflict: boolean,
 ): TeamCoordinatorLinkState {
 	const keys = new Set(
 		candidates.map((row) => teamMemberRemovalLinkKey(row.coordinatorId, row.groupId)),
 	);
 	const first = candidates[0];
-	// The coordinator was asked and holds no group for it, and nothing here names one.
-	if (!first) return reportedUnbound ? { state: "conflict" } : { state: "none" };
+	// Several groups invited people to it, the coordinator bound none, and nothing here names one.
+	if (!first) return reportedConflict ? { state: "conflict" } : { state: "none" };
 	if (keys.size !== 1 || keys.has(null)) return { state: "conflict" };
 	return { state: "linked", coordinatorId: first.coordinatorId, groupId: first.groupId };
 }
@@ -101,12 +102,14 @@ function stateOf(
  * from the Team's completed setup, the group recorded when an admin device
  * created it, and the group the Team's coordinator bound it to. Accepted
  * invitations are not evidence. It is a conflict, and no group is picked, when
- * these disagree, or when the coordinator reported no binding and nothing else
- * names a group.
+ * these disagree, or when nothing names a group and the coordinator reported
+ * Team invitations from more than one group. A Team its coordinator has not
+ * bound yet, with nothing else naming a group, has no group: nothing applies
+ * from any group, but it is not a conflict.
  */
 export function teamCoordinatorLinkState(db: Database, teamId: string): TeamCoordinatorLinkState {
-	const { candidates, reportedUnbound } = linkCandidates(db, teamId);
-	return stateOf(candidates, reportedUnbound);
+	const { candidates, reportedConflict } = linkCandidates(db, teamId);
+	return stateOf(candidates, reportedConflict);
 }
 
 /**
@@ -146,14 +149,46 @@ function insertLink(
 	).run(input.teamId, input.coordinatorId, input.groupId, input.source, input.now);
 }
 
+/**
+ * The group a new Team invitation for the Team must go through. The first Team
+ * invitation binds the Team on the coordinator for good, so a Team whose group
+ * is known here is invited only through that group, and only while this device
+ * is configured for it. A Team with no known group returns null, and the
+ * caller's configured group is used. Throws `team_link_conflict` or
+ * `team_group_mismatch` instead of minting through another group.
+ */
+export function teamInvitationGroup(
+	db: Database,
+	input: {
+		teamId: string;
+		coordinatorId: string;
+		configuredGroupIds: readonly string[];
+		requestedGroupId: string | null;
+	},
+): string | null {
+	const link = teamCoordinatorLinkState(db, input.teamId);
+	if (link.state === "none") return null;
+	if (link.state === "conflict") throw new Error("team_link_conflict");
+	const configured = teamMemberRemovalCoordinatorKey(input.coordinatorId);
+	if (
+		configured === null ||
+		configured !== teamMemberRemovalCoordinatorKey(link.coordinatorId) ||
+		!input.configuredGroupIds.includes(link.groupId) ||
+		(input.requestedGroupId !== null && input.requestedGroupId !== link.groupId)
+	)
+		throw new Error("team_group_mismatch");
+	return link.groupId;
+}
+
 /** One Team's binding as its coordinator reported it. */
 export type CoordinatorTeamGroupBindingReport = CoordinatorTeamGroupBinding;
 
 /**
  * Records the bindings a coordinator reported for its Teams. A bound Team gets
- * that group as a candidate. An unbound Team is recorded as reported unbound,
- * which counts only while nothing names a group for it, so a later binding
- * resolves it.
+ * that group as a candidate. A Team the coordinator reports as a conflict, with
+ * Team invitations from more than one group and no binding, is recorded as
+ * such; it counts only while nothing names a group for it, so a later binding
+ * resolves it. A Team that is merely not bound yet records nothing.
  */
 export function recordTeamGroupBindings(
 	db: Database,
@@ -166,9 +201,10 @@ export function recordTeamGroupBindings(
 	db.transaction(() => {
 		for (const binding of input.bindings) {
 			const base = { teamId: binding.team_id, coordinatorId: input.coordinatorId, now: input.now };
-			const groupId = binding.state === "bound" ? binding.group_id : "";
-			const source = binding.state === "bound" ? "coordinator_binding" : "coordinator_unbound";
-			insertLink(db, { ...base, groupId, source });
+			if (binding.state === "bound")
+				insertLink(db, { ...base, groupId: binding.group_id, source: "coordinator_binding" });
+			else if (binding.state === "conflict")
+				insertLink(db, { ...base, groupId: "", source: "coordinator_conflict" });
 		}
 	}).immediate();
 }
@@ -206,12 +242,12 @@ export function teamIdsForBindingRead(
  * them, and the Viewer warns about them.
  */
 export function teamCoordinatorLinkConflicts(db: Database): string[] {
-	// Only a Team with two claims, or a report that it is unbound, can be a conflict.
+	// Only a Team with two claims, or a coordinator report of a conflict, can be a conflict.
 	const teamIds = db
 		.prepare(
 			`SELECT link.team_id FROM policy_team_coordinator_links AS link
 			 GROUP BY link.team_id
-			 HAVING COUNT(*) > 1 OR SUM(link.source = 'coordinator_unbound') > 0
+			 HAVING COUNT(*) > 1 OR SUM(link.source = 'coordinator_conflict') > 0
 			   OR EXISTS (SELECT 1 FROM legacy_team_setup_drafts AS draft
 			     WHERE draft.state = 'completed' AND draft.completed_team_id = link.team_id)
 			 ORDER BY link.team_id`,
@@ -238,10 +274,12 @@ function completedSetupGroups(db: Database, teamId: string) {
 }
 
 /**
- * Identities removed from the Team by its own coordinator group. A record from
- * any other group is kept but never applies, so a group cannot remove members
- * of a Team it does not hold. A Team with a link conflict applies none. `settingUpFrom` names the group
- * of a setup that is completing the Team now.
+ * Identities removed from the Team: by its own coordinator group, or in a
+ * removal this machine enforced earlier. A record from any other group is
+ * kept but never applies, so a group cannot remove members of a Team it does
+ * not hold. While the Team's group is a conflict, no new removal applies, and
+ * every enforced one still does. `settingUpFrom` names the group of a setup
+ * that is completing the Team now.
  */
 export function removedTeamMemberIdentityIds(
 	db: Database,
@@ -251,19 +289,30 @@ export function removedTeamMemberIdentityIds(
 	// A setup in progress counts its own group, so a removal that arrived first
 	// applies to it, and a setup from another group than the recorded one is a conflict.
 	const setup = options.settingUpFrom;
-	const { candidates, reportedUnbound } = linkCandidates(db, teamId);
-	const link = stateOf([...candidates, ...(setup ? [setup] : [])], reportedUnbound);
-	if (link.state !== "linked") return new Set();
-	const links = new Set([teamMemberRemovalLinkKey(link.coordinatorId, link.groupId) ?? ""]);
+	const { candidates, reportedConflict } = linkCandidates(db, teamId);
+	const link = stateOf([...candidates, ...(setup ? [setup] : [])], reportedConflict);
+	// A removal enforced here stays enforced, whatever later happens to the Team's group.
+	const removed = enforcedRemovals(db, teamId);
+	if (link.state !== "linked") return removed;
+	const key = teamMemberRemovalLinkKey(link.coordinatorId, link.groupId);
 	const rows = db
 		.prepare(
 			"SELECT identity_id, coordinator_id, group_id FROM policy_team_member_removals WHERE team_id = ?",
 		)
 		.all(teamId) as Array<{ identity_id: string; coordinator_id: string; group_id: string }>;
+	for (const row of rows)
+		if (key !== null && teamMemberRemovalLinkKey(row.coordinator_id, row.group_id) === key)
+			removed.add(row.identity_id);
+	return removed;
+}
+
+/** Identities whose removal from the Team this machine enforced. */
+function enforcedRemovals(db: Database, teamId: string): Set<string> {
 	return new Set(
-		rows
-			.filter((row) => links.has(teamMemberRemovalLinkKey(row.coordinator_id, row.group_id) ?? ""))
-			.map((row) => row.identity_id),
+		db
+			.prepare("SELECT identity_id FROM policy_team_member_removal_enforcements WHERE team_id = ?")
+			.pluck()
+			.all(teamId) as string[],
 	);
 }
 

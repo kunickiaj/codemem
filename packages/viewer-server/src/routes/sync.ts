@@ -210,6 +210,7 @@ import {
 	supportsSyncFeature,
 	syncScopeResetRequiredPayload,
 	teamIdsForBindingRead,
+	teamInvitationGroup,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMappings,
@@ -7118,6 +7119,34 @@ export function previewRecipientInvitation(
 	}
 }
 
+/**
+ * The group a recipient invitation goes through. A Team's first invitation
+ * binds it on the coordinator, so a Team whose group is known goes only through
+ * that group; anything else uses the requested or configured group.
+ */
+function recipientInvitationGroup(
+	store: MemoryStore,
+	input: {
+		body: Record<string, unknown>;
+		kind: RecipientInviteKind;
+		targetId: string;
+		config: ReturnType<typeof readCoordinatorSyncConfig>;
+		status: ReturnType<typeof coordinatorAdminStatusPayload>;
+	},
+): string | null {
+	const requestedGroupId = optionalViewerString(input.body, "group_id");
+	const teamGroupId =
+		input.kind === "team_member"
+			? teamInvitationGroup(store.db, {
+					teamId: input.targetId,
+					coordinatorId: input.config.syncCoordinatorUrl,
+					configuredGroupIds: input.config.syncCoordinatorGroups,
+					requestedGroupId,
+				})
+			: null;
+	return teamGroupId ?? resolveCoordinatorAdminGroup(requestedGroupId, input.status);
+}
+
 async function issueRecipientInvitation(
 	store: MemoryStore,
 	body: Record<string, unknown>,
@@ -7129,7 +7158,7 @@ async function issueRecipientInvitation(
 	const status = coordinatorAdminStatusPayload(config);
 	const reviewedIntent = recipientInviteReviewedIntent(store, kind, targetId, preview);
 	const reviewedPreviewDigest = await recipientReviewedIntentDigest(reviewedIntent);
-	const groupId = resolveCoordinatorAdminGroup(optionalViewerString(body, "group_id"), status);
+	const groupId = recipientInvitationGroup(store, { body, kind, targetId, config, status });
 	const ttlHours = parseInviteTtlHours(body.ttl_hours);
 	if (!groupId) throw new Error("group_id_required");
 	if (ttlHours == null) throw new Error("ttl_hours_invalid");
@@ -7193,6 +7222,9 @@ export async function createRecipientInvitation(
 		const invite = await issueRecipientInvitation(store, body, kind, targetId, preview);
 		return { httpStatus: 200, body: { ok: true, kind, preview, invite } };
 	} catch (error) {
+		const code = error instanceof Error ? error.message : "";
+		if (code === "team_group_mismatch" || code === "team_link_conflict")
+			return { httpStatus: 409, body: { error: code } };
 		return {
 			httpStatus: 400,
 			body: { error: error instanceof Error ? error.message : "recipient_invite_failed" },

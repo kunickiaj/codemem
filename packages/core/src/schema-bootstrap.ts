@@ -981,6 +981,21 @@ export function ensurePolicyTeamMemberRemovalsTable(db: Database): void {
 		recorded_at TEXT NOT NULL,
 		PRIMARY KEY(coordinator_id, group_id, team_id, identity_id)
 	)`);
+	if (tableExists(db, "policy_team_member_removal_enforcements")) return;
+	db.exec(`CREATE TABLE policy_team_member_removal_enforcements (
+		team_id TEXT NOT NULL,
+		identity_id TEXT NOT NULL,
+		enforced_at TEXT NOT NULL,
+		PRIMARY KEY(team_id, identity_id)
+	)`);
+	// Before this table, a removal applied only when its group set the Team up.
+	if (!tableExists(db, "legacy_team_setup_drafts")) return;
+	db.exec(`INSERT OR IGNORE INTO policy_team_member_removal_enforcements(team_id, identity_id, enforced_at)
+		SELECT removal.team_id, removal.identity_id, removal.recorded_at
+		FROM policy_team_member_removals AS removal
+		WHERE EXISTS (SELECT 1 FROM legacy_team_setup_drafts AS draft
+		  WHERE draft.state = 'completed' AND draft.completed_team_id = removal.team_id
+		    AND draft.coordinator_id = removal.coordinator_id AND draft.group_id = removal.group_id)`);
 }
 
 function ensureSyncPeerLastSuccessAddressColumn(db: Database): void {
