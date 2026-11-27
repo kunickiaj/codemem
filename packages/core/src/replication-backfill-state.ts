@@ -73,7 +73,7 @@ export function readBackfillState(db: Database): BackfillState | null {
 }
 
 /** The newest memories at or below `throughId`, newest first, as the store has them now. */
-export function readNewestRows(db: Database, throughId: number): MemoryRowIdentity[] {
+function readNewestRows(db: Database, throughId: number): MemoryRowIdentity[] {
 	return db
 		.prepare("SELECT id, import_key FROM memory_items WHERE id <= ? ORDER BY id DESC LIMIT ?")
 		.raw()

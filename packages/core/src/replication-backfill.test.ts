@@ -364,6 +364,99 @@ describe("memories that reuse the ID of a deleted row", () => {
 	});
 });
 
+describe("legacy keys of memories that reuse the ID of a deleted row", () => {
+	function blockedPair(suffix: number) {
+		// The device-scoped key the legacy row would get already belongs to another memory.
+		insertMemory(db, { importKey: `legacy:dev-local:memory_item:${suffix}` });
+		return insertMemory(db, { importKey: `legacy:memory_item:${suffix}` });
+	}
+
+	it("rewrites the legacy key of a replacement inserted before the next slice", () => {
+		insertMemory(db, { importKey: "key:first" });
+		const newest = insertMemory(db, { importKey: "key:second" });
+		slice();
+
+		db.prepare("DELETE FROM memory_items WHERE id = ?").run(newest);
+		const replacement = insertMemory(db, {
+			importKey: "legacy:memory_item:42",
+			updatedAt: LONG_AGO,
+		});
+		const result = slice(db, minutesAfter(1));
+
+		expect(replacement).toBe(newest);
+		expect(result).toEqual({ opsCreated: 1, keysMigrated: 1, complete: true });
+		expect(importKey(db, replacement)).toBe("legacy:dev-local:memory_item:42");
+		expect(ops(db).map((op) => op.entity_id)).toContain("legacy:dev-local:memory_item:42");
+	});
+
+	it("rewrites the legacy key of a replacement inserted after a slice saw the deletion", () => {
+		insertMemory(db, { importKey: "key:first" });
+		const newest = insertMemory(db, { importKey: "key:second" });
+		slice();
+
+		db.prepare("DELETE FROM memory_items WHERE id = ?").run(newest);
+		slice(db, minutesAfter(1));
+		const replacement = insertMemory(db, {
+			importKey: "legacy:memory_item:42",
+			updatedAt: LONG_AGO,
+		});
+
+		expect(slice(db, minutesAfter(2)).keysMigrated).toBe(1);
+		expect(importKey(db, replacement)).toBe("legacy:dev-local:memory_item:42");
+	});
+
+	it("does not try a blocked key below the replacements again", () => {
+		const blocked = blockedPair(7);
+		insertMemory(db, { importKey: "key:kept" });
+		const newest = insertMemory(db, { importKey: "key:newest" });
+		const warn = vi.fn();
+		slice(db, NOW, warn);
+
+		db.prepare("DELETE FROM memory_items WHERE id = ?").run(newest);
+		insertMemory(db, { importKey: "legacy:memory_item:42", updatedAt: LONG_AGO });
+		// Its blocker is gone, so trying the blocked row again would rewrite its key.
+		db.prepare(
+			"DELETE FROM memory_items WHERE import_key = 'legacy:dev-local:memory_item:7'",
+		).run();
+		slice(db, minutesAfter(1), warn);
+
+		expect(importKey(db, blocked)).toBe("legacy:memory_item:7");
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(getMaintenanceJob(db, REPLICATION_BACKFILL_JOB)?.metadata).toMatchObject({
+			blocked_legacy_keys: 1,
+			reported_blocked_legacy_keys: 1,
+		});
+	});
+
+	it("counts blocked keys once when every remembered row was replaced", () => {
+		blockedPair(7);
+		const ids = Array.from({ length: 10 }, (_, index) =>
+			insertMemory(db, { importKey: `key:${index}` }),
+		);
+		const warn = vi.fn();
+		slice(db, NOW, warn);
+
+		// More newest rows than a slice remembers are deleted and replaced.
+		db.prepare("DELETE FROM memory_items WHERE id >= ?").run(ids[0]);
+		const replacement = insertMemory(db, {
+			importKey: "legacy:memory_item:42",
+			updatedAt: LONG_AGO,
+		});
+		for (let index = 0; index < 9; index++) {
+			insertMemory(db, { importKey: `key:replacement-${index}`, updatedAt: LONG_AGO });
+		}
+		const result = slice(db, minutesAfter(1), warn);
+
+		expect(result).toEqual({ opsCreated: 10, keysMigrated: 1, complete: true });
+		expect(importKey(db, replacement)).toBe("legacy:dev-local:memory_item:42");
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(getMaintenanceJob(db, REPLICATION_BACKFILL_JOB)?.metadata).toMatchObject({
+			blocked_legacy_keys: 1,
+			reported_blocked_legacy_keys: 1,
+		});
+	});
+});
+
 describe("slices from two processes", () => {
 	let dir: string;
 	let dbPath: string;

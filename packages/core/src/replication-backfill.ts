@@ -37,7 +37,6 @@ import {
 	type BackfillState,
 	type MemoryRowIdentity,
 	readBackfillState,
-	readNewestRows,
 	saveBackfillState,
 } from "./replication-backfill-state.js";
 import type * as schema from "./schema.js";
@@ -241,38 +240,57 @@ function checkNewRows(context: SliceContext): boolean {
 	}
 }
 
-/**
- * SQLite gives a new memory the ID of a deleted newest row. A replacement can therefore sit
- * at or below the mark without having been checked, with any `updated_at`, as an import has.
- * Compare the newest checked rows with the store. When the newest one is gone or is another
- * memory, go back to the newest remembered row that is unchanged: IDs are only reused above
- * the rows that survived. With none unchanged, check every memory again.
- */
-function markBelowReplacedRows(db: Database, state: BackfillState): number {
-	const remembered = state.newestCheckedRows;
-	const newest = remembered[0];
-	if (!newest) return state.checkedThroughId;
-	const current = new Map(readNewestRows(db, newest[0]));
-	const unchanged = ([id, importKey]: MemoryRowIdentity) =>
-		current.has(id) && current.get(id) === importKey;
-	if (unchanged(newest)) return state.checkedThroughId;
-	return remembered.find(unchanged)?.[0] ?? 0;
+/** The import keys the remembered rows have now, by ID. A deleted row has no entry. */
+function currentImportKeys(db: Database, rows: MemoryRowIdentity[]): Map<number, string | null> {
+	if (rows.length === 0) return new Map();
+	const placeholders = rows.map(() => "?").join(", ");
+	return new Map(
+		db
+			.prepare(`SELECT id, import_key FROM memory_items WHERE id IN (${placeholders})`)
+			.raw()
+			.all(...rows.map(([id]) => id)) as MemoryRowIdentity[],
+	);
 }
 
 /**
- * Lower the mark past any checked row that was deleted since the last slice, so a memory
- * that reuses a freed ID is read as a new row. Returns the newest memory ID.
+ * Lower the marks past any checked row that was deleted since the last slice. Returns the
+ * newest memory ID.
+ *
+ * SQLite gives a new memory the ID of a deleted newest row. A replacement can therefore sit
+ * at or below the marks without having been checked or had its legacy key tried, with any
+ * `updated_at`, as an import has. Compare the newest checked rows with the store. When the
+ * newest one is gone or is another memory, go back to the newest remembered row that is
+ * unchanged: IDs are only reused above the rows that survived, so every row above that one
+ * is a replacement and none of them was tried before.
+ *
+ * With no remembered row unchanged, nothing says how far down the replacements reach. Check
+ * every memory again, legacy keys included, and count the blocked keys afresh. The number
+ * already reported is kept, so only keys beyond it are reported.
  */
-function lowerMarkToSurvivingRows(db: Database, state: BackfillState): number {
+function lowerMarksToSurvivingRows(db: Database, state: BackfillState): number {
 	const newest = db.prepare("SELECT max(id) AS id FROM memory_items").get() as {
 		id: number | null;
 	};
 	const newestId = newest.id ?? 0;
-	state.checkedThroughId = Math.min(
-		state.checkedThroughId,
-		newestId,
-		markBelowReplacedRows(db, state),
-	);
+	const remembered = state.newestCheckedRows;
+	const current = currentImportKeys(db, remembered);
+	const unchanged = ([id, importKey]: MemoryRowIdentity) =>
+		current.has(id) && current.get(id) === importKey;
+
+	let survivingThrough = newestId;
+	const newestRemembered = remembered[0];
+	if (newestRemembered && !unchanged(newestRemembered)) {
+		const survivor = remembered.find(unchanged);
+		if (!survivor) {
+			state.checkedThroughId = 0;
+			state.legacyKeysTriedThroughId = 0;
+			state.blockedLegacyKeys = 0;
+			return newestId;
+		}
+		survivingThrough = Math.min(newestId, survivor[0]);
+	}
+	state.checkedThroughId = Math.min(state.checkedThroughId, survivingThrough);
+	state.legacyKeysTriedThroughId = Math.min(state.legacyKeysTriedThroughId, survivingThrough);
 	return newestId;
 }
 
@@ -328,9 +346,11 @@ function hasWork(db: Database, timing: SliceTiming, localDeviceId: string): bool
 	const stored = readBackfillState(db);
 	if (!stored) return true;
 	const state = { ...stored };
-	lowerMarkToSurvivingRows(db, state);
-	if (state.checkedThroughId !== stored.checkedThroughId || !stored.initialPassComplete)
-		return true;
+	lowerMarksToSurvivingRows(db, state);
+	const marksLowered =
+		state.checkedThroughId !== stored.checkedThroughId ||
+		state.legacyKeysTriedThroughId !== stored.legacyKeysTriedThroughId;
+	if (marksLowered || !stored.initialPassComplete) return true;
 	const newRow = db.prepare("SELECT 1 FROM memory_items WHERE id > ? LIMIT 1");
 	if (newRow.get(state.checkedThroughId)) return true;
 	const context = sliceContext(db, state, timing, { localDeviceId, dryRun: true });
@@ -346,7 +366,7 @@ function runLockedSlice(
 	options: { localDeviceId: string; warn: (message: string) => void },
 ): ReplicationBackfillSliceResult {
 	const state = readBackfillState(db) ?? initialState(timing.recheckFrom);
-	const newestMemoryId = lowerMarkToSurvivingRows(db, state);
+	const newestMemoryId = lowerMarksToSurvivingRows(db, state);
 	const context = sliceContext(db, state, timing, {
 		localDeviceId: options.localDeviceId,
 		dryRun: false,
