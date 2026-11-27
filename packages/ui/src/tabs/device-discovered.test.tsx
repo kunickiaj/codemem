@@ -167,3 +167,43 @@ describe("Devices waiting for review", () => {
 		expect(mount.textContent).toContain("Disconnected this device from Desk Mini.");
 	});
 });
+
+describe("Devices waiting for review results", () => {
+	it("keeps the result visible after the paired device leaves the list", async () => {
+		const api = fakeApi({
+			review: vi.fn(async () => ({
+				message:
+					"Step 1 complete on this device for Desk Mini. Finish onboarding on the other device so both sides trust each other for sync.",
+				tone: "success" as const,
+			})),
+		});
+		const onDone = vi.fn();
+		await show([row({ approvalState: "not-required" })], api, onDone);
+		await act(async () => mount.querySelector("button")?.click());
+		await act(async () => {});
+
+		// The refresh moves the device out of the review list.
+		await act(() => render(<DevicesToReview api={api} onDone={onDone} rows={[]} />, mount));
+
+		expect(mount.querySelector("li")).toBeNull();
+		expect(mount.querySelector('[role="status"]')?.textContent).toContain(
+			"Finish onboarding on the other device",
+		);
+	});
+
+	it("keeps a naming warning visible after the device leaves the list", async () => {
+		const api = fakeApi({
+			review: vi.fn(async () => ({
+				message: "Approval was sent, but naming did not finish. You do not need to approve again.",
+				tone: "warning" as const,
+			})),
+		});
+		await show([row()], api);
+		await act(async () => mount.querySelector("button")?.click());
+		await act(async () => {});
+
+		await act(() => render(<DevicesToReview api={api} onDone={vi.fn()} rows={[]} />, mount));
+
+		expect(mount.querySelector('[role="alert"]')?.textContent).toContain("naming did not finish");
+	});
+});

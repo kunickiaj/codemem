@@ -58,67 +58,66 @@ export function discoveredDevicesApi(
 function ReviewAction({
 	api,
 	onDone,
+	onFeedback,
 	row,
 }: {
 	api: DiscoveredDevicesApi;
 	onDone: () => unknown;
+	onFeedback: (feedback: SyncActionFeedback | null) => void;
 	row: TeamSyncDiscoveredRow;
 }) {
 	const [busy, setBusy] = useState(false);
-	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
 	const idle = row.actionLabel || "Pair with this device";
 	const [label, setLabel] = useState(idle);
 	async function run() {
 		setBusy(true);
 		setLabel("Pairing…");
-		setFeedback({
+		onFeedback({
 			message: `Pairing ${row.displayName}. Keep this page open while the device is approved and refreshed.`,
 			tone: "success",
 		});
 		try {
 			const next = await api.review(row);
-			setFeedback(next);
+			onFeedback(next);
 			setLabel(next?.tone === "warning" ? "Retry" : idle);
 			if (next) await Promise.resolve(onDone()).catch(() => undefined);
 		} catch {
-			setFeedback({ message: `Pairing ${row.displayName} failed. Try again.`, tone: "warning" });
+			onFeedback({ message: `Pairing ${row.displayName} failed. Try again.`, tone: "warning" });
 			setLabel("Retry");
 		} finally {
 			setBusy(false);
 		}
 	}
 	return (
-		<>
-			<button
-				aria-label={`${label} for ${row.displayName}`}
-				className="settings-button"
-				disabled={busy}
-				onClick={() => void run()}
-				type="button"
-			>
-				{label}
-			</button>
-			<SyncInlineFeedback feedback={feedback} />
-		</>
+		<button
+			aria-label={`${label} for ${row.displayName}`}
+			className="settings-button"
+			disabled={busy}
+			onClick={() => void run()}
+			type="button"
+		>
+			{label}
+		</button>
 	);
 }
 
 function ConflictAction({
 	api,
 	onDone,
+	onFeedback,
 	row,
 }: {
 	api: DiscoveredDevicesApi;
 	onDone: () => unknown;
+	onFeedback: (feedback: SyncActionFeedback | null) => void;
 	row: TeamSyncDiscoveredRow;
 }) {
 	const [busy, setBusy] = useState(false);
-	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
 	async function run() {
 		setBusy(true);
 		try {
 			const next = await api.disconnect(row);
-			setFeedback(next);
+			onFeedback(next);
 			if (next?.tone === "success") await Promise.resolve(onDone()).catch(() => undefined);
 		} finally {
 			setBusy(false);
@@ -139,7 +138,6 @@ function ConflictAction({
 			>
 				Disconnect on this device…
 			</button>
-			<SyncInlineFeedback feedback={feedback} />
 		</>
 	);
 }
@@ -147,10 +145,12 @@ function ConflictAction({
 function DiscoveredRow({
 	api,
 	onDone,
+	onFeedback,
 	row,
 }: {
 	api: DiscoveredDevicesApi;
 	onDone: () => unknown;
+	onFeedback: (feedback: SyncActionFeedback | null) => void;
 	row: TeamSyncDiscoveredRow;
 }) {
 	return (
@@ -177,9 +177,13 @@ function DiscoveredRow({
 			</div>
 			<div className="peer-meta">{row.note}</div>
 			<div className="peer-actions">
-				{row.mode === "accept" ? <ReviewAction api={api} onDone={onDone} row={row} /> : null}
+				{row.mode === "accept" ? (
+					<ReviewAction api={api} onDone={onDone} onFeedback={onFeedback} row={row} />
+				) : null}
 				{row.actionMessage ? <div className="peer-meta">{row.actionMessage}</div> : null}
-				{row.mode === "conflict" ? <ConflictAction api={api} onDone={onDone} row={row} /> : null}
+				{row.mode === "conflict" ? (
+					<ConflictAction api={api} onDone={onDone} onFeedback={onFeedback} row={row} />
+				) : null}
 			</div>
 		</li>
 	);
@@ -187,7 +191,8 @@ function DiscoveredRow({
 
 /**
  * Team devices the coordinator lists that this device can pair with or approve. Pairing and
- * approval start here, with no trip to Advanced.
+ * approval start here, with no trip to Advanced. The result of an action is kept at this level
+ * rather than in the row, because the row leaves the list once the pairing is saved.
  */
 export function DevicesToReview({
 	api,
@@ -199,22 +204,30 @@ export function DevicesToReview({
 	onDone: () => unknown;
 	rows: TeamSyncDiscoveredRow[];
 }) {
+	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
 	const visible = reviewableDiscoveredRows(rows);
-	if (visible.length === 0) return null;
+	if (visible.length === 0 && !feedback) return null;
 	return (
 		<section aria-labelledby="devices-to-review-heading" className="devices-to-review">
 			<h3 id="devices-to-review-heading">
-				Devices waiting for review <span className="devices-heading-count">· {visible.length}</span>
+				Devices waiting for review{" "}
+				{visible.length > 0 ? (
+					<span className="devices-heading-count">· {visible.length}</span>
+				) : null}
 			</h3>
-			<p className="small">
-				Pair with a teammate's device so it appears in Devices and starts syncing.
-			</p>
+			<SyncInlineFeedback feedback={feedback} />
+			{visible.length > 0 ? (
+				<p className="small">
+					Pair with a teammate's device so it appears in Devices and starts syncing.
+				</p>
+			) : null}
 			<ul className="devices-to-review-list">
 				{visible.map((row) => (
 					<DiscoveredRow
 						api={api}
 						key={`${row.deviceId}:${row.incomingRequestId}:${row.fingerprint}`}
 						onDone={onDone}
+						onFeedback={setFeedback}
 						row={row}
 					/>
 				))}
