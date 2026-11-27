@@ -538,6 +538,30 @@ query path and can retry installation on a later writable open. The index uses
 built-in JSON functions so older clients can maintain it. Its one-time build,
 storage, and per-event write costs trade against repeated dashboard scans.
 
+## Periodic work on the Viewer's event loop
+
+The sync daemon and the raw-event sweeper run inside the Viewer process, and
+SQLite calls there are synchronous. A statement that reads a whole table stops
+the Viewer from answering anything, for as long as the read takes. On a store
+of several gigabytes that is hundreds of milliseconds while the pages are
+cached and many seconds when they are not. Periodic paths should therefore
+read only rows with work.
+
+- **Sync pass preflight.** Memories written without a replication op, and
+  legacy import keys, are found incrementally. A `maintenance_jobs` row of kind
+  `replication_op_backfill` records the highest memory ID checked and a position
+  in `updated_at` order. A sync tick reads the rows above those marks for at
+  most 25 ms. The maintenance worker runs the same check once a minute and
+  performs the first full check of an existing store in short slices. A legacy
+  key whose device-scoped form belongs to another memory is tried once, counted
+  in the job's message and reported in one warning. Pruning replication ops
+  requests a full recheck, because a memory whose current op was pruned needs a
+  new one.
+
+`capturePlans` and `statementsScanning` in
+`packages/core/src/query-plan-test-fixtures.ts` let a test assert that a path
+prepares no statement whose plan scans a named table.
+
 ## Viewer sync-status reads
 
 Sync-status counts use a partial index of active memories with nonblank text and

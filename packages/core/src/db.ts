@@ -667,6 +667,20 @@ function ensureMemoryItemsPagingIndex(db: DatabaseType): void {
 }
 
 /**
+ * Create the `updated_at` index the replication backfill reads to find rows changed since
+ * its last pass. Runs outside the SCHEMA_VERSION-gated block so databases already at the
+ * current version get it.
+ */
+function ensureMemoryItemsSyncIndexes(db: DatabaseType): void {
+	if (!tableExists(db, "memory_items")) return;
+	try {
+		db.exec("CREATE INDEX IF NOT EXISTS idx_memory_items_updated_at ON memory_items(updated_at)");
+	} catch {
+		// Keep additive compatibility best-effort for index creation.
+	}
+}
+
+/**
  * Create the (started_at, id) keyset index that newest-first candidate scans
  * rely on (listProjectScopeCandidates). Same rationale as the memory_items
  * paging index: run unconditionally so databases already at the current
@@ -1124,6 +1138,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
+	ensureMemoryItemsSyncIndexes(db);
 	ensureUsageEventsAggregateIndex(db);
 	ensureSyncStatusIndexes(db);
 	if (!compatAlreadyApplied) {

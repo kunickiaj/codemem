@@ -33,6 +33,7 @@ import { readRetainedPeerProjectFilters } from "./peer-project-filter-retention.
 import { projectBasename } from "./project.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
+import { requestReplicationBackfillRecheck } from "./replication-backfill-state.js";
 import * as schema from "./schema.js";
 import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import {
@@ -1710,6 +1711,15 @@ export function hasUnsyncedSharedMemoryChanges(db: Database, limit = 25): SyncDi
 	return { dirty: count > 0, count };
 }
 
+/**
+ * After ops were pruned: move the scope's retained floor, and have the backfill check every
+ * memory again, because a memory whose current op was pruned needs a new one.
+ */
+function recordPrunedFloor(db: Database, floorCursor: string, scopeId: string): void {
+	setSyncResetState(db, { retained_floor_cursor: floorCursor }, scopeId);
+	requestReplicationBackfillRecheck(db);
+}
+
 export function pruneReplicationOps(
 	db: Database,
 	options?: {
@@ -1751,9 +1761,7 @@ export function pruneReplicationOps(
 								)
 								.run(scopeId, createdAt, createdAt, opId) as { changes?: number });
 				const changes = result.changes ?? 0;
-				if (changes > 0) {
-					setSyncResetState(db, { retained_floor_cursor: floorCursor }, scopeId);
-				}
+				if (changes > 0) recordPrunedFloor(db, floorCursor, scopeId);
 				return changes;
 			})
 			.immediate();
@@ -1975,9 +1983,7 @@ export function bulkPruneReplicationOpsByAgeCutoff(
 							changes?: number;
 						});
 			const changes = result.changes ?? 0;
-			if (changes > 0) {
-				setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor }, scopeId);
-			}
+			if (changes > 0) recordPrunedFloor(db, retainedFloorCursor, scopeId);
 			return changes;
 		})
 		.immediate();
@@ -3561,6 +3567,65 @@ function syncScopeRejectionsTableExists(db: Database): boolean {
 
 const LEGACY_IMPORT_KEY_OLD_RE = /^legacy:memory_item:(.+)$/;
 
+/** The columns the legacy import key migration reads from one memory row. */
+export interface LegacyImportKeyRow {
+	id: number;
+	import_key: string | null;
+	metadata_json: string | null;
+}
+
+/**
+ * What the migration did with one row. `blocked` means the device-scoped key the row
+ * would get already belongs to another memory, so the row keeps its legacy key.
+ */
+export type LegacyImportKeyOutcome = "unchanged" | "migrated" | "blocked";
+
+/** The local device ID that legacy rows without a recorded origin are attributed to. */
+export function localReplicationDeviceId(db: Database): string {
+	const deviceRow = drizzle(db, { schema })
+		.select({ device_id: schema.syncDevice.device_id })
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
+	return String(deviceRow?.device_id ?? "").trim();
+}
+
+function canonicalLegacyImportKey(row: LegacyImportKeyRow, localDeviceId: string): string {
+	const memoryId = Number(row.id);
+	const current = String(row.import_key ?? "").trim();
+	if (!current) return `legacy:${localDeviceId}:memory_item:${memoryId}`;
+	const match = current.match(LEGACY_IMPORT_KEY_OLD_RE);
+	if (!match) return "";
+	const metadata = fromJson(row.metadata_json);
+	const clockDeviceId =
+		typeof metadata.clock_device_id === "string" ? metadata.clock_device_id.trim() : "";
+	const origin = clockDeviceId && clockDeviceId !== "local" ? clockDeviceId : localDeviceId;
+	return origin ? `legacy:${origin}:memory_item:${match[1] ?? ""}` : "";
+}
+
+/** Rewrite one row's legacy import key into its device-scoped form. */
+export function migrateLegacyImportKeyForRow(
+	db: Database,
+	row: LegacyImportKeyRow,
+	localDeviceId: string,
+): LegacyImportKeyOutcome {
+	const memoryId = Number(row.id);
+	const current = String(row.import_key ?? "").trim();
+	const canonical = canonicalLegacyImportKey(row, localDeviceId);
+	if (!canonical || canonical === current) return "unchanged";
+
+	const existing = drizzle(db, { schema })
+		.select({ id: schema.memoryItems.id })
+		.from(schema.memoryItems)
+		.where(eq(schema.memoryItems.import_key, canonical))
+		.limit(1)
+		.get();
+	if (existing && Number(existing.id) !== memoryId) return "blocked";
+
+	assignMemoryImportKey(db, memoryId, canonical);
+	return "migrated";
+}
+
 /**
  * Rewrite legacy import keys into globally unique, device-scoped keys.
  *
@@ -3570,12 +3635,7 @@ const LEGACY_IMPORT_KEY_OLD_RE = /^legacy:memory_item:(.+)$/;
  */
 export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
 	const d = drizzle(db, { schema });
-	const deviceRow = d
-		.select({ device_id: schema.syncDevice.device_id })
-		.from(schema.syncDevice)
-		.limit(1)
-		.get();
-	const localDeviceId = String(deviceRow?.device_id ?? "").trim();
+	const localDeviceId = localReplicationDeviceId(db);
 	if (!localDeviceId) return 0;
 
 	const rows = d
@@ -3596,43 +3656,10 @@ export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
 		.limit(limit)
 		.all();
 
-	if (rows.length === 0) return 0;
-
 	let updated = 0;
 	for (const row of rows) {
-		const memoryId = Number(row.id);
-		const current = String(row.import_key ?? "").trim();
-		const metadata = fromJson(row.metadata_json);
-		const clockDeviceId =
-			typeof metadata.clock_device_id === "string" ? metadata.clock_device_id.trim() : "";
-
-		let canonical = "";
-		if (!current) {
-			canonical = `legacy:${localDeviceId}:memory_item:${memoryId}`;
-		} else {
-			const match = current.match(LEGACY_IMPORT_KEY_OLD_RE);
-			if (!match) continue;
-			const suffix = match[1] ?? "";
-			const origin = clockDeviceId && clockDeviceId !== "local" ? clockDeviceId : localDeviceId;
-			canonical = origin ? `legacy:${origin}:memory_item:${suffix}` : "";
-		}
-
-		if (!canonical || canonical === current) continue;
-
-		const existing = d
-			.select({ id: schema.memoryItems.id })
-			.from(schema.memoryItems)
-			.where(eq(schema.memoryItems.import_key, canonical))
-			.limit(1)
-			.get();
-		if (existing && Number(existing.id) !== memoryId) {
-			continue;
-		}
-
-		assignMemoryImportKey(db, memoryId, canonical);
-		updated++;
+		if (migrateLegacyImportKeyForRow(db, row, localDeviceId) === "migrated") updated++;
 	}
-
 	return updated;
 }
 
@@ -3643,11 +3670,86 @@ function assignMemoryImportKey(db: Database, memoryId: number, importKey: string
 	}).immediate();
 }
 
+/** The device a backfilled op is attributed to: the row's recorded clock device, else this one. */
+function backfillOriginDeviceId(row: MemoryItemRow, localDeviceId: string): string {
+	const metadata =
+		typeof row.metadata_json === "string"
+			? fromJson(row.metadata_json)
+			: fromJsonNullableLike(row.metadata_json);
+	const clockDeviceId =
+		typeof metadata.clock_device_id === "string" ? metadata.clock_device_id.trim() : "";
+	return clockDeviceId && clockDeviceId !== "local" ? clockDeviceId : localDeviceId;
+}
+
+/** The row's import key, assigning a device-scoped one when it has none. */
+function backfillImportKey(db: Database, row: MemoryItemRow, originDeviceId: string): string {
+	const importKey = String(row.import_key ?? "").trim();
+	if (importKey || !originDeviceId) return importKey;
+	const assigned = `legacy:${originDeviceId}:memory_item:${Number(row.id)}`;
+	assignMemoryImportKey(db, Number(row.id), assigned);
+	return assigned;
+}
+
+/**
+ * Write the replication op one memory row lacks for its current revision. Returns false when
+ * the row cannot get one: it has no ID or origin device, or the op already exists.
+ */
+export function insertBackfillReplicationOp(
+	db: Database,
+	row: MemoryItemRow,
+	localDeviceId: string,
+	now: string,
+): boolean {
+	const d = drizzle(db, { schema });
+	const rowId = Number(row.id ?? 0);
+	if (!rowId) return false;
+
+	const originDeviceId = backfillOriginDeviceId(row, localDeviceId);
+	const importKey = backfillImportKey(db, row, originDeviceId);
+	if (!importKey) return false;
+
+	const rev = Number(row.rev ?? 0);
+	const deletedAt = String(row.deleted_at ?? "").trim();
+	const opType = deletedAt || Number(row.active ?? 1) === 0 ? "delete" : "upsert";
+	const opId = `backfill:memory_item:${importKey}:${rev}:${opType}`;
+
+	const exists = d
+		.select({ one: sql<number>`1` })
+		.from(schema.replicationOps)
+		.where(eq(schema.replicationOps.op_id, opId))
+		.limit(1)
+		.get();
+	if (exists || !originDeviceId) return false;
+	const scopeId = ensureMemoryScopeId(db, rowId);
+	const payload = buildPayloadFromMemoryRow({ ...row, scope_id: scopeId });
+
+	d.insert(schema.replicationOps)
+		.values({
+			op_id: opId,
+			entity_type: "memory_item",
+			entity_id: importKey,
+			op_type: opType,
+			payload_json: toJson(payload),
+			clock_rev: rev,
+			clock_updated_at: String(row.updated_at ?? now),
+			clock_device_id: originDeviceId,
+			device_id: originDeviceId,
+			created_at: now,
+			scope_id: scopeId,
+		})
+		.onConflictDoNothing()
+		.run();
+	return true;
+}
+
 /**
  * Generate replication ops for rows that predate replication.
  *
  * Prioritizes delete/tombstone ops first, then active upserts, and only
  * generates ops when a matching op for the same entity/rev/op_type is missing.
+ *
+ * This scans every memory on each call. The sync pass and the maintenance worker use
+ * the incremental pass in `replication-backfill.ts` instead.
  */
 export function backfillReplicationOps(db: Database, limit = 200): number {
 	if (limit <= 0) return 0;
@@ -3655,12 +3757,7 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 	migrateLegacyImportKeys(db, 2000);
 
 	const d = drizzle(db, { schema });
-	const deviceRow = d
-		.select({ device_id: schema.syncDevice.device_id })
-		.from(schema.syncDevice)
-		.limit(1)
-		.get();
-	const localDeviceId = String(deviceRow?.device_id ?? "").trim();
+	const localDeviceId = localReplicationDeviceId(db);
 
 	const deletedRows = d
 		.select()
@@ -3708,72 +3805,11 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 		rows = [...rows, ...upsertRows];
 	}
 
-	if (rows.length === 0) return 0;
-
 	const now = new Date().toISOString();
 	let inserted = 0;
-
 	for (const row of rows) {
-		const rowId = Number(row.id ?? 0);
-		if (!rowId) continue;
-
-		const metadata =
-			typeof row.metadata_json === "string"
-				? fromJson(row.metadata_json)
-				: fromJsonNullableLike(row.metadata_json);
-		const metadataClockDeviceId =
-			typeof metadata.clock_device_id === "string" ? metadata.clock_device_id.trim() : "";
-		const originDeviceId =
-			metadataClockDeviceId && metadataClockDeviceId !== "local"
-				? metadataClockDeviceId
-				: localDeviceId;
-
-		let importKey = String(row.import_key ?? "").trim();
-		if (!importKey) {
-			if (!originDeviceId) continue;
-			importKey = `legacy:${originDeviceId}:memory_item:${rowId}`;
-			assignMemoryImportKey(db, rowId, importKey);
-		}
-
-		const rev = Number(row.rev ?? 0);
-		const active = Number(row.active ?? 1);
-		const deletedAt = String(row.deleted_at ?? "").trim();
-		const opType: "upsert" | "delete" = deletedAt || active === 0 ? "delete" : "upsert";
-		const opId = `backfill:memory_item:${importKey}:${rev}:${opType}`;
-
-		const exists = d
-			.select({ one: sql<number>`1` })
-			.from(schema.replicationOps)
-			.where(eq(schema.replicationOps.op_id, opId))
-			.limit(1)
-			.get();
-		if (exists) continue;
-
-		const clockDeviceId = originDeviceId;
-		if (!clockDeviceId) continue;
-		const scopeId = ensureMemoryScopeId(db, rowId);
-		const payload = buildPayloadFromMemoryRow({ ...row, scope_id: scopeId });
-
-		d.insert(schema.replicationOps)
-			.values({
-				op_id: opId,
-				entity_type: "memory_item",
-				entity_id: importKey,
-				op_type: opType,
-				payload_json: toJson(payload),
-				clock_rev: rev,
-				clock_updated_at: String(row.updated_at ?? now),
-				clock_device_id: clockDeviceId,
-				device_id: clockDeviceId,
-				created_at: now,
-				scope_id: scopeId,
-			})
-			.onConflictDoNothing()
-			.run();
-
-		inserted++;
+		if (insertBackfillReplicationOp(db, row, localDeviceId, now)) inserted++;
 	}
-
 	return inserted;
 }
 

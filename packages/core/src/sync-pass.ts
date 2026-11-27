@@ -14,6 +14,7 @@ import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } f
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
+import { runReplicationBackfillSlice } from "./replication-backfill.js";
 import * as schema from "./schema.js";
 import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import {
@@ -55,7 +56,6 @@ import { ensureDeviceIdentity } from "./sync-identity.js";
 import {
 	ACCESS_CLEANUP_OP_TYPE,
 	applyReplicationOps,
-	backfillReplicationOps,
 	chunkOpsBySize,
 	clearReplicationCursorLastApplied,
 	DEFAULT_SYNC_SCOPE_ID,
@@ -64,7 +64,6 @@ import {
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
-	migrateLegacyImportKeys,
 	parseReassignScopePayload,
 	REASSIGN_SCOPE_OP_TYPE,
 	reconcileStalePeerReceivedRows,
@@ -1389,11 +1388,16 @@ export { syncOneScope as syncScopedPeerPull };
 // Preflight
 // ---------------------------------------------------------------------------
 
-/** Run migration + replication backfill preflight. */
-export function syncPassPreflight(db: Database): void {
+/**
+ * Before a sync pass: give memories written since the last pass their device-scoped import
+ * key and replication op. This reads only new and changed rows, within a time limit, so a
+ * sync tick never scans the store; the maintenance worker completes the first full check.
+ */
+export function syncPassPreflight(db: Database, options: { maxRuntimeMs?: number } = {}): void {
 	ensureAdditiveSchemaCompatibility(db);
-	migrateLegacyImportKeys(db, 2000);
-	backfillReplicationOps(db, 200);
+	// The daemon runs on the Viewer's event loop, so its slice does not wait behind another
+	// writer. A skipped slice costs nothing: the next tick or the maintenance worker does it.
+	runReplicationBackfillSlice(db, { maxRuntimeMs: options.maxRuntimeMs, waitForWriteLock: false });
 }
 
 type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
