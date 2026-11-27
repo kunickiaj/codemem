@@ -261,13 +261,22 @@ function revocationStatements(
 	const subjects = [{ kind: "device_id", value: input.deviceId }];
 	if (keyId) subjects.push({ kind: "ed25519_key", value: keyId });
 	const revocationId = globalThis.crypto.randomUUID();
-	const writes = subjects.map(({ kind, value }) => ({
-		sql: `INSERT INTO coordinator_device_revocations(subject_kind, subject_value, revocation_id,
+	const writes = subjects.flatMap(({ kind, value }) => [
+		{
+			sql: `INSERT INTO coordinator_device_revocations(subject_kind, subject_value, revocation_id,
 evidence_group_id, evidence_device_id, evidence_public_key, evidence_fingerprint, actor_id, created_at)
 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (${evidenceSql})
 ON CONFLICT(subject_kind, subject_value) DO NOTHING`,
-		values: [kind, value, revocationId, ...tuple, input.actorId, now, ...evidenceValues],
-	}));
+			values: [kind, value, revocationId, ...tuple, input.actorId, now, ...evidenceValues],
+		},
+		// A retry may win just the ID while the key belongs to a previous revocation.
+		// Rows without a filled key ID cannot rule out a canonical key match.
+		{
+			sql: `UPDATE groups SET readiness_generation=NULL WHERE changes()=1 AND readiness_generation IS NOT NULL
+AND group_id IN (SELECT group_id FROM enrolled_devices WHERE ${kind === "device_id" ? "device_id=?" : "key_id=? OR key_id IS NULL"})`,
+			values: [value],
+		},
+	]);
 	return [
 		{ sql: evidenceSql, values: evidenceValues, read: true },
 		...writes,

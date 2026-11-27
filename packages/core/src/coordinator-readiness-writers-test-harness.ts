@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import type { RevocationFixture } from "./coordinator-device-revocation-test-harness.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
+import { registerPolicyInvalidation } from "./coordinator-readiness-policy-test-harness.js";
 import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -39,6 +40,7 @@ export function registerReadinessWriterTests(run: Run) {
 	registerJoinApproval(run);
 	registerWriterBoundaries(run);
 	registerMembershipWriters(run);
+	registerPolicyInvalidation(run);
 }
 
 async function arrangeScopedDevice(f: Fixture, scopeId: string) {

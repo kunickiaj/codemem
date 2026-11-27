@@ -9,6 +9,7 @@ import type { CoordinatorListDeviceRemovalsInput } from "./coordinator-device-re
 import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 import { membershipGrantStatement } from "./coordinator-membership-enrollment.js";
 import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-removal-query.js";
+import { scopePolicyUpdate } from "./coordinator-scope-policy-update.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
  *
@@ -401,7 +402,6 @@ import {
 	normalizeCoordinatorCreateScopeInput,
 	normalizeCoordinatorGrantScopeMembershipInput,
 	normalizeCoordinatorInviteMetadata,
-	normalizeCoordinatorUpdateScopeInput,
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
 import {
@@ -3822,37 +3822,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async updateScope(opts: CoordinatorUpdateScopeInput): Promise<CoordinatorScope | null> {
+		return this.db.transaction(() => this.updateScopeSync(opts)).immediate();
+	}
+
+	private updateScopeSync(opts: CoordinatorUpdateScopeInput): CoordinatorScope | null {
 		const scopeId = clean(opts.scopeId);
 		const existing = scopeId ? this.getScopeSync(scopeId) : null;
 		if (!existing) return null;
-		const normalized = normalizeCoordinatorUpdateScopeInput(opts, existing);
-		this.db
-			.prepare(`UPDATE coordinator_scopes
-				 SET label = ?,
-					 kind = ?,
-					 authority_type = ?,
-					 coordinator_id = ?,
-					 group_id = ?,
-					 manifest_issuer_device_id = ?,
-					 membership_epoch = ?,
-					 manifest_hash = ?,
-					 status = ?,
-					 updated_at = ?
-				 WHERE scope_id = ?`)
-			.run(
-				normalized.label,
-				normalized.kind,
-				normalized.authorityType,
-				normalized.coordinatorId,
-				normalized.groupId,
-				normalized.manifestIssuerDeviceId,
-				normalized.membershipEpoch,
-				normalized.manifestHash,
-				normalized.status,
-				nowISO(),
-				normalized.scopeId,
-			);
-		return this.getScopeSync(normalized.scopeId);
+		const { write, invalidate } = scopePolicyUpdate(opts, existing, nowISO());
+		if (this.db.prepare(write.sql).run(...write.values).changes !== 1)
+			throw new Error("scope_update_conflict");
+		if (invalidate) this.db.prepare(invalidate.sql).run(...invalidate.values);
+		return this.getScopeSync(existing.scope_id);
 	}
 
 	async listScopes(opts: CoordinatorListScopesInput = {}): Promise<CoordinatorScope[]> {

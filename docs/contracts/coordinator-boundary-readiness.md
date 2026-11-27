@@ -250,6 +250,8 @@ enrollment or removal checks the actual number of enrolled rows.
 | Group archive and unarchive (`/v1/admin/groups/archive`, `/v1/admin/groups/unarchive`) | The group whose archive state changed. A group name change has no effect. |
 | Team member removal and Team-to-group binding | The named group when the removal or binding is inserted. This includes the first binding created while minting a Team invitation. A replay or conflicting binding does not clear a new preparation. |
 | Scope membership grant and revoke | The scope's current group when the mutation writes an audit row. Legacy memberships may inherit that group. A replay or a revoke with no matching membership does not clear a preparation. |
+| Scope policy update | The old and new groups when a policy field changes. A label edit, an unchanged policy, or an update that loses to a concurrent change preserves the generation. |
+| Coordinator-wide device revocation, from enrollment or removal evidence | A newly revoked device ID invalidates every group containing that ID. A newly revoked canonical key invalidates groups containing that key under any ID, and groups with unfilled key IDs where a match cannot be excluded. Existing revocation subjects do not invalidate a fresh preparation on retry. |
 
 Older admin clients call these same coordinator paths. An older **coordinator
 binary** that writes the database directly does not clear the column. A later

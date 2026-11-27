@@ -272,6 +272,7 @@ import {
 	SCOPE_FIELDS,
 	scopeAuthorizationError,
 } from "./coordinator-scope-authorization.js";
+import { scopePolicyUpdate } from "./coordinator-scope-policy-update.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorBootstrapGrantAuthorizationInput,
@@ -326,7 +327,6 @@ import {
 	normalizeCoordinatorCreateScopeInput,
 	normalizeCoordinatorGrantScopeMembershipInput,
 	normalizeCoordinatorInviteMetadata,
-	normalizeCoordinatorUpdateScopeInput,
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
 import { TeamGroupBindingOperations } from "./coordinator-team-group-bindings.js";
@@ -4151,35 +4151,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const scopeId = clean(opts.scopeId);
 		const existing = scopeId ? await this.getScope(scopeId) : null;
 		if (!existing) return null;
-		const normalized = normalizeCoordinatorUpdateScopeInput(opts, existing);
-		await this.db
-			.prepare(`UPDATE coordinator_scopes
-				 SET label = ?,
-					 kind = ?,
-					 authority_type = ?,
-					 coordinator_id = ?,
-					 group_id = ?,
-					 manifest_issuer_device_id = ?,
-					 membership_epoch = ?,
-					 manifest_hash = ?,
-					 status = ?,
-					 updated_at = ?
-				 WHERE scope_id = ?`)
-			.bind(
-				normalized.label,
-				normalized.kind,
-				normalized.authorityType,
-				normalized.coordinatorId,
-				normalized.groupId,
-				normalized.manifestIssuerDeviceId,
-				normalized.membershipEpoch,
-				normalized.manifestHash,
-				normalized.status,
-				nowISO(),
-				normalized.scopeId,
-			)
-			.run();
-		return await this.getScope(normalized.scopeId);
+		const { write, invalidate } = scopePolicyUpdate(opts, existing, nowISO());
+		if (!this.db.batch) throw new Error("scope_update_atomic_batch_required");
+		const statements = [this.db.prepare(write.sql).bind(...write.values)];
+		if (invalidate) statements.push(this.db.prepare(invalidate.sql).bind(...invalidate.values));
+		const [receipt] = await this.db.batch(statements);
+		if (batchResultChanges(receipt) !== 1) throw new Error("scope_update_conflict");
+		return await this.getScope(existing.scope_id);
 	}
 
 	async listScopes(opts: CoordinatorListScopesInput = {}): Promise<CoordinatorScope[]> {
