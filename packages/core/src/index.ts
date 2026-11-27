@@ -1798,6 +1798,14 @@ export {
 	type TeamMemberRemovalContext,
 	type TeamMemberRemovalRejection,
 } from "./team-member-removal-review.js";
+export {
+	commitTeamRecovery,
+	TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS,
+	type TeamRecoveryCommitContext,
+	type TeamRecoveryCommitRefusal,
+	type TeamRecoveryCommitResult,
+	type TeamRecoveryEvidenceReading,
+} from "./team-recovery-commit.js";
 export type {
 	TeamRecoveryDevice,
 	TeamRecoveryDeviceBlockCheck,
