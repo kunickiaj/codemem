@@ -341,11 +341,13 @@ jobs:
 
   # Not a required check. Installs on Node 26 are supported (engines: node >=24.15.0), while
   # development (mise.toml) and the required jobs use Node 24. This job reports Node 26
-  # regressions in a pull request's affected tests without running the full suite.
+  # regressions in a pull request's affected tests without running the full suite: when the
+  # selection is more than half the suite, as for a release bump, only build and smoke run.
   node-26-compat:
     name: Node 26 Compatibility (not required)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v6
@@ -379,6 +381,7 @@ jobs:
       - name: Affected tests
         env:
           CI_TEST_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_TEST_MAX_SHARE: "0.5"
         run: node scripts/ci-changed-tests.mjs test:ci:parallel
 
   windows-embedding-runtime-smoke:

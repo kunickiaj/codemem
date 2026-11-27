@@ -9,9 +9,11 @@ import {
 	expandScripts,
 	isUntraced,
 	main,
+	parseMaxShare,
 	parseVitest,
 	selectFiles,
 	shardArgs,
+	shareSkipReason,
 	supportImports,
 } from "./ci-changed-tests.mjs";
 import { TEST_CONFIG_TRIGGERS } from "./test-rerun-triggers.mjs";
@@ -179,6 +181,52 @@ describe("shardArgs", () => {
 	it("rejects a malformed shard instead of running every file", () => {
 		for (const shard of ["2", "0/2", "1/0", "1/2 --project x", "a/b"])
 			assert.throws(() => shardArgs(shard, { selected: true }), /Invalid CI_TEST_SHARD/u, shard);
+	});
+});
+
+describe("parseMaxShare", () => {
+	it("reads a share in (0, 1] and leaves an unset value unlimited", () => {
+		assert.equal(parseMaxShare(undefined), null);
+		assert.equal(parseMaxShare(""), null);
+		assert.equal(parseMaxShare("0.5"), 0.5);
+		assert.equal(parseMaxShare("1"), 1);
+	});
+
+	it("rejects values outside (0, 1] or that are not plain decimals", () => {
+		for (const value of ["0", "1.5", "50%", "-0.5", "half"])
+			assert.throws(() => parseMaxShare(value), /Invalid CI_TEST_MAX_SHARE/u, value);
+	});
+});
+
+describe("shareSkipReason", () => {
+	it("skips a full selection, or one over the share, and runs everything else", () => {
+		const total = 758;
+		// A changed test config selects everything, as a release bump does.
+		assert.equal(
+			shareSkipReason({ files: null, total, maxShare: 0.5 }),
+			"Skipping 758 of 758 test files: the selection is more than 50% of them.",
+		);
+		assert.match(
+			shareSkipReason({ files: Array(380).fill("f"), total, maxShare: 0.5 }) ?? "",
+			/^Skipping 380 of 758/u,
+		);
+		assert.equal(shareSkipReason({ files: Array(379).fill("f"), total, maxShare: 0.5 }), null);
+		assert.equal(shareSkipReason({ files: null, total, maxShare: null }), null);
+	});
+});
+
+describe("main with a share limit", () => {
+	it("refuses an invalid CI_TEST_MAX_SHARE before running anything", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "ci-changed-tests-"));
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ scripts: { "test:x": "true" } }));
+		try {
+			assert.throws(
+				() => main(["test:x"], { cwd, env: { CI_TEST_BASE: "abc", CI_TEST_MAX_SHARE: "2" } }),
+				/Invalid CI_TEST_MAX_SHARE: 2/u,
+			);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
 
