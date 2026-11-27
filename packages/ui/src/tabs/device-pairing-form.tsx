@@ -53,11 +53,15 @@ function usePairingFlow(api: DevicePairingApi, onPaired?: () => unknown) {
 		setReview(null);
 		setMessage(null);
 	}
-	async function save(value: string) {
+	async function save(value: string, current: number) {
 		await api.save(value);
-		setCode("");
-		setReview(null);
-		setMessage({ text: SAVED, tone: "success" });
+		// A code pasted or handed over during the save is newer input, so keep it. Devices
+		// still refreshes below, because the earlier pairing was saved.
+		if (current === revision.current) {
+			setCode("");
+			setReview(null);
+			setMessage({ text: SAVED, tone: "success" });
+		}
 		await Promise.resolve()
 			.then(() => onPaired?.())
 			.catch(() => undefined);
@@ -81,7 +85,7 @@ function usePairingFlow(api: DevicePairingApi, onPaired?: () => unknown) {
 		setBusy(true);
 		setMessage(null);
 		try {
-			if (saving) await save(value);
+			if (saving) await save(value, current);
 			else await inspect(value, current);
 		} catch (error) {
 			if (current !== revision.current) return;

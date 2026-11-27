@@ -133,3 +133,29 @@ it("takes a code handed over while the form is already open and drops the old re
 	expect(submit()?.textContent).toBe("Review pairing");
 	expect(hasPendingPairingCode()).toBe(false);
 });
+
+it("keeps a newer code handed over while a save is pending, and still refreshes Devices", async () => {
+	let finishSave: () => void = () => {};
+	const api = {
+		review: vi.fn(async () => ({ deviceId: "peer", fingerprint: "fp", addresses: [] })),
+		save: vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finishSave = resolve;
+				}),
+		),
+	};
+	const onPaired = vi.fn();
+	await act(() => render(<DevicePairingForm api={api} onPaired={onPaired} />, mount));
+	typeCode("old-code");
+	await press();
+	await press();
+	expect(api.save).toHaveBeenCalledOnce();
+
+	await act(async () => setPendingPairingCode("new-code"));
+	await act(async () => finishSave());
+
+	expect(mount.querySelector("textarea")?.value).toBe("new-code");
+	expect(mount.textContent).not.toContain("Pairing saved");
+	expect(onPaired).toHaveBeenCalledOnce();
+});
