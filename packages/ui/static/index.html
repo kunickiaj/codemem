@@ -2122,6 +2122,22 @@
         background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-1));
       }
       .recipient-policy-sharing-attention p { margin-top: var(--sp-2); }
+      .recipient-policy-sharing-warning {
+        margin: var(--sp-3) 0 0;
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid color-mix(in srgb, var(--status-warning) 45%, var(--border));
+        border-radius: var(--radius-sm, 6px);
+        background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-1));
+        color: var(--text-primary);
+      }
+      .recipient-policy-team-member-removal-members,
+      .recipient-policy-team-member-removal-invitations {
+        border: 0;
+        margin: var(--sp-3) 0 0;
+        padding: 0;
+        display: grid;
+        gap: var(--sp-2);
+      }
       .recipient-policy-sharing-attention .settings-button { margin-top: var(--sp-3); }
       .recipient-policy-sharing-team-setup-list {
         display: grid;
