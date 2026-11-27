@@ -161,6 +161,7 @@ function prepareMemory(context: SliceContext, memoryId: number): { keyBlocked: b
 }
 
 type ScanOutcome = "caught-up" | "out-of-time" | "found-work";
+type ChangedRow = { id: number; updated_at: string };
 
 /**
  * One page of changed rows. Moves the position past each row it handled, and returns
@@ -168,7 +169,7 @@ type ScanOutcome = "caught-up" | "out-of-time" | "found-work";
  */
 function checkChangedPage(
 	context: SliceContext,
-	rows: Array<{ id: number; updated_at: string }>,
+	rows: ChangedRow[],
 	syncState: Statement<[number]>,
 ): boolean {
 	for (const { id, updated_at } of rows) {
@@ -190,24 +191,38 @@ function checkChangedPage(
 function checkChangedRows(context: SliceContext): ScanOutcome {
 	const { db, state } = context;
 	if (state.checkedThroughId <= 0) return "caught-up";
-	// The unary plus keeps the planner on the updated_at index: without it the ID bound could
-	// be chosen as the access path, which reads every checked row.
-	const page = db.prepare(
+	// A page is read in two steps so that each starts by index seek after the previous
+	// (updated_at, ID) position: first the rest of the rows that share the position's
+	// timestamp, then rows with a later one. One statement with `updated_at >= ?` would seek
+	// to the timestamp only and read the already checked rows of a large group again on
+	// every page, as a bulk deactivation leaves behind.
+	// The unary plus keeps the planner on the updated_at index: without it the upper ID
+	// bound could be chosen as the access path, which reads every checked row.
+	const sameTimestamp = db.prepare(
 		`SELECT id, updated_at FROM memory_items
-		 WHERE updated_at >= ? AND (updated_at > ? OR id > ?) AND +id <= ?
+		 WHERE updated_at = ? AND id > ? AND +id <= ?
+		 ORDER BY id LIMIT ?`,
+	);
+	const laterTimestamps = db.prepare(
+		`SELECT id, updated_at FROM memory_items
+		 WHERE updated_at > ? AND +id <= ?
 		 ORDER BY updated_at, id LIMIT ?`,
 	);
 	const syncState = db.prepare(
 		"SELECT import_key, rev, active, deleted_at FROM memory_items WHERE id = ?",
 	);
 	while (true) {
-		const rows = page.all(
-			state.updatedAt,
+		const ceiling = state.checkedThroughId;
+		const rows = sameTimestamp.all(
 			state.updatedAt,
 			state.updatedId,
-			state.checkedThroughId,
+			ceiling,
 			WINDOW_ROWS,
-		) as Array<{ id: number; updated_at: string }>;
+		) as ChangedRow[];
+		if (rows.length < WINDOW_ROWS) {
+			const remaining = WINDOW_ROWS - rows.length;
+			rows.push(...(laterTimestamps.all(state.updatedAt, ceiling, remaining) as ChangedRow[]));
+		}
 		if (checkChangedPage(context, rows, syncState)) return "found-work";
 		if (rows.length < WINDOW_ROWS) return "caught-up";
 		if (context.outOfTime(0.5)) return "out-of-time";
