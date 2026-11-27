@@ -1385,6 +1385,12 @@ export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
 export * from "./release-discovery.js";
 export {
+	ReplicationBackfillRunner,
+	runReplicationBackfillPass,
+	runReplicationBackfillSlice,
+} from "./replication-backfill.js";
+export { REPLICATION_BACKFILL_JOB } from "./replication-backfill-state.js";
+export {
 	canonicalRepositoryProjectIdentity,
 	type RepositoryIdentitySnapshot,
 	readRepositoryIdentitySnapshot,

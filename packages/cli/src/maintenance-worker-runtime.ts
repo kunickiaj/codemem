@@ -13,6 +13,7 @@ import {
 	MemoryStore as MemoryStoreCtor,
 	REF_BACKFILL_JOB,
 	RefBackfillRunner,
+	ReplicationBackfillRunner,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
@@ -246,6 +247,9 @@ function createRetentionRunners(
 	// history is local diagnostics, so both are trimmed whatever the sync settings are.
 	runners.push(new LedgerRetentionRunner({ dbPath, signal, logger }));
 	runners.push(new SyncAttemptRetentionRunner({ dbPath, signal, logger }));
+	// Import keys and replication ops for rows written without them. The sync pass only
+	// spends a few milliseconds on this per tick; the first full check of a store runs here.
+	runners.push(new ReplicationBackfillRunner({ dbPath, signal, logger }));
 	return runners;
 }
 

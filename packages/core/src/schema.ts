@@ -181,6 +181,8 @@ export const memoryItems = sqliteTable(
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
 		index("idx_memory_items_created_id").on(table.created_at, table.id),
 		index("idx_memory_items_origin_device_active").on(table.origin_device_id, table.active),
+		// The replication backfill finds rows changed since its last pass by index range.
+		index("idx_memory_items_updated_at").on(table.updated_at),
 		index("idx_memory_items_session").on(table.session_id),
 		index("idx_memory_items_project").on(table.project),
 		index("idx_memory_items_scope_visibility_created").on(
