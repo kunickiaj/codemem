@@ -36,6 +36,7 @@ import { SHARING_HANDOFF_EVENT, type SharingHandoff } from "./lib/sharing-handof
 import {
 	type AdvancedSection,
 	ALL_TAB_IDS,
+	type CachedLegacySharedReview,
 	getVisibleTabs,
 	initState,
 	isCoordinatorAdministrationRoute,
@@ -90,6 +91,8 @@ import {
 	loadSyncData,
 } from "./tabs/sync";
 import { applySyncSubView } from "./tabs/sync/sync-view-controller";
+import { legacySharedReviewView } from "./tabs/sync/team-sync/render/legacy-review-view";
+import { reassignLegacySharedReviewGroup } from "./tabs/sync/team-sync/render/sharing-review";
 import { summarizeSyncRunResult } from "./tabs/sync/view-model";
 import { derivePeerUiStatus } from "./tabs/sync/view-model/peer-status";
 
@@ -129,17 +132,15 @@ function readNonNegativeCount(value: unknown, fallback = 0): number {
 	return Number.isFinite(count) ? Math.max(0, count) : fallback;
 }
 
-function readLegacyUpgradeReviewSummary(payload: unknown): LegacyUpgradeReviewSummary | null {
+function legacySharedReviewPayload(payload: unknown): CachedLegacySharedReview | null {
 	if (!payload || typeof payload !== "object") return null;
 	const review = (payload as { legacy_shared_review?: unknown }).legacy_shared_review ?? payload;
-	if (!review || typeof review !== "object") return null;
-	const raw = review as {
-		groups?: unknown;
-		has_data?: unknown;
-		memory_count?: unknown;
-		total_group_count?: unknown;
-	};
-	if (raw.has_data !== true) return null;
+	return review && typeof review === "object" ? (review as CachedLegacySharedReview) : null;
+}
+
+function readLegacyUpgradeReviewSummary(payload: unknown): LegacyUpgradeReviewSummary | null {
+	const raw = legacySharedReviewPayload(payload);
+	if (raw?.has_data !== true) return null;
 	const groups = Array.isArray(raw.groups) ? raw.groups : [];
 	const groupCount = readNonNegativeCount(raw.total_group_count, groups.length);
 	const memoryCount = readNonNegativeCount(raw.memory_count);
@@ -178,7 +179,9 @@ async function checkLegacyUpgradeNotice() {
 	if (legacyUpgradeNoticeShown || isLegacyUpgradeNoticeDismissed()) return;
 	try {
 		const payload = await api.loadSyncStatus(false, "", { includeJoinRequests: false });
-		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(payload));
+		const summary = readLegacyUpgradeReviewSummary(payload);
+		if (summary) state.lastSyncLegacySharedReview = legacySharedReviewPayload(payload);
+		maybeShowLegacyUpgradeNotice(summary);
 	} catch {}
 }
 
@@ -1053,13 +1056,8 @@ const legacyUpgradeDialogRoot = document.getElementById("legacyUpgradeDialogMoun
 if (legacyUpgradeDialogRoot) {
 	mountLegacyUpgradeDialog(legacyUpgradeDialogRoot, {
 		onDismiss: dismissLegacyUpgradeNoticeIfRequested,
-		onReviewGroups: () => {
-			window.location.hash = "sync";
-			setTimeout(
-				() => document.getElementById("syncSharingReview")?.scrollIntoView({ block: "start" }),
-				120,
-			);
-		},
+		onReassign: reassignLegacySharedReviewGroup,
+		readReview: () => legacySharedReviewView(state.lastSyncLegacySharedReview),
 		onReviewProjects: () => {
 			window.location.hash = "projects";
 		},

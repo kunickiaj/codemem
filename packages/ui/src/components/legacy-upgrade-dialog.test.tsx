@@ -42,8 +42,10 @@ vi.mock("./primitives/radix-dialog", () => {
 	};
 });
 
+import type { SyncLegacySharedReviewItem } from "../tabs/sync/components/sync-sharing-review";
 import {
 	hideLegacyUpgradeDialog,
+	type LegacyUpgradeDialogActions,
 	mountLegacyUpgradeDialog,
 	showLegacyUpgradeDialog,
 } from "./legacy-upgrade-dialog";
@@ -53,7 +55,33 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
-function mountDialog() {
+function reviewGroup(name: string) {
+	return {
+		displayProject: name,
+		identitySource: "git_remote",
+		lastUpdatedAt: null,
+		memoryCount: 3,
+		memorySamples: [],
+		peerOwnedMemoryCount: 0,
+		reassignableMemoryCount: 3,
+		suggestedScopeId: "scope-team",
+		suggestionReason: null,
+		workspaceIdentity: `workspace-${name}`,
+	};
+}
+
+function legacyReview(groups: string[]): SyncLegacySharedReviewItem | null {
+	if (groups.length === 0) return null;
+	return {
+		groups: groups.map(reviewGroup),
+		memoryCount: groups.length * 3,
+		scopeId: "legacy-shared-review",
+		totalGroupCount: groups.length,
+		targetScopes: [{ authorityType: "coordinator", label: "Team Space", scopeId: "scope-team" }],
+	};
+}
+
+function mountDialog(overrides: Partial<LegacyUpgradeDialogActions> = {}) {
 	const trigger = document.createElement("button");
 	trigger.textContent = "Open";
 	document.body.append(trigger);
@@ -61,8 +89,10 @@ function mountDialog() {
 	document.body.append(mount);
 	const actions = {
 		onDismiss: vi.fn(),
-		onReviewGroups: vi.fn(),
+		onReassign: vi.fn(async () => null),
 		onReviewProjects: vi.fn(),
+		readReview: vi.fn(() => legacyReview(["alpha", "beta"])),
+		...overrides,
 	};
 	mountLegacyUpgradeDialog(mount, actions);
 	return { actions, mount, trigger };
@@ -96,7 +126,7 @@ describe("LegacyUpgradeDialog", () => {
 		expect(actions.onDismiss).toHaveBeenCalledOnce();
 	});
 
-	it("does not dismiss from the backdrop and routes the primary action", async () => {
+	it("does not close from the backdrop and keeps Start review in the dialog", async () => {
 		const { actions } = mountDialog();
 		act(() => showLegacyUpgradeDialog({ groupCount: 1, memoryCount: 4 }));
 		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
@@ -105,8 +135,133 @@ describe("LegacyUpgradeDialog", () => {
 		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
 
 		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
-		expect(actions.onDismiss).toHaveBeenCalledOnce();
-		expect(actions.onReviewGroups).toHaveBeenCalledOnce();
+		expect(actions.onReviewProjects).not.toHaveBeenCalled();
+		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
+	});
+
+	it("saves Don't show this again before Start review removes the checkbox", async () => {
+		const saved: Array<boolean | undefined> = [];
+		mountDialog({
+			onDismiss: vi.fn(() => {
+				saved.push(
+					(document.getElementById("legacyUpgradeDontShow") as HTMLInputElement | null)?.checked,
+				);
+			}),
+		});
+		act(() => showLegacyUpgradeDialog({ groupCount: 1, memoryCount: 4 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+		(document.getElementById("legacyUpgradeDontShow") as HTMLInputElement).checked = true;
+
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+
+		expect(saved).toEqual([true]);
+		expect(document.getElementById("legacyUpgradeDontShow")).toBeNull();
+		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
+	});
+
+	it("shows the group review in the dialog and moves focus to it", async () => {
+		mountDialog();
+		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 6 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+
+		const review = document.getElementById("legacyUpgradeReview");
+		await vi.waitFor(() => expect(document.activeElement).toBe(review));
+		expect(document.getElementById("legacyUpgradeTitle")?.textContent).toBe(
+			"Review older shared memories",
+		);
+		expect(review?.textContent).toContain("alpha");
+		expect(review?.textContent).toContain("beta");
+		expect(document.getElementById("legacyUpgradeReviewGroups")).toBeNull();
+	});
+
+	it("previews a group's move in place and drops the group once it is applied", async () => {
+		const reviewed = ["alpha", "beta"];
+		const { actions } = mountDialog({
+			readReview: vi.fn(() => legacyReview(reviewed)),
+			onReassign: vi.fn(async (_group, _scopeId, confirmed) => {
+				if (!confirmed) {
+					return {
+						confirmation_token: "token-a",
+						memory_count: 3,
+						reassignable_memory_count: 3,
+						skipped_memory_count: 0,
+						warning: "Other devices may keep copies.",
+					} as never;
+				}
+				reviewed.splice(0, 1);
+				return null;
+			}),
+		});
+		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 6 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+		const review = document.getElementById("legacyUpgradeReview");
+		const buttonLabelled = (label: string) =>
+			[...(review?.querySelectorAll("button") ?? [])].find(
+				(button) => button.textContent === label,
+			);
+
+		await act(async () => buttonLabelled("Preview reassignment")?.click());
+		expect(actions.onReassign).toHaveBeenCalledWith(
+			expect.objectContaining({ workspaceIdentity: "workspace-alpha" }),
+			"scope-team",
+			false,
+			undefined,
+		);
+		await vi.waitFor(() => expect(buttonLabelled("I understand, reassign memories")).toBeTruthy());
+		await act(async () => buttonLabelled("I understand, reassign memories")?.click());
+
+		await vi.waitFor(() => expect(review?.textContent).not.toContain("alpha"));
+		expect(review?.textContent).toContain("beta");
+		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
+	});
+});
+
+describe("LegacyUpgradeDialog review stage", () => {
+	it("says when nothing is left to review", async () => {
+		mountDialog({ readReview: vi.fn(() => null) });
+		act(() => showLegacyUpgradeDialog({ groupCount: 1, memoryCount: 3 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+
+		expect(document.getElementById("legacyUpgradeReview")?.textContent).toBe(
+			"No older shared memories are waiting for review.",
+		);
+	});
+
+	it("closes from the review and sends Manage all projects to Projects", async () => {
+		const { actions } = mountDialog();
+		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 6 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+
+		act(() => document.getElementById("legacyUpgradeClose")?.click());
+		expect(actions.onDismiss).toHaveBeenCalledTimes(2);
 		expect(document.getElementById("legacyUpgradeModal")).toBeNull();
+
+		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 6 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+		expect(document.getElementById("legacyUpgradeReview")).toBeNull();
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+		const manageAll = [...document.querySelectorAll("button")].find(
+			(button) => button.textContent === "Manage all projects",
+		);
+		act(() => manageAll?.click());
+		expect(actions.onReviewProjects).toHaveBeenCalledOnce();
+		expect(document.getElementById("legacyUpgradeModal")).toBeNull();
+	});
+
+	it("routes Manage all projects from the summary to Projects", async () => {
+		const { actions } = mountDialog();
+		act(() => showLegacyUpgradeDialog({ groupCount: 1, memoryCount: 4 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+
+		act(() => document.getElementById("legacyUpgradeReviewProjects")?.click());
+
+		expect(actions.onDismiss).toHaveBeenCalledOnce();
+		expect(actions.onReviewProjects).toHaveBeenCalledOnce();
 	});
 });

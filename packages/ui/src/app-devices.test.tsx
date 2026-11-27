@@ -59,15 +59,8 @@ vi.mock("./components/legacy-upgrade-dialog", () => {
 	let show: (() => void) | null = null;
 	return {
 		hideLegacyUpgradeDialog: vi.fn(),
-		mountLegacyUpgradeDialog: (
-			mount: HTMLElement,
-			actions: { onReviewGroups: () => void; onReviewProjects: () => void },
-		) => {
-			mount.innerHTML =
-				'<button id="legacyUpgradeReviewGroups">Start review</button><button id="legacyUpgradeReviewProjects">Manage all projects</button>';
-			mount
-				.querySelector("#legacyUpgradeReviewGroups")
-				?.addEventListener("click", actions.onReviewGroups);
+		mountLegacyUpgradeDialog: (mount: HTMLElement, actions: { onReviewProjects: () => void }) => {
+			mount.innerHTML = '<button id="legacyUpgradeReviewProjects">Manage all projects</button>';
 			mount
 				.querySelector("#legacyUpgradeReviewProjects")
 				?.addEventListener("click", actions.onReviewProjects);
@@ -1737,26 +1730,15 @@ describe("Viewer behavior contracts", () => {
 		expect(window.location.hash).toBe("#advanced/sync");
 	});
 
-	it("routes legacy upgrade review actions to Advanced Sync and Projects", async () => {
+	it("routes the legacy upgrade dialog's Manage all projects to Projects", async () => {
 		const { showLegacyUpgradeDialog } = await import("./components/legacy-upgrade-dialog");
-		const sharingReview = document.getElementById("syncSharingReview") as HTMLElement | null;
-		if (!sharingReview) throw new Error("Legacy Sharing review destination missing");
-		sharingReview.scrollIntoView = vi.fn();
-
-		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 3 }));
-		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(120);
-		});
-		expect(window.location.hash).toBe("#sync");
-		expect(document.getElementById("advancedSyncContent")?.hidden).toBe(false);
-		expect(sharingReview.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
 
 		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 3 }));
 		act(() => document.getElementById("legacyUpgradeReviewProjects")?.click());
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(0);
 		});
+
 		expect(window.location.hash).toBe("#projects");
 		expect(document.getElementById("tab-projects")?.hidden).toBe(false);
 	});

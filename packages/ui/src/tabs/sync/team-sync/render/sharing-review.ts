@@ -17,6 +17,7 @@ import {
 	SyncSharingReview,
 	type SyncSharingReviewItem,
 } from "../../components/sync-sharing-review";
+import { legacySharedReviewView } from "./legacy-review-view";
 
 function openFeedSharingReview() {
 	setFeedScopeFilter("mine");
@@ -28,7 +29,7 @@ function openProjectsReview() {
 	window.location.hash = "projects";
 }
 
-async function reassignLegacySharedReviewGroup(
+export async function reassignLegacySharedReviewGroup(
 	group: SyncLegacySharedReviewGroup,
 	scopeId: string,
 	confirmedOldCopies: boolean,
@@ -64,72 +65,7 @@ export function renderSyncSharingReview() {
 	if (!panel || !meta || !list) return;
 	const title = panel.querySelector<HTMLElement>(".settings-group-title");
 	const items = Array.isArray(state.lastSyncSharingReview) ? state.lastSyncSharingReview : [];
-	const legacyRaw = state.lastSyncLegacySharedReview;
-	const legacyCount = Math.max(0, Number(legacyRaw?.memory_count ?? 0));
-	const legacyReview = legacyRaw?.has_data
-		? {
-				groups: Array.isArray(legacyRaw.groups)
-					? legacyRaw.groups.map((group) => {
-							const raw = group as Record<string, unknown>;
-							return {
-								displayProject: String(raw.display_project || raw.project || "Unknown project"),
-								identitySource: String(raw.identity_source || "unknown"),
-								lastUpdatedAt: typeof raw.last_updated_at === "string" ? raw.last_updated_at : null,
-								memoryCount: Number(raw.memory_count || 0),
-								memorySamples: Array.isArray(raw.memory_samples)
-									? raw.memory_samples.map((sample) => {
-											const sampleRaw = sample as Record<string, unknown>;
-											const ownership: "local" | "peer" =
-												sampleRaw.ownership === "peer" ? "peer" : "local";
-											return {
-												bodyPreview:
-													typeof sampleRaw.body_preview === "string"
-														? sampleRaw.body_preview
-														: null,
-												createdAt:
-													typeof sampleRaw.created_at === "string" ? sampleRaw.created_at : null,
-												cwd: typeof sampleRaw.cwd === "string" ? sampleRaw.cwd : null,
-												gitRemote:
-													typeof sampleRaw.git_remote === "string" ? sampleRaw.git_remote : null,
-												id: Number(sampleRaw.id || 0),
-												kind: typeof sampleRaw.kind === "string" ? sampleRaw.kind : null,
-												ownership,
-												project: typeof sampleRaw.project === "string" ? sampleRaw.project : null,
-												title: String(sampleRaw.title || `Memory ${Number(sampleRaw.id || 0)}`),
-												updatedAt:
-													typeof sampleRaw.updated_at === "string" ? sampleRaw.updated_at : null,
-											};
-										})
-									: [],
-								peerOwnedMemoryCount: Number(raw.peer_owned_memory_count || 0),
-								reassignableMemoryCount: Number(raw.reassignable_memory_count || 0),
-								suggestedScopeId:
-									typeof raw.suggested_scope_id === "string" ? raw.suggested_scope_id : null,
-								suggestionReason:
-									typeof raw.suggestion_reason === "string" ? raw.suggestion_reason : null,
-								workspaceIdentity: String(
-									raw.workspace_identity || raw.display_project || "unknown",
-								),
-							};
-						})
-					: [],
-				memoryCount: legacyCount,
-				scopeId: String(legacyRaw.scope_id || "legacy-shared-review"),
-				totalGroupCount: Number(legacyRaw.total_group_count || legacyRaw.groups?.length || 0),
-				targetScopes: Array.isArray(legacyRaw.target_scopes)
-					? legacyRaw.target_scopes
-							.map((scope) => {
-								const raw = scope as Record<string, unknown>;
-								return {
-									authorityType: String(raw.authority_type || "unknown"),
-									label: String(raw.label || raw.scope_id || "Unknown domain"),
-									scopeId: String(raw.scope_id || ""),
-								};
-							})
-							.filter((scope) => scope.scopeId)
-					: [],
-			}
-		: null;
+	const legacyReview = legacySharedReviewView(state.lastSyncLegacySharedReview);
 	if (!items.length && !legacyReview) {
 		clearSyncMount(list);
 		panel.hidden = true;

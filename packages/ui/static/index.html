@@ -4163,6 +4163,8 @@
       /* Radix sets pointer-events inline on modal content; keep backdrop clicks on the overlay. */
       .legacy-upgrade-modal { pointer-events: none !important; }
       .legacy-upgrade-modal .modal-card { width: min(620px, 100%); pointer-events: auto; }
+      .legacy-upgrade-modal--review .modal-card { width: min(960px, 100%); }
+      #legacyUpgradeReview:focus { outline: none; }
       .legacy-upgrade-summary {
         padding: var(--sp-3);
         border: 1px solid color-mix(in srgb, var(--accent-warm) 28%, var(--border));
