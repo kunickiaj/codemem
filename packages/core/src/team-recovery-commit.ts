@@ -80,11 +80,19 @@ export interface TeamRecoveryCommitContext {
 	readEvidence(): Promise<TeamRecoveryEvidenceReading>;
 	/** This machine's clock, in milliseconds. */
 	nowMs?: () => number;
+	/**
+	 * Whether this machine may still recover the Team, from its configuration as
+	 * it is now. Asked inside the transaction that writes the recovery and inside
+	 * the one that settles it, because the reads before each can take a while
+	 * and the administrator's authority can end meanwhile.
+	 */
+	stillAuthorized?: () => boolean;
 }
 
 export type TeamRecoveryCommitRefusal =
 	| TeamRecoveryRefusal
 	| "evidence_stale"
+	| "admin_authority_changed"
 	| "recovery_preview_stale"
 	| "recovery_state_changed";
 
@@ -102,10 +110,11 @@ export type TeamRecoveryCommitResult =
 	  }
 	/**
 	 * The recovery was written and the Team is still held, serving nothing: the
-	 * read after it was too old by the time this machine could act on it. The
-	 * recovery can be tried again, and takes this hold over.
+	 * read after it was too old by the time this machine could act on it, or
+	 * this machine's authority to recover the Team ended meanwhile. The recovery
+	 * can be tried again by an administrator, and takes this hold over.
 	 */
-	| { state: "unverified"; reason: "evidence_stale" }
+	| { state: "unverified"; reason: "evidence_stale" | "admin_authority_changed" }
 	/** The recovery was written, and a later recovery took the Team over before this one was verified. */
 	| { state: "superseded" };
 
@@ -252,8 +261,9 @@ function applyRecovery(
 	db: Database,
 	input: { coordinatorId: string; groupId: string; expectedDigest: string },
 	reading: TeamRecoveryEvidenceReading,
-	nowMs: number,
+	{ nowMs, authorized }: { nowMs: number; authorized: boolean },
 ): Applied {
+	if (!authorized) return { state: "refused", reason: "admin_authority_changed" };
 	if (isEvidenceStale(reading.startedAtMs, nowMs))
 		return { state: "refused", reason: "evidence_stale" };
 	// A Team an abandoned recovery left active and held is disabled first, hold and all,
@@ -399,15 +409,16 @@ function isEvidenceStale(startedAtMs: number, nowMs: number): boolean {
 /**
  * Acts on the second read, in one transaction, and only for the recovery it
  * verified: its hold must still be the Team's. A verified read lifts the hold,
- * unless it is older than the evidence limit by now: waiting for the write
- * lock counts, and then the hold stays for a retry. A read that failed or
+ * unless it is older than the evidence limit by now, where waiting for the
+ * write lock counts, or this machine may no longer recover the Team. Then the
+ * hold stays for a retry. A read that failed or
  * showed a change quarantines the Team and leaves the hold on it, so that only
  * another recovery makes the Team active again.
  */
 function settleRecovery(
 	db: Database,
 	written: Written,
-	second: { reread: Reread; stale: boolean },
+	second: { reread: Reread; stale: boolean; authorized: boolean },
 ): TeamRecoveryCommitResult {
 	const { plan, recoveryId } = written;
 	const { teamId, candidateRef } = plan.preview;
@@ -423,6 +434,7 @@ function settleRecovery(
 		.get(teamId);
 	// Something else disabled the Team meanwhile. Its hold stays, so only a recovery reopens it.
 	if (!active) return { state: "quarantined_again", reason: "disabled_before_verification" };
+	if (!second.authorized) return { state: "unverified", reason: "admin_authority_changed" };
 	if (second.stale) return { state: "unverified", reason: "evidence_stale" };
 	liftTeamRecoveryHold(db, hold);
 	// Verified: from here recipient policy reads the Team as active, so its Projects reconcile.
@@ -459,9 +471,13 @@ async function verifyAfterCommit(
 	}
 	let reread: Reread = after === null ? "evidence_unavailable" : "evidence_changed";
 	if (before !== null && after === before) reread = "verified";
-	// The age is taken inside the transaction, once the write lock is held.
+	// The age and the authority are taken inside the transaction, once the write lock is held.
 	const settle = () =>
-		settleRecovery(db, written, { reread, stale: isEvidenceStale(startedAtMs, nowMs()) });
+		settleRecovery(db, written, {
+			reread,
+			stale: isEvidenceStale(startedAtMs, nowMs()),
+			authorized: (context.stillAuthorized ?? (() => true))(),
+		});
 	return serializeRecovery(db, { teamId: plan.preview.teamId, groupId: plan.groupId }, () =>
 		Promise.resolve(db.transaction(settle).immediate()),
 	);
@@ -477,19 +493,23 @@ export async function commitTeamRecovery(
 	context: TeamRecoveryCommitContext,
 ): Promise<TeamRecoveryCommitResult> {
 	const nowMs = context.nowMs ?? Date.now;
+	const stillAuthorized = context.stillAuthorized ?? (() => true);
 	let reading: TeamRecoveryEvidenceReading;
 	try {
 		reading = await context.readEvidence();
 	} catch {
 		return { state: "refused", reason: "roster_unavailable" };
 	}
+	// Both are taken inside the transaction, after the read and with the write lock held.
+	const apply = () =>
+		applyRecovery(db, input, reading, { nowMs: nowMs(), authorized: stillAuthorized() });
 	const teamId = deterministicPolicyTeamId(
 		legacyTeamCandidateId(input.coordinatorId, input.groupId),
 	);
 	let applied: Applied;
 	try {
 		applied = await serializeRecovery(db, { teamId, groupId: input.groupId }, () =>
-			Promise.resolve(db.transaction(() => applyRecovery(db, input, reading, nowMs())).immediate()),
+			Promise.resolve(db.transaction(apply).immediate()),
 		);
 	} catch (error) {
 		if (error instanceof RecoveryRefused) return error.refusal;

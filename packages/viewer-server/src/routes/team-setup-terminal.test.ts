@@ -4453,3 +4453,39 @@ describe("Team setup background check status", () => {
 		}
 	});
 });
+
+describe("Team setup background check while another operation holds a group", () => {
+	it("checks the other groups without waiting for the held one, and reports it skipped", async () => {
+		// Arrange: a Team recovery that is still reading the coordinator holds the first group.
+		const store = new MemoryStore(":memory:");
+		const second = { ...SNAPSHOTS[0], groupId: "group-beta", displayName: "Second Team" };
+		const secondRef = legacyTeamCandidateId(COORDINATOR_ID, "group-beta");
+		const releaseHeld = __teamSetupTestHooks.claimCandidateMutation(store.db, CANDIDATE_REF);
+		try {
+			const { app, check } = backgroundApp(store, {
+				loadLegacyTeamConfiguredGroupSnapshots: async () =>
+					[SNAPSHOTS[0], second] as LegacyTeamConfiguredGroupSnapshot[],
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: { create: vi.fn(), get: async () => null, list: async () => [] },
+			});
+
+			const finished = await Promise.race([
+				check()
+					.refresh()
+					.then(() => "finished"),
+				new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1_000)),
+			]);
+			const summary = (await (await app.request("/api/sync/team-setup/v1")).json()) as {
+				candidates: Array<{ candidateRef: string }>;
+				reconciliation: { skipped_groups: number };
+			};
+
+			expect(finished).toBe("finished");
+			expect(summary.reconciliation.skipped_groups).toBe(1);
+			expect(summary.candidates.map((candidate) => candidate.candidateRef)).toContain(secondRef);
+		} finally {
+			releaseHeld?.();
+			store.close();
+		}
+	});
+});

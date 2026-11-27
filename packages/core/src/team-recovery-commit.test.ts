@@ -807,3 +807,39 @@ describe("Team recovery whose read after the commit is too old to act on", () =>
 		expect(scopedRead(db, "device-b").state).toBe("authorized");
 	});
 });
+
+describe("Team recovery when this machine stops being allowed to recover the Team", () => {
+	/** A context whose authority ends while its `during`th read is out. */
+	function losingAuthorityDuringRead(during: number) {
+		let reads = 0;
+		return {
+			nowMs: () => CLOCK_MS,
+			stillAuthorized: () => reads < during,
+			readEvidence: (): Promise<TeamRecoveryEvidenceReading> => {
+				reads += 1;
+				return Promise.resolve({ evidence: evidence(), startedAtMs: CLOCK_MS });
+			},
+		};
+	}
+
+	it("writes nothing when that happens during the first read", async () => {
+		const digest = reviewedDigest();
+		const before = snapshot();
+
+		const result = await commit(digest, losingAuthorityDuringRead(1));
+
+		expect(result).toEqual({ state: "refused", reason: "admin_authority_changed" });
+		expect(snapshot()).toEqual(before);
+	});
+
+	it("keeps the hold when that happens during the read after the commit", async () => {
+		await keepScopeProof(db, "device-b");
+
+		const result = await commit(reviewedDigest(), losingAuthorityDuringRead(2));
+
+		expect(result).toEqual({ state: "unverified", reason: "admin_authority_changed" });
+		expect(teamState()).toBe("active:completed");
+		expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+		expect(scopedRead(db, "device-b").state).toBe("policy_denied");
+	});
+});

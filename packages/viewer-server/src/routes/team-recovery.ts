@@ -14,7 +14,11 @@ import {
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import { parseViewerJsonBody, type StoreFactory } from "./sync.js";
-import { claimCandidateMutation, normalizedCoordinatorId } from "./team-setup.js";
+import {
+	claimCandidateMutation,
+	daemonSigningIdentity,
+	normalizedCoordinatorId,
+} from "./team-setup.js";
 
 /*
  * Viewer routes for recovering a Team that was disabled after device removals:
@@ -23,17 +27,23 @@ import { claimCandidateMutation, normalizedCoordinatorId } from "./team-setup.js
  * Team, because the evidence comes from the coordinator's admin reads.
  *
  * Both routes read the evidence themselves, from the configured coordinator,
- * for each request. The commit holds the Team setup claim for its candidate
- * from before its first read until its recovery is settled, so background
- * reconciliation skips the group meanwhile and retries it afterwards.
+ * for each request. Those reads take a while, so the configuration is read
+ * again after them: inside the transaction that writes the recovery and inside
+ * the one that settles it. A device that is no longer an admin of the setup's
+ * group by then recovers nothing.
+ *
+ * The commit holds the Team setup claim for its candidate from before its
+ * first read until its recovery is settled, so background reconciliation skips
+ * the group meanwhile and retries it afterwards.
  */
 
 const BASE = "/api/sync/recipient-policy/v1/teams/:teamId/recovery";
 
-type Status = 400 | 404 | 409 | 503;
+type Status = 400 | 403 | 404 | 409 | 503;
 
 // 503: a read of the coordinator failed or was too old, and the same request can be tried again.
 // 409: the Team, its setup or its evidence is in a state recovery does not accept.
+// 403: this device stopped being an admin of the setup's group while the request ran.
 const REFUSAL_STATUS: Record<TeamRecoveryCommitRefusal, Status> = {
 	invalid_input: 400,
 	team_not_found: 404,
@@ -60,6 +70,7 @@ const REFUSAL_STATUS: Record<TeamRecoveryCommitRefusal, Status> = {
 	device_missing_without_removal: 409,
 	device_decision_changed: 409,
 	evidence_stale: 503,
+	admin_authority_changed: 403,
 	recovery_preview_stale: 409,
 	recovery_state_changed: 409,
 };
@@ -76,9 +87,40 @@ interface Request {
 	db: ReturnType<StoreFactory>["db"];
 	target: TeamRecoveryEvidenceTarget;
 	actions: TeamRecoveryEvidenceActions;
+	/**
+	 * Whether the configuration, read again now, still makes this device an admin
+	 * of the setup's coordinator and group with the secret the request started with.
+	 */
+	stillAuthorized: () => boolean;
 }
 
-type Refused = { error: string; status: 403 | Status };
+type Refused = { error: string; status: Status };
+type Config = ReturnType<typeof readCoordinatorSyncConfig>;
+
+/** Whether the configuration is for the setup's coordinator and one of its groups. */
+function configuredFor(config: Config, target: TeamRecoveryEvidenceTarget): boolean {
+	return (
+		normalizedCoordinatorId(config.syncCoordinatorUrl) === target.coordinatorId &&
+		config.syncCoordinatorGroups.includes(target.groupId)
+	);
+}
+
+/**
+ * The coordinator reads for this device. The block check is signed with the
+ * identity the sync daemon signs with, keys directory included. Without a
+ * usable one the check fails, and the recovery reads it as unavailable.
+ */
+function evidenceActions(store: ReturnType<StoreFactory>, config: Config) {
+	const identity = daemonSigningIdentity(store);
+	const actions = coordinatorTeamRecoveryEvidenceActions(
+		store,
+		config,
+		identity ?? { localDeviceId: "" },
+	);
+	if (identity) return actions;
+	const unsigned = () => Promise.reject(new Error("signing_identity_unavailable"));
+	return { ...actions, blockedDeviceIds: unsigned };
+}
 
 /**
  * What a request acts on, or why it cannot: the device is no admin, the Team
@@ -90,7 +132,8 @@ function recoveryRequest(
 	getStore: StoreFactory,
 	options: TeamRecoveryRouteOptions,
 ): Request | Refused {
-	const config = (options.readCoordinatorConfig ?? readCoordinatorSyncConfig)();
+	const readConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
+	const config = readConfig();
 	if (!isCoordinatorAdminDevice(config))
 		return { error: "coordinator_admin_required", status: 403 };
 	if (!isStrictRecipientPolicyId(teamId)) return { error: "invalid_input", status: 400 };
@@ -98,14 +141,18 @@ function recoveryRequest(
 	const target = teamRecoveryTarget(store.db, teamId);
 	if (!target) return { error: "team_not_found", status: 404 };
 	// Every read goes to the configured coordinator, so the setup must be one of its groups.
-	const configured =
-		normalizedCoordinatorId(config.syncCoordinatorUrl) === target.coordinatorId &&
-		config.syncCoordinatorGroups.includes(target.groupId);
-	if (!configured) return { error: "team_coordinator_not_configured", status: 409 };
-	const actions =
-		options.actions ??
-		coordinatorTeamRecoveryEvidenceActions(store, config, { localDeviceId: store.deviceId });
-	return { db: store.db, target, actions };
+	if (!configuredFor(config, target))
+		return { error: "team_coordinator_not_configured", status: 409 };
+	const stillAuthorized = () => {
+		const current = readConfig();
+		return (
+			isCoordinatorAdminDevice(current) &&
+			configuredFor(current, target) &&
+			current.syncCoordinatorAdminSecret === config.syncCoordinatorAdminSecret
+		);
+	};
+	const actions = options.actions ?? evidenceActions(store, config);
+	return { db: store.db, target, actions, stillAuthorized };
 }
 
 /** The response for a commit that did not leave the Team recovered. */
@@ -122,8 +169,10 @@ function commitFailure(result: Exclude<TeamRecoveryCommitResult, { state: "recov
 	}
 	if (result.state === "superseded") return { body: { error: "recovery_superseded" }, status: 409 };
 	// The Team is still held and serves nothing. Trying the recovery again takes the hold over.
-	if (result.state === "unverified")
-		return { body: { error: "recovery_unverified", reason: result.reason }, status: 503 };
+	if (result.state === "unverified") {
+		const status = result.reason === "admin_authority_changed" ? 403 : 503;
+		return { body: { error: "recovery_unverified", reason: result.reason }, status };
+	}
 	// The Team is disabled again. A read that failed can be tried again as it is.
 	return {
 		body: { error: "recovery_quarantined_again", reason: result.reason },
@@ -156,6 +205,8 @@ export function teamRecoveryRoutes(getStore: StoreFactory, options: TeamRecovery
 		if (!isEmptyObject(await parseViewerJsonBody(c, { allowEmpty: true })))
 			return c.json({ error: "invalid_input" }, 400);
 		const { evidence } = await read(request);
+		// The reads take a while. A device that is no admin by now gets no preview.
+		if (!request.stillAuthorized()) return c.json({ error: "coordinator_admin_required" }, 403);
 		const nowMs = (options.nowMs ?? Date.now)();
 		const preview = previewTeamRecovery(request.db, request.target, evidence, { nowMs });
 		if (preview.state === "ready") return c.json(preview);
@@ -175,7 +226,11 @@ export function teamRecoveryRoutes(getStore: StoreFactory, options: TeamRecovery
 			const result = await commitTeamRecovery(
 				request.db,
 				{ ...request.target, ...input },
-				{ readEvidence: () => read(request), nowMs: options.nowMs },
+				{
+					readEvidence: () => read(request),
+					nowMs: options.nowMs,
+					stillAuthorized: request.stillAuthorized,
+				},
 			);
 			if (result.state === "recovered") return c.json(result);
 			const failure = commitFailure(result);

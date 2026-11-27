@@ -403,15 +403,26 @@ export async function lookupPeerRemovalsAsDaemon(
 	store: MemoryStore,
 	config: ReturnType<typeof readCoordinatorSyncConfig>,
 ) {
+	const identity = daemonSigningIdentity(store);
+	if (!identity) return unavailablePeerRemovalLookup();
+	return fetchPeerRemovalLookup(store, config, identity);
+}
+
+/**
+ * The identity the sync daemon signs coordinator requests with: this store's
+ * one device, and its keys in the directory `CODEMEM_KEYS_DIR` names or the
+ * default one. Null when the store has no single device or its key is not
+ * usable. Nothing here creates or repairs a key.
+ */
+export function daemonSigningIdentity(
+	store: Pick<MemoryStore, "db">,
+): { localDeviceId: string; keysDir: string | undefined } | null {
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 	const rows = store.db.prepare("SELECT device_id FROM sync_device LIMIT 2").pluck().all();
 	const localDeviceId = rows.length === 1 && typeof rows[0] === "string" ? rows[0] : null;
-	if (
-		!localDeviceId ||
-		!loadRuntimeSigningPublicKey(store.db, { deviceId: localDeviceId, keysDir })
-	)
-		return unavailablePeerRemovalLookup();
-	return fetchPeerRemovalLookup(store, config, { localDeviceId, keysDir });
+	if (!localDeviceId) return null;
+	if (!loadRuntimeSigningPublicKey(store.db, { deviceId: localDeviceId, keysDir })) return null;
+	return { localDeviceId, keysDir };
 }
 
 function unavailablePeerRemovalLookup(): Awaited<ReturnType<typeof fetchPeerRemovalLookup>> {
@@ -1041,9 +1052,9 @@ async function runSummaryReconciliation(
 	const groups = await dependencies.loadSnapshots();
 	// Discovery below runs one group at a time, so bound the whole roster here.
 	requireBoundedSnapshots(groups);
-	await Promise.all(
-		groups.map((group) => candidateMutationSettled(store.db, summaryCandidateRef(group))),
-	);
+	// A group another operation holds is not waited for. One slow holder, such as a
+	// Team recovery reading the coordinator, would stall the check of every other
+	// group. Each step below skips a held group, and the pass retries it soon.
 	const blockers = new Map<string, CompletionBlocker>();
 	const skipped = new Set<string>();
 	const views = new Map<string, LegacyTeamCandidateView>();

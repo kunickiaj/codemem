@@ -1,11 +1,20 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+	BetterSqliteCoordinatorStore,
 	type CoordinatorLegacyTeamCompletionManifestV1,
+	coordinatorTeamRecoveryEvidenceActions,
+	createBetterSqliteCoordinatorApp,
+	ensureDeviceIdentity,
+	loadPublicKey,
 	type MemoryStore,
 	readCoordinatorSyncConfig,
 	type TeamRecoveryEvidenceActions,
 } from "@codemem/core";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isScopeDeviceAdmissionRefused } from "../../../core/src/scope-device-admission.js";
 import {
 	CANDIDATE,
 	COORDINATOR_ID,
@@ -56,6 +65,8 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 	return actions;
 }
 
+type Config = ReturnType<typeof readCoordinatorSyncConfig>;
+
 interface AppOptions {
 	adminSecret?: string;
 	coordinatorUrl?: string;
@@ -63,6 +74,8 @@ interface AppOptions {
 	actions?: TeamRecoveryEvidenceActions;
 	teamId?: string;
 	nowMs?: () => number;
+	/** What the configuration has become by the time it is read again. */
+	changedConfig?: () => Partial<Config>;
 }
 
 function app(options: AppOptions = {}) {
@@ -77,6 +90,7 @@ function app(options: AppOptions = {}) {
 			syncCoordinatorUrl: options.coordinatorUrl ?? COORDINATOR_ID,
 			syncCoordinatorGroups: options.groups ?? [GROUP_ID],
 			syncCoordinatorAdminSecret: options.adminSecret ?? "synthetic-admin",
+			...options.changedConfig?.(),
 		}),
 		actions: options.actions ?? coordinator(),
 		nowMs: options.nowMs ?? (() => Date.parse(NOW)),
@@ -285,5 +299,162 @@ describe("Team recovery commit route after its first transaction", () => {
 		} finally {
 			release?.();
 		}
+	});
+});
+
+describe("Team recovery routes when the device stops being an admin mid-request", () => {
+	const CHANGES: Array<[string, Partial<Config>]> = [
+		["the admin secret is cleared", { syncCoordinatorAdminSecret: "" }],
+		["the admin secret is replaced", { syncCoordinatorAdminSecret: "another-secret" }],
+		["the setup's group is removed", { syncCoordinatorGroups: ["group-other"] }],
+		[
+			"another coordinator is configured",
+			{ syncCoordinatorUrl: "https://elsewhere.example.invalid" },
+		],
+	];
+	const count = (table: string) => db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get();
+
+	/** A request whose configuration changes while its `during`th read of the roster is out. */
+	function changingDuringRead(during: number, change: Partial<Config>) {
+		let rosterReads = 0;
+		let changed: Partial<Config> = {};
+		const actions = coordinator({
+			listDevices: (groupId, deadlineMs) => {
+				rosterReads += 1;
+				if (rosterReads === during) changed = change;
+				return coordinator().listDevices(groupId, deadlineMs);
+			},
+		});
+		return app({ actions, changedConfig: () => changed });
+	}
+
+	it.each(CHANGES)(
+		"refuses the commit and writes nothing when %s during its first read",
+		async (_case, change) => {
+			const digest = (await app().post("preview", {}))[1].expectedDigest;
+
+			const response = await changingDuringRead(1, change).post("commit", {
+				expectedDigest: digest,
+			});
+
+			expect(response).toEqual([403, { error: "admin_authority_changed" }]);
+			expect(teamState()).toBe("inactive:needs_setup");
+			expect(count("policy_team_recovery_holds")).toBe(0);
+			expect(count("policy_team_recovery_exclusions")).toBe(0);
+		},
+	);
+
+	it.each(CHANGES)(
+		"keeps the Team held and serving nothing when %s during the read after the commit",
+		async (_case, change) => {
+			const digest = (await app().post("preview", {}))[1].expectedDigest;
+
+			const response = await changingDuringRead(2, change).post("commit", {
+				expectedDigest: digest,
+			});
+
+			expect(response).toEqual([
+				403,
+				{ error: "recovery_unverified", reason: "admin_authority_changed" },
+			]);
+			expect(teamState()).toBe("active:completed");
+			expect(count("policy_team_recovery_holds")).toBe(1);
+			expect(
+				isScopeDeviceAdmissionRefused(db, { scopeId: "scope-engineering", deviceId: "device-b" }),
+			).toBe(true);
+		},
+	);
+
+	it("gives no preview when the admin secret is cleared during its read", async () => {
+		const response = await changingDuringRead(1, { syncCoordinatorAdminSecret: "" }).post(
+			"preview",
+			{},
+		);
+
+		expect(response).toEqual([403, { error: "coordinator_admin_required" }]);
+	});
+});
+
+describe("Team recovery routes against a coordinator, with this device's own reads", () => {
+	let root: string;
+	let keysDir: string;
+	let localDeviceId: string;
+	const CONFIG = {
+		...readCoordinatorSyncConfig({}),
+		syncCoordinatorUrl: COORDINATOR_ID,
+		syncCoordinatorGroups: [GROUP_ID],
+		syncCoordinatorAdminSecret: "synthetic-admin",
+	};
+
+	/** A coordinator that holds the setup's group with this device, the Desktop and the Tablet enrolled. */
+	async function coordinatorApp() {
+		root = mkdtempSync(join(tmpdir(), "codemem-recovery-routes-"));
+		// This device signs with keys in a directory that is not the default one.
+		keysDir = join(root, "elsewhere", "keys");
+		vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
+		db.prepare("DELETE FROM sync_device").run();
+		const [deviceId, fingerprint] = ensureDeviceIdentity(db, { keysDir });
+		localDeviceId = deviceId;
+		const coordinatorDbPath = join(root, "coordinator.sqlite");
+		const store = new BetterSqliteCoordinatorStore(coordinatorDbPath);
+		try {
+			await store.createGroup(GROUP_ID);
+			const publicKey = loadPublicKey(keysDir) ?? "";
+			for (const device of [{ deviceId, fingerprint, publicKey }, DESKTOP, TABLET])
+				await store.enrollDevice(GROUP_ID, device);
+		} finally {
+			await store.close();
+		}
+		return createBetterSqliteCoordinatorApp({
+			dbPath: coordinatorDbPath,
+			runtime: { adminSecret: () => "synthetic-admin", now: () => new Date().toISOString() },
+		});
+	}
+
+	const store = () => ({ db, dbPath: ":memory:", deviceId: "unused" }) as unknown as MemoryStore;
+
+	/** The real routes for a store on this test's database, with no read replaced unless given. */
+	function realRoutes(actions?: TeamRecoveryEvidenceActions) {
+		const routes = teamRecoveryRoutes(store, { readCoordinatorConfig: () => CONFIG, actions });
+		return async () => {
+			const response = await routes.request(
+				`/api/sync/recipient-policy/v1/teams/${manifest.team_id}/recovery/preview`,
+				{ method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+			);
+			return [response.status, await response.json()];
+		};
+	}
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("signs the block check with the keys in the directory CODEMEM_KEYS_DIR names", async () => {
+		const coordinatorRoutes = await coordinatorApp();
+		vi.stubGlobal("fetch", (input: string | URL, init?: RequestInit) =>
+			coordinatorRoutes.request(String(input), init),
+		);
+
+		// Assert: every device read was accepted, so the first thing missing is the setup's copy.
+		expect(await realRoutes()()).toEqual([409, { error: "completion_missing" }]);
+	});
+
+	it("answers 503 when the coordinator's block reply says nothing about the devices asked about", async () => {
+		// Arrange: the coordinator's own reads, signed with this device's keys wherever they are.
+		const coordinatorRoutes = await coordinatorApp();
+		const malformed = { version: 1, revoked: [], removed: [], enrolled: [], removal_seq: 0 };
+		vi.stubGlobal("fetch", (input: string | URL, init?: RequestInit) =>
+			String(input).includes("/v1/peers/revocations")
+				? Promise.resolve(Response.json(malformed))
+				: coordinatorRoutes.request(String(input), init),
+		);
+		const actions = coordinatorTeamRecoveryEvidenceActions(store(), CONFIG, {
+			localDeviceId,
+			keysDir,
+		});
+
+		expect(await realRoutes(actions)()).toEqual([503, { error: "device_blocks_unavailable" }]);
 	});
 });
