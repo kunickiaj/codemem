@@ -463,6 +463,24 @@ describe("Team recovery check after the commit", () => {
 	});
 });
 
+describe("Team recovery check of where the completed setup came from", () => {
+	it.each([
+		["another group", { ...GROUP, groupId: "group-other" }],
+		["another coordinator", { ...GROUP, coordinatorId: "https://elsewhere.example.invalid" }],
+	])(
+		"quarantines the Team again when the read after the commit takes the same completed setup from %s",
+		async (_case, source) => {
+			const elsewhere = evidence(undefined, { completion: { status: "read", source, manifest } });
+
+			const result = await commit(reviewedDigest(), reader(evidence(), elsewhere));
+
+			expect(result).toEqual({ state: "quarantined_again", reason: "evidence_changed" });
+			expect(teamState()).toBe("inactive:needs_setup");
+			expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+		},
+	);
+});
+
 describe("Team recovery hold", () => {
 	const hold = () => db.prepare("SELECT reason FROM policy_team_recovery_holds").pluck().all();
 

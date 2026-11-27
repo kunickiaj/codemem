@@ -316,7 +316,15 @@ function readParts(evidence: TeamRecoveryEvidence) {
 		const manifest = canonicalCoordinatorLegacyTeamCompletionManifestJson(
 			normalizeCoordinatorLegacyTeamCompletionManifest(completion.manifest),
 		);
-		return { roster, deviceRemovals, deviceBlocks, memberRemovals, groupBinding, manifest };
+		return {
+			roster,
+			deviceRemovals,
+			deviceBlocks,
+			completion,
+			memberRemovals,
+			groupBinding,
+			manifest,
+		};
 	} catch {
 		return null;
 	}
@@ -332,7 +340,7 @@ const sortedRows = (rows: string[][]) => rows.map((row) => row.join("\u0000")).t
 function decidingEvidence(evidence: TeamRecoveryEvidence, plan: TeamRecoveryPlan): string | null {
 	const parts = readParts(evidence);
 	if (!parts) return null;
-	const { roster, deviceRemovals, deviceBlocks, memberRemovals, groupBinding } = parts;
+	const { roster, deviceRemovals, deviceBlocks, completion, memberRemovals, groupBinding } = parts;
 	const deviceIds = new Set(plan.preview.devices.map((device) => device.deviceId));
 	const listed = roster.devices.filter((device) => deviceIds.has(device.deviceId));
 	const keys = new Set([
@@ -343,7 +351,9 @@ function decidingEvidence(evidence: TeamRecoveryEvidence, plan: TeamRecoveryPlan
 	const checkedKey = (publicKey: unknown) =>
 		typeof publicKey === "string" ? fingerprintPublicKey(publicKey) : "";
 	return recipientPolicyDigest("team-recovery-deciding-evidence-v1", {
-		sources: [roster, deviceRemovals, deviceBlocks, memberRemovals, groupBinding].map(
+		// Every part, the completed setup included: the same answer from another
+		// coordinator or group is not the answer this recovery was planned on.
+		sources: [roster, deviceRemovals, deviceBlocks, completion, memberRemovals, groupBinding].map(
 			(part) => part.source,
 		),
 		roster: sortedRows(
