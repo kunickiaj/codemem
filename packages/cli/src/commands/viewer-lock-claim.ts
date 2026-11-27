@@ -144,6 +144,9 @@ export function reportViewerStartup(event: ViewerStartupEvent): void {
 	});
 }
 
+/** How long an exited Viewer's channel may stay open before the exit is reported anyway. */
+const EXIT_MESSAGE_GRACE_MS = 1_000;
+
 export type BackgroundViewerStartup =
 	| { state: "listening" }
 	| { state: "starting" }
@@ -167,12 +170,15 @@ function startupEvent(message: unknown): ViewerStartupEvent | null {
  * but was not serving yet when the wait ended.
  */
 export function waitForViewerStartup(
-	child: Pick<ChildProcess, "on" | "off" | "connected" | "disconnect">,
+	child: Pick<ChildProcess, "on" | "off" | "once" | "connected" | "disconnect">,
 	timeoutMs: number,
 ): Promise<BackgroundViewerStartup> {
 	return new Promise((resolve) => {
 		let lockAcquired = false;
+		let settled = false;
 		const finish = (result: BackgroundViewerStartup) => {
+			if (settled) return;
+			settled = true;
 			clearTimeout(timer);
 			child.off("message", onMessage);
 			child.off("exit", onExit);
@@ -185,11 +191,19 @@ export function waitForViewerStartup(
 			if (event?.state === "lock_acquired") lockAcquired = true;
 			else if (event) finish(event);
 		};
-		const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
-			finish({
-				state: "failed",
-				message: `The viewer exited during startup (${signal ?? `exit code ${code ?? "unknown"}`}).`,
-			});
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			const exited = () =>
+				finish({
+					state: "failed",
+					message: `The viewer exited during startup (${signal ?? `exit code ${code ?? "unknown"}`}).`,
+				});
+			if (!child.connected) return exited();
+			// Node can emit "exit" before it delivers messages still queued on the
+			// channel, such as the Viewer's refusal. They all arrive before the
+			// channel disconnects, so report the exit only then.
+			child.once("disconnect", exited);
+			setTimeout(exited, EXIT_MESSAGE_GRACE_MS).unref();
+		};
 		const onError = (error: Error) =>
 			finish({ state: "failed", message: `Could not start the viewer: ${error.message}` });
 		const timer = setTimeout(() => {

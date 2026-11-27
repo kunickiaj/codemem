@@ -254,11 +254,32 @@ describe("waiting for a background Viewer's startup", () => {
 		expect(child.disconnect).toHaveBeenCalled();
 	});
 
+	it("keeps a refusal that arrives after the exit event", async () => {
+		const child = fakeChild();
+		const waiting = waitForViewerStartup(child as never, 5_000);
+
+		// Node may emit "exit" before the messages still queued on the channel.
+		child.emit("exit", 1, null);
+		child.emit(
+			"message",
+			message("failed", { message: "Another codemem viewer is already using x" }),
+		);
+		child.disconnect();
+		child.emit("disconnect");
+
+		await expect(waiting).resolves.toEqual({
+			state: "failed",
+			message: "Another codemem viewer is already using x",
+		});
+	});
+
 	it("reports a Viewer that exits before its result", async () => {
 		const child = fakeChild();
 		const waiting = waitForViewerStartup(child as never, 5_000);
 
 		child.emit("exit", 1, null);
+		child.disconnect();
+		child.emit("disconnect");
 
 		await expect(waiting).resolves.toEqual({
 			state: "failed",
