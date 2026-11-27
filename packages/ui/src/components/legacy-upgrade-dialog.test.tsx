@@ -126,7 +126,7 @@ describe("LegacyUpgradeDialog", () => {
 		expect(actions.onDismiss).toHaveBeenCalledOnce();
 	});
 
-	it("does not dismiss from the backdrop and keeps Start review in the dialog", async () => {
+	it("does not close from the backdrop and keeps Start review in the dialog", async () => {
 		const { actions } = mountDialog();
 		act(() => showLegacyUpgradeDialog({ groupCount: 1, memoryCount: 4 }));
 		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
@@ -135,8 +135,27 @@ describe("LegacyUpgradeDialog", () => {
 		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
 
 		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
-		expect(actions.onDismiss).not.toHaveBeenCalled();
 		expect(actions.onReviewProjects).not.toHaveBeenCalled();
+		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
+	});
+
+	it("saves Don't show this again before Start review removes the checkbox", async () => {
+		const saved: Array<boolean | undefined> = [];
+		mountDialog({
+			onDismiss: vi.fn(() => {
+				saved.push(
+					(document.getElementById("legacyUpgradeDontShow") as HTMLInputElement | null)?.checked,
+				);
+			}),
+		});
+		act(() => showLegacyUpgradeDialog({ groupCount: 1, memoryCount: 4 }));
+		await vi.waitFor(() => expect(document.getElementById("legacyUpgradeModal")).not.toBeNull());
+		(document.getElementById("legacyUpgradeDontShow") as HTMLInputElement).checked = true;
+
+		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
+
+		expect(saved).toEqual([true]);
+		expect(document.getElementById("legacyUpgradeDontShow")).toBeNull();
 		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
 	});
 
@@ -196,7 +215,7 @@ describe("LegacyUpgradeDialog", () => {
 
 		await vi.waitFor(() => expect(review?.textContent).not.toContain("alpha"));
 		expect(review?.textContent).toContain("beta");
-		expect(actions.onDismiss).not.toHaveBeenCalled();
+		expect(document.getElementById("legacyUpgradeModal")).not.toBeNull();
 	});
 });
 
@@ -220,7 +239,7 @@ describe("LegacyUpgradeDialog review stage", () => {
 		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
 
 		act(() => document.getElementById("legacyUpgradeClose")?.click());
-		expect(actions.onDismiss).toHaveBeenCalledOnce();
+		expect(actions.onDismiss).toHaveBeenCalledTimes(2);
 		expect(document.getElementById("legacyUpgradeModal")).toBeNull();
 
 		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 6 }));

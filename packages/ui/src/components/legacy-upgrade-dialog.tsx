@@ -229,7 +229,11 @@ function LegacyUpgradeDialog({ actions }: { actions: LegacyUpgradeDialogActions 
 				<LegacyUpgradeFooter
 					actions={actions}
 					onClose={close}
-					onStartReview={() => setStage("review")}
+					onStartReview={() => {
+						// The checkbox leaves the page with the summary, so save its choice first.
+						actions.onDismiss();
+						setStage("review");
+					}}
 					reviewing={reviewing}
 				/>
 			</div>
