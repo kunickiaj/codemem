@@ -1,6 +1,6 @@
 import {
 	coordinatorEnabled,
-	coordinatorStatusGeneration,
+	coordinatorStatusCacheIdentity,
 	coordinatorStatusSnapshot,
 	getCoordinatorEnrollmentReconciliationIssueSummary,
 	getSemanticIndexDiagnostics,
@@ -626,10 +626,13 @@ async function readCoordinatorStatus(
 ): Promise<Record<string, unknown>> {
 	const { config } = base;
 	if (!coordinatorEnabled(config)) return coordinatorStatusSnapshot(input.store, config);
+	const identity = coordinatorStatusCacheIdentity(input.store, config);
 	const cached = readInBackground({
-		key: `coordinator-status|${input.store.dbPath}`,
-		version: coordinatorStatusGeneration(input.store, config),
-		maxAgeMs: coordinatorStatusMaxAgeMs,
+		key: `coordinator-status|${identity.key}`,
+		version: String(identity.generation),
+		// Status reads renew this device's presence, so never wait longer than that.
+		maxAgeMs: (snapshot, refreshedAtMs) =>
+			Math.min(coordinatorStatusMaxAgeMs(snapshot, refreshedAtMs), identity.presenceRenewalMs),
 		load: () => coordinatorStatusSnapshot(input.store, config),
 	});
 	return {
@@ -646,8 +649,7 @@ function readJoinRequests(input: SyncStatusInput, config: SyncConfig): Record<st
 		return [];
 	}
 	const cached = readInBackground({
-		key: `coordinator-join-requests|${input.store.dbPath}`,
-		version: `${config.syncCoordinatorUrl}|${config.syncCoordinatorGroups.join(",")}`,
+		key: `coordinator-join-requests|${input.store.dbPath}|${config.syncCoordinatorUrl}|${config.syncCoordinatorGroups.join(",")}`,
 		maxAgeMs: COORDINATOR_STATUS_MAX_AGE_MS,
 		load: () => listCoordinatorJoinRequests(config),
 	});

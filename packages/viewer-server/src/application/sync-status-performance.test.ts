@@ -5,7 +5,7 @@ import { ensureDeviceIdentity, initTestSchema, MemoryStore } from "@codemem/core
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../index.js";
-import { settleBackgroundRefreshes } from "./background-refresh.js";
+import { clearBackgroundRefreshes, settleBackgroundRefreshes } from "./background-refresh.js";
 
 let directory: string;
 let previousConfig: string | undefined;
@@ -26,6 +26,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	// Forget cached coordinator answers, including a refresh that never finishes.
+	clearBackgroundRefreshes();
 	vi.restoreAllMocks();
 	store.close();
 	if (previousConfig === undefined) delete process.env.CODEMEM_CONFIG;
@@ -215,7 +217,7 @@ describe("sync status reads", () => {
 });
 
 /** Turns on a coordinator for the test store, with a fresh device identity. */
-function enableCoordinator(): void {
+function enableCoordinator(settings: Record<string, unknown> = {}): void {
 	const keysDir = join(directory, "keys");
 	vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
 	writeFileSync(
@@ -224,10 +226,88 @@ function enableCoordinator(): void {
 			sync_enabled: true,
 			sync_coordinator_url: "https://coord.example.test",
 			sync_coordinator_group: "team-a",
+			...settings,
 		}),
 	);
 	ensureDeviceIdentity(store.db, { keysDir });
 }
+
+/** A coordinator that answers every request at once, listing `peers` for `url`. */
+function answeringCoordinator(peersByUrl: Record<string, Array<Record<string, unknown>>> = {}) {
+	return vi.fn(async (input: RequestInfo | URL) => {
+		const url = String(input);
+		const origin = new URL(url).origin;
+		if (url.includes("/v1/presence")) return Response.json({ ok: true, addresses: [] });
+		if (url.includes("/v1/peers")) return Response.json({ items: peersByUrl[origin] ?? [] });
+		return Response.json({ items: [] });
+	});
+}
+
+async function readCoordinatorStatus(): Promise<Record<string, unknown>> {
+	const response = await app.request("/api/sync/status");
+	return ((await response.json()) as { coordinator: Record<string, unknown> }).coordinator;
+}
+
+describe("sync status coordinator cache", () => {
+	it("refreshes by the presence renewal deadline when the presence TTL is short", async () => {
+		enableCoordinator({ sync_coordinator_presence_ttl_s: 20 });
+		const fetchMock = answeringCoordinator();
+		vi.stubGlobal("fetch", fetchMock);
+		const presenceCalls = () =>
+			fetchMock.mock.calls.filter(([input]) => String(input).includes("/v1/presence")).length;
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			await readCoordinatorStatus();
+			await settleBackgroundRefreshes();
+			const afterFirstRefresh = presenceCalls();
+			expect(afterFirstRefresh).toBe(1);
+
+			// A 20-second TTL renews presence every 10 seconds, sooner than the 30-second reuse.
+			vi.setSystemTime(Date.now() + 11_000);
+			await readCoordinatorStatus();
+			await settleBackgroundRefreshes();
+
+			expect(presenceCalls()).toBe(afterFirstRefresh + 1);
+		} finally {
+			vi.useRealTimers();
+			await settleBackgroundRefreshes();
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("never serves one coordinator configuration's answer for another", async () => {
+		enableCoordinator();
+		const peerA = { device_id: "peer-a", fingerprint: "fp-a", addresses: [], stale: false };
+		vi.stubGlobal("fetch", answeringCoordinator({ "https://coord.example.test": [peerA] }));
+		try {
+			await readCoordinatorStatus();
+			await settleBackgroundRefreshes();
+			expect(await readCoordinatorStatus()).toMatchObject({
+				coordinator_url: "https://coord.example.test",
+				discovered_devices: [{ device_id: "peer-a" }],
+			});
+
+			// The new coordinator never answers; its first read must not show the old one.
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(() => new Promise<Response>(() => {})),
+			);
+			enableCoordinator({ sync_coordinator_url: "https://other-coord.example.test" });
+			const switched = await readCoordinatorStatus();
+
+			expect(switched).toMatchObject({
+				coordinator_url: "https://other-coord.example.test",
+				presence_status: "unknown",
+				discovered_devices: [],
+				status_refreshed_at: null,
+			});
+		} finally {
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	});
+});
 
 describe("sync status coordinator answers", () => {
 	it("answers from memory while the coordinator is slow, then shows its answer and age", async () => {
