@@ -563,22 +563,92 @@ describe("ReplicationBackfillRunner", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("checks the store from its own connection and reports what it changed", async () => {
+	/** A file-backed store, as the maintenance worker opens one of its own. */
+	function storeOnDisk() {
 		const dbPath = join(dir, "mem.sqlite");
 		const file = connect(dbPath);
 		addDeviceIdentity(file);
 		sessionId = insertTestSession(file);
-		insertMemory(file, { importKey: "key:on-disk" });
 		const logger = { step: vi.fn(), warn: vi.fn() };
+		return { file, logger, runner: new ReplicationBackfillRunner({ dbPath, logger }) };
+	}
 
-		const retrySoon = await new ReplicationBackfillRunner({ dbPath, logger }).runOnce();
+	/** A sync pass's slice that sees its limit spent after one window of rows. */
+	function syncSliceOfOneWindow(file: Db) {
+		let tick = 0;
+		return runReplicationBackfillSlice(file, {
+			maxRuntimeMs: 1,
+			now: () => NOW,
+			clock: () => tick++ * 10,
+		});
+	}
+
+	it("leaves a store that no sync pass has checked as it is", async () => {
+		const { file, logger, runner } = storeOnDisk();
+		// Never synced: sharing its Project moves it without asking another device.
+		const neverSynced = insertMemory(file, { importKey: null });
+		insertMemory(file, { importKey: "legacy:memory_item:42" });
+
+		const retrySoon = await runner.runOnce();
 
 		expect(retrySoon).toBe(false);
-		expect(ops(file)).toEqual([{ entity_id: "key:on-disk", op_type: "upsert", clock_rev: 1 }]);
+		expect(importKey(file, neverSynced)).toBeNull();
+		expect(ops(file)).toEqual([]);
+		expect(getMaintenanceJob(file, REPLICATION_BACKFILL_JOB)).toBeNull();
+		expect(logger.step).not.toHaveBeenCalled();
+		file.close();
+	});
+
+	it("finishes a check that a sync pass ran out of time for", async () => {
+		const { file, logger, runner } = storeOnDisk();
+		for (let index = 0; index < 450; index++) insertMemory(file);
+		const begun = syncSliceOfOneWindow(file);
+
+		const retrySoon = await runner.runOnce();
+
+		expect(begun).toEqual({ opsCreated: 200, keysMigrated: 0, complete: false });
+		expect(retrySoon).toBe(false);
+		expect(ops(file)).toHaveLength(450);
 		expect(logger.step).toHaveBeenCalledWith(
-			"Replication backfill recorded 1 sync changes and rewrote 0 legacy import keys",
+			"Replication backfill recorded 250 sync changes and rewrote 0 legacy import keys",
 		);
 		expect(logger.warn).not.toHaveBeenCalled();
+		expect(getMaintenanceJob(file, REPLICATION_BACKFILL_JOB)).toMatchObject({
+			status: "completed",
+			metadata: { unfinished: false },
+		});
+		file.close();
+	});
+
+	it("leaves memories written after a finished check to the next sync pass", async () => {
+		const { file, runner } = storeOnDisk();
+		insertMemory(file, { importKey: "key:checked" });
+		slice(file);
+		const written = insertMemory(file, { importKey: null });
+
+		await runner.runOnce();
+		const untouched = importKey(file, written);
+		const bySyncPass = slice(file, minutesAfter(1));
+
+		expect(untouched).toBeNull();
+		expect(bySyncPass).toEqual({ opsCreated: 1, keysMigrated: 1, complete: true });
+		expect(importKey(file, written)).toBe(`legacy:dev-local:memory_item:${written}`);
+		file.close();
+	});
+
+	it("leaves a recheck after pruning to the next sync pass", async () => {
+		const { file, runner } = storeOnDisk();
+		insertMemory(file, { importKey: "key:pruned" });
+		slice(file);
+		file.prepare("DELETE FROM replication_ops").run();
+		requestReplicationBackfillRecheck(file);
+
+		await runner.runOnce();
+		const afterWorker = ops(file);
+		slice(file, minutesAfter(1));
+
+		expect(afterWorker).toEqual([]);
+		expect(ops(file)).toEqual([{ entity_id: "key:pruned", op_type: "upsert", clock_rev: 1 }]);
 		file.close();
 	});
 });

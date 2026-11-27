@@ -551,12 +551,16 @@ read only rows with work.
   legacy import keys, are found incrementally. A `maintenance_jobs` row of kind
   `replication_op_backfill` records the highest memory ID checked and a position
   in `updated_at` order. A sync tick reads the rows above those marks for at
-  most 25 ms. The maintenance worker runs the same check once a minute and
-  performs the first full check of an existing store in short slices. A legacy
-  key whose device-scoped form belongs to another memory is tried once, counted
-  in the job's message and reported in one warning. Pruning replication ops
-  requests a full recheck, because a memory whose current op was pruned needs a
-  new one.
+  most 25 ms. When that is not enough, as in the first full check of an existing
+  store, the slice records that it stopped early and the maintenance worker
+  finishes the check in short slices. The worker looks for such a check once a
+  minute and never begins one: a memory with no import key and no op has never
+  left the device, and sharing its Project moves it without waiting for other
+  devices, so a store that does not sync keeps those memories as they are. A
+  legacy key whose device-scoped form belongs to another memory is tried once,
+  counted in the job's message and reported in one warning. Pruning replication
+  ops requests a full recheck, because a memory whose current op was pruned
+  needs a new one.
 - **Received-row cleanup.** A direct sync pass lists a peer's scopes from the
   `(origin_device_id, active, scope_id)` index and reads rows only in scopes
   cleanup can delete from: no scope, the default scope, or a scope this device
