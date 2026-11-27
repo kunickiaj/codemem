@@ -142,6 +142,29 @@ describe("converting older device assignments during coordinator maintenance", (
 		expect(legacyPairingAssignmentsConverted(store.db)).toBe(false);
 	});
 
+	it("writes nothing when the groups change to a different list that joins to the same text", async () => {
+		claimPeerAsOwnDevice();
+		const config = (groups: string[]) => ({
+			...readCoordinatorSyncConfig({}),
+			syncCoordinatorUrl: "https://coord.example.test",
+			syncCoordinatorAdminSecret: "fixture-admin-secret",
+			syncCoordinatorGroups: groups,
+		});
+		let groups = ["group-a\ngroup-b"];
+
+		const result = await convertLegacyPairingAssignmentsOperation(store, {
+			readConfig: () => config(groups),
+			loadCoordinatorEvidence: async () => {
+				groups = ["group-a", "group-b"];
+				return available();
+			},
+		});
+
+		expect(result).toEqual({ status: "waiting", waitingReason: "coordinator_authority_changed" });
+		expect(boundIdentity()).toBeUndefined();
+		expect(legacyPairingAssignmentsConverted(store.db)).toBe(false);
+	});
+
 	it("changes nothing while the configured coordinator cannot be read", async () => {
 		claimPeerAsOwnDevice();
 

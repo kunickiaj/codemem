@@ -2319,6 +2319,11 @@ export async function loadAllGroupsDeviceIdentityCoordinatorEvidence(
 	}
 }
 
+/** Group IDs may hold any text, so lists are compared entry by entry. */
+function sameGroups(current: readonly string[], fetched: readonly string[]): boolean {
+	return current.length === fetched.length && current.every((group, i) => group === fetched[i]);
+}
+
 /**
  * Whether the coordinator, groups and admin secret are still the ones the evidence
  * was fetched with. The fetch can outlast a change, so the write checks this.
@@ -2332,7 +2337,7 @@ function sameCoordinatorAuthority(
 		return (
 			current.syncCoordinatorUrl === fetchedWith.syncCoordinatorUrl &&
 			current.syncCoordinatorAdminSecret === fetchedWith.syncCoordinatorAdminSecret &&
-			current.syncCoordinatorGroups.join("\n") === fetchedWith.syncCoordinatorGroups.join("\n")
+			sameGroups(current.syncCoordinatorGroups, fetchedWith.syncCoordinatorGroups)
 		);
 	} catch {
 		return false;
@@ -6688,6 +6693,29 @@ async function renameActorRoute(
 	return c.json({ ...result, display_name: displayName, updated_at: updatedAt });
 }
 
+/**
+ * Runs the recipient-policy migration, or returns null when this device may no
+ * longer change access. A dry run writes nothing, so any device may run one. The
+ * gate checked on entry, but reading the body can outlast that, so a migration
+ * that writes checks again inside its transaction.
+ */
+function migrateIfAllowed(
+	store: MemoryStore,
+	dryRun: boolean,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	const migrate = () =>
+		migrateRecipientPolicyIntent(
+			store.db,
+			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+			{ dryRun },
+		);
+	if (dryRun) return migrate();
+	return store.db
+		.transaction(() => (canChangeRecipientAccess(readConfig) ? migrate() : null))
+		.immediate();
+}
+
 function createActorMutationPreflightRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 	const preflight = async (c: Context, next: () => Promise<void>) => {
@@ -8026,13 +8054,8 @@ export function syncRoutes(
 			return c.json({ error: "request_invalid" }, 400);
 		}
 		try {
-			return c.json(
-				migrateRecipientPolicyIntent(
-					store.db,
-					{ localActorId: store.actorId, localDeviceId: store.deviceId },
-					{ dryRun: body.dryRun === true },
-				),
-			);
+			const result = migrateIfAllowed(store, body.dryRun === true, readCoordinatorConfig);
+			return result ? c.json(result) : c.json(ACCESS_CHANGE_REFUSAL, 403);
 		} catch (error) {
 			if (isSqliteBusy(error)) {
 				c.header("Retry-After", "1");
