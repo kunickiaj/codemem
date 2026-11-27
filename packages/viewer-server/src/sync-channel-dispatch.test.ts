@@ -2,6 +2,7 @@ import * as core from "@codemem/core";
 import { fingerprintPublicKey, LOCAL_SYNC_CAPABILITY, type MemoryStore } from "@codemem/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
+import { insertTestSession } from "../../core/src/test-utils.js";
 import { createSyncApp } from "./index.js";
 import { createSyncChannelDispatcher, type SyncChannelRequest } from "./sync-channel-dispatch.js";
 import {
@@ -822,6 +823,49 @@ it.each(READ_ROUTES)(
 		).toBeUndefined();
 	},
 );
+
+it("refuses a push touching a copy in another scope with a read's answer, without the default boundary", async () => {
+	// Arrange: the push names the authorized scope, but this device stores the same
+	// memory in a scope the peer is no longer a member of.
+	const f = await fixture();
+	await addOtherScope(f);
+	f.store.db
+		.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = ? AND device_id = ?")
+		.run(OTHER_SCOPE, f.peerDeviceId);
+	const sessionId = insertTestSession(f.store.db);
+	f.store.db
+		.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+		 import_key, scope_id, visibility, active)
+		 VALUES (?, 'discovery', 'Stored copy', 'Stored copy', ?, ?, 'channel-item', ?, 'shared', 1)`)
+		.run(sessionId, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", OTHER_SCOPE);
+	core.getSyncResetState(f.store.db);
+	const push = signedRequest(f, {
+		method: "POST",
+		target: "/v1/ops",
+		bodyBytes: bytes({
+			scope_id: SCOPE,
+			sync_capability: LOCAL_SYNC_CAPABILITY,
+			// An unknown label reaches the managed check rather than the memory scope check.
+			ops: [{ ...memoryOp(f), entity_type: "memory_itemx" }],
+		}),
+	});
+	const read = signedRequest(f, { target: `/v1/status?scope_id=${OTHER_SCOPE}` });
+	const before = f.store.db.prepare("SELECT * FROM memory_items").all();
+	// Act
+	const pushed = await f.dispatch(push);
+	const readDenied = await f.dispatch(read);
+	// Assert: a refused read's fields, naming only the scope the peer named.
+	expect(pushed.status).toBe(409);
+	expect(json(pushed)).toEqual({ ...(json(readDenied) as object), scope_id: SCOPE });
+	expect(json(pushed)).toEqual({
+		error: "reset_required",
+		reset_required: true,
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		reason: "missing_scope",
+		scope_id: SCOPE,
+	});
+	expect(f.store.db.prepare("SELECT * FROM memory_items").all()).toEqual(before);
+});
 
 it.each(READ_ROUTES)("requires scoped capability negotiation on %s", async (route) => {
 	// Arrange

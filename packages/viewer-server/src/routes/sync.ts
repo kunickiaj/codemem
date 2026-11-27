@@ -207,7 +207,6 @@ import {
 	setPeerProjectFilterChecked,
 	summarizeInboundScopeRejections,
 	supportsSyncFeature,
-	syncScopeResetRequiredPayload,
 	teamIdsForBindingRead,
 	teamInvitationGroup,
 	updatePeerAddresses,
@@ -5407,15 +5406,19 @@ function rejectUnauthorizedInboundBatch(
 	const scopeId = named.has(failure.scopeId) ? failure.scopeId : options.scopeId;
 	if (reason !== failure.reason || scopeId !== failure.scopeId)
 		logWithheldScopeDenial(failure.reason, failure.scopeId);
-	return c.json(
-		syncScopeResetRequiredPayload(
-			getSyncResetState(context.db),
-			reason,
-			LOCAL_SYNC_CAPABILITY,
-			scopeId,
-		),
-		409,
-	);
+	// A push has no use for a reset boundary, and the default stream's is not the peer's to see.
+	return c.json(peerFacingScopeReset(reason, scopeId), 409);
+}
+
+/** A scope refusal that tells the peer nothing about this device's default stream. */
+function peerFacingScopeReset(reason: SyncScopeResetReason, scopeId: string | null) {
+	return {
+		error: "reset_required",
+		reset_required: true,
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		reason,
+		scope_id: scopeId,
+	} as const;
 }
 
 /** Records locally what a scope denial withheld from the peer's answer. */
@@ -5486,8 +5489,7 @@ function serveAuthorizedSnapshot(
 				negotiatedCapability: negotiatedSyncCapability(c),
 			},
 		);
-		if (!scopeRequest.ok)
-			return syncScopeResetResponse(c, store, scopeRequest.reason, options.syncChannelPeerPin);
+		if (!scopeRequest.ok) return syncScopeResetResponse(c, scopeRequest.reason);
 		const pageRequest = snapshotPageRequest((name) => c.req.query(name), localDeviceId);
 		const result = loadMemorySnapshotPageForPeer(store.db, {
 			...pageRequest,
@@ -5547,7 +5549,7 @@ function serveChannelRead(c: Context, options: SyncChannelReadOptions): Response
 	}
 	const limited = rateLimitedResponse(c, auth.deviceId, true);
 	if (limited) return limited;
-	if (c.req.path === "/v1/status") return serveChannelStatus(c, store, auth, syncChannelPeerPin);
+	if (c.req.path === "/v1/status") return serveScopedStatus(c, store, auth);
 	return serveAuthorizedSnapshot(c, store, auth, { syncChannelPeerPin });
 }
 
@@ -5558,40 +5560,23 @@ function syncScopeProvided(
 	return syncChannelPeerPin !== undefined || provided;
 }
 
-function syncScopeResetResponse(
-	c: Context,
-	store: MemoryStore,
-	preciseReason: SyncScopeResetReason,
-	syncChannelPeerPin?: SyncProtocolRouteOptions["syncChannelPeerPin"],
-): Response {
+/**
+ * Refuses a request whose scope this peer may not use. The answer names no
+ * boundary: the default stream's is not the peer's to see, and a refused scope has
+ * none it may use. Resets after authorization carry their own scope's boundary.
+ */
+function syncScopeResetResponse(c: Context, preciseReason: SyncScopeResetReason): Response {
 	const reason = peerFacingScopeResetReason(preciseReason);
 	if (reason !== preciseReason)
 		logWithheldScopeDenial(preciseReason, c.req.query(SYNC_SCOPE_QUERY_PARAM) ?? null);
-	if (syncChannelPeerPin !== undefined) {
-		// An unauthorized scope must not disclose the legacy default boundary.
-		return c.json(
-			{
-				error: "reset_required",
-				reset_required: true,
-				sync_capability: LOCAL_SYNC_CAPABILITY,
-				reason,
-				scope_id: null,
-			},
-			409,
-		);
-	}
-	return c.json(
-		syncScopeResetRequiredPayload(getSyncResetState(store.db), reason, LOCAL_SYNC_CAPABILITY, null),
-		409,
-	);
+	return c.json(peerFacingScopeReset(reason, null), 409);
 }
 
-function serveChannelStatus(
-	c: Context,
-	store: MemoryStore,
-	auth: AuthenticatedSyncPeer,
-	syncChannelPeerPin: SyncProtocolRouteOptions["syncChannelPeerPin"],
-) {
+/**
+ * Status for one named scope, from the channel or from a direct request that
+ * names a scope. A scope the peer may not use gets the minimal refusal.
+ */
+function serveScopedStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
 	try {
 		const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const authorization = syncScopeAuthorizationContext(store, auth, deviceId);
@@ -5599,17 +5584,15 @@ function serveChannelStatus(
 			...authorization,
 			negotiatedCapability: negotiatedSyncCapability(c),
 		});
-		if (!scopeRequest.ok)
-			return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
+		if (!scopeRequest.ok) return syncScopeResetResponse(c, scopeRequest.reason);
 		if (scopeRequest.mode !== "scoped" || !scopeRequest.scope_id)
-			return syncScopeResetResponse(c, store, "missing_scope", syncChannelPeerPin);
+			return syncScopeResetResponse(c, "missing_scope");
 		const scopes = listAuthorizedScopesForPeer(store.db, {
 			...authorization,
 			scopeId: scopeRequest.scope_id,
 		});
 		const selectedScope = scopes[0];
-		if (!selectedScope || scopes.length !== 1)
-			return syncScopeResetResponse(c, store, "missing_scope", syncChannelPeerPin);
+		if (!selectedScope || scopes.length !== 1) return syncScopeResetResponse(c, "missing_scope");
 		return c.json({
 			device_id: deviceId,
 			protocol_version: SYNC_PROTOCOL_VERSION,
@@ -5623,6 +5606,31 @@ function serveChannelStatus(
 	} catch {
 		return c.json({ error: "internal_error" }, 500);
 	}
+}
+
+/** Status for a direct request that names no scope: the default stream and every authorized scope. */
+function serveDefaultStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
+	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	const syncReset = getSyncResetState(store.db);
+	const negotiated = negotiatedSyncCapability(c);
+	const authorizedScopes = isScopedSyncCapability(negotiated)
+		? listAuthorizedScopesForPeer(store.db, {
+				...syncScopeAuthorizationContext(store, auth, deviceId),
+			})
+		: null;
+	const response: Record<string, unknown> = {
+		device_id: deviceId,
+		protocol_version: SYNC_PROTOCOL_VERSION,
+		fingerprint,
+		runtime_version: VERSION,
+		sync_reset: addSyncScopeToBoundary(syncReset, null),
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		sync_features: LOCAL_SYNC_FEATURES,
+	};
+	if (authorizedScopes !== null) {
+		response.authorized_scopes = authorizedScopes;
+	}
+	return c.json(response);
 }
 
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
@@ -5712,29 +5720,11 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 						dbPath: store.dbPath,
 					});
 				}
-				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
-					keysDir: syncKeysDir(),
-				});
-				const syncReset = getSyncResetState(store.db);
-				const negotiated = negotiatedSyncCapability(c);
-				const authorizedScopes = isScopedSyncCapability(negotiated)
-					? listAuthorizedScopesForPeer(store.db, {
-							...syncScopeAuthorizationContext(store, auth, deviceId),
-						})
-					: null;
-				const response: Record<string, unknown> = {
-					device_id: deviceId,
-					protocol_version: SYNC_PROTOCOL_VERSION,
-					fingerprint,
-					runtime_version: VERSION,
-					sync_reset: addSyncScopeToBoundary(syncReset, null),
-					sync_capability: LOCAL_SYNC_CAPABILITY,
-					sync_features: LOCAL_SYNC_FEATURES,
-				};
-				if (authorizedScopes !== null) {
-					response.authorized_scopes = authorizedScopes;
+				// Naming a scope asks for that scope's status, never the default stream's.
+				if (c.req.query(SYNC_SCOPE_QUERY_PARAM) !== undefined) {
+					return serveScopedStatus(c, store, auth);
 				}
-				return c.json(response);
+				return serveDefaultStatus(c, store, auth);
 			} catch {
 				return c.json({ error: "internal_error" }, 500);
 			}
@@ -5767,7 +5757,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				},
 			);
 			if (!scopeRequest.ok) {
-				return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
+				return syncScopeResetResponse(c, scopeRequest.reason);
 			}
 			const since = c.req.query("since") ?? null;
 			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
@@ -5917,7 +5907,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		});
 		if (!scopeRequest.ok) {
 			recordInboundScopeFailure(scopeContext);
-			return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
+			return syncScopeResetResponse(c, scopeRequest.reason);
 		}
 		if (!Array.isArray(body.ops)) {
 			return c.json({ error: "invalid_ops" }, 400);
