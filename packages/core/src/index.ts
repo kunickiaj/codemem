@@ -224,6 +224,15 @@ export type {
 	CoordinatorEnrollmentReconciliationIssueSummary,
 } from "./coordinator-enrollment-reconciliation-issues.js";
 export { getCoordinatorEnrollmentReconciliationIssueSummary } from "./coordinator-enrollment-reconciliation-issues.js";
+export {
+	type AttestationOptions,
+	attestCoordinatorFree,
+	type CoordinatorFreeStatus,
+	markCoordinatorManaged,
+	propagateCoordinatorManaged,
+	readCoordinatorFreeStatus,
+	type WitnessBackend,
+} from "./coordinator-free-attestation.js";
 export type {
 	CoordinatorGroupPreference,
 	UpsertCoordinatorGroupPreferenceInput,

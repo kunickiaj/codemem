@@ -5,10 +5,8 @@ import {
 	mergeCoordinatorPeerAddresses,
 	normalizeAddress,
 } from "./address-utils.js";
-import {
-	recordListedCoordinatorPeers,
-	recordStoreCoordinatorHistory,
-} from "./coordinator-history.js";
+import { recordCoordinatorListing } from "./coordinator-free-attestation.js";
+import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	fetchPeerRemovalLookup,
 	type PeerRemovalLookup,
@@ -360,7 +358,7 @@ export async function lookupCoordinatorPeers(
 	}
 	const peers = [...merged.values()];
 	// Before any caller trusts a listed device or refreshes a pin from this listing.
-	recordListedCoordinatorPeers(store.db, peers);
+	recordCoordinatorListing(store.db, peers, { keysDir });
 	return peers;
 }
 

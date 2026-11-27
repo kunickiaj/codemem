@@ -10,6 +10,9 @@ import { afterAll, afterEach } from "vitest";
  * reading the developer's own codemem config or coordinator credentials, and
  * from opening a connection to a host other than this machine.
  *
+ * It also points CODEMEM_KEYS_DIR at a directory of its own, so code that falls back to it
+ * doesn't read or mark the developer's device key.
+ *
  * It also sets CODEMEM_INVITE_TOKEN_KEY to a key generated for this process, so
  * coordinator stores can create invitations. A test of a missing or rotated key
  * passes its own keys to the store.
@@ -97,6 +100,9 @@ writeFileSync(configPath, "{}\n");
 process.env.CODEMEM_CONFIG = configPath;
 for (const name of DEVELOPER_COORDINATOR_VARIABLES) delete process.env[name];
 process.env.CODEMEM_INVITE_TOKEN_KEY = randomBytes(32).toString("hex");
+// Code that finds no keys directory otherwise uses the developer's own, and coordinator entry
+// points write a permanent managed mark beside the device key there.
+process.env.CODEMEM_KEYS_DIR ||= join(configDirectory, "keys");
 
 afterEach(() => failOnBlockedConnections(guard));
 afterAll(() => {

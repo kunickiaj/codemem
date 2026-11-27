@@ -11,6 +11,7 @@ import {
 	type CoordinatorDeviceRemovalListResult,
 	parseDeviceRemovalListPage,
 } from "./coordinator-device-removal-list.js";
+import { markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	type CoordinatorIdentityGroupGrantActionResult,
@@ -2678,12 +2679,28 @@ function recordInviteJoinHistory(dbPath: string): void {
 	}
 }
 
+/**
+ * A signed join can bring back trust that this store then saves, such as an inviter's pin or
+ * a shared Project, so the store and its key are marked managed before the request, even if
+ * the coordinator then refuses it. An unsigned join saves only settings, which the next
+ * coordinator refresh marks before any coordinator call.
+ */
+function markInviteStoreManaged({ dbPath, keysDir }: { dbPath: string; keysDir?: string }): void {
+	const conn = connect(dbPath);
+	try {
+		markCoordinatorManaged(conn, { keysDir });
+	} finally {
+		conn.close();
+	}
+}
+
 async function requestInvitationJoin(
 	transport: InviteJoinTransport,
 	body: Record<string, unknown>,
 	{ recipientLegacyRetry }: { recipientLegacyRetry: boolean },
 ) {
 	recordInviteJoinHistory(transport.device.dbPath);
+	if (transport.signed) markInviteStoreManaged(transport.device);
 	try {
 		const [status, response] = await postInviteJoin(transport, body);
 		if (
