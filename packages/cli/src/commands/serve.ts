@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net, { type Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -61,6 +61,17 @@ import {
 	waitForViewerStartup,
 	waitForViewerWriterLockRelease,
 } from "./viewer-lock-claim.js";
+import {
+	isLikelyViewerCommand,
+	listeningPid,
+	type ProcessIdentity,
+	readProcessCommand,
+	readProcessIdentity,
+	sameProcess,
+	type VerificationDependencies,
+	type VerifiedViewer,
+	verifyViewerForDatabase,
+} from "./viewer-stop-verification.js";
 
 export function extractViewerPid(payload: unknown): number | null {
 	if (!payload || typeof payload !== "object") return null;
@@ -91,16 +102,7 @@ function warnIfViewerExposed(host: string, port: number): void {
 	);
 }
 
-export function isLikelyViewerCommand(command: string): boolean {
-	const lowered = command.toLowerCase();
-	if (!/\b(?:serve|service)\s+start\b/.test(lowered)) return false;
-	return (
-		lowered.includes("codemem") ||
-		lowered.includes("packages/cli/dist/index.js") ||
-		lowered.includes("/cli/dist/index.js") ||
-		lowered.includes("packages/cli/src/index.ts")
-	);
-}
+export { isLikelyViewerCommand } from "./viewer-stop-verification.js";
 
 export function prepareViewerDatabase(dbPath?: string | null): string {
 	return initDatabase(dbPath ?? undefined).path;
@@ -112,44 +114,6 @@ export function pickViewerPidCandidate(
 ): number | null {
 	if (statsPid && listenerPid && statsPid !== listenerPid) return null;
 	return statsPid ?? listenerPid ?? null;
-}
-
-function lookupListeningPid(host: string, port: number): number | null {
-	if (!isLocalHost(host)) return null;
-	const result = spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
-		encoding: "utf-8",
-		timeout: 1000,
-	});
-	if (result.status !== 0) return null;
-	const first = (result.stdout || "")
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.find((line) => line.length > 0);
-	if (!first) return null;
-	const parsed = Number.parseInt(first, 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function readProcessCommand(pid: number): string | null {
-	const result = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
-		encoding: "utf-8",
-		timeout: 1000,
-	});
-	if (result.status !== 0) return null;
-	const cmd = (result.stdout || "").trim();
-	return cmd.length > 0 ? cmd : null;
-}
-
-function isTrustedViewerPid(
-	pid: number,
-	target: { host: string; port: number },
-	listenerPid: number | null,
-): boolean {
-	if (!isLocalHost(target.host)) return false;
-	if (listenerPid && listenerPid !== pid) return false;
-	const command = readProcessCommand(pid);
-	if (!command) return false;
-	return isLikelyViewerCommand(command);
 }
 
 // Runtime files sit beside the canonical database, so a database reached through
@@ -329,34 +293,97 @@ async function waitForProcessExit(pid: number, timeoutMs = 30000): Promise<boole
 	return !isProcessRunning(pid);
 }
 
-async function terminateProcessPid(
-	pid: number,
-	timeouts: { gracefulMs?: number; forceMs?: number } = {},
-): Promise<boolean> {
+export interface TerminateOptions {
+	gracefulMs?: number;
+	forceMs?: number;
+	/** Reads the process's identity; tests replace it. */
+	readIdentity?: (pid: number) => ProcessIdentity | null;
+}
+
+/** The outcome of a stop: whether a signal was sent, and whether the process is gone. */
+export interface Termination {
+	signalled: boolean;
+	stopped: boolean;
+}
+
+type Confirmation = "same" | "changed" | "not-target" | "unknown";
+
+/**
+ * Whether `pid` still names the verified process. The proof that chose it runs first and
+ * the identity read last, so nothing is checked between that read and the signal.
+ * "changed" means the pid names another process now: the verified one has exited.
+ */
+function confirmVerified(
+	viewer: Pick<VerifiedViewer, "pid" | "identity" | "recheck">,
+	readIdentity: (pid: number) => ProcessIdentity | null,
+): Confirmation {
+	const proven = viewer.recheck();
+	const now = readIdentity(viewer.pid);
+	if (now && !sameProcess(now, viewer.identity)) return "changed";
+	if (!proven) return "not-target";
+	return now ? "same" : "unknown";
+}
+
+/**
+ * Stops a verified process: SIGTERM, then after the wait SIGKILL. Each signal is sent only
+ * when the pid still names the process as it was verified and it still passes its proof.
+ * A process that exited during the wait, whose pid may name another process now, is
+ * never signalled again.
+ */
+async function terminateVerified(
+	viewer: Pick<VerifiedViewer, "pid" | "identity" | "recheck">,
+	options: TerminateOptions = {},
+): Promise<Termination> {
+	const readIdentity = options.readIdentity ?? readProcessIdentity;
+	const { pid } = viewer;
+	if (confirmVerified(viewer, readIdentity) !== "same") return { signalled: false, stopped: false };
 	try {
 		process.kill(pid, "SIGTERM");
 	} catch {
-		return true;
+		return { signalled: true, stopped: true };
 	}
-	if (await waitForProcessExit(pid, timeouts.gracefulMs ?? 30000)) return true;
+	if (await waitForProcessExit(pid, options.gracefulMs ?? 30000))
+		return { signalled: true, stopped: true };
 
-	// A stuck better-sqlite3 maintenance query blocks the target process's JS
-	// signal handler, so graceful shutdown can never run. Callers only reach
-	// this helper after command-line/pidfile trust checks; escalate so lifecycle
-	// commands do not require a manual kill -9.
+	// A stuck better-sqlite3 maintenance query blocks the target process's JS signal
+	// handler, so graceful shutdown can never run, and lifecycle commands escalate rather
+	// than require a manual kill -9.
+	const confirmation = confirmVerified(viewer, readIdentity);
+	if (confirmation === "changed") return { signalled: true, stopped: true };
+	if (confirmation !== "same") return { signalled: true, stopped: false };
 	try {
 		process.kill(pid, "SIGKILL");
 	} catch {
-		return true;
+		return { signalled: true, stopped: true };
 	}
-	return waitForProcessExit(pid, timeouts.forceMs ?? 5000);
+	return { signalled: true, stopped: await waitForProcessExit(pid, options.forceMs ?? 5000) };
 }
 
-export async function terminateTrustedViewerPid(
-	pid: number,
-	timeouts: { gracefulMs?: number; forceMs?: number } = {},
-): Promise<boolean> {
-	return terminateProcessPid(pid, timeouts);
+/**
+ * Stops a process its caller has just checked, such as a maintenance worker. Its identity
+ * is read once before SIGTERM and must match again before SIGKILL; when it cannot be read,
+ * SIGTERM is the only signal.
+ */
+async function terminateProcessPid(pid: number, options: TerminateOptions = {}): Promise<boolean> {
+	const readIdentity = options.readIdentity ?? readProcessIdentity;
+	const identity = readIdentity(pid);
+	if (!identity) {
+		try {
+			process.kill(pid, "SIGTERM");
+		} catch {
+			return true;
+		}
+		return waitForProcessExit(pid, options.gracefulMs ?? 30000);
+	}
+	return (await terminateVerified({ pid, identity, recheck: () => true }, options)).stopped;
+}
+
+/** Stops a Viewer that `verifyViewerForDatabase` verified. */
+export async function terminateVerifiedViewer(
+	viewer: Pick<VerifiedViewer, "pid" | "identity" | "recheck">,
+	options: TerminateOptions = {},
+): Promise<Termination> {
+	return terminateVerified(viewer, options);
 }
 
 /**
@@ -367,7 +394,7 @@ export async function terminateTrustedViewerPid(
  */
 export async function terminateTrustedMaintenanceWorker(
 	dbPath: string,
-	timeouts: { gracefulMs?: number; forceMs?: number } = {},
+	timeouts: TerminateOptions = {},
 ): Promise<boolean> {
 	const paths = [
 		...new Set([
@@ -385,7 +412,7 @@ export async function terminateTrustedMaintenanceWorker(
 async function terminateRecordedMaintenanceWorker(
 	pidPath: string,
 	dbPath: string,
-	timeouts: { gracefulMs?: number; forceMs?: number },
+	timeouts: TerminateOptions,
 ): Promise<boolean> {
 	const record = readMaintenanceWorkerPidRecordAt(pidPath);
 	if (!record) return true;
@@ -421,41 +448,109 @@ export const viewerLockDependencies: ViewerLockClaimDependencies = {
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-export async function stopExistingViewer(
-	dbPath: string,
+export interface StopViewerResult {
+	stopped: boolean;
+	pid: number | null;
+	/** A Viewer that was found but not signalled, and why. */
+	refused?: { pid: number; host: string; port: number; reason: string };
+}
+
+export type StopViewerOptions = Pick<TerminateOptions, "gracefulMs" | "forceMs" | "readIdentity"> &
+	Pick<VerificationDependencies, "platform">;
+
+type Candidate = { pid: number } | null;
+
+/**
+ * The codemem Viewer to consider at `target`: on macOS and Linux the process listening on
+ * the port, else the pid its answer names, which verification then refuses because it is
+ * not the listener. Null when no codemem Viewer is there, so that an unrelated listener is
+ * not reported.
+ */
+async function viewerCandidateAt(
 	target: { host: string; port: number },
-): Promise<{ stopped: boolean; pid: number | null }> {
-	const viewerPidFromStats = await lookupViewerPidFromStats(target.host, target.port);
-	const listenerPid = lookupListeningPid(target.host, target.port);
-	const viewerPid = pickViewerPidCandidate(viewerPidFromStats, listenerPid);
-	if (viewerPid && isTrustedViewerPid(viewerPid, target, listenerPid)) {
-		const stopped = await terminateTrustedViewerPid(viewerPid);
-		if (!stopped) return { stopped: false, pid: viewerPid };
-		removeStoppedViewerPidRecords(dbPath, viewerPid);
-		return { stopped: true, pid: viewerPid };
-	}
+	options: StopViewerOptions,
+): Promise<Candidate> {
+	if (!isLocalHost(target.host)) return null;
+	const statsPid = await lookupViewerPidFromStats(target.host, target.port);
+	if ((options.platform ?? process.platform) === "win32")
+		return statsPid ? { pid: statsPid } : null;
+	const listener = listeningPid(target.port);
+	// Without a listener to name, the answering pid goes to verification, which refuses it
+	// and says why.
+	const pid = (listener.ok ? listener.pid : null) ?? statsPid;
+	if (!pid) return null;
+	const command = (options.readIdentity ?? readProcessIdentity)(pid)?.command;
+	return command && isLikelyViewerCommand(command) ? { pid } : null;
+}
+
+type StopAttempt =
+	| { stopped: boolean; pid: number }
+	| { refused: NonNullable<StopViewerResult["refused"]> };
+
+/** Verifies that Viewer `pid` at `address` serves this database, then stops it. */
+async function stopVerifiedViewer(
+	pid: number,
+	address: { host: string; port: number },
+	dbPath: string,
+	options: StopViewerOptions,
+): Promise<StopAttempt> {
+	const verification = await verifyViewerForDatabase(pid, address, dbPath, options);
+	if (!verification.ok) return { refused: { pid, ...address, reason: verification.reason } };
+	const termination = await terminateVerifiedViewer(verification.viewer, options);
+	if (!termination.signalled)
+		return {
+			refused: {
+				pid,
+				...address,
+				reason: "its process changed or stopped serving the database before it could be signalled",
+			},
+		};
+	return { stopped: termination.stopped, pid };
+}
+
+/** Tries the Viewers this database's PID records name; the first stopped, or the first refusal. */
+async function stopRecordedViewers(
+	dbPath: string,
+	options: StopViewerOptions,
+): Promise<StopAttempt | null> {
+	let refusal: StopAttempt | null = null;
 	// The current record first, then the one an older release left beside the
 	// database path as given. Each passes the same checks before it is stopped.
 	for (const { path, record } of readViewerPidRecords(dbPath)) {
-		const result = await stopRecordedViewer(record);
-		if (!result) continue;
-		if (result.stopped) removeFile(path);
-		return result;
+		if (!isLocalHost(record.host) || !(await respondsLikeCodememViewer(record))) continue;
+		const attempt = await stopVerifiedViewer(record.pid, record, dbPath, options);
+		if ("refused" in attempt) {
+			refusal ??= attempt;
+			continue;
+		}
+		if (attempt.stopped) removeFile(path);
+		return attempt;
 	}
-	return { stopped: false, pid: null };
+	return refusal;
 }
 
-/** Stops the Viewer a PID record names when it answers and its process is trusted; else null. */
-async function stopRecordedViewer(
-	record: ViewerPidRecord,
-): Promise<{ stopped: boolean; pid: number } | null> {
-	const recordListenerPid = lookupListeningPid(record.host, record.port);
-	if (
-		!(await respondsLikeCodememViewer(record)) ||
-		!isTrustedViewerPid(record.pid, { host: record.host, port: record.port }, recordListenerPid)
-	)
-		return null;
-	return { stopped: await terminateTrustedViewerPid(record.pid), pid: record.pid };
+export async function stopExistingViewer(
+	dbPath: string,
+	target: { host: string; port: number },
+	/** Timeouts and readers that tests replace. */
+	options: StopViewerOptions = {},
+): Promise<StopViewerResult> {
+	const candidate = await viewerCandidateAt(target, options);
+	const atPort = candidate
+		? await stopVerifiedViewer(candidate.pid, target, dbPath, options)
+		: null;
+	if (atPort && !("refused" in atPort)) {
+		if (atPort.stopped) removeStoppedViewerPidRecords(dbPath, atPort.pid);
+		return atPort;
+	}
+	const recorded = await stopRecordedViewers(dbPath, options);
+	if (recorded && !("refused" in recorded)) return recorded;
+	const refusal = atPort ?? recorded;
+	return {
+		stopped: false,
+		pid: null,
+		...(refusal && "refused" in refusal ? { refused: refusal.refused } : {}),
+	};
 }
 
 function removeFile(path: string): void {
@@ -1510,6 +1605,11 @@ async function stopBeforeStart(
 	stop: typeof stopExistingViewer,
 ): Promise<boolean> {
 	const result = await stop(dbPath, { host: invocation.host, port: invocation.port });
+	if (result.refused) {
+		// Restart too: starting this database's Viewer on that port would only fail.
+		reportRefusedViewer(dbPath, result.refused);
+		return false;
+	}
 	if (result.pid && !result.stopped) {
 		p.intro("codemem viewer");
 		p.log.error(`Viewer is still shutting down (pid ${result.pid})`);
@@ -1531,6 +1631,21 @@ async function stopBeforeStart(
 		return false;
 	}
 	return waitForStoppedViewer(invocation, dbPath);
+}
+
+/** A Viewer that answered but was not shown to serve this database. Nothing was signalled. */
+function reportRefusedViewer(
+	dbPath: string,
+	viewer: { pid: number; host: string; port: number; reason: string },
+): void {
+	p.intro("codemem viewer");
+	p.log.error(
+		`The viewer at ${viewer.host}:${viewer.port} (pid ${viewer.pid}) could not be confirmed to serve ${dbPath}: ${viewer.reason}. Nothing was stopped.`,
+	);
+	p.log.info(
+		"It may serve another database, or come from a release that does not record its database. Pass the --db-path and --port it was started with, or stop it yourself after checking it.",
+	);
+	process.exitCode = 1;
 }
 
 /**

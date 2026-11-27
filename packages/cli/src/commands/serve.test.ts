@@ -28,7 +28,7 @@ import {
 	sqliteVecFailureDiagnostics,
 	startForegroundViewer,
 	terminateTrustedMaintenanceWorker,
-	terminateTrustedViewerPid,
+	terminateVerifiedViewer,
 } from "./serve.js";
 import {
 	resolveLegacyServeInvocation,
@@ -639,11 +639,18 @@ describe("serve command option resolution", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+});
 
-	it("escalates trusted viewer shutdown when graceful SIGTERM stalls", async () => {
+describe("signalling only the verified Viewer process", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/** A process that ignores SIGTERM and ends on SIGKILL; records the signals it got. */
+	function stallingProcess() {
 		const signals: string[] = [];
 		let running = true;
-		const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+		vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
 			expect(pid).toBe(12345);
 			if (signal === 0) {
 				if (!running) throw new Error("not running");
@@ -653,13 +660,91 @@ describe("serve command option resolution", () => {
 			if (signal === "SIGKILL") running = false;
 			return true;
 		});
+		return signals;
+	}
 
-		await expect(terminateTrustedViewerPid(12345, { gracefulMs: 1, forceMs: 50 })).resolves.toBe(
-			true,
+	type Identity = { started: string; command: string };
+	const verified: Identity = {
+		started: "Fri Nov 27 10:00:00 2026",
+		command: "node /repo/bin/codemem serve start --foreground",
+	};
+	const replacement: Identity = { started: "Fri Nov 27 10:00:31 2026", command: "/usr/bin/vim" };
+
+	/**
+	 * Stops pid 12345 as verified as `verified`. `reads` are what the pid names at each read
+	 * and `proofs` what its proof answers at each recheck, in order: before SIGTERM, then
+	 * before SIGKILL. The last entry repeats.
+	 */
+	async function stop(reads: Array<Identity | null>, proofs: boolean[] = [true]) {
+		const signals = stallingProcess();
+		const order: string[] = [];
+		let read = 0;
+		let proof = 0;
+		const result = await terminateVerifiedViewer(
+			{
+				pid: 12345,
+				identity: verified,
+				recheck: () => {
+					order.push("proof");
+					return proofs[Math.min(proof++, proofs.length - 1)] ?? true;
+				},
+			},
+			{
+				gracefulMs: 1,
+				forceMs: 50,
+				readIdentity: () => {
+					order.push("identity");
+					return reads[Math.min(read++, reads.length - 1)] ?? null;
+				},
+			},
 		);
+		return { signals, order, result };
+	}
+
+	it("sends SIGTERM, then SIGKILL, while the pid names the verified process", async () => {
+		const { signals, order, result } = await stop([verified]);
 
 		expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
-		expect(killSpy).toHaveBeenCalled();
+		expect(result).toEqual({ signalled: true, stopped: true });
+		// The proof runs first and the identity read last, before each signal.
+		expect(order).toEqual(["proof", "identity", "proof", "identity"]);
+	});
+
+	it.each([
+		["names another process", [replacement]],
+		["cannot be identified", [null]],
+	] as const)("sends nothing when, before SIGTERM, the pid %s", async (_label, reads) => {
+		const { signals, result } = await stop([...reads]);
+
+		expect(signals).toEqual([]);
+		expect(result).toEqual({ signalled: false, stopped: false });
+	});
+
+	it("sends nothing when the proof fails before SIGTERM", async () => {
+		const { signals, result } = await stop([verified], [false]);
+
+		expect(signals).toEqual([]);
+		expect(result).toEqual({ signalled: false, stopped: false });
+	});
+
+	it.each([
+		["names another process, so the verified one exited", [verified, replacement], true],
+		["cannot be identified", [verified, null], false],
+	] as const)(
+		"does not SIGKILL when, after the wait, the pid %s",
+		async (_label, reads, stopped) => {
+			const { signals, result } = await stop([...reads]);
+
+			expect(signals).toEqual(["SIGTERM"]);
+			expect(result).toEqual({ signalled: true, stopped });
+		},
+	);
+
+	it("does not SIGKILL when the proof fails after the wait", async () => {
+		const { signals, result } = await stop([verified], [true, false]);
+
+		expect(signals).toEqual(["SIGTERM"]);
+		expect(result).toEqual({ signalled: true, stopped: false });
 	});
 });
 
