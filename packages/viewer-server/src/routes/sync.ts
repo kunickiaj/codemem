@@ -5108,9 +5108,12 @@ function legacySharedReviewReassignmentPreview(
 function reassignLegacySharedReviewGroup(
 	store: MemoryStore,
 	input: { confirmationToken?: string | null; scopeId: string; workspaceIdentity: string },
+	stillAllowed: () => boolean,
 ): Record<string, unknown> {
 	return store.db
 		.transaction(() => {
+			// The gate checked on entry, but reading the body can outlast that.
+			if (!stillAllowed()) throw new Error("access_change_needs_admin_device");
 			const preview = legacySharedReviewReassignmentPreview(store, input);
 			if (input.confirmationToken !== preview.confirmation_token) {
 				throw new Error(
@@ -6212,7 +6215,7 @@ async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 		);
 		return c.json({ ok: true, deleted });
 	} catch (error) {
-		return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
 	} finally {
 		releasePublicationMutation?.();
 	}
@@ -6418,6 +6421,7 @@ function deleteProjectMappingAndWakePolicies(
 	store.adoptEnsuredDeviceIdentity(deviceId);
 	return store.db
 		.transaction(() => {
+			requireAdminWhenGated();
 			const before = policyWakeMappings(store);
 			const removed = before.find((mapping) => mapping.id === mappingId);
 			const deleted = deleteProjectScopeSettingsMapping(store.db, mappingId, {
@@ -6850,6 +6854,69 @@ async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
  */
 const ACCESS_CHANGE_REFUSAL = { error: "access_change_needs_admin_device" } as const;
 
+/**
+ * Records review decisions, or returns null when this device may no longer change
+ * access. The gate checked on entry, but reading the body can outlast that, so the
+ * write transaction checks again.
+ */
+function resolveReviewIfAllowed(
+	store: MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
+	request: RecipientPolicyReviewResolveRequestV1,
+): ReturnType<typeof resolveRecipientPolicyReview> | null;
+function resolveReviewIfAllowed(
+	store: MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
+	request: RecipientPolicyReviewResolveRequestV1[],
+): ReturnType<typeof resolveRecipientPolicyReviewBulk> | null;
+function resolveReviewIfAllowed(
+	store: MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
+	request: RecipientPolicyReviewResolveRequestV1 | RecipientPolicyReviewResolveRequestV1[],
+) {
+	const context = { localActorId: store.actorId, localDeviceId: store.deviceId };
+	const resolve = () =>
+		Array.isArray(request)
+			? resolveRecipientPolicyReviewBulk(store.db, context, request)
+			: resolveRecipientPolicyReview(store.db, context, request);
+	return store.db
+		.transaction(() => (canChangeRecipientAccess(readConfig) ? resolve() : null))
+		.immediate();
+}
+
+/**
+ * Commits recipient edges, refusing inside the write transaction when this device
+ * may no longer change access. The gate checked on entry; the body and the Team
+ * queues can outlast that.
+ */
+function commitEdgesIfAllowed(
+	store: MemoryStore,
+	request: unknown,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	return commitRecipientPolicyEdges(store.db, request, {
+		stillAllowed: () => canChangeRecipientAccess(readConfig),
+	});
+}
+
+const EDGE_COMMIT_HTTP_STATUS: Partial<Record<string, 400 | 404 | 409>> = {
+	invalid: 400,
+	not_found: 404,
+	stale: 409,
+	conflict: 409,
+};
+
+function edgeCommitResponse(c: Context, result: ReturnType<typeof commitRecipientPolicyEdges>) {
+	if (result.errorCode === ACCESS_CHANGE_REFUSAL.error) return c.json(ACCESS_CHANGE_REFUSAL, 403);
+	return c.json(result, EDGE_COMMIT_HTTP_STATUS[result.status] ?? 200);
+}
+
+/** A write that found this device no longer the admin device answers like the gate. */
+function accessRefusalOr(c: Context, message: string, status: 400 | 404) {
+	if (message === ACCESS_CHANGE_REFUSAL.error) return c.json(ACCESS_CHANGE_REFUSAL, 403);
+	return c.json({ error: message }, status);
+}
+
 function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig): boolean {
 	try {
 		return isCoordinatorAdminDevice(readConfig());
@@ -7170,18 +7237,28 @@ function peerEnrollmentHandler(getStore: StoreFactory) {
 }
 
 /**
- * Set while a request that passed the gate only because it narrows access is
- * handled. Another save can land between the gate and the write, so the write
- * checks again inside its transaction, after the publication lock.
+ * The gate's config reader, set while a mapping save or delete that passed the
+ * gate is handled. The body, the publication lock and another save can all land
+ * between the gate and the write, so the write checks again inside its
+ * transaction: a device that is no longer the admin device may still only narrow.
  */
-const mappingSaveMustOnlyNarrow = new AsyncLocalStorage<boolean>();
+const mappingWriteAuthority = new AsyncLocalStorage<typeof readCoordinatorSyncConfig>();
 
 function requireNarrowingWhenGated(
 	store: MemoryStore,
 	inputs: UpsertProjectScopeMappingInput[],
 ): void {
-	if (!mappingSaveMustOnlyNarrow.getStore()) return;
+	const readConfig = mappingWriteAuthority.getStore();
+	if (!readConfig || canChangeRecipientAccess(readConfig)) return;
 	if (!projectScopeMappingSavesOnlyNarrow(store.db, inputs)) {
+		throw new Error("access_change_needs_admin_device");
+	}
+}
+
+/** Removing a mapping can expose a broader one, so only the admin device may. */
+function requireAdminWhenGated(): void {
+	const readConfig = mappingWriteAuthority.getStore();
+	if (readConfig && !canChangeRecipientAccess(readConfig)) {
 		throw new Error("access_change_needs_admin_device");
 	}
 }
@@ -7259,13 +7336,12 @@ export function installRecipientAccessChangeGate(
 	] as const;
 	for (const [path, parse] of mappingRoutes) {
 		app.put(path, async (c, next) => {
-			if (allowed()) return next();
-			if (!(await mappingSaveOnlyNarrows(c, getStore(), parse))) return refuse(c);
-			return mappingSaveMustOnlyNarrow.run(true, () => next());
+			if (!allowed() && !(await mappingSaveOnlyNarrows(c, getStore(), parse))) return refuse(c);
+			return mappingWriteAuthority.run(readConfig, () => next());
 		});
 	}
 	app.delete("/api/sync/sharing-domains/project-mappings/:id", async (c, next) =>
-		allowed() ? next() : refuse(c),
+		allowed() ? mappingWriteAuthority.run(readConfig, () => next()) : refuse(c),
 	);
 }
 
@@ -8016,16 +8092,10 @@ export function syncRoutes(
 				index: number,
 			): Promise<ReturnType<typeof commitRecipientPolicyEdges>> => {
 				const teamId = teamIds[index];
-				if (!teamId) return commitRecipientPolicyEdges(store.db, request ?? body);
+				if (!teamId) return commitEdgesIfAllowed(store, request ?? body, readCoordinatorConfig);
 				return serializeRecipientPolicyTeamMutation(store.db, teamId, () => commit(index + 1));
 			};
-			const result = await commit(0);
-			if (result.status === "invalid") return c.json(result, 400);
-			if (result.status === "not_found") return c.json(result, 404);
-			if (result.status === "stale" || result.status === "conflict") {
-				return c.json(result, 409);
-			}
-			return c.json(result);
+			return edgeCommitResponse(c, await commit(0));
 		} catch (error) {
 			if (isSqliteBusy(error)) {
 				c.header("Retry-After", "1");
@@ -8111,11 +8181,8 @@ export function syncRoutes(
 		const request = parseReviewRequest(body);
 		if (!request) return c.json({ error: "request_invalid" }, 400);
 		requireLocalActorRecord(store);
-		const result = resolveRecipientPolicyReview(
-			store.db,
-			{ localActorId: store.actorId, localDeviceId: store.deviceId },
-			request,
-		);
+		const result = resolveReviewIfAllowed(store, readCoordinatorConfig, request);
+		if (!result) return c.json(ACCESS_CHANGE_REFUSAL, 403);
 		if (result.status === "stale" || result.status === "conflict") return c.json(result, 409);
 		if (result.status === "not_found") return c.json(result, 404);
 		if (result.status === "invalid") return c.json(result, 400);
@@ -8136,11 +8203,12 @@ export function syncRoutes(
 		if (requests.some((request) => request == null))
 			return c.json({ error: "request_invalid" }, 400);
 		requireLocalActorRecord(store);
-		const result = resolveRecipientPolicyReviewBulk(
-			store.db,
-			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+		const result = resolveReviewIfAllowed(
+			store,
+			readCoordinatorConfig,
 			requests as RecipientPolicyReviewResolveRequestV1[],
 		);
+		if (!result) return c.json(ACCESS_CHANGE_REFUSAL, 403);
 		return c.json(result, result.results.some((item) => item.status !== "applied") ? 207 : 200);
 	});
 
@@ -8420,15 +8488,15 @@ export function syncRoutes(
 				);
 			}
 			return c.json(
-				reassignLegacySharedReviewGroup(store, {
-					confirmationToken,
-					scopeId,
-					workspaceIdentity,
-				}),
+				reassignLegacySharedReviewGroup(
+					store,
+					{ confirmationToken, scopeId, workspaceIdentity },
+					() => canChangeRecipientAccess(readCoordinatorConfig),
+				),
 			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return c.json({ error: message }, message.includes("not found") ? 404 : 400);
+			return accessRefusalOr(c, message, message.includes("not found") ? 404 : 400);
 		}
 	});
 
@@ -8467,7 +8535,7 @@ export function syncRoutes(
 			const [mapping] = saveProjectMappingsAndWakePolicies(store, deviceId, [mappingInput]);
 			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
 		} catch (error) {
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
 		} finally {
 			releasePublicationMutation?.();
 		}
@@ -8490,7 +8558,7 @@ export function syncRoutes(
 				guardrail_warnings: verdict.warnings,
 			});
 		} catch (error) {
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			return accessRefusalOr(c, error instanceof Error ? error.message : String(error), 400);
 		} finally {
 			releasePublicationMutation?.();
 		}

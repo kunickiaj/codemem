@@ -6,6 +6,7 @@ import {
 	ensureScopeBackfillScopes,
 	initTestSchema,
 	MemoryStore,
+	readCoordinatorSyncConfig,
 	storeVectors,
 } from "@codemem/core";
 import { Hono } from "hono";
@@ -134,7 +135,10 @@ function assertReadableDeniedHistory() {
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 }
 
+let adminSecret = "fixture-admin-secret";
+
 function initializeMutationSurfaces() {
+	adminSecret = "fixture-admin-secret";
 	app = new Hono()
 		.route(
 			"/",
@@ -146,7 +150,15 @@ function initializeMutationSurfaces() {
 		)
 		.route(
 			"/",
-			syncRoutes(() => store),
+			// Reassigning held-back memories needs the admin device; these tests are about other checks.
+			syncRoutes(() => store, undefined, {
+				readCoordinatorConfig: () =>
+					readCoordinatorSyncConfig({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_groups: ["group-admin"],
+						sync_coordinator_admin_secret: adminSecret,
+					}),
+			}),
 		);
 	const server = createCodememMcpServer(store, {
 		defaultProject: null,
@@ -648,6 +660,39 @@ it.each<State>(["revoked", "missing scope proof", "wrong scope key"])(
 		}
 	},
 );
+
+it("refuses a confirmed legacy-review reassignment when the admin secret goes while the body arrives", async () => {
+	// Arrange: a confirmed request the gate admits; reading its body removes the secret.
+	seedLegacyHistory();
+	const token = await legacyPreview();
+	const before = snapshot();
+	const encoded = new TextEncoder().encode(
+		JSON.stringify({
+			workspace_identity: fixtureProjectIdentity,
+			scope_id: "managed-write",
+			confirmed_old_copies: true,
+			confirmation_token: token,
+		}),
+	);
+	const body = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			adminSecret = "";
+			controller.enqueue(encoded);
+			controller.close();
+		},
+	});
+	// Act.
+	const response = await app.request("/api/sync/legacy-shared-review/reassign", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body,
+		duplex: "half",
+	} as RequestInit);
+	// Assert.
+	expect(response.status).toBe(403);
+	expect(await response.json()).toEqual({ error: "access_change_needs_admin_device" });
+	expect(snapshot()).toEqual(before);
+});
 
 it("requires the existing legacy-review token and reassigns with active V1 target proof", async () => {
 	// Arrange.

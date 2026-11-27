@@ -1032,25 +1032,56 @@ function commitChangedRecipientPolicies(
 	db.exec("COMMIT");
 }
 
+/**
+ * The reviewed preview, or why the commit must not write, checked inside its
+ * transaction: first that the caller may still change access, then that the
+ * policy has not changed since it was reviewed.
+ */
+function previewOrRefusal(
+	db: Database,
+	request: RecipientPolicyEdgeCommitRequestV1,
+	stillAllowed: (() => boolean) | undefined,
+): { state: ReturnType<typeof buildPreview> } | { refused: RecipientPolicyEdgeCommitResultV1 } {
+	if (stillAllowed?.() === false) {
+		return {
+			refused: emptyCommitResult(
+				"conflict",
+				"access_change_needs_admin_device",
+				request.reviewedPolicyDigest,
+			),
+		};
+	}
+	const state = buildPreview(db, request);
+	if (state.response.reviewedPolicyDigest === request.reviewedPolicyDigest) return { state };
+	return {
+		refused: emptyCommitResult(
+			"stale",
+			"reviewed_policy_stale",
+			state.response.reviewedPolicyDigest,
+		),
+	};
+}
+
 export function commitRecipientPolicyEdges(
 	db: Database,
 	value: unknown,
-	options: { now?: () => string } = {},
+	options: {
+		now?: () => string;
+		/** Whether the caller may still change access, checked inside the write transaction. */
+		stillAllowed?: () => boolean;
+	} = {},
 ): RecipientPolicyEdgeCommitResultV1 {
 	const request = parseRecipientPolicyEdgeCommitRequest(value);
 	if (!request) return emptyCommitResult("invalid", "request_invalid");
 	try {
 		db.exec("BEGIN IMMEDIATE");
 		try {
-			const state = buildPreview(db, request);
-			if (state.response.reviewedPolicyDigest !== request.reviewedPolicyDigest) {
+			const checked = previewOrRefusal(db, request, options.stillAllowed);
+			if ("refused" in checked) {
 				db.exec("ROLLBACK");
-				return emptyCommitResult(
-					"stale",
-					"reviewed_policy_stale",
-					state.response.reviewedPolicyDigest,
-				);
+				return checked.refused;
 			}
+			const { state } = checked;
 			const now = (options.now ?? (() => new Date().toISOString()))();
 			const outcomes: RecipientPolicyEdgeCommitOutcomeV1[] = [];
 			let writeCount = 0;
