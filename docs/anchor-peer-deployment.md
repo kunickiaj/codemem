@@ -34,7 +34,8 @@ Recommended shape:
 - laptop: member of `personal:owner`
 - desktop: member of `personal:owner`
 - always-on anchor peer: member of `personal:owner`
-- coordinator: optional discovery plane, not a data path
+- coordinator: required to grant the domain memberships; memory payloads move
+  peer-to-peer and never through it
 
 ### Small team VPS
 

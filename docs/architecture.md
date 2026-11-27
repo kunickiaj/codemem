@@ -121,7 +121,7 @@ Contributor-aware retrieval layers on top of this baseline without changing the 
 - workspace filters: `include_workspace_ids`, `exclude_workspace_ids`, `include_workspace_kinds`, `exclude_workspace_kinds`
 - `personal_first`: enabled by default, adding a ranking bonus for memories authored by the local actor
 
-New memories default to `visibility=private`. Shared memories (`visibility=shared`) remain part of the same retrieval corpus but are the only memories eligible for peer-to-peer replication.
+New memories default to `visibility=shared`. Private memories (`visibility=private`) remain part of the same retrieval corpus but never replicate. A shared memory replicates only to a peer that is a member of the memory's Sharing domain, and those memberships come from a coordinator. A memory in the local default scope, or in a scope this device created locally, never crosses a peer boundary, so without a coordinator no memory replicates.
 
 `trust_state` is intentionally lightweight in MVP:
 
