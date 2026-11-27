@@ -235,6 +235,16 @@ export {
 	listCoordinatorGroupPreferences,
 	upsertCoordinatorGroupPreference,
 } from "./coordinator-group-preferences.js";
+export {
+	type CoordinatorHistorySource,
+	deviceHasCoordinatorHistory,
+	ensureCoordinatorHistorySchema,
+	readStoreId,
+	recordConfiguredCoordinatorHistory,
+	recordDeviceCoordinatorHistory,
+	recordStoreCoordinatorHistory,
+	storeHasCoordinatorHistory,
+} from "./coordinator-history.js";
 export type {
 	CoordinatorIdentityGroupGrant,
 	CoordinatorIdentityGroupGrantIssueInput,

@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
+import { ensureCoordinatorHistorySchema } from "./coordinator-history.js";
 import {
 	getSchemaVersion,
 	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
@@ -1142,6 +1143,8 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureMemoryItemsSyncIndexes(db);
 	ensureUsageEventsAggregateIndex(db);
 	ensureSyncStatusIndexes(db);
+	// After every table its triggers watch.
+	ensureCoordinatorHistorySchema(db);
 	if (!compatAlreadyApplied) {
 		promoteLegacySchemaVersion(db);
 		markSchemaCompatApplied(db);

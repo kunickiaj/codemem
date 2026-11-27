@@ -317,6 +317,14 @@ describe("manual and invite scopes never authorize another device", () => {
 				.pluck()
 				.get(peer.deviceId),
 		).toBe(1);
+		// The recreated pin names no group, so only the history shows that a coordinator vouched for it.
+		expect(
+			store.db
+				.prepare(`SELECT source FROM coordinator_history
+				 WHERE subject_kind = 'device' AND device_id = ? AND fingerprint = ?`)
+				.pluck()
+				.get(peer.deviceId, fingerprintPublicKey(peer.publicKey)),
+		).toBe("bootstrap_grant");
 		expect(await authorizedScopeIds()).toEqual([]);
 		await expectUnmanagedScopesRefused();
 

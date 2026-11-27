@@ -180,6 +180,7 @@ import {
 	reconcileCoordinatorEnrollmentSnapshot,
 	type reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
+	recordDeviceCoordinatorHistory,
 	recordHighestObservedDirectSignatureVersion,
 	recordNonce,
 	recordSyncTransferObservation,
@@ -3564,12 +3565,7 @@ async function authorizeBootstrapGrantRequest(
 	const createdAt = new Date().toISOString();
 	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
 	if (nonceResult) return nonceResult;
-	updatePeerAddresses(store.db, deviceId, [], {
-		name: workerEnrollment.display_name?.trim() || undefined,
-		pinnedFingerprint: workerFingerprint,
-		publicKey: workerPublicKey,
-		replaceTrust: true,
-	});
+	pinBootstrapGrantPeer(store.db, deviceId, workerEnrollment);
 	if (signatureVerification.version === DIRECT_PEER_SIGNATURE_VERSION_NUMBER) {
 		const versionResult = recordDirectPeerSignatureVersion(
 			store,
@@ -3579,6 +3575,30 @@ async function authorizeBootstrapGrantRequest(
 		if (versionResult) return versionResult;
 	}
 	return authenticatedSyncPeer(deviceId, workerPublicKey);
+}
+
+/**
+ * The pin names no group, so the coordinator history alone records that a coordinator
+ * vouched for this device. Both are written together, or neither is.
+ */
+function pinBootstrapGrantPeer(
+	db: MemoryStore["db"],
+	deviceId: string,
+	enrollment: Pick<CoordinatorEnrollment, "display_name" | "fingerprint" | "public_key">,
+): void {
+	db.transaction(() => {
+		recordDeviceCoordinatorHistory(db, {
+			deviceId,
+			fingerprint: enrollment.fingerprint,
+			source: "bootstrap_grant",
+		});
+		updatePeerAddresses(db, deviceId, [], {
+			name: enrollment.display_name?.trim() || undefined,
+			pinnedFingerprint: enrollment.fingerprint,
+			publicKey: enrollment.public_key,
+			replaceTrust: true,
+		});
+	})();
 }
 
 function parseJsonList(value: unknown): string[] {

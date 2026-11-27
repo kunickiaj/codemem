@@ -1,3 +1,4 @@
+import { ensureCoordinatorHistorySchema } from "./coordinator-history.js";
 import { BetterSqliteCoordinatorStore, DEFAULT_COORDINATOR_DB_PATH } from "./coordinator-store.js";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import {
@@ -127,6 +128,8 @@ export function ensureScopeMembershipCacheStateTable(db: Database): void {
 			db.exec(
 				"ALTER TABLE scope_membership_cache_state ADD COLUMN refresh_revision INTEGER NOT NULL DEFAULT 0",
 			);
+		// A table created here also needs its coordinator history trigger.
+		ensureCoordinatorHistorySchema(db);
 	}).immediate();
 }
 
