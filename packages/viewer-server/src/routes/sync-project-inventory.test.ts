@@ -62,7 +62,11 @@ describe("project inventory route repository reads", () => {
 			const statement = prepare(sql);
 			const normalized = sql.replace(/\s+/g, " ").trim();
 			let recordRead: (() => void) | undefined;
-			if (/^SELECT DISTINCT cwd, git_remote, metadata_json FROM sessions\b/i.test(normalized))
+			if (
+				/^SELECT DISTINCT cwd, git_remote, .* AS repository_identity FROM sessions\b/i.test(
+					normalized,
+				)
+			)
 				recordRead = evidenceReads;
 			if (/^SELECT DISTINCT cwd FROM sessions\b/i.test(normalized)) recordRead = cwdReads;
 			if (recordRead) {

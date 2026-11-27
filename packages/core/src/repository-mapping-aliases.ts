@@ -7,6 +7,7 @@ import {
 	resolveProjectScope,
 	type ScopeMapping,
 } from "./scope-resolution.js";
+import { SESSION_REPOSITORY_IDENTITY_SQL } from "./sessions-repository-evidence-index.js";
 
 const GIT_IDENTITY_CACHE_TTL_MS = 5_000;
 const GIT_IDENTITY_CACHE_MAX_ENTRIES = 256;
@@ -138,18 +139,29 @@ function recordedRepositoryIdentities(
 	return { byWorkspace, known };
 }
 
-export function recordedRepositoryIdentitySetsByWorkspace(db: Database): Map<string, Set<string>> {
-	const rows = db
+/**
+ * Each distinct folder, git remote and recorded identity among sessions that record a
+ * repository at all. Selects the identity expression instead of the metadata, so the
+ * read stays on idx_sessions_repository_evidence and never parses session metadata in
+ * JavaScript. Sessions with neither give no evidence, so leaving them out changes
+ * nothing.
+ */
+function readRecordedRepositoryRows(
+	db: Database,
+): Array<{ cwd: string; git_remote: string | null; repository_identity: string | null }> {
+	return db
 		.prepare(
-			`SELECT DISTINCT cwd, git_remote, metadata_json
+			`SELECT DISTINCT cwd, git_remote, ${SESSION_REPOSITORY_IDENTITY_SQL} AS repository_identity
 			 FROM sessions
 			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
-			   AND ((json_valid(metadata_json)
-			         AND json_type(metadata_json, '$.codemem_repository_identity') = 'text')
+			   AND ((${SESSION_REPOSITORY_IDENTITY_SQL}) IS NOT NULL
 			        OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))`,
 		)
-		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
-	return recordedRepositoryIdentities(rows).byWorkspace;
+		.all() as Array<{ cwd: string; git_remote: string | null; repository_identity: string | null }>;
+}
+
+export function recordedRepositoryIdentitySetsByWorkspace(db: Database): Map<string, Set<string>> {
+	return recordedRepositoryIdentities(readRecordedRepositoryRows(db)).byWorkspace;
 }
 
 export function recordedRepositoryIdentityEvidence(db: Database): {
@@ -296,7 +308,7 @@ export function recordedRepositoryIdentitiesByWorkspace(
 }
 
 function collectRecordedRepositoryEvidence(
-	rows: Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>,
+	rows: Array<{ cwd: string; git_remote: string | null; repository_identity: string | null }>,
 	requested: ReadonlySet<string>,
 ): { known: Set<string>; recordedByWorkspace: Map<string, Set<string>> } {
 	const recorded = recordedRepositoryIdentities(rows);
@@ -364,13 +376,7 @@ export function recordedRepositoryIdentityEvidenceByWorkspace(
 			.filter((identity): identity is string => identity != null),
 	);
 	const requested = new Set(normalizedWorkspaces);
-	const rows = db
-		.prepare(
-			`SELECT cwd, git_remote, metadata_json FROM sessions
-			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`,
-		)
-		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
-	const evidence = collectRecordedRepositoryEvidence(rows, requested);
+	const evidence = collectRecordedRepositoryEvidence(readRecordedRepositoryRows(db), requested);
 	addUnambiguousRecordedEvidence(identities, recordedWorkspaces, evidence.recordedByWorkspace);
 	addDiscoveredRepositoryEvidence(
 		identities,
