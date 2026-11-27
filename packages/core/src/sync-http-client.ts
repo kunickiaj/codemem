@@ -42,6 +42,32 @@ export function buildBaseUrl(address: string): string {
 	return `http://${trimmed}`;
 }
 
+/**
+ * The identity of a coordinator URL: scheme, host, path and query, with the
+ * scheme and host in lower case and no trailing slash. Two spellings of one
+ * coordinator give the same identity. Null for anything that is not an http or
+ * https URL, or that carries credentials.
+ */
+export function normalizedCoordinatorId(value: string): string | null {
+	try {
+		const normalized = buildBaseUrl(value);
+		if (!normalized) return null;
+		const parsed = new URL(normalized);
+		if (
+			(parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+			!parsed.host ||
+			parsed.username ||
+			parsed.password
+		) {
+			return null;
+		}
+		const path = parsed.pathname === "/" ? "" : parsed.pathname;
+		return `${parsed.protocol}//${parsed.host}${path}${parsed.search}`;
+	} catch {
+		return null;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // JSON request
 // ---------------------------------------------------------------------------

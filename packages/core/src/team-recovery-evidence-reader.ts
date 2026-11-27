@@ -17,7 +17,7 @@ import type { CoordinatorTeamMemberRemoval } from "./coordinator-team-member-rem
 import type { Database } from "./db.js";
 import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 import type { MemoryStore } from "./store.js";
-import { buildBaseUrl } from "./sync-http-client.js";
+import { buildBaseUrl, normalizedCoordinatorId } from "./sync-http-client.js";
 import type { TeamRecoveryEvidenceReading } from "./team-recovery-commit.js";
 import type {
 	TeamRecoveryDeviceBlockCheck,
@@ -51,6 +51,8 @@ export interface TeamRecoveryEvidenceTarget {
  * several pages or batches must have all of them back by then, or fail.
  */
 export interface TeamRecoveryEvidenceActions {
+	/** The coordinator every one of these reads is sent to. */
+	coordinatorUrl: string;
 	/** Every device enrolled in the group, disabled ones included. */
 	listDevices(groupId: string, deadlineMs: number): Promise<readonly CoordinatorEnrollment[]>;
 	/** The coordinator's device removal records, blocked devices included. */
@@ -90,7 +92,8 @@ async function part<T extends object>(
 /**
  * The group's devices, and whether the coordinator blocks each one. The block
  * check asks about every enrolled device under the key the roster lists, so it
- * waits for the roster.
+ * waits for a first roster read. The roster in the evidence is a second read,
+ * made after the check.
  */
 async function readRosterAndBlocks(
 	target: TeamRecoveryEvidenceTarget,
@@ -104,12 +107,6 @@ async function readRosterAndBlocks(
 	} catch {
 		return { roster: UNAVAILABLE, deviceBlocks: UNAVAILABLE };
 	}
-	const devices = enrolled.map((device) => ({
-		deviceId: device.device_id,
-		fingerprint: device.fingerprint,
-		displayName: device.display_name ?? "Device",
-		enabled: device.enabled === 1,
-	}));
 	const peers = enrolled.map((device) => ({
 		device_id: device.device_id,
 		public_key: device.public_key,
@@ -126,7 +123,31 @@ async function readRosterAndBlocks(
 		}));
 		return { source, checks };
 	});
-	return { roster: { status: "read", source, devices }, deviceBlocks };
+	// Without the check the recovery stops and names the check, so the first roster will do.
+	if (deviceBlocks.status !== "read")
+		return { roster: { status: "read", source, devices: listed(enrolled) }, deviceBlocks };
+	// The roster the recovery decides on is read again after the block check. The
+	// check cannot show every removal made since the first roster: the coordinator
+	// reports none while the key is still enrolled in another group. A device
+	// removed in between is off this roster, and one that joined or changed its
+	// key in between has no check that covers it, so it is not cleared.
+	let confirmed: readonly CoordinatorEnrollment[];
+	try {
+		confirmed = await actions.listDevices(target.groupId, deadlineMs);
+	} catch {
+		return { roster: UNAVAILABLE, deviceBlocks: UNAVAILABLE };
+	}
+	return { roster: { status: "read", source, devices: listed(confirmed) }, deviceBlocks };
+}
+
+/** The enrollments as the roster part of the evidence lists them. */
+function listed(enrolled: readonly CoordinatorEnrollment[]) {
+	return enrolled.map((device) => ({
+		deviceId: device.device_id,
+		fingerprint: device.fingerprint,
+		displayName: device.display_name ?? "Device",
+		enabled: device.enabled === 1,
+	}));
 }
 
 /**
@@ -142,11 +163,28 @@ function reportedRemoval(
 	return "none";
 }
 
+const NOTHING_READ: TeamRecoveryEvidence = {
+	roster: UNAVAILABLE,
+	deviceRemovals: UNAVAILABLE,
+	deviceBlocks: UNAVAILABLE,
+	completion: UNAVAILABLE,
+	memberRemovals: UNAVAILABLE,
+	groupBinding: UNAVAILABLE,
+};
+
+/** Whether two spellings name one coordinator. Anything that is not a coordinator URL matches nothing. */
+function sameCoordinator(left: string, right: string): boolean {
+	const identity = normalizedCoordinatorId(left);
+	return identity !== null && identity === normalizedCoordinatorId(right);
+}
+
 /**
  * Reads every part of the evidence now. `startedAtMs` is this machine's clock
  * before the first read is sent, which is what a recovery measures the age of
  * its evidence from. Evidence older than the limit is refused, so every read,
- * with all its pages and batches, has until then and no longer.
+ * with all its pages and batches, has until then and no longer. Nothing is
+ * read, and every part is unavailable, when the reads would go to another
+ * coordinator than the setup's.
  */
 export async function readTeamRecoveryEvidence(
 	target: TeamRecoveryEvidenceTarget,
@@ -154,6 +192,9 @@ export async function readTeamRecoveryEvidence(
 	nowMs: () => number = Date.now,
 ): Promise<TeamRecoveryEvidenceReading> {
 	const startedAtMs = nowMs();
+	// The parts are stamped with the setup's coordinator, so the reads must go to it.
+	if (!sameCoordinator(actions.coordinatorUrl, target.coordinatorId))
+		return { startedAtMs, evidence: NOTHING_READ };
 	const deadlineMs = startedAtMs + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS;
 	const here = { coordinatorId: target.coordinatorId };
 	const group = { ...here, groupId: target.groupId };
@@ -226,6 +267,7 @@ export function coordinatorTeamRecoveryEvidenceActions(
 		return { remoteUrl, adminSecret, timeoutS: Math.min(configuredS, leftS) };
 	};
 	return {
+		coordinatorUrl: remoteUrl,
 		listDevices: (groupId, deadlineMs) =>
 			coordinatorListDevicesAction({ groupId, includeDisabled: true, ...admin(deadlineMs) }),
 		listDeviceRemovals: (deadlineMs) =>

@@ -1663,7 +1663,7 @@ export {
 	type RecordedSyncFailureCategory,
 } from "./sync-failure-classification.js";
 export type { RequestJsonExecutor, RequestJsonOptions } from "./sync-http-client.js";
-export { buildBaseUrl, requestJson } from "./sync-http-client.js";
+export { buildBaseUrl, normalizedCoordinatorId, requestJson } from "./sync-http-client.js";
 export type { DeviceIdentityErrorCode, EnsureDeviceIdentityOptions } from "./sync-identity.js";
 export {
 	DeviceIdentityError,

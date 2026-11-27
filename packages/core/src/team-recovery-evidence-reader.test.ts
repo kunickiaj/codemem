@@ -55,6 +55,7 @@ const enrolled = (deviceId: string, enabled = 1): CoordinatorEnrollment => ({
 function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 	const asked: unknown[] = [];
 	const actions: TeamRecoveryEvidenceActions = {
+		coordinatorUrl: TARGET.coordinatorId,
 		listDevices: async (groupId) => {
 			asked.push(["devices", groupId]);
 			return [enrolled("device-a"), enrolled("device-b", 0)];
@@ -173,6 +174,7 @@ describe("Team recovery evidence reader", () => {
 			return Promise.resolve(answer);
 		};
 		const actions: TeamRecoveryEvidenceActions = {
+			coordinatorUrl: TARGET.coordinatorId,
 			listDevices: (_groupId, deadlineMs) => seen(deadlineMs, [enrolled("device-a")]),
 			listDeviceRemovals: (deadlineMs) => seen(deadlineMs, []),
 			deviceBlocksAndRemovals: (_groupId, _peers, deadlineMs) => seen(deadlineMs, NOTHING_REPORTED),
@@ -184,7 +186,8 @@ describe("Team recovery evidence reader", () => {
 
 		await readTeamRecoveryEvidence(TARGET, actions, () => 1_000);
 
-		expect(deadlines).toEqual(new Array(6).fill(1_000 + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS));
+		// Seven reads: the roster is read before the block check and again after it.
+		expect(deadlines).toEqual(new Array(7).fill(1_000 + TEAM_RECOVERY_EVIDENCE_MAX_AGE_MS));
 	});
 
 	it("carries what the block check says about a removal into each answer", async () => {
@@ -220,6 +223,76 @@ describe("Team recovery evidence reader", () => {
 		const reading = await readTeamRecoveryEvidence(TARGET, actions, () => clock);
 
 		expect(reading.startedAtMs).toBe(1_000);
+	});
+});
+
+describe("the roster and the coordinator a Team recovery reads", () => {
+	it("decides on the roster as it is after the block check, not the one the check was asked with", async () => {
+		// Arrange: device-b leaves the group, and device-c joins it, while the block check is out.
+		let rosterReads = 0;
+		const { actions } = coordinator({
+			listDevices: async () => {
+				rosterReads += 1;
+				return rosterReads === 1
+					? [enrolled("device-a"), enrolled("device-b")]
+					: [enrolled("device-a"), enrolled("device-c")];
+			},
+			deviceBlocksAndRemovals: async () => NOTHING_REPORTED,
+		});
+
+		const { evidence } = await readTeamRecoveryEvidence(TARGET, actions);
+
+		// Assert: device-b is off the roster, and device-c is on it with no check that clears it.
+		expect(evidence.roster).toMatchObject({
+			devices: [{ deviceId: "device-a" }, { deviceId: "device-c" }],
+		});
+		expect(evidence.deviceBlocks).toMatchObject({
+			checks: [{ deviceId: "device-a" }, { deviceId: "device-b" }],
+		});
+	});
+
+	it("reads neither the roster nor the block checks when the roster cannot be read again after the check", async () => {
+		let rosterReads = 0;
+		const { actions } = coordinator({
+			listDevices: async () => {
+				rosterReads += 1;
+				if (rosterReads > 1) throw new Error("coordinator_unavailable");
+				return [enrolled("device-a")];
+			},
+		});
+
+		const { evidence } = await readTeamRecoveryEvidence(TARGET, actions);
+
+		expect(evidence.roster).toEqual({ status: "unavailable" });
+		expect(evidence.deviceBlocks).toEqual({ status: "unavailable" });
+	});
+
+	it.each([
+		["another coordinator", "https://elsewhere.example.invalid"],
+		["something that is not a coordinator URL", "not a url"],
+	])("reads nothing when the reads would go to %s", async (_case, coordinatorUrl) => {
+		const { actions, asked } = coordinator({ coordinatorUrl });
+		const unavailable = { status: "unavailable" };
+
+		const { evidence } = await readTeamRecoveryEvidence(TARGET, actions);
+
+		expect(evidence).toEqual({
+			roster: unavailable,
+			deviceRemovals: unavailable,
+			deviceBlocks: unavailable,
+			completion: unavailable,
+			memberRemovals: unavailable,
+			groupBinding: unavailable,
+		});
+		expect(asked).toEqual([]);
+	});
+
+	it("reads from a coordinator whose configured URL is another spelling of the setup's", async () => {
+		const { actions } = coordinator({ coordinatorUrl: "HTTPS://COORDINATOR.EXAMPLE.INVALID/" });
+
+		const { evidence } = await readTeamRecoveryEvidence(TARGET, actions);
+
+		expect(evidence.roster).toMatchObject({ status: "read", source: GROUP });
 	});
 });
 
@@ -554,17 +627,19 @@ describe("the Team recovery reads against a coordinator", () => {
 		expect(pages).toBe(pagesAtDeadline);
 	}, 5_000);
 
-	it("reports a device removed between the roster read and the block check as removed under the key it sent", async () => {
+	it("reports a device removed between the first roster read and the block check as removed under the key it sent, and off the roster", async () => {
 		const { read } = await enrolledCoordinator(local, {
 			beforeBlockCheck: (store) =>
-				store.removeEnrollment({ groupId: GROUP_ID, deviceId: peer.device_id }),
+				store
+					.removeEnrollment({ groupId: GROUP_ID, deviceId: peer.device_id })
+					.catch(() => undefined),
 		});
 
 		const { evidence } = await read();
 
-		// Assert: the roster was read first and still lists the device. Only the check shows the removal.
+		// Assert: the check was asked about the device, and the roster read after it no longer lists it.
 		expect(evidence).toMatchObject({
-			roster: { devices: inAnyOrder({ deviceId: local.deviceId }, { deviceId: peer.device_id }) },
+			roster: { devices: [{ deviceId: local.deviceId }] },
 			deviceBlocks: {
 				status: "read",
 				checks: inAnyOrder(
@@ -575,7 +650,7 @@ describe("the Team recovery reads against a coordinator", () => {
 		});
 	});
 
-	it("misses, in the block check, a device removed from the group while its key stays enrolled in another, and reads it off the roster next time", async () => {
+	it("reads a device off the roster when it left the group before the block check, although the check reports no removal while its key stays enrolled in another group", async () => {
 		// Arrange: the device holds one key in two groups, and leaves this group once the roster is read.
 		const other = "group-other";
 		const { read } = await enrolledCoordinator(local, {
@@ -594,23 +669,17 @@ describe("the Team recovery reads against a coordinator", () => {
 					.catch(() => undefined),
 		});
 
-		const first = (await read()).evidence;
-		const second = (await read()).evidence;
+		const { evidence } = await read();
 
-		// Assert: the check reports no removal while the key is enrolled anywhere.
-		expect(first).toMatchObject({
-			roster: { devices: inAnyOrder({ deviceId: local.deviceId }, { deviceId: peer.device_id }) },
+		// Assert: the check alone would clear the device. The roster read after it does not list it.
+		expect(evidence).toMatchObject({
+			roster: { devices: [{ deviceId: local.deviceId }] },
 			deviceBlocks: {
 				checks: inAnyOrder(
 					{ deviceId: local.deviceId, removal: "none" },
 					{ deviceId: peer.device_id, blocked: false, removal: "none" },
 				),
 			},
-		});
-		// The next reading no longer lists the device and has its removal on record.
-		expect(second).toMatchObject({
-			roster: { devices: [{ deviceId: local.deviceId }] },
-			deviceRemovals: { removals: [{ group_id: GROUP_ID, device_id: peer.device_id }] },
 		});
 	});
 
@@ -714,15 +783,16 @@ describe("a Team recovery on what a coordinator reports about a device's keys", 
 		});
 	});
 
-	it("refuses as contradictory a device whose reviewed key is removed between the roster read and the block check", async () => {
+	it("does not give access back to a device whose reviewed key is removed between the first roster read and the block check", async () => {
 		const result = await planOnCoordinatorEvidence(
 			(store) => store.enrollDevice(GROUP_ID, enrollment(DESKTOP)),
-			(store) => remove(store, DESKTOP.deviceId),
+			(store) => remove(store, DESKTOP.deviceId).catch(() => undefined),
 		);
 
+		// Assert: the Desktop is off the roster. The removal list was read before the removal, so recovery stops.
 		expect(result).toEqual({
 			state: "refused",
-			reason: "device_evidence_contradictory",
+			reason: "device_missing_without_removal",
 			deviceIds: ["device-b"],
 		});
 	});
