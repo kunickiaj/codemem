@@ -129,7 +129,11 @@ function retainedQueueMetadata(
 export function queueVectorBackfill(
 	db: Database,
 	work: VectorBackfillWork,
-	options: { resumeMigration?: boolean } = {},
+	options: {
+		resumeMigration?: boolean;
+		/** What the job says it is doing, when more specific than the default. */
+		message?: string;
+	} = {},
 ): void {
 	const queuedWork = mergeQueuedSyncMemoryIds({}, work);
 	if (
@@ -162,16 +166,20 @@ export function queueVectorBackfill(
 		// The worker uses this trigger to drain queued IDs before migration cutover.
 		metadata.trigger = existingMetadata.trigger ?? SYNC_INCREMENTAL_TRIGGER;
 		metadata.local_repair_preserves_migration_state = undefined;
-		const message = options.resumeMigration
-			? "Queued vector catch-up for incremental sync data"
-			: "Queued vector catch-up for memories";
+		// Every new or changed memory records its vector work here, so this wording
+		// must not suggest the whole index is being rebuilt.
+		const message =
+			options.message ??
+			(options.resumeMigration
+				? "Queued vector catch-up for incremental sync data"
+				: "Queued vectors for new or changed memories");
 		const pendingWorkCount =
 			metadataMemoryIds(metadata.pending_upsert_memory_ids).length +
 			metadataMemoryIds(metadata.pending_delete_memory_ids).length;
 
 		if (!existingJob || existingJob.status === "completed" || existingJob.status === "cancelled") {
 			startVectorMigrationJob(db, {
-				title: "Re-indexing memories",
+				title: "Indexing memories",
 				status: "pending",
 				message,
 				progressTotal: null,

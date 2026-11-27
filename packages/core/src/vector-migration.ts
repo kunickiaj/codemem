@@ -35,6 +35,7 @@ import { resolveVectorLayout } from "./vector-layout.js";
 import { prepareVectorWrites } from "./vector-writes.js";
 import {
 	backfillVectors,
+	findActiveMemoriesMissingVectors,
 	findMemoryIdsWithCompleteActiveVectorCoverage,
 	findMemoryIdsWithCurrentTargetCoverage,
 	pruneStaleCurrentModelVectors,
@@ -56,6 +57,8 @@ export interface VectorModelMigrationOptions {
 	 * batch per tick.
 	 */
 	tickBudgetMs?: number;
+	/** How often an idle runner looks for active memories that have no vectors. */
+	coverageGapCheckIntervalMs?: number;
 	dbPath?: string;
 	signal?: AbortSignal;
 }
@@ -63,6 +66,9 @@ export interface VectorModelMigrationOptions {
 // Runner uses this cadence after a tick that detected no work. A live
 // migration or queued sync work switches back to intervalMs automatically.
 const IDLE_INTERVAL_MS = 60_000;
+/** Memories without vectors are rare and their repair is not urgent. */
+const COVERAGE_GAP_CHECK_INTERVAL_MS = 10 * 60_000;
+const COVERAGE_GAP_BATCH = 500;
 
 // Another connection held the write lock past busy_timeout. Retry soon with a
 // growing delay instead of treating lock contention as an idle database.
@@ -1959,6 +1965,10 @@ export class VectorModelMigrationRunner {
 	private lastTickWasIdle = false;
 	private consecutiveBusyTicks = 0;
 	private lockNoticeWritten = false;
+	private readonly coverageGapCheckIntervalMs: number;
+	private lastCoverageGapCheckAtMs: number | null = null;
+	/** Memories this runner already queued for repair; each is tried once per process. */
+	private readonly coverageGapQueued = new Set<number>();
 
 	constructor(options: VectorModelMigrationOptions = {}) {
 		this.dbPath = resolveDbPath(options.dbPath);
@@ -1967,6 +1977,10 @@ export class VectorModelMigrationRunner {
 		this.intervalMs = Math.max(1000, options.intervalMs ?? 5000);
 		this.idleIntervalMs = Math.max(1000, options.idleIntervalMs ?? IDLE_INTERVAL_MS);
 		this.tickBudgetMs = Math.max(0, options.tickBudgetMs ?? 0);
+		this.coverageGapCheckIntervalMs = Math.max(
+			0,
+			options.coverageGapCheckIntervalMs ?? COVERAGE_GAP_CHECK_INTERVAL_MS,
+		);
 	}
 
 	start(): void {
@@ -2033,6 +2047,7 @@ export class VectorModelMigrationRunner {
 			owner = { job: getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB), failureHandled: false };
 			loadSqliteVec(db);
 			this.lastTickWasIdle = await this.runPassesWithinBudget(db, owner);
+			if (this.lastTickWasIdle && this.queueCoverageGap(db)) this.lastTickWasIdle = false;
 			this.consecutiveBusyTicks = 0;
 			this.lockNoticeWritten = false;
 		} catch (error) {
@@ -2071,6 +2086,49 @@ export class VectorModelMigrationRunner {
 			// No transaction is open here. Let shutdown and timers run between batches.
 			await yieldToEventLoop();
 		}
+	}
+
+	/**
+	 * Queues vectors for active memories that have none under the current model.
+	 * Their queued work can be lost, for example when a sync pass commits memories
+	 * and then fails to record their vector work, and nothing else would retry
+	 * them once the job completed. Runs only after a completed job for the current
+	 * model, so a model migration keeps its own path. Returns whether it queued work.
+	 */
+	private queueCoverageGap(db: SqliteDatabase): boolean {
+		if (isEmbeddingDisabled()) return false;
+		const now = Date.now();
+		if (
+			this.lastCoverageGapCheckAtMs !== null &&
+			now - this.lastCoverageGapCheckAtMs < this.coverageGapCheckIntervalMs
+		) {
+			return false;
+		}
+		this.lastCoverageGapCheckAtMs = now;
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		const meta = (job?.metadata ?? {}) as MigrationMetadata;
+		const targetModel = tryResolveEmbeddingVectorIdentityLabel();
+		if (job?.status !== "completed" || !targetModel || meta.target_model !== targetModel) {
+			return false;
+		}
+		if (pendingQueuedSyncCount(meta) > 0 || meta.cleanup_pending) return false;
+		const memoryIds = findActiveMemoriesMissingVectors(db, targetModel, COVERAGE_GAP_BATCH).filter(
+			(memoryId) => !this.coverageGapQueued.has(memoryId),
+		);
+		if (memoryIds.length === 0) return false;
+		for (const memoryId of memoryIds) this.coverageGapQueued.add(memoryId);
+		queueVectorBackfill(
+			db,
+			{ upsertMemoryIds: memoryIds, deleteMemoryIds: [] },
+			{
+				resumeMigration: true,
+				message: `Queued vectors for ${memoryIds.length} memories that had none`,
+			},
+		);
+		console.warn(
+			`[codemem] vector catch-up queued ${memoryIds.length} memories that had no vectors`,
+		);
+		return true;
 	}
 
 	private handleOwnedTickFailure(
