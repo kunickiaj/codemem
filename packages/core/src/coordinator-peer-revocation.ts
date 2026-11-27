@@ -35,6 +35,11 @@ export interface PeerRemovalLookup {
 	generation: number | null;
 	/** Groups that answered this device's signed request with `403 device_removed`. */
 	removedFromGroups: string[];
+	/**
+	 * IDs whose key this device sent is still enabled under that ID, from the
+	 * coordinator's key evidence. Absent or empty when the coordinator sent none.
+	 */
+	keyEnrolled?: string[];
 }
 
 /** What the coordinator says about one device, or that it gave no usable answer. */
@@ -53,6 +58,7 @@ interface PeerRemovalReply {
 	removed: string[];
 	enrolled: string[];
 	removalSeq: number;
+	keyEnrolled: string[];
 }
 
 type StoreLike = Pick<MemoryStore, "db" | "dbPath">;
@@ -111,6 +117,29 @@ function sentIds(value: unknown[], sent: Set<string>): string[] {
 	return value.filter((id): id is string => typeof id === "string" && sent.has(id));
 }
 
+/**
+ * The IDs whose sent key the coordinator reports still enabled, or none. Only
+ * IDs this device sent a key for count, every one must also be enrolled, and
+ * an ID the evidence calls both removed and enabled discards the evidence. A
+ * broken evidence answer costs only the evidence, never the reply.
+ */
+function keyEnrolledIds(
+	value: unknown,
+	entries: PeerRemovalLookupEntry[],
+	enrolled: readonly string[],
+): string[] {
+	const evidence = value as { removed?: unknown; enrolled?: unknown } | null | undefined;
+	if (!evidence || typeof evidence !== "object") return [];
+	if (!Array.isArray(evidence.removed) || !Array.isArray(evidence.enrolled)) return [];
+	const keyed = new Set(
+		entries.filter((entry) => entry.public_key).map((entry) => entry.device_id),
+	);
+	const removedKeys = new Set(sentIds(evidence.removed, keyed));
+	const enabledKeys = sentIds(evidence.enrolled, keyed);
+	if (enabledKeys.some((id) => removedKeys.has(id) || !enrolled.includes(id))) return [];
+	return enabledKeys;
+}
+
 /** A reply without all three arrays and the integer is invalid, and the caller keeps every pairing. */
 function parseReply(
 	response: Record<string, unknown> | null,
@@ -128,12 +157,14 @@ function parseReply(
 		throw new Error("peer_revocation_response_invalid");
 	const sent = new Set(entries.map((entry) => entry.device_id));
 	const blocked = sentIds(revoked, sent);
+	const enrolledIds = sentIds(enrolled, sent);
 	return {
 		revoked: blocked,
 		// A block outranks a removal when a reply lists an ID in both.
 		removed: sentIds(removed, sent).filter((id) => !blocked.includes(id)),
-		enrolled: sentIds(enrolled, sent),
+		enrolled: enrolledIds,
 		removalSeq: removalSeq as number,
+		keyEnrolled: keyEnrolledIds(response?.key_evidence, entries, enrolledIds),
 	};
 }
 
@@ -268,6 +299,7 @@ export async function fetchPeerRemovalLookup(
 			revoked: replies.flatMap((reply) => reply.revoked),
 			removed: replies.flatMap((reply) => reply.removed),
 			enrolled: replies.flatMap((reply) => reply.enrolled),
+			keyEnrolled: replies.flatMap((reply) => reply.keyEnrolled),
 			// A removal recorded between two requests is above the lowest number, so it is not counted.
 			// With a pairing or binding left out, no number describes everything this device holds.
 			removalSeq: omitted ? null : Math.min(...replies.map((reply) => reply.removalSeq)),

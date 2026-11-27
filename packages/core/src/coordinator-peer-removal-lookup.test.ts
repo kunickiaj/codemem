@@ -26,7 +26,13 @@ const config = readCoordinatorSyncConfig({
 	sync_coordinator_groups: GROUPS,
 });
 
-type Reply = { revoked?: string[]; removed?: string[]; enrolled?: string[]; removal_seq?: unknown };
+type Reply = {
+	revoked?: string[];
+	removed?: string[];
+	enrolled?: string[];
+	removal_seq?: unknown;
+	key_evidence?: unknown;
+};
 type LookupCall = { groupId: string; entries: PeerRemovalLookupEntry[]; index: number };
 
 let root: string;
@@ -506,5 +512,54 @@ describe("this device was removed from sharing", () => {
 		await refresh();
 
 		expect(removalState()).toEqual({ removed: false, removedFromGroups: [] });
+	});
+});
+
+describe("coordinator removal lookup with key evidence", () => {
+	it("keeps a device listed as removed and enrolled when the pinned key is still enabled", async () => {
+		stubCoordinator(() =>
+			valid({
+				removed: ["peer-a"],
+				enrolled: ["peer-a"],
+				key_evidence: { removed: [], enrolled: ["peer-a"] },
+			}),
+		);
+
+		await refresh();
+
+		expect(pairedIds()).toEqual(["peer-a", "peer-b"]);
+		expect(bindingStatus("peer-a")).toBe("active");
+		expect(cursorCount("peer-a")).toBe(1);
+	});
+
+	it.each([
+		["the pinned key is the removed one", { removed: ["peer-a"], enrolled: [] }],
+		["the coordinator sends no key evidence", undefined],
+		["the key evidence is malformed", { removed: "peer-a" }],
+		["the key evidence contradicts itself", { removed: ["peer-a"], enrolled: ["peer-a"] }],
+	])("removes a device listed as removed and enrolled when %s", async (_label, keyEvidence) => {
+		stubCoordinator(() =>
+			valid({ removed: ["peer-a"], enrolled: ["peer-a"], key_evidence: keyEvidence }),
+		);
+
+		await refresh();
+
+		expect(pairedIds()).toEqual(["peer-b"]);
+		expect(bindingStatus("peer-a")).toBe("removed");
+	});
+
+	it("ignores key evidence for a device this machine sent without a key", async () => {
+		bind("bound-only");
+		stubCoordinator(() =>
+			valid({
+				removed: ["bound-only"],
+				enrolled: ["bound-only"],
+				key_evidence: { removed: [], enrolled: ["bound-only"] },
+			}),
+		);
+
+		await refresh();
+
+		expect(bindingStatus("bound-only")).toBe("removed");
 	});
 });

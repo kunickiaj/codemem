@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The sync daemon no longer ends a paired device's access when the coordinator removed an older key of that device but still has the key this device pinned enabled under the same device ID. It uses the coordinator's per-key removal evidence for that. Without that evidence, as from an older coordinator, it removes the device as before.
+- Team setup reconciliation in the Viewer no longer creates or repairs this device's signing keys when it asks the coordinator which paired devices were removed. Without an existing usable identity, it reports the check as unavailable and keeps every pairing.
+
 ## [0.50.0-beta.3] - 2026-11-26
 
 ### Added

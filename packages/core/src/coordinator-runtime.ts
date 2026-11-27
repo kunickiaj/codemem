@@ -942,6 +942,21 @@ function recordRemovalNotice(db: Database, coordinatorId: string, lookup: PeerRe
  * answer. After a complete lookup the coordinator's removal number is stored
  * for the next presence update.
  */
+/**
+ * The removed IDs whose local access ends. An ID that is also still enrolled
+ * stays only when the coordinator says the very key this device pinned is still
+ * enabled under it: the removal was of another key. Without that evidence, as
+ * from an older coordinator, the ID is removed as before, which fails closed.
+ */
+function provenRemovedDeviceIds(lookup: PeerRemovalLookup, localDeviceId: string): string[] {
+	const keyEnrolled = new Set(lookup.keyEnrolled ?? []);
+	return lookup.removed.filter(
+		(deviceId) =>
+			deviceId !== localDeviceId &&
+			!(lookup.enrolled.includes(deviceId) && keyEnrolled.has(deviceId)),
+	);
+}
+
 export async function removeCoordinatorRevokedPeers(
 	store: PresenceStoreLike,
 	config: CoordinatorSyncConfig,
@@ -977,7 +992,7 @@ export async function removeCoordinatorRevokedPeers(
 			const removed = removePairingState(db, {
 				localDeviceId,
 				reason: "removed",
-				deviceIds: lookup.removed.filter((deviceId) => deviceId !== localDeviceId),
+				deviceIds: provenRemovedDeviceIds(lookup, localDeviceId),
 			}).syncPeers;
 			if (lookup.removalSeq !== null) {
 				storeAppliedRemovalSeq(db, { generation, removalSeq: lookup.removalSeq });
