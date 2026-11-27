@@ -182,23 +182,25 @@ function readRecordedRepositoryRows(db: Database): RecordedRepositoryRow[] {
 			)
 			.all() as RecordedRepositoryRow[];
 	}
-	const checked = db
+	// One statement, so checked and unchecked rows come from one snapshot: a row the
+	// worker checks during the read is in exactly one half.
+	return db
 		.prepare(
-			`SELECT DISTINCT cwd, git_remote, ${SESSION_IDENTITY_COLUMN} AS repository_identity
-			 FROM sessions
-			 WHERE ${SESSION_IDENTITY_CHECKED_COLUMN} = 1 AND ${cwdFilter}
-			   AND (${SESSION_IDENTITY_COLUMN} IS NOT NULL
-			        OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))`,
+			`SELECT * FROM (
+				SELECT DISTINCT cwd, git_remote, ${SESSION_IDENTITY_COLUMN} AS repository_identity,
+				       NULL AS metadata_json
+				FROM sessions
+				WHERE ${SESSION_IDENTITY_CHECKED_COLUMN} = 1 AND ${cwdFilter}
+				  AND (${SESSION_IDENTITY_COLUMN} IS NOT NULL
+				       OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))
+			)
+			UNION ALL
+			SELECT cwd, git_remote, NULL AS repository_identity, metadata_json
+			FROM sessions
+			WHERE ${SESSION_IDENTITY_CHECKED_COLUMN} IS NULL AND ${cwdFilter}
+			  AND ${MAY_RECORD_REPOSITORY_SQL}`,
 		)
 		.all() as RecordedRepositoryRow[];
-	const unchecked = db
-		.prepare(
-			`SELECT cwd, git_remote, metadata_json FROM sessions
-			 WHERE ${SESSION_IDENTITY_CHECKED_COLUMN} IS NULL AND ${cwdFilter}
-			   AND ${MAY_RECORD_REPOSITORY_SQL}`,
-		)
-		.all() as RecordedRepositoryRow[];
-	return [...checked, ...unchecked];
 }
 
 export function recordedRepositoryIdentitySetsByWorkspace(db: Database): Map<string, Set<string>> {

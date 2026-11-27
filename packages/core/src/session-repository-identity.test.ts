@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect, ensureAdditiveSchemaCompatibility } from "./db.js";
 import {
 	recordedRepositoryIdentityEvidenceByWorkspace,
@@ -199,6 +199,41 @@ describe("session repository identities", () => {
 		} finally {
 			if (writer.inTransaction) writer.exec("ROLLBACK");
 			writer.close();
+			db.close();
+		}
+	});
+});
+
+describe("session repository identity reads during the backfill", () => {
+	it("keeps a session the worker checks while a read is in progress", () => {
+		const db = openDb();
+		const worker = connect(join(tmpDir, "mem.sqlite"));
+		try {
+			insertSession(db, "/nonexistent-codemem/a", `{"${KEY}":"github.com/o/a"}`);
+			installSessionRepositoryIdentity(db);
+			// The worker checks the session as soon as the read has run its first statement.
+			const prepare = db.prepare.bind(db);
+			let checkedDuringRead = false;
+			const spy = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+				const statement = prepare(sql);
+				if (!sql.includes(`${SESSION_IDENTITY_CHECKED_COLUMN} = 1`)) return statement;
+				const all = statement.all.bind(statement);
+				statement.all = ((...params: unknown[]) => {
+					const rows = all(...params);
+					if (!checkedDuringRead)
+						checkedDuringRead = checkSessionRepositoryIdentities(worker, 10) > 0;
+					return rows;
+				}) as typeof statement.all;
+				return statement;
+			}) as typeof db.prepare);
+
+			const recorded = recordedRepositoryIdentitySetsByWorkspace(db);
+			spy.mockRestore();
+
+			expect(checkedDuringRead).toBe(true);
+			expect(recorded.get("/nonexistent-codemem/a")).toEqual(new Set(["github.com/o/a"]));
+		} finally {
+			worker.close();
 			db.close();
 		}
 	});
