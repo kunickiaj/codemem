@@ -436,13 +436,28 @@ export function deriveLegacyTeamSetupCompletionManifest(
 	return deriveFromDraft(db, draft, input.completedAt ?? new Date().toISOString());
 }
 
+/**
+ * The manifest the candidate's latest completed draft yields, whatever state
+ * its Team is in now, and the attempt it came from. Team recovery compares it
+ * with the coordinator's copy while the Team is quarantined.
+ */
+export function deriveCompletedLegacyTeamSetupDraftManifest(
+	db: Database,
+	input: { candidateRef: string },
+): { attemptId: string; manifest: CoordinatorLegacyTeamCompletionManifestV1 } {
+	const draft = loadCompletedDraft(db, input.candidateRef);
+	if (draft.state !== "completed" || !draft.completed_at) fail("team_setup_completion_invalid");
+	return {
+		attemptId: draft.attempt_id,
+		manifest: deriveFromDraft(db, draft, draft.completed_at),
+	};
+}
+
 export function reconstructLegacyTeamSetupCompletionManifest(
 	db: Database,
 	input: { candidateRef: string },
 ): CoordinatorLegacyTeamCompletionManifestV1 {
-	const draft = loadCompletedDraft(db, input.candidateRef);
-	if (draft.state !== "completed" || !draft.completed_at) fail("team_setup_completion_invalid");
-	const manifest = deriveFromDraft(db, draft, draft.completed_at);
+	const { manifest } = deriveCompletedLegacyTeamSetupDraftManifest(db, input);
 	const team = db
 		.prepare("SELECT display_name FROM policy_teams WHERE team_id = ? AND status = 'active'")
 		.get(manifest.team_id) as { display_name: string } | undefined;

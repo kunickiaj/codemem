@@ -113,6 +113,22 @@ export function teamCoordinatorLinkState(db: Database, teamId: string): TeamCoor
 }
 
 /**
+ * The Team's coordinator group when a setup from `setup` counts as one of its
+ * sources. A quarantined Team's setup no longer counts on its own, because
+ * quarantine clears the finish digest that ties the setup to its completion.
+ * Team recovery asks this to learn whether restoring that setup would leave the
+ * Team with one group or with a conflict.
+ */
+export function teamCoordinatorLinkStateWithSetup(
+	db: Database,
+	teamId: string,
+	setup: { coordinatorId: string; groupId: string },
+): TeamCoordinatorLinkState {
+	const { candidates, reportedConflict } = linkCandidates(db, teamId);
+	return stateOf([...candidates, setup], reportedConflict);
+}
+
+/**
  * The Team's coordinator group as a removal key: a set with one entry when the
  * Team has one group, and empty when it has none or a conflict. Only a removal
  * recorded by that group applies to the Team.
