@@ -5464,7 +5464,7 @@
       <div class="card" id="syncTeamCard">
         <div class="section-header">
           <div class="section-header-title">
-            <h2>Join a team</h2>
+            <h2>Team setup</h2>
             <span class="sync-online-badge" id="syncOnlineBadge" hidden role="status" aria-live="polite"></span>
           </div>
         </div>
@@ -5476,36 +5476,10 @@
         </div>
         <div class="sync-actions" id="syncTeamActions" hidden></div>
         <div id="syncSetupPanel">
-          <div id="syncJoinSection">
-            <h3 class="settings-group-title">Join a team</h3>
-            <div class="actor-create-row" id="syncJoinPanel" hidden>
-              <label for="syncJoinInvite" class="sr-only">Invite or pairing code</label>
-              <textarea class="feed-search" id="syncJoinInvite" placeholder="Invite or pairing code" rows="2"></textarea>
-              <div id="syncProjectInviteReview" role="region" aria-labelledby="syncProjectInviteReviewHeading" hidden>
-                <h4 id="syncProjectInviteReviewHeading" tabindex="-1">Review project invitation</h4>
-                <div class="section-meta" id="syncProjectInviteContext"></div>
-                <label for="syncRecipientName">Your name</label>
-                <input class="feed-search" id="syncRecipientName" maxlength="120" autocomplete="name" />
-                <label for="syncRecipientDeviceName">This device</label>
-                <input class="feed-search" id="syncRecipientDeviceName" maxlength="120" />
-              </div>
-              <div id="syncPairingReview" role="region" aria-labelledby="syncPairingReviewHeading" hidden>
-                <h4 id="syncPairingReviewHeading" tabindex="-1">Review device pairing</h4>
-                <p>Check these details with the other device. Accept only a device you trust.</p>
-                <dl>
-                  <dt>Device ID</dt><dd id="syncPairingDeviceId" style="overflow-wrap: anywhere"></dd>
-                  <dt>Fingerprint</dt><dd id="syncPairingFingerprint" style="overflow-wrap: anywhere"></dd>
-                  <dt>Addresses</dt><dd id="syncPairingAddresses" style="white-space: pre-wrap; overflow-wrap: anywhere"></dd>
-                </dl>
-              </div>
-              <button class="settings-button" id="syncJoinButton">Review invite</button>
-            </div>
-          </div>
           <div id="syncAdminSection">
             <div id="syncAdminDisclosureMount" style="display: contents"></div>
           </div>
         </div>
-        <div class="actor-list" id="syncJoinRequests"></div>
       </div>
 
       <!-- 2. People and devices -->

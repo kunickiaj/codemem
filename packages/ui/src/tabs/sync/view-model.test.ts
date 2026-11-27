@@ -748,7 +748,7 @@ describe("deriveTeamSyncPrimaryStatus fail-closed states", () => {
 			"not-enrolled",
 			"Not enrolled",
 			"Team: Acme. This device is not enrolled with the coordinator.",
-			"Paste a Team invite below, or ask a Team admin to enroll this device.",
+			"Accept a Team invitation in Sharing, or ask a Team admin to enroll this device.",
 		],
 		[
 			"configured unreachable",
@@ -764,7 +764,7 @@ describe("deriveTeamSyncPrimaryStatus fail-closed states", () => {
 			"unreachable",
 			"Setup needed",
 			"Configure or join a Team before expecting Project data to sync.",
-			"Paste a Team invite below, or set a coordinator URL in Settings → Device Sync.",
+			"Accept a Team invitation in Sharing, or set a coordinator URL in Settings → Device Sync.",
 		],
 	];
 

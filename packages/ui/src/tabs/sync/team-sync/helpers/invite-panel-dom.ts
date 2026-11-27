@@ -57,13 +57,6 @@ export function renderAdminSetupDisclosure() {
 	});
 }
 
-export function ensureJoinPanelInSetupSection() {
-	const joinPanel = document.getElementById("syncJoinPanel");
-	const joinSection = document.getElementById("syncJoinSection");
-	if (!joinPanel || !joinSection) return;
-	if (joinPanel.parentElement !== joinSection) joinSection.appendChild(joinPanel);
-}
-
 export function setInviteOutputVisibility() {
 	const syncInviteOutput = document.getElementById(
 		"syncInviteOutput",
@@ -80,17 +73,6 @@ export function setInviteOutputVisibility() {
 		syncInviteWarnings.textContent = warnings.join(" · ");
 		syncInviteWarnings.hidden = warnings.length === 0;
 	}
-}
-
-export function setJoinFeedbackVisibility() {
-	const syncJoinFeedback = document.getElementById("syncJoinFeedback") as HTMLDivElement | null;
-	if (!syncJoinFeedback) return;
-	const feedback = state.syncJoinFlowFeedback;
-	syncJoinFeedback.textContent = feedback?.message || "";
-	syncJoinFeedback.hidden = !feedback?.message;
-	syncJoinFeedback.setAttribute("role", feedback?.tone === "warning" ? "alert" : "status");
-	syncJoinFeedback.setAttribute("aria-live", feedback?.tone === "warning" ? "assertive" : "polite");
-	syncJoinFeedback.className = `peer-meta${feedback ? ` ${feedback.tone === "warning" ? "sync-inline-feedback warning" : "sync-inline-feedback success"}` : ""}`;
 }
 
 export function renderInvitePolicySelect() {

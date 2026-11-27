@@ -220,9 +220,7 @@ async function setupRefreshAppTest(
 		mocks.refreshViewerStatus.mockImplementation(refreshViewerStatus);
 		mocks.loadViewerStatus.mockResolvedValue({ identity: { actor_id: "actor-one" } });
 		if (options.initialStatus) mocks.loadViewerStatus.mockReturnValueOnce(options.initialStatus);
-		mocks.initSyncTab.mockImplementation((refresh: () => void) =>
-			initTeamSyncEvents(refresh, async () => {}),
-		);
+		mocks.initSyncTab.mockImplementation((refresh: () => void) => initTeamSyncEvents(refresh));
 	}
 	await import("./app");
 	await act(async () => {

@@ -70,7 +70,7 @@ beforeEach(() => {
 	act(() => {
 		disposeHost = mountOperationStatusHost(host);
 	});
-	initTeamSyncEvents(refresh, async () => {});
+	initTeamSyncEvents(refresh);
 });
 
 afterEach(() => {

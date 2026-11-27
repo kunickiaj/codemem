@@ -227,7 +227,7 @@ function derivePresenceStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPr
 			state: "not-enrolled",
 			badgeLabel: "Not enrolled",
 			meta: `Team: ${input.label}. This device is not enrolled with the coordinator.`,
-			nextAction: "Paste a Team invite below, or ask a Team admin to enroll this device.",
+			nextAction: "Accept a Team invitation in Sharing, or ask a Team admin to enroll this device.",
 		};
 	}
 	if (presence !== "posted") {
@@ -240,7 +240,7 @@ function derivePresenceStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPr
 				: "Configure or join a Team before expecting Project data to sync.",
 			nextAction: configured
 				? "Check the coordinator connection, then refresh Team sync."
-				: "Paste a Team invite below, or set a coordinator URL in Settings → Device Sync.",
+				: "Accept a Team invitation in Sharing, or set a coordinator URL in Settings → Device Sync.",
 		};
 	}
 	return null;

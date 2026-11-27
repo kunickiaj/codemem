@@ -72,7 +72,7 @@ describe("project-first navigation layout", () => {
 		expect(advanced).toContain('id="coordinatorAdminMount"');
 		expect(advanced).toContain('href="#advanced/sync/diagnostics"');
 		expect(advanced).toContain('href="#advanced/sync"');
-		expect(advanced).toContain(">Review invite</button>");
+		expect(advanced).not.toContain("syncJoinInvite");
 		expect(advanced).toContain('<h2 class="advanced-heading">Advanced</h2>');
 		expect(advanced).toContain('id="advancedTabsMount"');
 		expect(advanced).toContain("<summary>Legacy administration</summary>");

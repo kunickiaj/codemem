@@ -11,7 +11,7 @@ import { state } from "../../../../lib/state";
 import { AdvancedSyncStatus } from "../../components/advanced-sync-status";
 import { clearSyncMount, renderIntoSyncMount } from "../../components/render-root";
 import { SyncInviteJoinPanels } from "../../components/sync-invite-join-panels";
-import { TeamSyncPanel, type TeamSyncPendingJoinRequest } from "../../components/team-sync-panel";
+import { TeamSyncPanel } from "../../components/team-sync-panel";
 import {
 	clearDuplicatePersonDecision,
 	hideSkeleton,
@@ -26,11 +26,9 @@ import { deriveDiscoveredRows } from "../discovered-devices";
 import { clearContent, pulseAttentionTarget, syncScrollBehavior } from "../helpers/dom";
 import {
 	applySyncInviteReadinessState,
-	ensureJoinPanelInSetupSection,
 	renderAdminSetupDisclosure,
 	renderInvitePolicySelect,
 	setInviteOutputVisibility,
-	setJoinFeedbackVisibility,
 } from "../helpers/invite-panel-dom";
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
@@ -66,11 +64,7 @@ function renderPrimaryActionOnly(actions: HTMLElement, primaryStatus: UiTeamSync
 		h(TeamSyncPanel, {
 			actionItems: [],
 			actionableCount: 0,
-			joinRequestsMount: null,
-			onApproveJoinRequest: async () => null,
 			onAttentionAction: async () => {},
-			onDenyJoinRequest: async () => null,
-			pendingJoinRequests: [],
 			presenceStatus: "unknown",
 			primaryStatus,
 		}),
@@ -94,14 +88,10 @@ function renderUnconfiguredSetup(input: {
 	setupPanel: HTMLElement;
 	primaryStatus: UiTeamSyncPrimaryStatus;
 }) {
-	const joinPanel = document.getElementById("syncJoinPanel");
-	const joinRequests = document.getElementById("syncJoinRequests");
-	teardownTeamSyncRender(input.actions, [joinRequests]);
+	teardownTeamSyncRender(input.actions, []);
 	input.setupPanel.hidden = false;
-	if (joinPanel) joinPanel.hidden = false;
 	input.actions.hidden = false;
 	renderPrimaryActionOnly(input.actions, input.primaryStatus);
-	if (joinRequests) joinRequests.hidden = true;
 }
 
 export function renderTeamSync() {
@@ -113,17 +103,12 @@ export function renderTeamSync() {
 	renderAdminSetupDisclosure();
 	renderInvitePolicySelect();
 	setInviteOutputVisibility();
-	setJoinFeedbackVisibility();
 	applySyncInviteReadinessState();
 
 	const invitePanel = document.getElementById("syncInvitePanel");
 	const inviteRestoreParent = document.getElementById("syncAdminSection");
-	const joinPanel = document.getElementById("syncJoinPanel");
-	const joinRestoreParent = document.getElementById("syncJoinSection");
-	const joinRequests = document.getElementById("syncJoinRequests");
 
 	hideSkeleton("syncTeamSkeleton");
-	ensureJoinPanelInSetupSection();
 
 	const coordinator = state.lastSyncCoordinator;
 	const syncView = currentSyncView();
@@ -249,13 +234,7 @@ export function renderTeamSync() {
 		(item) => !item.deviceId || !pendingApprovalDeviceIds.has(item.deviceId),
 	);
 
-	const pendingJoinRequests: TeamSyncPendingJoinRequest[] = [];
-	const actionableCount = visibleAttentionItems.length + pendingJoinRequests.length;
-	if (joinRequests) {
-		joinRequests.hidden = pendingJoinRequests.length === 0 && !state.syncJoinRequestsFeedback;
-	}
-
-	teardownTeamSyncRender(actions, [joinRequests]);
+	teardownTeamSyncRender(actions, []);
 	const actionMount = document.createElement("div");
 	actionMount.id = TEAM_SYNC_ACTIONS_MOUNT_ID;
 	actions.appendChild(actionMount);
@@ -264,13 +243,11 @@ export function renderTeamSync() {
 		actionMount,
 		h(TeamSyncPanel, {
 			actionItems: visibleAttentionItems,
-			actionableCount,
+			actionableCount: visibleAttentionItems.length,
 			children: h(SyncInviteJoinPanels, {
 				invitePanel,
 				invitePanelOpen: teamInvitePanelOpen,
 				inviteRestoreParent,
-				joinPanel,
-				joinRestoreParent,
 				onToggleInvitePanel: () => {
 					if (!invitePanel) return;
 					setTeamInvitePanelOpen(!teamInvitePanelOpen);
@@ -278,8 +255,6 @@ export function renderTeamSync() {
 				},
 				presenceStatus,
 			}),
-			joinRequestsMount: joinRequests,
-			onApproveJoinRequest: async () => null,
 			onAttentionAction: async (item) => {
 				if (item.kind === "possible-duplicate-person") {
 					await reviewDuplicatePeople(item);
@@ -287,8 +262,6 @@ export function renderTeamSync() {
 				}
 				focusAttentionTarget(item);
 			},
-			onDenyJoinRequest: async () => null,
-			pendingJoinRequests,
 			presenceStatus,
 			primaryStatus: syncView.primaryStatus,
 		}),
