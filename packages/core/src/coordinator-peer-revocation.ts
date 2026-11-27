@@ -67,6 +67,8 @@ type SignedRequest = {
 	groupId: string;
 	keysDir?: string;
 	removedFromGroups?: string[];
+	/** Fail on a redirect, so the answer comes from the coordinator and group that were asked. */
+	redirect?: "error";
 };
 
 /** The stored key when the coordinator would accept it. Otherwise the device is asked about by ID only. */
@@ -194,6 +196,7 @@ async function checkBatch(
 		body,
 		bodyBytes,
 		timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		redirect: request.redirect,
 	});
 	if (status === 403 && response?.error === "device_removed")
 		request.removedFromGroups?.push(request.groupId);
@@ -342,4 +345,32 @@ export async function queryPeerRemoval(
 	} catch {
 		return { answered: false };
 	}
+}
+
+/**
+ * Asks the coordinator, as a member of exactly this group, which of these
+ * devices it blocks. Returns the blocked IDs among those sent. Unlike the
+ * lookups above it does not try another group and does not follow a redirect,
+ * and it throws unless every batch came back as a valid answer: the caller
+ * records the coordinator and group it asked, and that must be who answered.
+ */
+export async function fetchBlockedDeviceIdsForGroup(
+	store: StoreLike,
+	config: CoordinatorSyncConfig,
+	request: { localDeviceId: string; keysDir?: string; groupId: string },
+	peers: readonly PeerRemovalLookupEntry[],
+): Promise<string[]> {
+	const entries = peers.map((peer) => {
+		const key = usableKey(peer.public_key);
+		// A device that cannot be asked about by ID and key cannot be cleared.
+		if (!isAuthControllerId(peer.device_id) || key === undefined)
+			throw new Error("peer_block_check_unaskable");
+		return { device_id: peer.device_id, public_key: key };
+	});
+	const blocked: string[] = [];
+	for (const batch of batchesOf(entries)) {
+		const reply = await checkBatch(store, config, { ...request, redirect: "error" }, batch);
+		blocked.push(...reply.revoked);
+	}
+	return blocked;
 }

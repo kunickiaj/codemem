@@ -1812,6 +1812,13 @@ export type {
 	TeamRecoveryDeviceRemoval,
 } from "./team-recovery-devices.js";
 export {
+	coordinatorTeamRecoveryEvidenceActions,
+	readTeamRecoveryEvidence,
+	type TeamRecoveryEvidenceActions,
+	type TeamRecoveryEvidenceTarget,
+	teamRecoveryTarget,
+} from "./team-recovery-evidence-reader.js";
+export {
 	previewTeamRecovery,
 	type TeamRecoveryEvidence,
 	type TeamRecoveryPerson,
