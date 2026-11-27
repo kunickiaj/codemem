@@ -148,6 +148,43 @@ it("an older writer refreshing without a generation cannot preserve the prior ob
 	expect(transport).not.toHaveBeenCalled();
 });
 
+it.each(["same-generation refresh", "generation invalidation"] as const)(
+	"requires recollection if a %s commits during key hashing",
+	async (change) => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const digest = crypto.subtle.digest.bind(crypto.subtle);
+		const spy = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(async (...args) => {
+			entered.resolve();
+			await release.promise;
+			return digest(...args);
+		});
+		const pending = submitGroupBoundaryReadiness(input);
+		try {
+			await entered.promise;
+			if (change === "same-generation refresh") await refresh({ group_generation: generation });
+			else db.exec("UPDATE scope_membership_cache_state SET updated_at='later'");
+		} finally {
+			release.resolve();
+			spy.mockRestore();
+		}
+		const result = await pending;
+		expect(transport).not.toHaveBeenCalled();
+		expect(result).toEqual({ kind: "failed", reason: "recollect_required" });
+		if (change === "same-generation refresh") {
+			db.exec(
+				`INSERT INTO sync_peers(peer_device_id,created_at,projects_exclude_json) VALUES ('peer','now','["restricted"]')`,
+			);
+			await submitGroupBoundaryReadiness({ ...input, refreshRevision: 10 });
+			expect(sent().body).toMatchObject({
+				group_generation: generation,
+				scope_refresh_revision: 10,
+				filter_evidence: "present",
+			});
+		}
+	},
+);
+
 it("signs the device's generation, local refresh, sequence, filter evidence and fitted inventory together", async () => {
 	db.exec(`INSERT INTO replication_scopes(scope_id,label,kind,authority_type,coordinator_id,group_id,created_at,updated_at)
 		VALUES ('source','local label','team','coordinator','${authority}','${group}','now','now');

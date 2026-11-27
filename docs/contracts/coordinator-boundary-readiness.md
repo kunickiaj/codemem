@@ -26,8 +26,10 @@ snapshot. Redirects are refused. An older coordinator that omits the generation
 still supports ordinary sync, but its responses cannot supply readiness.
 The cache updates the observed generation in the same transaction as the
 membership data and revision. A legacy writer that refreshes the cache clears
-the observation. The sender must read both the requested revision and the
-matching stored generation before it can sign.
+the observation. After hashing the key, the sender reads the generation and
+revision again immediately before signing. If either no longer matches, it
+returns `recollect_required` without posting. The caller must start a new
+collection for the current refresh.
 
 The request uses the existing signed POST and includes these fields alongside
 `sequence`, `omitted_projects` and `projects`:

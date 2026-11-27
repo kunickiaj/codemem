@@ -1,6 +1,7 @@
 import {
 	collectGroupReadiness,
 	type GroupReadinessRequest,
+	isCurrentGroupRefresh,
 } from "./boundary-readiness-device-evidence.js";
 import { isBoundaryReadinessGeneration } from "./boundary-readiness-generation.js";
 import {
@@ -28,6 +29,7 @@ export interface SubmitBoundaryReadinessInput {
 type Failure =
 	| "invalid_input"
 	| "inventory_unavailable"
+	| "recollect_required"
 	| "request_too_large"
 	| "signing_failed"
 	| "transport_failed"
@@ -220,6 +222,23 @@ async function sendRecord(
 	const bodyBytes = Buffer.from(JSON.stringify(record), "utf8");
 	if (bodyBytes.byteLength > BOUNDARY_READINESS_MAX_BODY_BYTES) return failed("request_too_large");
 	let headers: ReturnType<typeof buildAuthHeaders>;
+	// Key hashing yielded after collection. Check the exact serialized record
+	// in a new read, with no await between this check, signing and starting fetch.
+	if (record.version === 2) {
+		try {
+			if (
+				!isCurrentGroupRefresh(input.dbPath, {
+					coordinatorUrl: record.coordinator_id,
+					groupId: record.group_id,
+					refreshRevision: record.scope_refresh_revision,
+					groupGeneration: record.group_generation,
+				})
+			)
+				return failed("recollect_required");
+		} catch {
+			return failed("inventory_unavailable");
+		}
+	}
 	try {
 		headers = buildAuthHeaders({
 			deviceId: input.deviceId,

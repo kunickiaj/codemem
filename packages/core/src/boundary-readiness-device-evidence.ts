@@ -36,28 +36,39 @@ function localIdentity(db: Database) {
 	return identity;
 }
 
-function snapshot(
-	db: Database,
-	config: Record<string, unknown>,
-	coordinatorId: string,
-	groupId: string,
-	refreshRevision: number,
-	requestedGeneration: string,
-) {
-	const identity = localIdentity(db);
-	if (!identity) return null;
+type GroupRefresh = Pick<
+	GroupReadinessRequest,
+	"coordinatorUrl" | "groupId" | "refreshRevision" | "groupGeneration"
+>;
+
+function matchingGeneration(db: Database, refresh: GroupRefresh) {
 	// A newly configured or never-refreshed group can look like a group with
 	// zero Projects. Only an inventory built after a successful refresh counts.
-	const cache = db
+	return db
 		.prepare(`SELECT observed_group_generation FROM scope_membership_cache_state WHERE coordinator_id = ?
 		AND group_id = ? AND refresh_revision = ? AND observed_group_generation = ? AND last_success_at = last_refresh_at
 		AND length(last_success_at) > 0 AND last_error IS NULL`)
 		.pluck()
-		.get(coordinatorId, groupId, refreshRevision, requestedGeneration);
+		.get(refresh.coordinatorUrl, refresh.groupId, refresh.refreshRevision, refresh.groupGeneration);
+}
+
+export function isCurrentGroupRefresh(dbPath: string, refresh: GroupRefresh): boolean {
+	const db = connectReadOnly(dbPath);
+	try {
+		return typeof matchingGeneration(db, refresh) === "string";
+	} finally {
+		db.close();
+	}
+}
+
+function snapshot(db: Database, config: Record<string, unknown>, refresh: GroupRefresh) {
+	const identity = localIdentity(db);
+	if (!identity) return null;
+	const cache = matchingGeneration(db, refresh);
 	if (typeof cache !== "string") return null;
 	const inventory = buildBoundaryReadinessInventory(db, {
-		coordinatorId,
-		groupId,
+		coordinatorId: refresh.coordinatorUrl,
+		groupId: refresh.groupId,
 		deviceId: identity.device_id,
 	});
 	return {
@@ -85,18 +96,7 @@ export function collectGroupReadiness(input: GroupReadinessRequest) {
 		return null;
 	const db = connectReadOnly(input.dbPath);
 	try {
-		const evidence = db
-			.transaction(() =>
-				snapshot(
-					db,
-					config,
-					coordinatorUrl,
-					input.groupId,
-					input.refreshRevision,
-					input.groupGeneration,
-				),
-			)
-			.deferred();
+		const evidence = db.transaction(() => snapshot(db, config, input)).deferred();
 		if (!evidence) return null;
 		return {
 			...evidence,
