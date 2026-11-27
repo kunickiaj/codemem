@@ -3747,3 +3747,46 @@ describe("Team setup on a device without the admin secret", () => {
 		expect(document.body.textContent).not.toContain("team_setup_admin_required");
 	});
 });
+
+describe("Team recovery in the Team setup dialog", () => {
+	it("offers to recover a Team that was turned off, beside the recovery details", async () => {
+		// Arrange: the summary names the Team an admin device can recover for this setup.
+		const candidate = {
+			candidateRef: "opaque-candidate",
+			displayName: "Engineering",
+			status: "stale" as const,
+			deviceCount: 1,
+			projectCount: 0,
+			unresolvedDeviceCount: 0,
+			unresolvedProjectCount: 0,
+			recoverableTeamId: "team-1",
+		};
+		const recovery = {
+			loadSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [candidate] }),
+			preview: vi.fn(),
+			commit: vi.fn(),
+		};
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockResolvedValue(detail({ conflictState: "team_setup_completion_conflict" })),
+			recovery,
+		});
+
+		const review = await vi.waitFor(() => button("Review recovery"));
+
+		expect(document.getElementById("legacy-team-setup-global-error")?.contains(review)).toBe(true);
+		expect(recovery.preview).not.toHaveBeenCalled();
+	});
+
+	it("does not look for a Team to recover while setup details load normally", async () => {
+		const recovery = { loadSummary: vi.fn(), preview: vi.fn(), commit: vi.fn() };
+		setup({ loadDetail: vi.fn().mockResolvedValue(detail()), recovery });
+
+		await vi.waitFor(() => expect(document.querySelector("#legacyTeamSetupDialog")).not.toBeNull());
+		await act(async () => undefined);
+
+		expect(recovery.loadSummary).not.toHaveBeenCalled();
+		expect(document.getElementById("team-recovery-panel")).toBeNull();
+	});
+});

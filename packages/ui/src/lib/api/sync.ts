@@ -1102,6 +1102,8 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 	blockingError?: LegacyTeamSetupErrorCode;
 	/** Optional detail for `blockingError`. */
 	blockingReason?: LegacyTeamSetupErrorReason;
+	/** The Team an admin device can recover for this setup, while that Team is turned off. */
+	recoverableTeamId?: string;
 };
 
 /** How current the Viewer's last check of Team setup with the coordinator is. */
@@ -1785,11 +1787,13 @@ function withKnownBlockingReasons(
 ): LegacyTeamSetupSummaryResponseV1 {
 	return {
 		...summary,
-		candidates: summary.candidates.map(({ blockingReason, ...candidate }) =>
-			blockingReason && LEGACY_TEAM_SETUP_ERROR_REASONS.has(blockingReason)
-				? { ...candidate, blockingReason }
-				: candidate,
-		),
+		candidates: summary.candidates.map(({ blockingReason, recoverableTeamId, ...candidate }) => ({
+			...candidate,
+			...(blockingReason && LEGACY_TEAM_SETUP_ERROR_REASONS.has(blockingReason)
+				? { blockingReason }
+				: {}),
+			...(typeof recoverableTeamId === "string" && recoverableTeamId ? { recoverableTeamId } : {}),
+		})),
 	};
 }
 

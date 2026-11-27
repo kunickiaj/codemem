@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import {
 	RadixDialog,
@@ -46,6 +47,8 @@ export interface LegacyTeamSetupDialogViewProps {
 	onOpenAutoFocus: NonNullable<RadixDialogProps["onOpenAutoFocus"]>;
 	onRefresh: () => void;
 	onRetry: () => void;
+	/** Shown with the recovery details of a setup that cannot be loaded or was turned off. */
+	recoveryPanel?: ComponentChildren;
 }
 
 const UNSAVED_DEVICE_NOTICES_ID = "legacy-team-setup-device-notices";
@@ -131,6 +134,47 @@ function groupItemErrors(errors: OpenSetupSessionState["errors"]) {
 	};
 }
 
+function retryLabel(loading: boolean, refresh: boolean): string {
+	if (loading) return refresh ? "Refreshing…" : "Retrying…";
+	return refresh ? "Retry loading current setup" : "Retry";
+}
+
+/** The setup's global error with its retry, and the Team recovery beside the recovery details. */
+function GlobalError(props: {
+	busy: boolean;
+	error: NonNullable<ReturnType<typeof globalError>>;
+	loading: boolean;
+	onRetry: () => void;
+	recoveryMode: boolean;
+	recoveryPanel?: ComponentChildren;
+}) {
+	const { busy, error, loading, recoveryMode } = props;
+	return (
+		<div
+			className="legacy-team-setup-error legacy-team-setup-recovery"
+			id="legacy-team-setup-global-error"
+		>
+			{recoveryMode ? <strong>Current setup details are unavailable</strong> : null}
+			<p aria-live="assertive" id="legacy-team-setup-error" role="alert">
+				{error.message}
+			</p>
+			<button
+				aria-busy={busy ? "true" : undefined}
+				aria-disabled={busy ? "true" : undefined}
+				className="settings-button legacy-team-setup-target"
+				id="legacy-team-setup-retry"
+				onClick={() => {
+					if (!busy) props.onRetry();
+				}}
+				type="button"
+			>
+				{retryLabel(loading, error.retry === "refresh")}
+			</button>
+			{recoveryMode ? props.recoveryPanel : null}
+		</div>
+	);
+}
+
 export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps) {
 	const session = props.session;
 	const view = session.view;
@@ -194,33 +238,14 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 					</p>
 					{loading && !view ? <p role="status">Loading the latest Team setup details…</p> : null}
 					{error ? (
-						<div
-							className="legacy-team-setup-error legacy-team-setup-recovery"
-							id="legacy-team-setup-global-error"
-						>
-							{recoveryMode ? <strong>Current setup details are unavailable</strong> : null}
-							<p aria-live="assertive" id="legacy-team-setup-error" role="alert">
-								{error.message}
-							</p>
-							<button
-								aria-busy={globalBusy ? "true" : undefined}
-								aria-disabled={globalBusy ? "true" : undefined}
-								className="settings-button legacy-team-setup-target"
-								id="legacy-team-setup-retry"
-								onClick={() => {
-									if (!globalBusy) props.onRetry();
-								}}
-								type="button"
-							>
-								{loading
-									? error.retry === "refresh"
-										? "Refreshing…"
-										: "Retrying…"
-									: error.retry === "refresh"
-										? "Retry loading current setup"
-										: "Retry"}
-							</button>
-						</div>
+						<GlobalError
+							busy={globalBusy}
+							error={error}
+							loading={loading}
+							onRetry={props.onRetry}
+							recoveryMode={recoveryMode}
+							recoveryPanel={props.recoveryPanel}
+						/>
 					) : null}
 					{itemRecoveryRequired ? (
 						<div className="legacy-team-setup-error" id="legacy-team-setup-item-errors">

@@ -12,8 +12,12 @@ import {
 	reduceSetupSession,
 	type SetupSessionEvent,
 } from "./legacy-team-setup-session";
+import { type TeamRecoveryActions, TeamRecoveryPanel } from "./team-recovery-panel";
 
-export type LegacyTeamSetupDialogDependencies = SetupEffectDependencies;
+export type LegacyTeamSetupDialogDependencies = SetupEffectDependencies & {
+	/** The Team recovery calls; tests replace them. */
+	recovery?: Partial<TeamRecoveryActions>;
+};
 
 const defaultDependencies: LegacyTeamSetupDialogDependencies = {
 	clearDecision: api.clearLegacyTeamSetupDecision,
@@ -69,7 +73,7 @@ function canRestoreFocus(element: HTMLElement | null): element is HTMLElement {
 	return true;
 }
 
-/** Session events for a device row's person assignment. */
+/** Session events for a device row's person assignment and its decision. */
 function deviceRowEvents(dispatch: (event: SetupSessionEvent) => void) {
 	return {
 		onAssign: (device: LegacyTeamSetupDeviceV1, assignee: LegacyTeamSetupAssignee) =>
@@ -78,6 +82,29 @@ function deviceRowEvents(dispatch: (event: SetupSessionEvent) => void) {
 			dispatch({ type: "clear_device", deviceRef: device.deviceRef }),
 		onDeviceDraftChange: (deviceRef: string) =>
 			dispatch({ type: "device_draft_changed", deviceRef }),
+		onDecide: decideDevice(dispatch),
+	};
+}
+
+function decideDevice(dispatch: (event: SetupSessionEvent) => void) {
+	return (
+		device: LegacyTeamSetupDeviceV1,
+		decision: "included" | "excluded" | "removed",
+		targetIdentityRef?: string,
+	) => {
+		if (decision === "included" && !targetIdentityRef) {
+			dispatch({
+				type: "open_blocked",
+				message: `Save a person assignment before including ${device.displayName}.`,
+			});
+			return;
+		}
+		dispatch({
+			type: "decide_device",
+			deviceRef: device.deviceRef,
+			decision,
+			...(targetIdentityRef ? { targetIdentityRef } : {}),
+		});
 	};
 }
 
@@ -156,21 +183,6 @@ function LegacyTeamSetupDialogHost({
 			{...deviceRowEvents(dispatch)}
 			onClose={close}
 			onCloseAutoFocus={(event) => restoreFocus(event, returnFocus)}
-			onDecide={(device, decision, targetIdentityRef) => {
-				if (decision === "included" && !targetIdentityRef) {
-					dispatch({
-						type: "open_blocked",
-						message: `Save a person assignment before including ${device.displayName}.`,
-					});
-					return;
-				}
-				dispatch({
-					type: "decide_device",
-					deviceRef: device.deviceRef,
-					decision,
-					...(targetIdentityRef ? { targetIdentityRef } : {}),
-				});
-			}}
 			onFinish={() => dispatch({ type: "finish" })}
 			onMap={(project, resolvedProjectRef) =>
 				dispatch({ type: "map_project", projectRef: project.projectRef, resolvedProjectRef })
@@ -179,6 +191,13 @@ function LegacyTeamSetupDialogHost({
 			onOpenAutoFocus={focusTitle}
 			onRefresh={() => dispatch({ type: "refresh" })}
 			onRetry={() => dispatch({ type: "retry" })}
+			recoveryPanel={
+				<TeamRecoveryPanel
+					actions={dependencies.recovery}
+					candidateRef={session.candidateRef}
+					onRecovered={dependencies.onCompleted}
+				/>
+			}
 		/>
 	);
 }

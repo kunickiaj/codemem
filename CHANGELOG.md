@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A Team that was turned off after devices were removed from its coordinator group can be recovered. On a device that holds the coordinator admin secret, **View recovery details** now offers **Recover this Team**: **Review recovery** lists the people, devices and Projects that come back and what stays out, and **Recover Team** turns the Team back on. Removed devices and people stay out, including a removed device that is enrolled again later. Recovery reads the coordinator again after it saves, and the Team shares nothing until that read confirms it. Before, such a Team stayed off, and setting it up again failed. The Viewer routes are `POST /api/sync/recipient-policy/v1/teams/:teamId/recovery/preview` and `.../recovery/commit`.
+
 ### Changed
 
 - **Start review** in the older shared memories dialog now opens the review inside the dialog, so nobody has to open **Advanced → Sync** to assign each project a destination. Before, it switched to Advanced and scrolled to the review. The review is the same list with the same previews and confirmations. The dialog's **Manage all projects** button still opens Projects.
