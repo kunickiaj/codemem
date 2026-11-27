@@ -3,10 +3,14 @@ import { Hono } from "hono";
 
 type StoreFactory = () => MemoryStore;
 
+/**
+ * Whether this process holds an open database connection. Answered from the connection
+ * object in memory: no statement runs, so a busy or locked database, or other work on the
+ * same connection, can never delay the health answer or turn it into a false failure.
+ */
 function databaseReachable(getStore: StoreFactory): boolean {
 	try {
-		getStore().db.pragma("schema_version", { simple: true });
-		return true;
+		return getStore().db.open === true;
 	} catch {
 		return false;
 	}
@@ -32,7 +36,7 @@ export function healthRoutes(getStore: StoreFactory) {
 			version: VERSION,
 			pid: process.pid,
 			uptime_ms: Math.max(0, Math.floor(process.uptime() * 1_000)),
-			// Database reachability is the only readiness dependency in this endpoint.
+			// An open database connection is the only readiness dependency in this endpoint.
 			ready: reachable,
 			database: { reachable },
 		});

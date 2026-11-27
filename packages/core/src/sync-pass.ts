@@ -374,7 +374,10 @@ async function reconcilePeerRowsBeforeExchange(
 	db: Database,
 	options: { localDeviceId: string; peerDeviceId: string; keysDir?: string },
 ): Promise<void> {
-	const reconciliation = reconcileStalePeerReceivedRows(db, options);
+	const reconciliation = reconcileStalePeerReceivedRows(db, {
+		...options,
+		onlyDeletableScopes: true,
+	});
 	if (reconciliation.deleted_memory_ids.length === 0) return;
 	const vectorWork = {
 		upsertMemoryIds: [],
@@ -401,6 +404,7 @@ function reconcileReceivedRowsForExchange(
 		localDeviceId: options.deviceId,
 		peerDeviceId: options.peerDeviceId,
 		keysDir: options.keysDir,
+		onlyDeletableScopes: true,
 	});
 }
 
@@ -1921,6 +1925,7 @@ async function applyPulledDefaultOps(
 		localDeviceId: context.deviceId,
 		peerDeviceId: context.peerDeviceId,
 		keysDir: context.keysDir,
+		onlyDeletableScopes: true,
 	});
 	const vectorWork = {
 		upsertMemoryIds: applied.vectorWork.upsertMemoryIds,

@@ -557,6 +557,18 @@ read only rows with work.
   in the job's message and reported in one warning. Pruning replication ops
   requests a full recheck, because a memory whose current op was pruned needs a
   new one.
+- **Received-row cleanup.** A direct sync pass lists a peer's scopes from the
+  `(origin_device_id, active, scope_id)` index and reads rows only in scopes
+  cleanup can delete from: no scope, the default scope, or a scope this device
+  is not authorized for.
+- **Sweeper session queries.** Sessions with events to flush come from the
+  partial index over sessions whose received sequence is ahead of their flushed
+  one. Flush batches are read only for those sessions, so batches left in a
+  retry status by idle sessions are not read on every tick. History recovery
+  reads two partial indexes that hold only the batches it can act on.
+
+`GET /api/health` reports whether the process holds an open database
+connection. It runs no statement, so it cannot wait on the database.
 
 `capturePlans` and `statementsScanning` in
 `packages/core/src/query-plan-test-fixtures.ts` let a test assert that a path
