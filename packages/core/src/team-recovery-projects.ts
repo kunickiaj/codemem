@@ -2,7 +2,9 @@ import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-le
 import type { Database } from "./db.js";
 import { compareCodepoints } from "./recipient-policy-identifiers.js";
 import {
+	hasRecordedRepositoryWorkspace,
 	normalizeRepositoryWorkspaceIdentity,
+	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
 import { resolveRepositoryIdentityScope, resolveSessionScope } from "./scope-stamping.js";
@@ -171,6 +173,45 @@ function checkoutSessionIds(db: Database, identities: readonly string[]): number
 	return [...latest.values()].toSorted((left, right) => left - right);
 }
 
+/**
+ * Checkout paths where no session recorded a remote or a repository, each with
+ * the repository Git on disk says it belongs to. Stamping reads such a
+ * checkout the same way, for a repository it knows, and it knows a Project once
+ * a mapping names it. So these are the checkouts a restored mapping would claim.
+ */
+function checkoutsIdentifiedOnDisk(
+	db: Database,
+	projectIdentities: readonly string[],
+): Map<string, string> {
+	const byWorkspace = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: projectIdentities,
+	});
+	return new Map(
+		[...byWorkspace].filter(
+			([workspace]) => !hasRecordedRepositoryWorkspace(byWorkspace, workspace),
+		),
+	);
+}
+
+// The latest local session in a checkout path. Memories received from peers are not checkouts.
+const CHECKOUT_PATH_SESSION_SQL = `SELECT MAX(id) FROM sessions
+	WHERE RTRIM(REPLACE(TRIM(cwd), char(92), '/'), '/') = ?
+	  AND COALESCE(tool_version, '') <> 'sync_replication'`;
+
+/** One session for each checkout of the Project that only Git on disk identifies. */
+function onDiskCheckoutSessionIds(
+	db: Database,
+	identities: readonly string[],
+	onDisk: ReadonlyMap<string, string>,
+): number[] {
+	const named = new Set(identities);
+	const session = db.prepare(CHECKOUT_PATH_SESSION_SQL).pluck();
+	return [...onDisk]
+		.filter(([, identity]) => named.has(identity))
+		.map(([workspace]) => session.get(workspace))
+		.filter((id): id is number => typeof id === "number");
+}
+
 interface ProjectRoute {
 	/** The scopes a mapping routes the Project to now. */
 	scopeIds: string[];
@@ -186,12 +227,19 @@ interface ProjectRoute {
  * stamping rules: from each checkout of it this machine has seen, and by its
  * identity alone, which covers a Project with no checkout here.
  */
-function projectRoute(db: Database, identities: readonly string[]): ProjectRoute {
+function projectRoute(
+	db: Database,
+	identities: readonly string[],
+	onDisk: ReadonlyMap<string, string>,
+): ProjectRoute {
 	const normalized = identities.flatMap((identity) => {
 		const value = normalizeRepositoryWorkspaceIdentity(identity);
 		return value ? [value] : [];
 	});
-	const sessionIds = checkoutSessionIds(db, normalized);
+	const sessionIds = [
+		...checkoutSessionIds(db, normalized),
+		...onDiskCheckoutSessionIds(db, normalized, onDisk),
+	];
 	const resolutions = [
 		...sessionIds.map((sessionId) => resolveSessionScope(db, { sessionId, readOnly: true })),
 		...identities.map((identity) => resolveRepositoryIdentityScope(db, identity)),
@@ -259,11 +307,12 @@ export function planTeamRecoveryProjects(
 	];
 	const projectIdentities = [...setup.keys(), ...outside];
 	const activeScopeIds = activeGroupScopeIds(db, input);
+	const onDisk = checkoutsIdentifiedOnDisk(db, projectIdentities.flatMap(identitiesOf));
 	return projectIdentities
 		.toSorted(compareCodepoints)
 		.map((projectIdentity): TeamRecoveryProject => {
 			const project = setup.get(projectIdentity);
-			const route = projectRoute(db, identitiesOf(projectIdentity));
+			const route = projectRoute(db, identitiesOf(projectIdentity), onDisk);
 			const plan: ProjectPlan = project
 				? planSetupProject(project, recipientByProject.get(projectIdentity), route, activeScopeIds)
 				: { outcome: "resumes", restoredMappings: [] };

@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
@@ -283,5 +286,47 @@ describe("Team recovery Project plan with checkout routing", () => {
 		mapCheckout(null, "/nonexistent/acme/*", "scope-other");
 
 		expect(plan()).toMatchObject([{ outcome: "restored", routedScopeIds: [] }]);
+	});
+});
+
+describe("Team recovery Project plan for a checkout no session recorded a repository for", () => {
+	let parent: string;
+	let checkout: string;
+
+	beforeEach(() => {
+		// An old session recorded neither a remote nor a repository. Only the Git
+		// repository on disk ties its checkout to the Project.
+		parent = mkdtempSync(join(tmpdir(), "codemem-recovery-projects-"));
+		checkout = join(parent, "api");
+		mkdirSync(join(checkout, ".git"), { recursive: true });
+		writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${PROJECT}\n`);
+		run(
+			"INSERT INTO sessions(started_at, cwd, project, tool_version) VALUES (?, ?, 'api', 'test')",
+			NOW,
+			checkout,
+		);
+		insertScope(db, "scope-other", "group-other");
+	});
+
+	afterEach(() => rmSync(parent, { recursive: true, force: true }));
+
+	it("skips the Project when a pattern on the checkout path routes it elsewhere", () => {
+		// Arrange: the pattern never names the Project. A restored mapping would claim the checkout.
+		run(
+			`INSERT INTO project_scope_mappings(project_pattern, scope_id, source, created_at, updated_at)
+			 VALUES (?, 'scope-other', 'user', ?, ?)`,
+			`${parent}/*`,
+			NOW,
+			NOW,
+		);
+
+		expect(plan()).toMatchObject([
+			{
+				outcome: "skipped",
+				reason: "mapping_changed",
+				routedScopeIds: ["scope-other"],
+				restoredMappings: [],
+			},
+		]);
 	});
 });
