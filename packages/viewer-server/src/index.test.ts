@@ -33,6 +33,7 @@ import {
 } from "../../core/src/managed-scope-test-fixtures.js";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import * as syncApi from "../../ui/src/lib/api/sync.js";
+import { settleBackgroundRefreshes } from "./application/background-refresh.js";
 import { type AppOptions, createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
 import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
@@ -57,6 +58,21 @@ const LEGACY_UNCLASSIFIED_PROVENANCE = {
 	estimated_count: 0,
 	legacy_unclassified_count: 1,
 };
+
+/**
+ * Sync status serves coordinator answers from memory. The first read starts the
+ * background refresh; this waits for it and reads again.
+ */
+const JOIN_REQUEST_STATUS_PATH = "/api/sync/status?includeDiagnostics=1&includeJoinRequests=1";
+
+async function refreshedStatus(
+	app: { request: (path: string) => Response | Promise<Response> },
+	path: string,
+) {
+	await app.request(path);
+	await settleBackgroundRefreshes();
+	return app.request(path);
+}
 
 function syncRequestCase(method: string, path: string, invoke: () => Promise<unknown>) {
 	return { method, path, invoke };
@@ -12310,9 +12326,7 @@ describe("viewer-server", () => {
 			try {
 				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
-				const res = await app.request(
-					"/api/sync/status?includeDiagnostics=1&includeJoinRequests=1",
-				);
+				const res = await refreshedStatus(app, JOIN_REQUEST_STATUS_PATH);
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as {
 					enabled: boolean;
@@ -12338,9 +12352,7 @@ describe("viewer-server", () => {
 				expect(body.join_requests).toHaveLength(1);
 				expect(body.join_requests[0].request_id).toBe("req-1");
 
-				const second = await app.request(
-					"/api/sync/status?includeDiagnostics=1&includeJoinRequests=1",
-				);
+				const second = await app.request(JOIN_REQUEST_STATUS_PATH);
 				expect(second.status).toBe(200);
 
 				const calls = fetchMock.mock.calls.map(([input]) => String(input));
@@ -12935,12 +12947,12 @@ describe("viewer-server", () => {
 				ensureDeviceIdentity(store.db, { keysDir });
 
 				type PresenceBody = { coordinator: { presence_status: string } };
-				const first = await app.request("/api/sync/status?includeDiagnostics=1");
+				const first = await refreshedStatus(app, "/api/sync/status?includeDiagnostics=1");
 				expect(first.status).toBe(200);
 				const firstBody = (await first.json()) as PresenceBody;
 				expect(firstBody.coordinator.presence_status).toBe("not_enrolled");
 
-				const second = await app.request("/api/sync/status?includeDiagnostics=1");
+				const second = await refreshedStatus(app, "/api/sync/status?includeDiagnostics=1");
 				expect(second.status).toBe(200);
 				const secondBody = (await second.json()) as PresenceBody;
 				expect(secondBody.coordinator.presence_status).toBe("posted");
@@ -13014,7 +13026,7 @@ describe("viewer-server", () => {
 			try {
 				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
-				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				const res = await refreshedStatus(app, "/api/sync/status?includeDiagnostics=1");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as {
 					coordinator: {
@@ -13099,7 +13111,7 @@ describe("viewer-server", () => {
 			try {
 				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
-				const res = await app.request("/api/sync/status");
+				const res = await refreshedStatus(app, "/api/sync/status");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as {
 					coordinator: { discovered_devices: Array<Record<string, unknown>> };
@@ -13220,7 +13232,7 @@ describe("viewer-server", () => {
 				const store = ensureStore();
 				const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
 				expect(deviceId).toBeTruthy();
-				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				const res = await refreshedStatus(app, "/api/sync/status?includeDiagnostics=1");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as {
 					coordinator: { discovered_devices: Array<Record<string, unknown>> };
@@ -16637,7 +16649,7 @@ describe("viewer-server", () => {
 						new Date().toISOString(),
 					);
 
-				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				const res = await refreshedStatus(app, "/api/sync/status?includeDiagnostics=1");
 
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as { peers?: Array<Record<string, unknown>> };

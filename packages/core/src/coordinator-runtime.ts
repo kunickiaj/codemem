@@ -1188,6 +1188,26 @@ function indexReciprocalApprovalsByPeer(
 	return indexed;
 }
 
+/**
+ * What a caller that keeps its own copy of the coordinator status needs to keep it
+ * correct. `key` names the source: the database, coordinator URL, groups, device
+ * identity and sync address, so a different source never shares a copy.
+ * `generation` changes when an action, such as a reciprocal approval, invalidates the
+ * status. `presenceRenewalMs` is how often a status read renews this device's
+ * presence, so a copy must not be reused for longer than that.
+ */
+export function coordinatorStatusCacheIdentity(
+	store: PresenceStoreLike,
+	config: CoordinatorSyncConfig,
+): { key: string; generation: number; presenceRenewalMs: number } {
+	const key = coordinatorStatusCacheKey(store, config);
+	return {
+		key,
+		generation: coordinatorStatusCacheGenerations.get(key) ?? 0,
+		presenceRenewalMs: presenceRefreshIntervalMs(config),
+	};
+}
+
 export async function coordinatorStatusSnapshot(
 	store: MemoryStore,
 	config: CoordinatorSyncConfig,

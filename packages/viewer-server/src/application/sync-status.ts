@@ -1,4 +1,6 @@
 import {
+	coordinatorEnabled,
+	coordinatorStatusCacheIdentity,
 	coordinatorStatusSnapshot,
 	getCoordinatorEnrollmentReconciliationIssueSummary,
 	getSemanticIndexDiagnostics,
@@ -13,6 +15,7 @@ import {
 import { count, eq, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { safeJsonList } from "../helpers.js";
+import { type BackgroundValue, readInBackground } from "./background-refresh.js";
 import { overallSyncHealth, readPeerSyncHealth } from "./sync-health.js";
 
 export type SyncRuntimeStatus = {
@@ -523,18 +526,134 @@ function applyDerivedDaemonState(
 	statusBlock.daemon_state = state;
 }
 
-async function readJoinRequests(
+/** How long a coordinator answer is served before a background refresh starts. */
+const COORDINATOR_STATUS_MAX_AGE_MS = 30_000;
+
+function discoveredDevices(snapshot: Record<string, unknown>): Record<string, unknown>[] {
+	return Array.isArray(snapshot.discovered_devices)
+		? (snapshot.discovered_devices as Record<string, unknown>[])
+		: [];
+}
+
+function expiresAtMs(device: Record<string, unknown>): number | null {
+	const parsed = Date.parse(String(device.expires_at ?? ""));
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * How long one coordinator answer is served, matching the coordinator runtime's own
+ * cache. Answers that need another try are refreshed on the next read: an unenrolled
+ * device, or a failed peer or approval lookup. Others are refreshed after 30 seconds,
+ * or sooner when a fresh peer's presence expires.
+ */
+function coordinatorStatusMaxAgeMs(
+	snapshot: Record<string, unknown>,
+	refreshedAtMs: number,
+): number {
+	const incomplete =
+		snapshot.presence_status === "not_enrolled" ||
+		Boolean(snapshot.lookup_error) ||
+		Boolean(snapshot.reciprocal_approval_error);
+	if (incomplete) return 0;
+	let deadline = refreshedAtMs + COORDINATOR_STATUS_MAX_AGE_MS;
+	for (const device of discoveredDevices(snapshot)) {
+		const expiry = device.stale ? null : expiresAtMs(device);
+		if (expiry !== null) deadline = Math.min(deadline, expiry);
+	}
+	return Math.max(0, deadline - refreshedAtMs);
+}
+
+/**
+ * Marks peers whose presence expired since the answer was fetched as stale, so a read
+ * served while the refresh runs never shows an expired peer as fresh.
+ */
+function withExpiredPeersStale(
+	snapshot: Record<string, unknown>,
+	nowMs: number,
+): Record<string, unknown> {
+	const devices = discoveredDevices(snapshot);
+	const expired = (device: Record<string, unknown>) => {
+		const expiry = expiresAtMs(device);
+		return !device.stale && expiry !== null && expiry <= nowMs;
+	};
+	if (!devices.some(expired)) return snapshot;
+	const served = devices.map((device) => (expired(device) ? { ...device, stale: true } : device));
+	const stale = served.filter((device) => device.stale).length;
+	return {
+		...snapshot,
+		discovered_devices: served,
+		fresh_peer_count: served.length - stale,
+		stale_peer_count: stale,
+	};
+}
+
+/** The coordinator fields known without asking it, shown until the first answer arrives. */
+function localCoordinatorSnapshot(config: SyncConfig): Record<string, unknown> {
+	return {
+		enabled: true,
+		configured: true,
+		sync_enabled: config.syncEnabled,
+		coordinator_url: config.syncCoordinatorUrl,
+		groups: config.syncCoordinatorGroups,
+		presence_status: "unknown",
+		presence_error: null,
+		advertised_addresses: [],
+		fresh_peer_count: 0,
+		stale_peer_count: 0,
+		discovered_peer_count: 0,
+		discovered_devices: [],
+	};
+}
+
+/** When the served answer was fetched, so readers can tell how current it is. */
+function refreshFields(value: BackgroundValue<unknown>): Record<string, unknown> {
+	return {
+		status_refreshed_at: value.refreshedAt,
+		status_age_ms: value.ageMs,
+		status_refreshing: value.refreshing,
+		status_refresh_error: value.error,
+	};
+}
+
+/**
+ * The coordinator status, from memory. Asking the coordinator takes several network
+ * round trips and a write transaction, so a background task refreshes the answer and
+ * this read never waits for it.
+ */
+async function readCoordinatorStatus(
 	input: SyncStatusInput,
-	config: SyncConfig,
-): Promise<Record<string, unknown>[]> {
+	base: BaseStatus,
+): Promise<Record<string, unknown>> {
+	const { config } = base;
+	if (!coordinatorEnabled(config)) return coordinatorStatusSnapshot(input.store, config);
+	const identity = coordinatorStatusCacheIdentity(input.store, config);
+	const cached = readInBackground({
+		key: `coordinator-status|${identity.key}`,
+		version: String(identity.generation),
+		// Status reads renew this device's presence, so never wait longer than that.
+		maxAgeMs: (snapshot, refreshedAtMs) =>
+			Math.min(coordinatorStatusMaxAgeMs(snapshot, refreshedAtMs), identity.presenceRenewalMs),
+		load: () => coordinatorStatusSnapshot(input.store, config),
+	});
+	return {
+		...(cached.value
+			? withExpiredPeersStale(cached.value, Date.now())
+			: localCoordinatorSnapshot(config)),
+		paired_peer_count: Number(base.statusPayload.peer_count ?? 0),
+		...refreshFields(cached),
+	};
+}
+
+function readJoinRequests(input: SyncStatusInput, config: SyncConfig): Record<string, unknown>[] {
 	if (!input.includeJoinRequests || !input.showDiagnostics || !config.syncCoordinatorAdminSecret) {
 		return [];
 	}
-	try {
-		return await listCoordinatorJoinRequests(config);
-	} catch {
-		return [];
-	}
+	const cached = readInBackground({
+		key: `coordinator-join-requests|${input.store.dbPath}|${config.syncCoordinatorUrl}|${config.syncCoordinatorGroups.join(",")}`,
+		maxAgeMs: COORDINATOR_STATUS_MAX_AGE_MS,
+		load: () => listCoordinatorJoinRequests(config),
+	});
+	return cached.value ?? [];
 }
 
 function addSyncHealth(
@@ -561,7 +680,7 @@ export async function buildSyncStatusResponse(
 	input: SyncStatusInput,
 ): Promise<Record<string, unknown>> {
 	const base = readBaseStatus(input);
-	const coordinatorSnapshot = await coordinatorStatusSnapshot(input.store, base.config);
+	const coordinatorSnapshot = await readCoordinatorStatus(input, base);
 	const coordinator = traceSync("coordinator", () =>
 		input.operations.redactCoordinatorStatus(coordinatorSnapshot, input.showDiagnostics),
 	);
@@ -595,7 +714,7 @@ export async function buildSyncStatusResponse(
 	const recipientPolicyReconciliation = traceSync("recipientPolicyReconciliation", () =>
 		input.operations.listRecipientPolicyReconciliationStatus(input.store),
 	);
-	const joinRequests = await readJoinRequests(input, base.config);
+	const joinRequests = readJoinRequests(input, base.config);
 	applyDerivedDaemonState(base, peers, attempts, failedPeerIds, statusBlock);
 	const syncHealth = addSyncHealth(base, peers, statusBlock);
 	const response: Record<string, unknown> = {

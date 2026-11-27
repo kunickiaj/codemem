@@ -327,6 +327,7 @@ export {
 } from "./coordinator-resolved-account-owner-status-client.js";
 export {
 	coordinatorEnabled,
+	coordinatorStatusCacheIdentity,
 	coordinatorStatusSnapshot,
 	createCoordinatorReciprocalApproval,
 	fetchCoordinatorStalePeers,

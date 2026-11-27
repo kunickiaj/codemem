@@ -563,15 +563,20 @@ export function getSyncResetState(db: Database, scopeId?: string | null): SyncRe
 	ensureSyncResetStateTable(db);
 	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
 	const includeScopeId = shouldReturnScopeId(scopeId);
-	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
-		seedDefaultSyncResetStateFromLegacy(db);
-	}
 	const d = drizzle(db, { schema });
-	const existing = d
-		.select()
-		.from(schema.syncResetStateV2)
-		.where(eq(schema.syncResetStateV2.scope_id, effectiveScopeId))
-		.get();
+	const readExisting = () =>
+		d
+			.select()
+			.from(schema.syncResetStateV2)
+			.where(eq(schema.syncResetStateV2.scope_id, effectiveScopeId))
+			.get();
+	let existing = readExisting();
+	// Seed only when the row is missing: an INSERT takes the write lock even when it
+	// inserts nothing, and status reads call this on every request.
+	if (!existing && effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		seedDefaultSyncResetStateFromLegacy(db);
+		existing = readExisting();
+	}
 	if (existing) {
 		return resetBoundaryFromRow(existing, effectiveScopeId, includeScopeId);
 	}

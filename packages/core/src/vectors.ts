@@ -35,7 +35,11 @@ import {
 	startMaintenanceJob,
 } from "./maintenance-jobs.js";
 import { projectColumnClause } from "./project.js";
-import { snapshot } from "./semantic/validated-vector-index-state.js";
+import {
+	readCatalog,
+	snapshot,
+	type VectorCatalog,
+} from "./semantic/validated-vector-index-state.js";
 import {
 	buildAuthorizedSemanticMemoryIdsQuery,
 	pendingVectorFreshness,
@@ -182,10 +186,26 @@ function clampSemanticLimit(limit: number): number {
 	return Math.min(Math.max(1, Math.trunc(limit)), 200);
 }
 
+/**
+ * The validated vector catalog when it is ready, else null. Its tables mirror every
+ * vector row and keep per-model counts, so reading them is cheaper than scanning the
+ * sqlite-vec table, which reads vector chunks from disk.
+ */
+function readyValidatedCatalog(db: Database): VectorCatalog | null {
+	try {
+		const catalog = readCatalog(db);
+		return catalog?.writerVersion === 1 && catalog.status === "ready" ? catalog : null;
+	} catch {
+		return null;
+	}
+}
+
 function listVectorModels(db: Database): Array<string | null> {
 	if (!vectorStoreExists(db)) {
 		return [];
 	}
+	const catalog = readyValidatedCatalog(db);
+	if (catalog) return catalog.models.map(({ model }) => model);
 	try {
 		const rows = db.prepare("SELECT DISTINCT model FROM memory_vectors").all() as Array<{
 			model: string | null;
@@ -1115,8 +1135,23 @@ function countIndexedActiveMemories(db: Database, models: string[]): number {
 
 function countIndexedActiveMemoriesFast(db: Database, models: string[]): number {
 	if (isEmbeddingDisabled() || !vectorStoreExists(db)) return 0;
+	const placeholders = models.map(() => "?").join(", ");
+	if (readyValidatedCatalog(db)) {
+		const row = db
+			.prepare(
+				`SELECT COUNT(*) AS c
+				 FROM memory_items mi
+				 WHERE mi.active = 1
+				   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''
+				   AND EXISTS (
+				     SELECT 1 FROM validated_vector_rows v
+				     WHERE v.memory_id = mi.id AND v.model IN (${placeholders})
+				   )`,
+			)
+			.get(...models) as { c?: number } | undefined;
+		return Number(row?.c ?? 0);
+	}
 	try {
-		const placeholders = models.map(() => "?").join(", ");
 		const row = db
 			.prepare(
 				`SELECT COUNT(DISTINCT mi.id) AS c
