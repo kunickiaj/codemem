@@ -11,7 +11,7 @@ pnpm install
 pnpm run codemem --help
 ```
 
-Published packages support Node 24.15 and later, including Node 26. On pull requests, the `Node 26 Compatibility (not required)` job builds on Node 26, runs the packaged CLI smoke test and runs the affected tests. It is not a required check, but treat its failures as regressions.
+Published packages support Node 24.15 and later, including Node 26. On pull requests, the `Node 26 Compatibility (not required)` job builds on Node 26, runs the packaged CLI smoke test and runs the affected tests. When the affected tests are more than half the suite, as for a release bump, it skips them and runs only the build and smoke test, and it stops after 25 minutes. It is not a required check, but treat its failures as regressions.
 
 This repo is TypeScript-first. The legacy Python runtime has been removed from `main`; use git history or the archive ref if you need to inspect the old implementation.
 

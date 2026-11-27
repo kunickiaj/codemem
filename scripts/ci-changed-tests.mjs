@@ -5,6 +5,8 @@
 // Main and `ci:full` runs set no base and execute every command unchanged.
 // CI_TEST_SHARD (for example `1/2`) runs one Vitest shard of each `vitest run`, after
 // selection, so every shard runner splits the same set of files.
+// CI_TEST_MAX_SHARE (for example `0.5`) skips a `vitest run` whose selection is more than
+// that share of its files, for a job that reports affected tests and must stay short.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -83,6 +85,24 @@ export function selectFiles({ all, changed, untraced }) {
 	return all.filter((file) => changed.has(file) || untraced.has(file));
 }
 
+/** The CI_TEST_MAX_SHARE value as a number in (0, 1], or null when unset. */
+export function parseMaxShare(value) {
+	if (value === undefined || value === "") return null;
+	const share = Number(value);
+	if (!/^(?:0?\.\d+|1(?:\.0+)?)$/.test(value) || !(share > 0 && share <= 1))
+		throw new Error(`Invalid CI_TEST_MAX_SHARE: ${value}`);
+	return share;
+}
+
+/** Why a selection is skipped under a share limit, or null to run it. `null` files means all. */
+export function shareSkipReason({ files, total, maxShare }) {
+	if (maxShare === null || total === 0) return null;
+	const selected = files === null ? total : files.length;
+	if (selected / total <= maxShare) return null;
+	const percent = Math.round(maxShare * 100);
+	return `Skipping ${selected} of ${total} test files: the selection is more than ${percent}% of them.`;
+}
+
 function run(command, args, cwd, options = {}) {
 	console.log(`$ ${[command, ...args].join(" ")}`);
 	return spawnSync(command, args, { cwd, stdio: "inherit", ...options }).status ?? 1;
@@ -116,7 +136,7 @@ export function shardArgs(shard, { selected }) {
 	return selected ? [`--shard=${shard}`, "--passWithNoTests"] : [`--shard=${shard}`];
 }
 
-function runSelected(command, cwd, base, shard) {
+function runSelected(command, cwd, base, shard, maxShare) {
 	const { flags, filters } = parseVitest(command);
 	const all = listFiles(cwd, [...flags, ...filters]);
 	const changed = new Set(listFiles(cwd, [...flags, "--changed", base]));
@@ -127,6 +147,11 @@ function runSelected(command, cwd, base, shard) {
 		}),
 	);
 	const files = selectFiles({ all, changed, untraced });
+	const skip = shareSkipReason({ files, total: all.length, maxShare });
+	if (skip) {
+		console.log(skip);
+		return 0;
+	}
 	if (files === null) {
 		const args = shardArgs(shard, { selected: false });
 		return run("pnpm", ["exec", "vitest", "run", ...flags, ...filters, ...args], cwd);
@@ -144,6 +169,7 @@ export function main(names, { cwd = process.cwd(), env = process.env } = {}) {
 	const { scripts } = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
 	const base = env.CI_FORCE_FULL === "1" ? "" : (env.CI_TEST_BASE ?? "");
 	const shard = env.CI_TEST_SHARD ?? "";
+	const maxShare = parseMaxShare(env.CI_TEST_MAX_SHARE);
 	console.log(base ? `Selecting tests changed since ${base}` : "Running full test scripts");
 	if (shard) console.log(`Running Vitest shard ${shard}`);
 	const commands = expandScripts(names, scripts);
@@ -154,7 +180,9 @@ export function main(names, { cwd = process.cwd(), env = process.env } = {}) {
 		const vitest = isVitestRun(command);
 		const full = [command, ...(vitest ? shardArgs(shard, { selected: false }) : [])].join(" ");
 		const status =
-			base && vitest ? runSelected(command, cwd, base, shard) : run(full, [], cwd, { shell: true });
+			base && vitest
+				? runSelected(command, cwd, base, shard, maxShare)
+				: run(full, [], cwd, { shell: true });
 		if (status !== 0) return status;
 	}
 	return 0;

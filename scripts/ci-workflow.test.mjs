@@ -592,7 +592,7 @@ describe("required OpenCode host workflow contract", () => {
 });
 
 describe("Node 26 compatibility job", () => {
-	it("builds, smokes the packed CLI and runs only a pull request's affected tests on Node 26", () => {
+	it("builds, smokes the packed CLI and runs only a bounded share of a pull request's affected tests on Node 26", () => {
 		// Arrange
 		const job = getJob(ciWorkflow, "node-26-compat");
 		// Act
@@ -609,6 +609,10 @@ describe("Node 26 compatibility job", () => {
 		assert.match(job, /^ {10}CI_TEST_BASE: \$\{\{ github\.event\.pull_request\.base\.sha \}\}$/m);
 		assert.ok(build >= 0 && smoke > build && affected > smoke);
 		assert.doesNotMatch(job, /CI_TEST_SHARD|test:ci(?=\s|$)|continue-on-error/mu);
+		// A selection over half the suite, such as a release bump, runs only build and smoke,
+		// and the job has a time limit of its own.
+		assert.match(job, /^ {10}CI_TEST_MAX_SHARE: "0\.5"$/m);
+		assert.match(job, /^ {4}timeout-minutes: 25$/m);
 		for (const id of ["tsc", "ts-test-common", "ts-test-shards", "ts-lint"])
 			assert.match(getJob(ciWorkflow, id), /^ {10}node-version: 24$/m);
 	});
