@@ -38,6 +38,14 @@ function exclusionKeys(db: Database): Set<string> {
 	return new Set(rows.map((row) => `${row.team_id}\u0000${row.device_id}`));
 }
 
+/** Returns whether a recovery left a device out of a Team, from one read of every exclusion. */
+export function teamRecoveryExclusionCheck(
+	db: Database,
+): (teamId: string, deviceId: string) => boolean {
+	const excluded = exclusionKeys(db);
+	return (teamId, deviceId) => excluded.has(`${teamId}\u0000${deviceId}`);
+}
+
 /** Records the devices a recovery leaves out. An existing exclusion is kept as it is. */
 export function recordTeamRecoveryExclusions(
 	db: Database,

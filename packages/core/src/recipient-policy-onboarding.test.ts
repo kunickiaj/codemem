@@ -18,6 +18,7 @@ import { managedProjectScopeId } from "./share-operation.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 import { linkTeamToCoordinatorGroup } from "./team-member-removal-test-fixtures.js";
+import { recordTeamRecoveryExclusions } from "./team-recovery-exclusions.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-07-21T12:00:00.000Z";
@@ -2866,5 +2867,48 @@ describe("direct Project share over a binding that device removal ended", () => 
 
 		expect(binding("device-owner-spare")).toMatchObject({ status: "removed" });
 		expect(binding("device-recipient")).toMatchObject({ status: "active" });
+	});
+});
+
+describe("recipient policy onboarding after a Team recovery exclusion", () => {
+	it("inherits no reviewed Team Project for a device the recovery left out, though its decision still says included", () => {
+		const db = seededOnboardingDatabase();
+		try {
+			db.prepare(
+				"UPDATE policy_teams SET device_eligibility_mode = 'reviewed_allowlist' WHERE team_id = 'team-a'",
+			).run();
+			db.prepare(
+				`UPDATE policy_team_memberships SET status = 'reviewed_active'
+				 WHERE team_id = 'team-a' AND identity_id = 'identity-a'`,
+			).run();
+			db.prepare(
+				`INSERT INTO policy_team_device_decisions(
+				 team_id, device_id, decision, provenance, revision, created_at, updated_at
+				 ) VALUES ('team-a', 'device-new', 'included', 'reviewed_setup', 'revision-device-new', ?, ?)`,
+			).run(NOW, NOW);
+			const teamSources = () =>
+				previewRecipientPolicyOnboarding(db, baseRequest()).projects.flatMap((project) =>
+					project.sources.filter((source) => source.kind === "team"),
+				);
+			expect(teamSources()).toHaveLength(2);
+
+			recordTeamRecoveryExclusions(db, {
+				teamId: "team-a",
+				devices: [{ deviceId: "device-new", fingerprint: "key-new", reason: "removed_from_group" }],
+				now: NOW,
+			});
+
+			expect(teamSources()).toEqual([]);
+			expect(
+				db
+					.prepare(
+						"SELECT decision FROM policy_team_device_decisions WHERE device_id = 'device-new'",
+					)
+					.pluck()
+					.get(),
+			).toBe("included");
+		} finally {
+			db.close();
+		}
 	});
 });
