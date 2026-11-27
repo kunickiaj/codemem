@@ -122,6 +122,23 @@ describe("viewer writer lock through symlinks", () => {
 	});
 });
 
+describe("viewer writer lock through a symlink to a database not created yet", () => {
+	it("uses the link target's lock before the database file exists", async () => {
+		mkdirSync(join(directory, "real"));
+		const realPath = join(directory, "real", "mem.sqlite");
+		const link = join(directory, "alias.sqlite");
+		symlinkSync(realPath, link);
+
+		expect(canonicalViewerDbPath(link)).toBe(canonicalViewerDbPath(realPath));
+		const throughLink = await holdViewerLockInAnotherProcess(link);
+		try {
+			expect(() => acquireViewerWriterLock(realPath)).toThrow(ViewerWriterLockHeldError);
+		} finally {
+			await stopHolder(throughLink);
+		}
+	});
+});
+
 describe("viewer writer lock owner", () => {
 	it("records this process as the owner when it takes the lock, and removes it on release", () => {
 		const lock = acquireViewerWriterLock(dbPath, { owner: { host: "127.0.0.1", port: 38_999 } });

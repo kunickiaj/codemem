@@ -161,10 +161,9 @@ export function maintenanceWorkerPidFilePath(dbPath: string): string {
 	return join(viewerRuntimeDir(dbPath), "maintenance-worker.pid");
 }
 
-function readMaintenanceWorkerPidRecord(
-	dbPath: string,
+function readMaintenanceWorkerPidRecordAt(
+	pidPath: string,
 ): { pid: number; dbPath: string | null } | null {
-	const pidPath = maintenanceWorkerPidFilePath(dbPath);
 	if (!existsSync(pidPath)) return null;
 	const raw = readFileSync(pidPath, "utf-8").trim();
 	try {
@@ -369,22 +368,41 @@ export async function terminateTrustedViewerPid(
 	return terminateProcessPid(pid, timeouts);
 }
 
+/**
+ * Stops a leftover maintenance worker for this database. Reads the current PID
+ * record and the one an older release left beside the database path as given,
+ * where a worker that outlived a Viewer started through a symlink recorded
+ * itself. False when a recorded worker is not trusted or did not stop.
+ */
 export async function terminateTrustedMaintenanceWorker(
 	dbPath: string,
 	timeouts: { gracefulMs?: number; forceMs?: number } = {},
 ): Promise<boolean> {
-	const pidPath = maintenanceWorkerPidFilePath(dbPath);
-	const record = readMaintenanceWorkerPidRecord(dbPath);
+	const paths = [
+		...new Set([
+			maintenanceWorkerPidFilePath(dbPath),
+			join(dirname(resolveDbPath(dbPath)), "maintenance-worker.pid"),
+		]),
+	];
+	let allStopped = true;
+	for (const pidPath of paths) {
+		if (!(await terminateRecordedMaintenanceWorker(pidPath, dbPath, timeouts))) allStopped = false;
+	}
+	return allStopped;
+}
+
+async function terminateRecordedMaintenanceWorker(
+	pidPath: string,
+	dbPath: string,
+	timeouts: { gracefulMs?: number; forceMs?: number },
+): Promise<boolean> {
+	const record = readMaintenanceWorkerPidRecordAt(pidPath);
 	if (!record) return true;
 	const isThisDb = (path: string | null): path is string =>
 		path !== null && canonicalViewerDbPath(path) === canonicalViewerDbPath(dbPath);
 	if (record.dbPath && !isThisDb(record.dbPath)) return false;
 	if (!isProcessRunning(record.pid)) {
-		try {
-			rmSync(pidPath);
-		} catch {
-			// ignore
-		}
+		removeFile(pidPath);
 		return true;
 	}
 	const command = readProcessCommand(record.pid);
@@ -392,13 +410,7 @@ export async function terminateTrustedMaintenanceWorker(
 	// The worker runs with the path it was started with, which may be a symlink.
 	if (!isThisDb(record.dbPath) || !commandHasExactDbPath(command, record.dbPath)) return false;
 	const stopped = await terminateProcessPid(record.pid, timeouts);
-	if (stopped) {
-		try {
-			rmSync(pidPath);
-		} catch {
-			// ignore
-		}
-	}
+	if (stopped) removeFile(pidPath);
 	return stopped;
 }
 

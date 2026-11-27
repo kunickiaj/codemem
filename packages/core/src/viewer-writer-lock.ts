@@ -12,7 +12,16 @@
  * reached through a symlink gets the same lock as its real path.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
 
@@ -58,22 +67,41 @@ export interface ViewerWriterLockOwner {
 
 /**
  * The database path with every symlink resolved. A path that does not exist yet
- * resolves through its nearest existing ancestor.
+ * resolves through its nearest existing ancestor, and a symlink whose target
+ * does not exist yet resolves to that target, where SQLite will create the file.
  */
 export function canonicalViewerDbPath(dbPath: string): string {
-	const absolute = resolve(dbPath);
+	return canonicalPath(resolve(dbPath), 0);
+}
+
+/** Follows at most this many dangling symlinks, so a symlink loop cannot recurse forever. */
+const MAX_DANGLING_LINKS = 32;
+
+function canonicalPath(absolute: string, followedLinks: number): string {
 	const missing: string[] = [];
 	let existing = absolute;
 	for (;;) {
 		try {
 			return join(realpathSync(existing), ...missing);
 		} catch (error) {
+			const target = followedLinks < MAX_DANGLING_LINKS ? danglingLinkTarget(existing) : null;
+			if (target) return join(canonicalPath(target, followedLinks + 1), ...missing);
 			const code = errorCode(error);
 			const parent = dirname(existing);
 			if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === existing) return absolute;
 			missing.unshift(basename(existing));
 			existing = parent;
 		}
+	}
+}
+
+/** Where a symlink points when `realpath` cannot follow it; null for anything else. */
+function danglingLinkTarget(path: string): string | null {
+	try {
+		if (!lstatSync(path).isSymbolicLink()) return null;
+		return resolve(dirname(path), readlinkSync(path));
+	} catch {
+		return null;
 	}
 }
 

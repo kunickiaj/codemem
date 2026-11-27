@@ -9,7 +9,11 @@ import {
 	holdViewerLockInAnotherProcess,
 	stopHolder,
 } from "../../../core/src/viewer-writer-lock-test-holder.js";
-import { runServeInvocation, stopExistingViewer } from "./serve.js";
+import {
+	runServeInvocation,
+	stopExistingViewer,
+	terminateTrustedMaintenanceWorker,
+} from "./serve.js";
 import { resolveServeInvocation, resolveStopRestartInvocation } from "./serve-invocation.js";
 
 /*
@@ -98,6 +102,27 @@ describe("a running Viewer from before the database lock", () => {
 		expect(startViewer).not.toHaveBeenCalled();
 		expect(process.exitCode).toBe(1);
 		expect(printed()).toContain(`already managed by viewer 127.0.0.1:${port} (pid ${viewer.pid})`);
+	});
+
+	it("stops a maintenance worker that outlived it, recorded beside the symlink", async () => {
+		const worker = await holdViewerLockInAnotherProcess(linkedDbPath, {
+			lock: false,
+			extraArgs: ["codemem", "maintenance", "worker", "--db-path", linkedDbPath],
+		});
+		processes.push(worker);
+		const workerPidPath = join(directory, "links", "maintenance-worker.pid");
+		writeFileSync(workerPidPath, JSON.stringify({ pid: worker.pid, dbPath: linkedDbPath }));
+		const exited = once(worker, "exit");
+
+		const stopped = await terminateTrustedMaintenanceWorker(linkedDbPath, {
+			gracefulMs: 5_000,
+			forceMs: 5_000,
+		});
+		await exited;
+
+		expect(stopped).toBe(true);
+		expect(worker.signalCode).toBe("SIGTERM");
+		expect(existsSync(workerPidPath)).toBe(false);
 	});
 
 	it("is stopped by `serve stop` on its port, which also removes its old record", async () => {
