@@ -42,8 +42,12 @@ import { buildAuthHeaders } from "./sync-auth.js";
 import { LOCAL_SYNC_CAPABILITY, LOCAL_SYNC_FEATURES } from "./sync-capability.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
-import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+import { ensureDeviceIdentity, loadPrivateKey, loadPublicKey } from "./sync-identity.js";
 import { updatePeerAddresses } from "./sync-peer-addresses.js";
+import {
+	ingestCoordinatorTransportStatements,
+	localTransportStatementCapability,
+} from "./sync-transport-evidence.js";
 
 export {
 	type CoordinatorSyncConfig,
@@ -273,6 +277,11 @@ export async function registerCoordinatorPresence(
 			sync_features: LOCAL_SYNC_FEATURES,
 			// 0 until a complete lookup has covered every pairing and binding this device has now.
 			applied_removal_seq: readAppliedRemovalSeq(store.db),
+			...localTransportStatementCapability({
+				deviceId,
+				fingerprint,
+				privateKey: () => loadPrivateKey(keysDir, store.dbPath, deviceId),
+			}),
 		},
 	};
 	const responses: Record<string, unknown>[] = [];
@@ -887,10 +896,12 @@ function reconcileCoordinatorPeerTrust(
 			}
 			revokeCoordinatorPeerTrust(db, localDeviceId);
 			const remainingPeers = peers.filter((peer) => !rotatedDevices.has(clean(peer.device_id)));
-			return (
+			const trusted =
 				rotatedDevices.size +
-				trustCoordinatorPeersWithSharedManagedScopes(db, localDeviceId, remainingPeers)
-			);
+				trustCoordinatorPeersWithSharedManagedScopes(db, localDeviceId, remainingPeers);
+			// After rotation and trust, so each statement is checked against the current pin.
+			ingestCoordinatorTransportStatements(db, peers);
+			return trusted;
 		})
 		.immediate();
 }

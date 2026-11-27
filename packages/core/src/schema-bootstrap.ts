@@ -15,6 +15,7 @@ import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
+import { ensureSyncPeerTransportPolicySchema } from "./sync-transport-policy.js";
 import { teamMemberRemovalLinkKey } from "./team-member-removal-lookup.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
@@ -922,6 +923,7 @@ export function bootstrapSchema(db: Database): void {
 		ensurePeerRemovalCheckState(db);
 		ensurePeerProjectFilterRetentionSchema(db);
 		ensurePeerProjectFilterManagementSchema(db);
+		ensureSyncPeerTransportPolicySchema(db);
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerExplicitPairingColumns(db);
 		ensurePolicyTeamMemberRemovalsTable(db);

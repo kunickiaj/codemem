@@ -51,6 +51,7 @@ import {
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
+	buildPairingPayload,
 	type CoordinatorDeviceAnswerLookup,
 	CoordinatorReciprocalApprovalRequestChangedError,
 	canonicalRepositoryProjectIdentity,
@@ -183,6 +184,7 @@ import {
 	recordDeviceCoordinatorHistory,
 	recordHighestObservedDirectSignatureVersion,
 	recordNonce,
+	recordPairingTransportEvidence,
 	recordSyncTransferObservation,
 	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
@@ -437,6 +439,7 @@ function tryParsePairingPayload(value: string):
 			fingerprint: string;
 			public_key: string;
 			addresses: string[];
+			payload: Record<string, unknown>;
 	  }
 	| { kind: "invalid-pair"; error: string }
 	| null {
@@ -490,6 +493,39 @@ function tryParsePairingPayload(value: string):
 		fingerprint,
 		public_key: publicKey,
 		addresses,
+		payload: parsed,
+	};
+}
+
+type ParsedPairingPayload = Extract<ReturnType<typeof tryParsePairingPayload>, { kind: "pair" }>;
+
+/** Pins the payload's key and records what the payload says about Noise, together. */
+function savePairingPayload(store: MemoryStore, pairing: ParsedPairingPayload): void {
+	store.db.transaction(() => {
+		updatePeerAddresses(store.db, pairing.device_id, pairing.addresses, {
+			pinnedFingerprint: pairing.fingerprint,
+			publicKey: pairing.public_key,
+			replaceTrust: true,
+		});
+		recordPairingTransportEvidence(store.db, pairing.device_id, pairing.payload);
+	})();
+}
+
+/** The shared pairing payload plus the viewer's filter hint. */
+function pairingPayloadBody(input: {
+	deviceId: string;
+	fingerprint: string;
+	publicKey: string | undefined;
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+}) {
+	return {
+		...buildPairingPayload({
+			deviceId: input.deviceId,
+			fingerprint: input.fingerprint,
+			publicKey: input.publicKey ?? "",
+			addresses: pairingAdvertiseAddresses(input.config),
+		}),
+		pairing_filter_hint: PAIRING_FILTER_HINT,
 	};
 }
 
@@ -7694,13 +7730,7 @@ export function syncRoutes(
 				return c.json({ error: "public key missing" }, 500);
 			}
 
-			return c.json({
-				device_id: deviceId,
-				fingerprint,
-				public_key: publicKey ?? null,
-				pairing_filter_hint: PAIRING_FILTER_HINT,
-				addresses: pairingAdvertiseAddresses(config),
-			});
+			return c.json(pairingPayloadBody({ deviceId, fingerprint, publicKey, config }));
 		}
 	});
 
@@ -8990,11 +9020,7 @@ export function syncRoutes(
 						409,
 					);
 				}
-				updatePeerAddresses(store.db, pairingResult.device_id, pairingResult.addresses, {
-					pinnedFingerprint: pairingResult.fingerprint,
-					publicKey: pairingResult.public_key,
-					replaceTrust: true,
-				});
+				savePairingPayload(store, pairingResult);
 				return c.json({
 					ok: true,
 					type: "pair",
