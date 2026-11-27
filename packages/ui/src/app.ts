@@ -93,9 +93,9 @@ import {
 	loadSyncData,
 } from "./tabs/sync";
 import { applySyncSubView } from "./tabs/sync/sync-view-controller";
+import { deriveDiscoveredRows } from "./tabs/sync/team-sync/discovered-devices";
 import { legacySharedReviewView } from "./tabs/sync/team-sync/render/legacy-review-view";
 import { reassignLegacySharedReviewGroup } from "./tabs/sync/team-sync/render/sharing-review";
-import { deriveDiscoveredRows } from "./tabs/sync/team-sync/discovered-devices";
 import { summarizeSyncRunResult } from "./tabs/sync/view-model";
 import { derivePeerUiStatus } from "./tabs/sync/view-model/peer-status";
 
