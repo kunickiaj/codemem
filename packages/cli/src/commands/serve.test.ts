@@ -701,6 +701,7 @@ describe("serve relay wiring", () => {
 				status: vi.fn(() => new Map()),
 			};
 			const store = {
+				enablePackWorker: vi.fn(),
 				dbPath: "/fixture/manual-sync.sqlite",
 				hasCurrentIdentity: () => false,
 				onIdentityChanged: vi.fn(() => vi.fn()),

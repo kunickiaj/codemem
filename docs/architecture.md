@@ -538,6 +538,55 @@ query path and can retry installation on a later writable open. The index uses
 built-in JSON functions so older clients can maintain it. Its one-time build,
 storage, and per-event write costs trade against repeated dashboard scans.
 
+## Prompt packs in a worker thread
+
+Assembling a prompt pack is synchronous SQL. In the Viewer it stopped every
+other request for about 200 ms per pack on a large store. The Viewer's store
+therefore assembles packs in a worker thread (`packages/core/src/pack-worker/`).
+The semantic search that precedes assembly already runs off the event loop and
+is unchanged. Other processes assemble packs on their own thread, as before.
+
+- **What the worker can do.** It opens the store read-only and reads through
+  `createMemoryReadHandle`, the same functions `MemoryStore` uses for `get`,
+  `recent` and its ownership checks. It learns who is asking from the request
+  alone: the actor ID, the device ID and the device's public key. It is started
+  with an empty environment and reads no configuration or key file.
+- **Who the pack is for.** The Viewer takes a proof for each pack request
+  before it retrieves anything: the Identity, the device key and the Identity
+  generation persisted in the store. A local Identity switch commits that
+  generation in the store before the configuration names the new Identity, so a
+  request is refused when the generation names another Identity than the
+  process runs as. The proof is read again as the last step before delivery,
+  after the pack is assembled and its memories are checked, whether the worker
+  assembled it or the main thread did. If anything changed, the request fails,
+  nothing is delivered and no usage is recorded. The worker makes the same
+  generation check on its own connection and refuses a request that does not
+  match.
+- **Which file.** The store identifies its file when it opens its connection:
+  device and inode of the database file, and of its write-ahead log when there
+  is one, read as bigints. The worker opens the same path later, so it compares
+  the path with that identity before and after it opens, and the main thread
+  compares again before asking and before delivery. A file replaced at the path
+  fails the request. Not covered: a process that can write to the store's
+  directory putting another file at the path only for the instant of the
+  worker's open. Such a process can already read and change the store.
+- **Which memories.** The main thread lists every memory the pack and its
+  trace name, from tables in `pack-memory-ids.ts` that have an entry for each
+  field of a pack. A field added without an entry does not compile, and a pack
+  with a field the tables do not know has no list. With one query under the
+  current Identity it checks that each listed memory is visible, active and not
+  deleted. If one is not, the pack is assembled again on the main thread.
+- **Writes.** The worker writes nothing. The main thread records the pack in
+  `usage_events` after the checks, and the route records the retrieval ledger
+  as before.
+- **Failure.** When the worker cannot start, reports an error or takes longer
+  than 10 seconds, the pack is assembled on the main thread. After three
+  failures in a row the worker is not used again until restart, and one warning
+  is logged.
+- **Loading.** An installed package runs `dist/pack-worker-entry.js`. From
+  source the thread is started through the tsx loader, because `store.ts` and
+  its imports use TypeScript syntax that Node's type stripping rejects.
+
 ## Periodic work on the Viewer's event loop
 
 The sync daemon and the raw-event sweeper run inside the Viewer process, and

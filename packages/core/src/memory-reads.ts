@@ -187,6 +187,32 @@ export function getMemory(
 	return parseMetadata(row);
 }
 
+/**
+ * Which of `memoryIds` may be delivered to the reader now: memories it may see that are
+ * active and not deleted. {@link getMemory} also returns a forgotten memory to a reader who
+ * may see it. A pack must not.
+ */
+export function deliverableMemoryIds(
+	reader: FilteredQuerySource,
+	memoryIds: readonly number[],
+): Set<number> {
+	if (memoryIds.length === 0) return new Set();
+	const filterResult = buildFilterClausesWithContext(null, reader.ownershipFilterContext());
+	const whereSql = buildWhereSql(
+		[
+			"memory_items.id IN (SELECT value FROM json_each(?))",
+			"memory_items.active = 1",
+			"memory_items.deleted_at IS NULL",
+			...filterResult.clauses,
+		],
+		[JSON.stringify(memoryIds), ...filterResult.params],
+	);
+	const rows = queries(reader.db).all<{ id: number }>(
+		sql`SELECT memory_items.id FROM memory_items WHERE ${whereSql}`,
+	);
+	return new Set(rows.map((row) => row.id));
+}
+
 export interface RecentMemoriesQuery {
 	limit: number;
 	filters: MemoryFilters | null | undefined;

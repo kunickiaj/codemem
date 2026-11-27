@@ -86,7 +86,7 @@ function captureIdentity(store: SemanticWorkerOptions["store"]): RuntimeIdentity
 	return { actorId: store.actorId, deviceId: store.deviceId };
 }
 
-function captureProof(
+export function captureProof(
 	store: SemanticWorkerOptions["store"],
 	identity = captureIdentity(store),
 ): RuntimeProof {

@@ -15,6 +15,11 @@ import { resolve } from "node:path";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeCaptureContext } from "./capture-context.js";
+import {
+	type DatabaseFileIdentity,
+	databaseFileAt,
+	databaseFileOpened,
+} from "./database-file-identity.js";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
@@ -46,6 +51,7 @@ import {
 } from "./memory-local-capture.js";
 import {
 	cleanStr,
+	deliverableMemoryIds,
 	getMemory,
 	recentMemories,
 	recentMemoriesByKinds,
@@ -54,7 +60,7 @@ import {
 } from "./memory-reads.js";
 import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
-import type { PackArtifacts } from "./pack.js";
+import type { PackArtifacts, PackAssemblyRequest } from "./pack.js";
 import {
 	buildMemoryPack,
 	buildMemoryPackAsync,
@@ -63,6 +69,11 @@ import {
 	buildMemoryPackWithTrace,
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
+import { beginPackDelivery, type PackDeliveryGuard } from "./pack-worker/pack-delivery-proof.js";
+import {
+	createPackWorkerExecutor,
+	type PackWorkerExecutor,
+} from "./pack-worker/pack-worker-executor.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY, resolveGitRepositoryIdentity } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { hydrateRawEvent, loadPriorDelegatedBriefEvents } from "./raw-event-context.js";
@@ -389,6 +400,7 @@ interface RememberOptions {
 export class MemoryStore {
 	readonly db: Database;
 	readonly dbPath: string;
+	private readonly openedDatabaseFile: DatabaseFileIdentity | null;
 	deviceId: string;
 	actorId: string;
 	actorDisplayName: string;
@@ -406,6 +418,9 @@ export class MemoryStore {
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
 	private readonly vectorWriteAbort = new AbortController();
 	private semanticExecutor: PackSemanticExecutor | undefined;
+	private packWorkerEnabled = false;
+	private identityChanges = 0;
+	private packWorker: PackWorkerExecutor | undefined;
 	private vectorIndexMaintenance: VectorIndexMaintenance | undefined;
 	private readonly pendingSemanticSearches = new Set<Promise<SemanticSearchResult[]>>();
 	private semanticClosing = false;
@@ -425,7 +440,12 @@ export class MemoryStore {
 			runtimeSigningKey: options.runtimeSigningKey ? { ...options.runtimeSigningKey } : undefined,
 		};
 		this.dbPath = resolveDbPath(dbPath);
-		this.db = connect(connectionPath(this.dbPath));
+		const path = connectionPath(this.dbPath);
+		// Identified around the open, so that later openers of the path can be compared with
+		// the file this connection holds.
+		const fileBeforeOpen = databaseFileAt(path);
+		this.db = connect(path);
+		this.openedDatabaseFile = databaseFileOpened(fileBeforeOpen, path);
 		try {
 			loadSqliteVec(this.db);
 			assertSchemaReady(this.db);
@@ -535,7 +555,13 @@ export class MemoryStore {
 		return () => this.identityChangeListeners.delete(listener);
 	}
 
+	/** How many times this process has changed its Identity. */
+	identityChangeCount(): number {
+		return this.identityChanges;
+	}
+
 	private notifyIdentityChanged(): void {
+		this.identityChanges += 1;
 		for (const listener of this.identityChangeListeners) {
 			try {
 				listener();
@@ -3462,6 +3488,49 @@ export class MemoryStore {
 		return resolveSameActorPeerIds(this.db, this.actorId);
 	}
 
+	/** Which of these memories may be delivered to the current Identity: visible and not forgotten. */
+	deliverableMemoryIds(memoryIds: readonly number[]): Set<number> {
+		return deliverableMemoryIds(this, memoryIds);
+	}
+
+	/** The file this store's connection opened, identified when it opened it. */
+	databaseFile(): DatabaseFileIdentity | null {
+		return this.openedDatabaseFile ?? null;
+	}
+
+	/**
+	 * Assemble prompt packs in a worker thread from now on. For a process that answers
+	 * requests while packs are built. Its owner must close the store with `closeAsync()`.
+	 */
+	enablePackWorker(): void {
+		this.packWorkerEnabled = true;
+	}
+
+	/**
+	 * See {@link StoreHandle.beginPackDelivery}. A process that answers requests while it
+	 * builds packs holds each request to the Identity it began under.
+	 */
+	beginPackDelivery(): PackDeliveryGuard | null {
+		// A closing or closed store refuses the build itself, with its own error.
+		if (!this.packWorkerEnabled || this.semanticClosing || this.closed) return null;
+		return beginPackDelivery(this);
+	}
+
+	/** See {@link StoreHandle.assemblePackOffThread}. */
+	async assemblePackOffThread(
+		request: PackAssemblyRequest,
+		options?: { signal?: AbortSignal },
+	): Promise<PackArtifacts | null> {
+		if (!this.packWorkerEnabled || this.semanticClosing || this.closed) return null;
+		if (!this.packWorker) {
+			// Without a file identified at open there is nothing a second connection could be
+			// checked against.
+			if (!this.databaseFile()) return null;
+			this.packWorker = createPackWorkerExecutor({ store: this });
+		}
+		return this.packWorker.assemble(request, options);
+	}
+
 	claimedSameActorLegacyActorIds(): string[] {
 		return this.sameActorPeerIds().map((peerId) => `legacy-sync:${peerId}`);
 	}
@@ -3654,6 +3723,7 @@ export class MemoryStore {
 		if (this.closed) return;
 		if (
 			this.semanticExecutor ||
+			this.packWorker ||
 			this.pendingSemanticSearches.size ||
 			this.vectorIndexMaintenance?.requiresAsyncClose ||
 			this.closePromise
@@ -3675,6 +3745,7 @@ export class MemoryStore {
 
 	private async finishAsyncClose(): Promise<void> {
 		await this.semanticExecutor?.close();
+		await this.packWorker?.close();
 		await Promise.allSettled([...this.pendingSemanticSearches]);
 		const maintenance = await Promise.allSettled([this.vectorIndexMaintenance?.close()]);
 		await this.flushPendingVectorWrites();
