@@ -3696,21 +3696,45 @@ function isPendingCaptureActorConflict(error: unknown): error is Error {
 	);
 }
 
+/**
+ * Whether this device's identity may claim its actor row. Throws when another
+ * process retired the identity; false preserves a pending capture conflict.
+ */
+function localIdentityMayClaimActor(store: MemoryStore): boolean {
+	// A stale process must not re-flag the Identity a local switch retired.
+	store.assertLocalIdentityCurrent();
+	try {
+		store.assertPendingLocalCaptureAdoptionActors();
+	} catch (error) {
+		if (isPendingCaptureActorConflict(error)) {
+			// Preserve the conflict for explicit adoption instead of repairing it on restart.
+			return false;
+		}
+		throw error;
+	}
+	return true;
+}
+
+/** Exactly one local actor row, and it is this device's actor: the state the repair writes. */
+function localActorRecordCurrent(store: MemoryStore): boolean {
+	const rows = store.db
+		.prepare("SELECT actor_id, is_local FROM actors WHERE is_local = 1 OR actor_id = ?")
+		.all(store.actorId) as Array<{ actor_id: string; is_local: number }>;
+	return rows.length === 1 && rows[0]?.actor_id === store.actorId && rows[0]?.is_local === 1;
+}
+
 /** False leaves the conflict untouched; callers must check before claiming or merging identity. */
 export function ensureLocalActorRecord(store: MemoryStore): boolean {
+	// Reads call this on every request. When the row is already right and no local
+	// capture awaits adoption, check it without the write transaction, which waits
+	// for any other writer. Pending capture keeps the write reservation, so its
+	// actor check and repair cannot be split by another connection's commit.
+	if (!store.hasPendingLocalCapture() && localActorRecordCurrent(store)) {
+		return localIdentityMayClaimActor(store);
+	}
 	return store.db
 		.transaction(() => {
-			// A stale process must not re-flag the Identity a local switch retired.
-			store.assertLocalIdentityCurrent();
-			try {
-				store.assertPendingLocalCaptureAdoptionActors();
-			} catch (error) {
-				if (isPendingCaptureActorConflict(error)) {
-					// Preserve the conflict for explicit adoption instead of repairing it on restart.
-					return false;
-				}
-				throw error;
-			}
+			if (!localIdentityMayClaimActor(store)) return false;
 			persistLocalActorRecord(store);
 			return true;
 		})
