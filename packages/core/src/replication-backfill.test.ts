@@ -319,74 +319,110 @@ describe("recheck after replication ops are pruned", () => {
 	});
 });
 
-describe("slices from two processes", () => {
-	/**
-	 * Runs a slice and calls `interleave` once after the slice has read its stored position,
-	 * as another process's commit would land.
-	 */
-	function sliceInterleavedWith(
-		interleave: () => void,
-		options: Parameters<typeof runReplicationBackfillSlice>[1],
-	) {
-		const prepare = db.prepare.bind(db);
-		let pending = true;
-		db.prepare = ((sql: string) => {
-			// The slice prepares this statement after reading its position and before scanning.
-			if (pending && sql.includes("AS upper")) {
-				pending = false;
-				db.prepare = prepare;
-				interleave();
-			}
-			return prepare(sql);
-		}) as Db["prepare"];
-		try {
-			return runReplicationBackfillSlice(db, { maxRuntimeMs: 60_000, warn: () => {}, ...options });
-		} finally {
-			db.prepare = prepare;
-		}
-	}
-
-	it("keeps a recheck requested while another slice was under way", () => {
-		insertMemory(db, { importKey: "key:pruned" });
+describe("memories that reuse the ID of a deleted row", () => {
+	it("checks a replacement inserted before the next slice", () => {
+		insertMemory(db, { importKey: "key:first" });
+		const newest = insertMemory(db, { importKey: "key:second" });
 		slice();
-		db.prepare("DELETE FROM replication_ops").run();
 
-		// Thirty minutes on, so the interleaved slice saves its idle position over the request.
-		const under = sliceInterleavedWith(() => requestReplicationBackfillRecheck(db), {
-			now: () => minutesAfter(30),
-		});
+		// No slice runs between the deletion and the insert, and the import keeps an old time.
+		db.prepare("DELETE FROM memory_items WHERE id = ?").run(newest);
+		const replacement = insertMemory(db, { importKey: "key:imported", updatedAt: LONG_AGO });
 
-		expect(under.opsCreated).toBe(0);
-		expect(slice(db, minutesAfter(31)).opsCreated).toBe(1);
+		expect(replacement).toBe(newest);
+		expect(slice(db, minutesAfter(1)).opsCreated).toBe(1);
+		expect(ops(db).map((op) => op.entity_id)).toContain("key:imported");
 	});
 
-	it("does not count again a blocked key another slice already counted", () => {
-		insertMemory(db, { importKey: "legacy:dev-local:memory_item:7" });
-		insertMemory(db, { importKey: "legacy:memory_item:7" });
-		const warn = vi.fn();
+	it("checks every replacement when several newest rows were deleted", () => {
+		const ids = ["a", "b", "c", "d", "e"].map((name) =>
+			insertMemory(db, { importKey: `key:${name}` }),
+		);
+		slice();
 
-		// Both slices start the first check from an empty position and find the same key.
-		sliceInterleavedWith(() => slice(db, NOW, warn), { now: () => NOW, warn });
+		db.prepare("DELETE FROM memory_items WHERE id >= ?").run(ids[2]);
+		insertMemory(db, { importKey: "key:new-1", updatedAt: LONG_AGO });
+		insertMemory(db, { importKey: "key:new-2", updatedAt: LONG_AGO });
 
-		expect(warn).toHaveBeenCalledTimes(1);
-		expect(getMaintenanceJob(db, REPLICATION_BACKFILL_JOB)?.metadata).toMatchObject({
-			blocked_legacy_keys: 1,
-			reported_blocked_legacy_keys: 1,
-		});
+		expect(slice(db, minutesAfter(1)).opsCreated).toBe(2);
+		expect(slice(db, minutesAfter(2)).opsCreated).toBe(0);
 	});
 
-	it("keeps the furthest position when a slower slice saves last", () => {
-		for (let index = 0; index < 450; index++) insertMemory(db);
+	it("checks every memory again when none of the remembered rows survived", () => {
+		const ids = Array.from({ length: 12 }, (_, index) =>
+			insertMemory(db, { importKey: `key:${index}` }),
+		);
+		slice();
+
+		// More newest rows than a slice remembers are deleted and replaced.
+		db.prepare("DELETE FROM memory_items WHERE id >= ?").run(ids[2]);
+		for (let index = 0; index < 10; index++) {
+			insertMemory(db, { importKey: `key:replacement-${index}`, updatedAt: LONG_AGO });
+		}
+
+		expect(slice(db, minutesAfter(1)).opsCreated).toBe(10);
+	});
+});
+
+describe("slices from two processes", () => {
+	let dir: string;
+	let dbPath: string;
+	let worker: ReturnType<typeof connect>;
+	let viewer: ReturnType<typeof connect>;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "codemem-replication-backfill-lock-"));
+		dbPath = join(dir, "mem.sqlite");
+		worker = connect(dbPath);
+		viewer = connect(dbPath);
+		addDeviceIdentity(worker);
+		sessionId = insertTestSession(worker);
+	});
+
+	afterEach(() => {
+		viewer.close();
+		worker.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("skips a slice that would have to wait for another writer", () => {
+		insertMemory(worker, { importKey: "key:waiting" });
+		worker.exec("BEGIN IMMEDIATE");
+
+		const skipped = runReplicationBackfillSlice(viewer, { waitForWriteLock: false });
+		worker.exec("COMMIT");
+		const done = runReplicationBackfillSlice(viewer, { waitForWriteLock: false });
+
+		expect(skipped).toEqual({ opsCreated: 0, keysMigrated: 0, complete: false });
+		expect(done).toEqual({ opsCreated: 1, keysMigrated: 0, complete: true });
+		expect(viewer.pragma("busy_timeout", { simple: true })).toBe(5000);
+	});
+
+	it("takes no write lock when there is nothing to write", () => {
+		insertMemory(worker, { importKey: "key:done" });
+		slice(worker);
+		worker.exec("BEGIN IMMEDIATE");
+
+		// An idle slice finishes while the other connection holds the write lock.
+		const idle = slice(viewer, minutesAfter(1));
+		worker.exec("COMMIT");
+
+		expect(idle).toEqual({ opsCreated: 0, keysMigrated: 0, complete: true });
+	});
+
+	it("continues from the position another process stored", () => {
+		for (let index = 0; index < 450; index++) insertMemory(worker);
 		let tick = 0;
 		const oneWindow = { maxRuntimeMs: 1, now: () => NOW, clock: () => tick++ * 10 };
 
-		// The interleaved slices check all 450 rows while the outer one checks one window.
-		const slower = sliceInterleavedWith(() => {
-			for (let index = 0; index < 4; index++) runReplicationBackfillSlice(db, oneWindow);
-		}, oneWindow);
+		runReplicationBackfillSlice(worker, oneWindow);
+		runReplicationBackfillSlice(viewer, oneWindow);
+		runReplicationBackfillSlice(worker, oneWindow);
+		const last = runReplicationBackfillSlice(viewer, oneWindow);
 
-		expect(slower.complete).toBe(false);
-		expect(getMaintenanceJob(db, REPLICATION_BACKFILL_JOB)).toMatchObject({
+		expect(last).toEqual({ opsCreated: 0, keysMigrated: 0, complete: true });
+		expect(ops(viewer)).toHaveLength(450);
+		expect(getMaintenanceJob(viewer, REPLICATION_BACKFILL_JOB)).toMatchObject({
 			status: "completed",
 			progress: { current: 450 },
 		});

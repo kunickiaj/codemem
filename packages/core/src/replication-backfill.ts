@@ -26,6 +26,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Statement } from "better-sqlite3";
 import type { Database } from "./db.js";
+import { isTransientSqliteBusy } from "./maintenance-jobs.js";
 import {
 	PeriodicRetentionRunner,
 	type PeriodicRetentionRunnerOptions,
@@ -34,8 +35,10 @@ import {
 } from "./periodic-retention.js";
 import {
 	type BackfillState,
-	commitBackfillProgress,
+	type MemoryRowIdentity,
 	readBackfillState,
+	readNewestRows,
+	saveBackfillState,
 } from "./replication-backfill-state.js";
 import type * as schema from "./schema.js";
 import {
@@ -72,6 +75,11 @@ export interface ReplicationBackfillSliceOptions {
 	now?: () => Date;
 	/** Receives the one-time report of unmigratable legacy keys. */
 	warn?: (message: string) => void;
+	/**
+	 * Whether a slice with something to write waits for another writer to finish. A process
+	 * that serves requests passes false: the slice is skipped and the next one does the work.
+	 */
+	waitForWriteLock?: boolean;
 }
 
 export interface ReplicationBackfillSliceResult {
@@ -88,8 +96,8 @@ interface SliceContext {
 	nowIso: string;
 	outOfTime: (shareOfLimit: number) => boolean;
 	result: ReplicationBackfillSliceResult;
-	/** Memories whose legacy key this slice tried and found blocked. */
-	blockedMemoryIds: number[];
+	/** A read-only look: stop at the first row that needs a write instead of writing it. */
+	dryRun: boolean;
 	selectMemory: Statement<[number]>;
 	selectOp: Statement<[string | null, string, number]>;
 }
@@ -141,13 +149,36 @@ function prepareMemory(context: SliceContext, memoryId: number): { keyBlocked: b
 	return { keyBlocked };
 }
 
+type ScanOutcome = "caught-up" | "out-of-time" | "found-work";
+
+/**
+ * One page of changed rows. Moves the position past each row it handled, and returns
+ * whether a dry run met a row that needs a write.
+ */
+function checkChangedPage(
+	context: SliceContext,
+	rows: Array<{ id: number; updated_at: string }>,
+	syncState: Statement<[number]>,
+): boolean {
+	for (const { id, updated_at } of rows) {
+		const row = syncState.get(id) as SyncStateColumns | undefined;
+		if (row && needsOp(context, row)) {
+			if (context.dryRun) return true;
+			prepareMemory(context, id);
+		}
+		context.state.updatedAt = updated_at;
+		context.state.updatedId = id;
+	}
+	return false;
+}
+
 /**
  * Rows changed in place since the last pass, among the rows the ID scan has already covered.
- * Reads the `updated_at` index only until a row needs work. Returns whether it caught up.
+ * Reads the `updated_at` index only until a row needs work.
  */
-function checkChangedRows(context: SliceContext): boolean {
+function checkChangedRows(context: SliceContext): ScanOutcome {
 	const { db, state } = context;
-	if (state.checkedThroughId <= 0) return true;
+	if (state.checkedThroughId <= 0) return "caught-up";
 	// The unary plus keeps the planner on the updated_at index: without it the ID bound could
 	// be chosen as the access path, which reads every checked row.
 	const page = db.prepare(
@@ -166,14 +197,9 @@ function checkChangedRows(context: SliceContext): boolean {
 			state.checkedThroughId,
 			WINDOW_ROWS,
 		) as Array<{ id: number; updated_at: string }>;
-		for (const { id, updated_at } of rows) {
-			const row = syncState.get(id) as SyncStateColumns | undefined;
-			if (row && needsOp(context, row)) prepareMemory(context, id);
-			state.updatedAt = updated_at;
-			state.updatedId = id;
-		}
-		if (rows.length < WINDOW_ROWS) return true;
-		if (context.outOfTime(0.5)) return false;
+		if (checkChangedPage(context, rows, syncState)) return "found-work";
+		if (rows.length < WINDOW_ROWS) return "caught-up";
+		if (context.outOfTime(0.5)) return "out-of-time";
 	}
 }
 
@@ -207,7 +233,7 @@ function checkNewRows(context: SliceContext): boolean {
 			.upper;
 		if (upper == null) return true;
 		for (const id of candidates.all(state.checkedThroughId, upper) as number[]) {
-			if (prepareMemory(context, id).keyBlocked) context.blockedMemoryIds.push(id);
+			if (prepareMemory(context, id).keyBlocked) state.blockedLegacyKeys += 1;
 		}
 		state.checkedThroughId = upper;
 		state.legacyKeysTriedThroughId = Math.max(state.legacyKeysTriedThroughId, upper);
@@ -216,16 +242,37 @@ function checkNewRows(context: SliceContext): boolean {
 }
 
 /**
- * Deleting the newest memory frees its ID for the next insert. Keep the mark at or below
- * the newest existing ID so a reused ID is still read as a new row.
+ * SQLite gives a new memory the ID of a deleted newest row. A replacement can therefore sit
+ * at or below the mark without having been checked, with any `updated_at`, as an import has.
+ * Compare the newest checked rows with the store. When the newest one is gone or is another
+ * memory, go back to the newest remembered row that is unchanged: IDs are only reused above
+ * the rows that survived. With none unchanged, check every memory again.
  */
-function clampToNewestMemory(db: Database, state: BackfillState): number {
+function markBelowReplacedRows(db: Database, state: BackfillState): number {
+	const remembered = state.newestCheckedRows;
+	const newest = remembered[0];
+	if (!newest) return state.checkedThroughId;
+	const current = new Map(readNewestRows(db, newest[0]));
+	const unchanged = ([id, importKey]: MemoryRowIdentity) =>
+		current.has(id) && current.get(id) === importKey;
+	if (unchanged(newest)) return state.checkedThroughId;
+	return remembered.find(unchanged)?.[0] ?? 0;
+}
+
+/**
+ * Lower the mark past any checked row that was deleted since the last slice, so a memory
+ * that reuses a freed ID is read as a new row. Returns the newest memory ID.
+ */
+function lowerMarkToSurvivingRows(db: Database, state: BackfillState): number {
 	const newest = db.prepare("SELECT max(id) AS id FROM memory_items").get() as {
 		id: number | null;
 	};
 	const newestId = newest.id ?? 0;
-	state.checkedThroughId = Math.min(state.checkedThroughId, newestId);
-	state.legacyKeysTriedThroughId = Math.min(state.legacyKeysTriedThroughId, newestId);
+	state.checkedThroughId = Math.min(
+		state.checkedThroughId,
+		newestId,
+		markBelowReplacedRows(db, state),
+	);
 	return newestId;
 }
 
@@ -239,55 +286,31 @@ function initialState(recheckFrom: string): BackfillState {
 		blockedLegacyKeys: 0,
 		reportedBlockedLegacyKeys: 0,
 		initialPassComplete: false,
-		recheckRequests: 0,
+		newestCheckedRows: [],
 	};
 }
 
-/** Whether a slice changed what is stored, or an idle position is old enough to rewrite. */
-function shouldSave(stored: BackfillState | null, context: SliceContext): boolean {
-	const { state, result, blockedMemoryIds } = context;
-	if (!stored || !result.complete) return true;
-	if (result.opsCreated > 0 || result.keysMigrated > 0 || blockedMemoryIds.length > 0) return true;
-	if (
-		state.checkedThroughId !== stored.checkedThroughId ||
-		state.initialPassComplete !== stored.initialPassComplete
-	)
-		return true;
-	return Date.parse(state.updatedAt) - Date.parse(stored.updatedAt) >= IDLE_SAVE_INTERVAL_MS;
+interface SliceTiming {
+	nowIso: string;
+	/** Changed rows are rechecked from this instant on every pass. */
+	recheckFrom: string;
+	outOfTime: (shareOfLimit: number) => boolean;
 }
 
-/**
- * Check what changed since the last slice, within a time limit. Never reads more than a
- * window of rows between checks of the limit.
- */
-export function runReplicationBackfillSlice(
+function sliceContext(
 	db: Database,
-	options: ReplicationBackfillSliceOptions = {},
-): ReplicationBackfillSliceResult {
-	const result: ReplicationBackfillSliceResult = { opsCreated: 0, keysMigrated: 0, complete: true };
-	// Without a device identity no row can be attributed; leave the position untouched so the
-	// first pass after an identity exists covers every row.
-	const localDeviceId = localReplicationDeviceId(db);
-	if (!localDeviceId) return result;
-
-	const clock = options.clock ?? Date.now;
-	const started = clock();
-	const maxRuntimeMs = options.maxRuntimeMs ?? DEFAULT_REPLICATION_BACKFILL_SLICE_MS;
-	const now = (options.now ?? (() => new Date()))();
-	const recheckFrom = new Date(now.getTime() - RECHECK_WINDOW_MS).toISOString();
-
-	const stored = readBackfillState(db);
-	const state = stored ? { ...stored } : initialState(recheckFrom);
-	const newestMemoryId = clampToNewestMemory(db, state);
-	const context: SliceContext = {
+	state: BackfillState,
+	timing: SliceTiming,
+	options: { localDeviceId: string; dryRun: boolean },
+): SliceContext {
+	return {
 		db,
 		state,
-		localDeviceId,
-		nowIso: now.toISOString(),
-		outOfTime: (shareOfLimit) =>
-			Boolean(options.signal?.aborted) || clock() - started >= maxRuntimeMs * shareOfLimit,
-		result,
-		blockedMemoryIds: [],
+		localDeviceId: options.localDeviceId,
+		nowIso: timing.nowIso,
+		outOfTime: timing.outOfTime,
+		result: { opsCreated: 0, keysMigrated: 0, complete: true },
+		dryRun: options.dryRun,
 		selectMemory: db.prepare("SELECT * FROM memory_items WHERE id = ?"),
 		selectOp: db.prepare(
 			`SELECT 1 FROM replication_ops
@@ -295,27 +318,106 @@ export function runReplicationBackfillSlice(
 			 LIMIT 1`,
 		),
 	};
+}
 
-	const changedDone = checkChangedRows(context);
+/**
+ * Whether a slice would write anything, found by reading only. An idle slice ends here, so
+ * it never takes the write lock.
+ */
+function hasWork(db: Database, timing: SliceTiming, localDeviceId: string): boolean {
+	const stored = readBackfillState(db);
+	if (!stored) return true;
+	const state = { ...stored };
+	lowerMarkToSurvivingRows(db, state);
+	if (state.checkedThroughId !== stored.checkedThroughId || !stored.initialPassComplete)
+		return true;
+	const newRow = db.prepare("SELECT 1 FROM memory_items WHERE id > ? LIMIT 1");
+	if (newRow.get(state.checkedThroughId)) return true;
+	const context = sliceContext(db, state, timing, { localDeviceId, dryRun: true });
+	if (checkChangedRows(context) !== "caught-up") return true;
+	// Nothing to write but the position, and that only once it has moved far enough.
+	return Date.parse(timing.recheckFrom) - Date.parse(stored.updatedAt) >= IDLE_SAVE_INTERVAL_MS;
+}
+
+/** The slice proper. The caller holds the write lock, so the stored position cannot change. */
+function runLockedSlice(
+	db: Database,
+	timing: SliceTiming,
+	options: { localDeviceId: string; warn: (message: string) => void },
+): ReplicationBackfillSliceResult {
+	const state = readBackfillState(db) ?? initialState(timing.recheckFrom);
+	const newestMemoryId = lowerMarkToSurvivingRows(db, state);
+	const context = sliceContext(db, state, timing, {
+		localDeviceId: options.localDeviceId,
+		dryRun: false,
+	});
+
+	const changedDone = checkChangedRows(context) === "caught-up";
 	// Caught up: the next pass rechecks the recent window again, wherever this one stopped.
 	if (changedDone) {
-		state.updatedAt = recheckFrom;
+		state.updatedAt = timing.recheckFrom;
 		state.updatedId = 0;
 	}
 	const newDone = checkNewRows(context);
-	result.complete = changedDone && newDone;
 	if (newDone) state.initialPassComplete = true;
+	context.result.complete = changedDone && newDone;
 
-	if (shouldSave(stored, context)) {
-		commitBackfillProgress(db, {
-			startedFrom: stored,
-			reached: state,
-			blockedMemoryIds: context.blockedMemoryIds,
-			newestMemoryId,
-			warn: options.warn ?? console.warn,
-		});
+	saveBackfillState(db, state, { newestMemoryId, warn: options.warn });
+	return context.result;
+}
+
+/**
+ * Runs `work` holding the write lock. Without `wait`, returns null when another writer
+ * holds the lock.
+ */
+function withWriteLock<T>(db: Database, wait: boolean, work: () => T): T | null {
+	if (wait) return db.transaction(work).immediate();
+	const previous = db.pragma("busy_timeout", { simple: true }) as number;
+	db.pragma("busy_timeout = 0");
+	try {
+		return db.transaction(work).immediate();
+	} catch (error) {
+		if (isTransientSqliteBusy(error)) return null;
+		throw error;
+	} finally {
+		db.pragma(`busy_timeout = ${Number(previous) || 0}`);
 	}
-	return result;
+}
+
+/**
+ * Check what changed since the last slice, within a time limit. Never reads more than a
+ * window of rows between checks of the limit.
+ *
+ * A slice first reads whether there is anything to write. Only then does it take the write
+ * lock and work under it, so slices from the sync pass and from the maintenance worker run
+ * one at a time and each sees the position the other stored.
+ */
+export function runReplicationBackfillSlice(
+	db: Database,
+	options: ReplicationBackfillSliceOptions = {},
+): ReplicationBackfillSliceResult {
+	const idle: ReplicationBackfillSliceResult = { opsCreated: 0, keysMigrated: 0, complete: true };
+	// Without a device identity no row can be attributed; leave the position untouched so the
+	// first pass after an identity exists covers every row.
+	const localDeviceId = localReplicationDeviceId(db);
+	if (!localDeviceId) return idle;
+
+	const clock = options.clock ?? Date.now;
+	const started = clock();
+	const maxRuntimeMs = options.maxRuntimeMs ?? DEFAULT_REPLICATION_BACKFILL_SLICE_MS;
+	const now = (options.now ?? (() => new Date()))();
+	const timing: SliceTiming = {
+		nowIso: now.toISOString(),
+		recheckFrom: new Date(now.getTime() - RECHECK_WINDOW_MS).toISOString(),
+		outOfTime: (shareOfLimit) =>
+			Boolean(options.signal?.aborted) || clock() - started >= maxRuntimeMs * shareOfLimit,
+	};
+	if (!hasWork(db, timing, localDeviceId)) return idle;
+
+	const result = withWriteLock(db, options.waitForWriteLock ?? true, () =>
+		runLockedSlice(db, timing, { localDeviceId, warn: options.warn ?? console.warn }),
+	);
+	return result ?? { ...idle, complete: false };
 }
 
 /**

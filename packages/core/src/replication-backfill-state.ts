@@ -4,6 +4,9 @@
  *
  * The position lives in the `maintenance_jobs` row for {@link REPLICATION_BACKFILL_JOB}. The
  * row reads `running` during the first full check of a store and `completed` afterwards.
+ * The pass writes it while holding the write lock, so the sync pass and the maintenance
+ * worker, which run slices from separate processes, never overwrite each other's progress
+ * or a recheck request.
  */
 import type { Database } from "./db.js";
 import {
@@ -14,6 +17,11 @@ import {
 
 export const REPLICATION_BACKFILL_JOB = "replication_op_backfill";
 const JOB_TITLE = "Preparing memories for sync";
+/** How many of the newest checked memories are remembered. */
+const NEWEST_CHECKED_ROWS = 8;
+
+/** A memory's ID and import key, enough to tell whether an ID now holds another memory. */
+export type MemoryRowIdentity = [id: number, importKey: string | null];
 
 export interface BackfillState {
 	/** Every memory with an ID up to this one has been checked for a missing op. */
@@ -28,26 +36,25 @@ export interface BackfillState {
 	reportedBlockedLegacyKeys: number;
 	/** Whether every existing memory has been checked once. */
 	initialPassComplete: boolean;
-	/** How many full rechecks have been requested; a slice compares it to notice a new one. */
-	recheckRequests: number;
-}
-
-/** What one slice did, for {@link commitBackfillProgress} to combine with the stored position. */
-export interface BackfillProgress {
-	/** The position the slice read when it started, or null on a store never checked. */
-	startedFrom: BackfillState | null;
-	/** The position the slice reached. Its counts of blocked keys are ignored. */
-	reached: BackfillState;
-	/** Memories whose legacy key the slice tried and found blocked. */
-	blockedMemoryIds: readonly number[];
-	newestMemoryId: number;
-	/** Receives the one-time report of unmigratable legacy keys. */
-	warn: (message: string) => void;
+	/**
+	 * The newest checked memories, newest first. SQLite reuses the ID of a deleted newest
+	 * row, so a slice compares these with the store to notice checked rows that were deleted
+	 * and replaced since the last one.
+	 */
+	newestCheckedRows: MemoryRowIdentity[];
 }
 
 function finiteInteger(value: unknown): number {
 	const parsed = Number(value);
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function rowIdentitiesFrom(value: unknown): MemoryRowIdentity[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((entry): MemoryRowIdentity[] => {
+		if (!Array.isArray(entry) || finiteInteger(entry[0]) === 0) return [];
+		return [[finiteInteger(entry[0]), typeof entry[1] === "string" ? entry[1] : null]];
+	});
 }
 
 export function readBackfillState(db: Database): BackfillState | null {
@@ -61,8 +68,16 @@ export function readBackfillState(db: Database): BackfillState | null {
 		blockedLegacyKeys: finiteInteger(metadata.blocked_legacy_keys),
 		reportedBlockedLegacyKeys: finiteInteger(metadata.reported_blocked_legacy_keys),
 		initialPassComplete: metadata.initial_pass_complete === true,
-		recheckRequests: finiteInteger(metadata.recheck_requests),
+		newestCheckedRows: rowIdentitiesFrom(metadata.newest_checked_rows),
 	};
+}
+
+/** The newest memories at or below `throughId`, newest first, as the store has them now. */
+export function readNewestRows(db: Database, throughId: number): MemoryRowIdentity[] {
+	return db
+		.prepare("SELECT id, import_key FROM memory_items WHERE id <= ? ORDER BY id DESC LIMIT ?")
+		.raw()
+		.all(throughId, NEWEST_CHECKED_ROWS) as MemoryRowIdentity[];
 }
 
 function blockedKeysMessage(count: number): string | null {
@@ -79,68 +94,41 @@ function stateMetadata(state: BackfillState): Record<string, unknown> {
 		blocked_legacy_keys: state.blockedLegacyKeys,
 		reported_blocked_legacy_keys: state.reportedBlockedLegacyKeys,
 		initial_pass_complete: state.initialPassComplete,
-		recheck_requests: state.recheckRequests,
+		newest_checked_rows: state.newestCheckedRows,
 	};
 }
 
 /**
- * The sync pass and the maintenance worker run slices from separate processes, and pruning
- * can request a recheck while a slice is under way. Combine a slice's result with what is
- * stored now, so neither a recheck request nor another process's progress is overwritten
- * and a blocked key another process already counted is not counted twice.
+ * Store the position a slice reached, and report unmigratable legacy keys once the first
+ * check is done. The caller holds the write lock.
  */
-function combineWithStored(saved: BackfillState | null, progress: BackfillProgress): BackfillState {
-	const { startedFrom, reached, blockedMemoryIds } = progress;
-	if (!saved) return { ...reached, blockedLegacyKeys: blockedMemoryIds.length };
-	const recheckRequested = saved.recheckRequests > (startedFrom?.recheckRequests ?? 0);
-	const newlyBlocked = blockedMemoryIds.filter((id) => id > saved.legacyKeysTriedThroughId);
-	// Another process may be further along, but no mark may pass the newest memory: a deleted
-	// newest row frees its ID, and the memory that reuses it must still be read as new.
-	const newestChecked = Math.max(progress.newestMemoryId, reached.checkedThroughId);
-	const furthest = (savedMark: number, reachedMark: number) =>
-		Math.min(newestChecked, Math.max(savedMark, reachedMark));
-	return {
-		...reached,
-		checkedThroughId: recheckRequested
-			? 0
-			: furthest(saved.checkedThroughId, reached.checkedThroughId),
-		legacyKeysTriedThroughId: furthest(
-			saved.legacyKeysTriedThroughId,
-			reached.legacyKeysTriedThroughId,
-		),
-		blockedLegacyKeys: saved.blockedLegacyKeys + newlyBlocked.length,
-		reportedBlockedLegacyKeys: saved.reportedBlockedLegacyKeys,
-		initialPassComplete: saved.initialPassComplete || reached.initialPassComplete,
-		recheckRequests: saved.recheckRequests,
-	};
-}
+export function saveBackfillState(
+	db: Database,
+	state: BackfillState,
+	context: { newestMemoryId: number; warn: (message: string) => void },
+): void {
+	const unreported = state.blockedLegacyKeys - state.reportedBlockedLegacyKeys;
+	const report = state.initialPassComplete ? blockedKeysMessage(unreported) : null;
+	if (report) state.reportedBlockedLegacyKeys = state.blockedLegacyKeys;
+	state.newestCheckedRows = readNewestRows(db, state.checkedThroughId);
 
-/** Store a slice's progress, and report unmigratable legacy keys once the first check is done. */
-export function commitBackfillProgress(db: Database, progress: BackfillProgress): void {
-	db.transaction(() => {
-		const state = combineWithStored(readBackfillState(db), progress);
-		const unreported = state.blockedLegacyKeys - state.reportedBlockedLegacyKeys;
-		const report = state.initialPassComplete ? blockedKeysMessage(unreported) : null;
-		if (report) state.reportedBlockedLegacyKeys = state.blockedLegacyKeys;
-
-		const metadata = stateMetadata(state);
-		if (!getMaintenanceJob(db, REPLICATION_BACKFILL_JOB)) {
-			startMaintenanceJob(db, {
-				kind: REPLICATION_BACKFILL_JOB,
-				title: JOB_TITLE,
-				progressUnit: "memories",
-				metadata,
-			});
-		}
-		updateMaintenanceJob(db, REPLICATION_BACKFILL_JOB, {
-			status: state.initialPassComplete ? "completed" : "running",
-			message: state.initialPassComplete ? blockedKeysMessage(state.blockedLegacyKeys) : null,
-			progressCurrent: state.checkedThroughId,
-			progressTotal: Math.max(progress.newestMemoryId, state.checkedThroughId),
+	const metadata = stateMetadata(state);
+	if (!getMaintenanceJob(db, REPLICATION_BACKFILL_JOB)) {
+		startMaintenanceJob(db, {
+			kind: REPLICATION_BACKFILL_JOB,
+			title: JOB_TITLE,
+			progressUnit: "memories",
 			metadata,
 		});
-		if (report) progress.warn(`[codemem] ${report}. They are not tried again.`);
-	}).immediate();
+	}
+	updateMaintenanceJob(db, REPLICATION_BACKFILL_JOB, {
+		status: state.initialPassComplete ? "completed" : "running",
+		message: state.initialPassComplete ? blockedKeysMessage(state.blockedLegacyKeys) : null,
+		progressCurrent: state.checkedThroughId,
+		progressTotal: Math.max(context.newestMemoryId, state.checkedThroughId),
+		metadata,
+	});
+	if (report) context.warn(`[codemem] ${report}. They are not tried again.`);
 }
 
 /**
@@ -151,12 +139,8 @@ export function commitBackfillProgress(db: Database, progress: BackfillProgress)
  */
 export function requestReplicationBackfillRecheck(db: Database): void {
 	const state = readBackfillState(db);
-	if (!state) return;
+	if (!state || state.checkedThroughId === 0) return;
 	updateMaintenanceJob(db, REPLICATION_BACKFILL_JOB, {
-		metadata: stateMetadata({
-			...state,
-			checkedThroughId: 0,
-			recheckRequests: state.recheckRequests + 1,
-		}),
+		metadata: stateMetadata({ ...state, checkedThroughId: 0 }),
 	});
 }

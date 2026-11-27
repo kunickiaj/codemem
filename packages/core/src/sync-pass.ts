@@ -1395,7 +1395,9 @@ export { syncOneScope as syncScopedPeerPull };
  */
 export function syncPassPreflight(db: Database, options: { maxRuntimeMs?: number } = {}): void {
 	ensureAdditiveSchemaCompatibility(db);
-	runReplicationBackfillSlice(db, { maxRuntimeMs: options.maxRuntimeMs });
+	// The daemon runs on the Viewer's event loop, so its slice does not wait behind another
+	// writer. A skipped slice costs nothing: the next tick or the maintenance worker does it.
+	runReplicationBackfillSlice(db, { maxRuntimeMs: options.maxRuntimeMs, waitForWriteLock: false });
 }
 
 type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
