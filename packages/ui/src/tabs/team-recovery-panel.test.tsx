@@ -65,12 +65,17 @@ function actions(overrides: Partial<TeamRecoveryActions> = {}): TeamRecoveryActi
 	};
 }
 
-async function mount(recovery: TeamRecoveryActions, onRecovered = vi.fn()) {
+async function mount(recovery: TeamRecoveryActions, onRecovered = vi.fn(), refreshKey = 0) {
 	const element = document.getElementById("mount");
 	if (!element) throw new Error("mount missing");
 	await act(async () => {
 		render(
-			<TeamRecoveryPanel actions={recovery} candidateRef="candidate-1" onRecovered={onRecovered} />,
+			<TeamRecoveryPanel
+				actions={recovery}
+				candidateRef="candidate-1"
+				onRecovered={onRecovered}
+				refreshKey={refreshKey}
+			/>,
 			element,
 		);
 	});
@@ -82,6 +87,8 @@ async function click(id: string) {
 	if (!button) throw new Error(`button missing: ${id}`);
 	await act(async () => {
 		button.click();
+		// Let the calls the click started settle: a recovery commits, then refreshes.
+		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 }
 
@@ -222,4 +229,67 @@ describe("Team recovery panel", () => {
 		expect(text("team-recovery-review-button")).toBe("Checking the coordinator…");
 		await act(async () => finish(PREVIEW));
 	});
+});
+
+describe("Team recovery panel when something around the recovery fails", () => {
+	it("reads the summary again when the dialog retries, after a first read failed", async () => {
+		const loadSummary = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("offline"))
+			.mockResolvedValue(summary("team-1"));
+		const recovery = actions({ loadSummary });
+		const onRecovered = await mount(recovery);
+		expect(document.getElementById("team-recovery-panel")).toBeNull();
+
+		await mount(recovery, onRecovered, 1);
+
+		expect(loadSummary).toHaveBeenCalledTimes(2);
+		expect(document.getElementById("team-recovery-review-button")).not.toBeNull();
+	});
+
+	it("says the Team is recovered and offers to refresh again when the refresh after it fails", async () => {
+		const onRecovered = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("team_setup_refresh_failed"))
+			.mockResolvedValue(undefined);
+		const recovery = actions();
+		await mount(recovery, onRecovered);
+		await click("team-recovery-review-button");
+		await click("team-recovery-commit");
+
+		const failed = text("team-recovery-status");
+		await click("team-recovery-refresh");
+
+		expect(failed).toContain("Engineering is recovered");
+		expect(failed).toContain("Sharing couldn't be refreshed");
+		expect(text("team-recovery-status")).toContain("Close this dialog to see the Team in Sharing");
+		expect(onRecovered).toHaveBeenCalledTimes(2);
+		expect(recovery.commit).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["the answer to the commit was lost", new TeamRecoveryApiError(0, "team_recovery_failed")],
+		["the commit failed for a reason the Viewer did not name", new Error("unreadable")],
+	])(
+		"does not say nothing changed when %s, and checks the Team's status on request",
+		async (_case, cause) => {
+			const loadSummary = vi
+				.fn()
+				.mockResolvedValueOnce(summary("team-1"))
+				.mockResolvedValue(summary());
+			const onRecovered = vi.fn();
+			await mount(actions({ loadSummary, commit: vi.fn().mockRejectedValue(cause) }), onRecovered);
+			await click("team-recovery-review-button");
+			await click("team-recovery-commit");
+
+			const unknown = text("team-recovery-error");
+			await click("team-recovery-check");
+
+			expect(unknown).toContain("couldn't confirm whether the Team was recovered");
+			expect(unknown).not.toContain("Nothing changed");
+			// The summary no longer names the Team, so the recovery went through.
+			expect(text("team-recovery-status")).toContain("no longer needs recovery");
+			expect(onRecovered).toHaveBeenCalledTimes(1);
+		},
+	);
 });

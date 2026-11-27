@@ -11,6 +11,7 @@ import {
 	type InteractiveTeamSetupStep,
 	reduceSetupSession,
 	type SetupSessionEvent,
+	type SetupSessionState,
 } from "./legacy-team-setup-session";
 import { type TeamRecoveryActions, TeamRecoveryPanel } from "./team-recovery-panel";
 
@@ -108,18 +109,11 @@ function decideDevice(dispatch: (event: SetupSessionEvent) => void) {
 	};
 }
 
-function LegacyTeamSetupDialogHost({
-	dependencies,
-}: {
-	dependencies: LegacyTeamSetupDialogDependencies;
-}) {
-	const [session, setSession] = useState(createSetupSessionState);
-	const returnFocus = useRef<HTMLElement | null>(null);
-	const runner = useMemo(() => createSetupEffectRunner(dependencies), [dependencies]);
-	const dispatch = (event: SetupSessionEvent) => {
-		setSession((current) => reduceSetupSession(current, event));
-	};
-
+/** Opens the dialog for each request another part of the Viewer sends. */
+function useOpenRequests(
+	setSession: (update: (current: SetupSessionState) => SetupSessionState) => void,
+	returnFocus: { current: HTMLElement | null },
+) {
 	useLayoutEffect(() => {
 		const onOpen = (event: Event) => {
 			const request = event as CustomEvent<OpenTeamSetupEventDetail>;
@@ -143,7 +137,18 @@ function LegacyTeamSetupDialogHost({
 		return () => {
 			window.removeEventListener(OPEN_TEAM_SETUP_EVENT, onOpen);
 		};
-	}, []);
+	}, [returnFocus, setSession]);
+}
+
+/** The setup session: its state, its events, and the effects its commands and focus ask for. */
+function useSetupSession(dependencies: LegacyTeamSetupDialogDependencies) {
+	const [session, setSession] = useState(createSetupSessionState);
+	const returnFocus = useRef<HTMLElement | null>(null);
+	const runner = useMemo(() => createSetupEffectRunner(dependencies), [dependencies]);
+	const dispatch = (event: SetupSessionEvent) => {
+		setSession((current) => reduceSetupSession(current, event));
+	};
+	useOpenRequests(setSession, returnFocus);
 
 	useEffect(() => {
 		if (session.status !== "open") return;
@@ -162,6 +167,17 @@ function LegacyTeamSetupDialogHost({
 		target.focus();
 		dispatch({ type: "focus_applied", id: session.focus.id });
 	}, [session]);
+	return { session, dispatch, returnFocus };
+}
+
+function LegacyTeamSetupDialogHost({
+	dependencies,
+}: {
+	dependencies: LegacyTeamSetupDialogDependencies;
+}) {
+	const { session, dispatch, returnFocus } = useSetupSession(dependencies);
+	// Retrying or refreshing the setup also reads again whether its Team needs a recovery.
+	const [recoveryChecks, setRecoveryChecks] = useState(0);
 
 	if (session.status === "closed") return null;
 	const close = () => {
@@ -189,13 +205,20 @@ function LegacyTeamSetupDialogHost({
 			}
 			onNavigate={navigate}
 			onOpenAutoFocus={focusTitle}
-			onRefresh={() => dispatch({ type: "refresh" })}
-			onRetry={() => dispatch({ type: "retry" })}
+			onRefresh={() => {
+				setRecoveryChecks((count) => count + 1);
+				dispatch({ type: "refresh" });
+			}}
+			onRetry={() => {
+				setRecoveryChecks((count) => count + 1);
+				dispatch({ type: "retry" });
+			}}
 			recoveryPanel={
 				<TeamRecoveryPanel
 					actions={dependencies.recovery}
 					candidateRef={session.candidateRef}
 					onRecovered={dependencies.onCompleted}
+					refreshKey={recoveryChecks}
 				/>
 			}
 		/>

@@ -212,7 +212,9 @@ const UNCONFIRMED_INTRO =
 type Step =
 	| { kind: "idle" }
 	| { kind: "review"; preview: TeamRecoveryPreviewV1 }
-	| { kind: "recovered"; teamName: string };
+	/** The commit's answer was lost or unreadable, so the recovery may have gone through. */
+	| { kind: "unconfirmed" }
+	| { kind: "recovered"; teamName: string; refresh: "running" | "done" | "failed" };
 
 interface RecoverableTeam {
 	teamId: string;
@@ -220,30 +222,45 @@ interface RecoverableTeam {
 	unconfirmed: boolean;
 }
 
-/** The Team the candidate's recovery would restore, once the summary names one. */
+/**
+ * The Team the candidate's recovery would restore, read from the summary again
+ * whenever `refreshKey` changes or `reload` is called. `offered` says whether
+ * this panel was ever given a Team, so that one no longer named reads as done.
+ */
 function useRecoverableTeam(
 	candidateRef: string,
 	actions: TeamRecoveryActions,
-): RecoverableTeam | null {
+	refreshKey: unknown,
+) {
 	const [team, setTeam] = useState<RecoverableTeam | null>(null);
+	const [offered, setOffered] = useState(false);
+	const [reloads, setReloads] = useState(0);
 	useEffect(() => {
 		let current = true;
-		setTeam(null);
+		void reloads;
+		void refreshKey;
 		actions
 			.loadSummary()
 			.then((summary) => {
+				if (!current) return;
 				const candidate = summary.candidates.find((item) => item.candidateRef === candidateRef);
 				const teamId = candidate?.recoverableTeamId;
 				const unconfirmed = candidate?.blockingReason === "team_recovery_unconfirmed";
-				if (current) setTeam(teamId ? { teamId, unconfirmed } : null);
+				setTeam(teamId ? { teamId, unconfirmed } : null);
+				if (teamId) setOffered(true);
 			})
-			// Without the summary there is no Team to offer, and Retry above still works.
+			// The last answer stays. Retry in the dialog, or Check status here, reads it again.
 			.catch(() => undefined);
 		return () => {
 			current = false;
 		};
-	}, [actions, candidateRef]);
-	return team;
+	}, [actions, candidateRef, refreshKey, reloads]);
+	return { team, offered, reload: () => setReloads((count) => count + 1) };
+}
+
+/** Whether a failed commit may have gone through: no answer, an unreadable one, or no known refusal. */
+function commitOutcomeUnknown(cause: unknown): boolean {
+	return !(cause instanceof api.TeamRecoveryApiError) || cause.errorCode === "team_recovery_failed";
 }
 
 /** The recovery's steps and the calls behind them. */
@@ -255,13 +272,14 @@ function useTeamRecovery(
 	const [step, setStep] = useState<Step>({ kind: "idle" });
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
-	const run = async (work: (teamId: string) => Promise<Step>) => {
+	const run = async (work: (teamId: string) => Promise<Step>, committing = false) => {
 		if (busy || !teamId) return;
 		setBusy(true);
 		setError("");
 		try {
 			setStep(await work(teamId));
 		} catch (cause) {
+			if (committing && commitOutcomeUnknown(cause)) return setStep({ kind: "unconfirmed" });
 			// A refused or unsettled recovery needs a new review: its digest no longer holds.
 			setStep({ kind: "idle" });
 			setError(errorMessage(cause));
@@ -269,16 +287,34 @@ function useTeamRecovery(
 			setBusy(false);
 		}
 	};
+	const refreshed = (teamName: string) => refreshAfterRecovery(teamName, onRecovered);
 	const review = () =>
 		run(async (id) => ({ kind: "review", preview: await actions.preview({ teamId: id }) }));
 	const recover = (preview: TeamRecoveryPreviewV1) =>
 		run(async (id) => {
 			await actions.commit({ teamId: id, expectedDigest: preview.expectedDigest });
-			void onRecovered?.();
-			return { kind: "recovered", teamName: preview.teamName };
-		});
-	const cancel = () => setStep({ kind: "idle" });
-	return { step, busy, error, review, recover, cancel };
+			return refreshed(preview.teamName);
+		}, true);
+	// Refreshes again after a failed refresh. It never recovers the Team a second time.
+	const refresh = async (teamName: string) => {
+		setStep({ kind: "recovered", teamName, refresh: "running" });
+		setStep(await refreshed(teamName));
+	};
+	const reset = () => setStep({ kind: "idle" });
+	return { step, busy, error, review, recover, refresh, reset };
+}
+
+/** Refreshes what the dialog was opened from once a recovery went through, and says how that went. */
+async function refreshAfterRecovery(
+	teamName: string,
+	onRecovered: (() => Promise<unknown> | unknown) | undefined,
+): Promise<Step> {
+	try {
+		await onRecovered?.();
+		return { kind: "recovered", teamName, refresh: "done" };
+	} catch {
+		return { kind: "recovered", teamName, refresh: "failed" };
+	}
 }
 
 export interface TeamRecoveryPanelProps {
@@ -286,6 +322,8 @@ export interface TeamRecoveryPanelProps {
 	actions?: Partial<TeamRecoveryActions>;
 	/** Runs once the Team is recovered, to refresh what the dialog was opened from. */
 	onRecovered?: () => Promise<unknown> | unknown;
+	/** Changes when the dialog retries or refreshes, so the panel reads the summary again. */
+	refreshKey?: unknown;
 }
 
 function PanelButton(props: { busy: boolean; id: string; label: string; onClick: () => void }) {
@@ -305,6 +343,76 @@ function PanelButton(props: { busy: boolean; id: string; label: string; onClick:
 	);
 }
 
+/** The panel once the recovery went through, with a retry for the refresh after it. */
+function RecoveredStatus(props: {
+	step: Extract<Step, { kind: "recovered" }>;
+	onRefresh: (teamName: string) => void;
+}) {
+	const { teamName, refresh } = props.step;
+	return (
+		<section className="team-recovery-panel" id="team-recovery-panel">
+			<p id="team-recovery-status" role="status">
+				{teamName} is recovered. Its devices receive its Projects again.
+				{refresh === "failed"
+					? " Sharing couldn't be refreshed to show it."
+					: " Close this dialog to see the Team in Sharing."}
+			</p>
+			{refresh === "failed" ? (
+				<PanelButton
+					busy={false}
+					id="team-recovery-refresh"
+					label="Refresh Sharing"
+					onClick={() => props.onRefresh(teamName)}
+				/>
+			) : null}
+		</section>
+	);
+}
+
+const NO_LONGER_NEEDED =
+	"This Team no longer needs recovery. Close this dialog to see it in Sharing.";
+const OUTCOME_UNKNOWN =
+	"codemem couldn't confirm whether the Team was recovered. It may already be sharing its Projects again. Check its status before trying again.";
+
+/** The panel's buttons for the step it is at. */
+function RecoveryActions(props: {
+	step: Step;
+	busy: boolean;
+	recovery: ReturnType<typeof useTeamRecovery>;
+	onCheckStatus: () => void;
+}) {
+	const { step, busy, recovery } = props;
+	if (step.kind === "unconfirmed")
+		return (
+			<PanelButton
+				busy={busy}
+				id="team-recovery-check"
+				label="Check the Team's status"
+				onClick={props.onCheckStatus}
+			/>
+		);
+	if (step.kind !== "review")
+		return (
+			<PanelButton
+				busy={busy}
+				id="team-recovery-review-button"
+				label={busy ? "Checking the coordinator…" : "Review recovery"}
+				onClick={recovery.review}
+			/>
+		);
+	return (
+		<div className="team-recovery-actions">
+			<PanelButton
+				busy={busy}
+				id="team-recovery-commit"
+				label={busy ? "Recovering…" : "Recover Team"}
+				onClick={() => recovery.recover(step.preview)}
+			/>
+			<PanelButton busy={busy} id="team-recovery-cancel" label="Cancel" onClick={recovery.reset} />
+		</div>
+	);
+}
+
 /**
  * Recovering a Team that was turned off after device removals: review what
  * comes back and what stays out, then recover. Renders nothing unless the Team
@@ -312,19 +420,22 @@ function PanelButton(props: { busy: boolean; id: string; label: string; onClick:
  */
 export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 	const [actions] = useState(() => ({ ...defaultActions, ...props.actions }));
-	const team = useRecoverableTeam(props.candidateRef, actions);
+	const { team, offered, reload } = useRecoverableTeam(
+		props.candidateRef,
+		actions,
+		props.refreshKey,
+	);
 	const recovery = useTeamRecovery(team?.teamId ?? null, actions, props.onRecovered);
 	const { step, busy, error } = recovery;
-	if (!team) return null;
 	if (step.kind === "recovered")
-		return (
-			<section className="team-recovery-panel" id="team-recovery-panel">
-				<p id="team-recovery-status" role="status">
-					{step.teamName} is recovered. Its devices receive its Projects again. Close this dialog to
-					see the Team in Sharing.
-				</p>
-			</section>
-		);
+		return <RecoveredStatus onRefresh={recovery.refresh} step={step} />;
+	if (!team) return offered ? <NoLongerNeeded /> : null;
+	// Checking the status refreshes what the dialog was opened from and reads the summary again.
+	const checkStatus = () => {
+		recovery.reset();
+		Promise.resolve(props.onRecovered?.()).catch(() => undefined);
+		reload();
+	};
 	return (
 		<section
 			aria-busy={busy ? "true" : "false"}
@@ -333,35 +444,23 @@ export function TeamRecoveryPanel(props: TeamRecoveryPanelProps) {
 		>
 			<strong>Recover this Team</strong>
 			<p className="small">{team.unconfirmed ? UNCONFIRMED_INTRO : TURNED_OFF_INTRO}</p>
-			{error ? (
+			{error || step.kind === "unconfirmed" ? (
 				<p aria-live="assertive" id="team-recovery-error" role="alert">
-					{error}
+					{step.kind === "unconfirmed" ? OUTCOME_UNKNOWN : error}
 				</p>
 			) : null}
 			{step.kind === "review" ? <RecoveryReview preview={step.preview} /> : null}
-			{step.kind === "review" ? (
-				<div className="team-recovery-actions">
-					<PanelButton
-						busy={busy}
-						id="team-recovery-commit"
-						label={busy ? "Recovering…" : "Recover Team"}
-						onClick={() => recovery.recover(step.preview)}
-					/>
-					<PanelButton
-						busy={busy}
-						id="team-recovery-cancel"
-						label="Cancel"
-						onClick={recovery.cancel}
-					/>
-				</div>
-			) : (
-				<PanelButton
-					busy={busy}
-					id="team-recovery-review-button"
-					label={busy ? "Checking the coordinator…" : "Review recovery"}
-					onClick={recovery.review}
-				/>
-			)}
+			<RecoveryActions busy={busy} onCheckStatus={checkStatus} recovery={recovery} step={step} />
+		</section>
+	);
+}
+
+function NoLongerNeeded() {
+	return (
+		<section className="team-recovery-panel" id="team-recovery-panel">
+			<p id="team-recovery-status" role="status">
+				{NO_LONGER_NEEDED}
+			</p>
 		</section>
 	);
 }
