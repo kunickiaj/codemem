@@ -1828,7 +1828,7 @@ describe("semantic index coverage", () => {
 			state: "pending",
 			indexed_memory_count: 1,
 			pending_memory_count: 1,
-			summary: "1 memory(s) still need semantic indexing",
+			summary: "1 memory has no vectors yet; background catch-up adds them",
 		});
 	});
 });

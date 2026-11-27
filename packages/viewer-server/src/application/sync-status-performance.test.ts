@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as core from "@codemem/core";
 import { ensureDeviceIdentity, initTestSchema, MemoryStore } from "@codemem/core";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -432,5 +433,35 @@ describe("sync status coordinator answers", () => {
 			vi.unstubAllGlobals();
 			vi.unstubAllEnvs();
 		}
+	});
+});
+
+describe("sync status semantic index summary", () => {
+	it("shows how many memories lack vectors when no catch-up job is running", async () => {
+		const summary = "2 memories have no vectors yet; background catch-up adds them";
+		vi.spyOn(core, "getSemanticIndexDiagnostics").mockReturnValue({
+			state: "pending",
+			summary,
+			mode: "semantic",
+			current_model: "test-model",
+			semantic_search_model: "test-model",
+			embeddable_memory_count: 10,
+			indexed_memory_count: 8,
+			pending_memory_count: 2,
+			maintenance_job: {
+				status: "completed",
+				message: "Finished vector catch-up for incremental sync data",
+				error: null,
+			},
+		} as unknown as ReturnType<typeof core.getSemanticIndexDiagnostics>);
+
+		const response = await app.request("/api/sync/status");
+		const body = (await response.json()) as Record<string, unknown>;
+
+		expect(body.semantic_index).toMatchObject({
+			state: "pending",
+			summary,
+			maintenance_job: { status: "completed", message: null },
+		});
 	});
 });

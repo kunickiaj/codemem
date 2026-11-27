@@ -2992,14 +2992,16 @@ function redactSemanticIndexDiagnostics(
 	if (showDiagnostics || !diagnostics.maintenance_job) {
 		return diagnostics;
 	}
-	const summary =
-		diagnostics.state === "pending"
-			? "Semantic-index catch-up is pending"
-			: diagnostics.state === "failed"
-				? "Semantic-index catch-up failed"
-				: diagnostics.state === "degraded"
-					? "Semantic index is running in degraded mode"
-					: diagnostics.summary;
+	const job = diagnostics.maintenance_job;
+	const jobActive = job.status === "pending" || job.status === "running";
+	// Without a running job the pending summary is only a count of memories that
+	// have no vectors, which reveals nothing the job message would.
+	const redactedSummaries: Partial<Record<SemanticIndexDiagnostics["state"], string>> = {
+		failed: "Semantic-index catch-up failed",
+		degraded: "Semantic index is running in degraded mode",
+		...(jobActive ? { pending: "Semantic-index catch-up is pending" } : {}),
+	};
+	const summary = redactedSummaries[diagnostics.state] ?? diagnostics.summary;
 	return {
 		...diagnostics,
 		summary,

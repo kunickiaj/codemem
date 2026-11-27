@@ -1133,6 +1133,44 @@ function countIndexedActiveMemories(db: Database, models: string[]): number {
 	}
 }
 
+/**
+ * Active memories with text that have no vector under `model`, oldest first. The
+ * vector catch-up uses this to repair memories whose queued vector work was lost.
+ */
+export function findActiveMemoriesMissingVectors(
+	db: Database,
+	model: string,
+	limit: number,
+	/** Memories to leave out before the limit applies, such as ones already queued. */
+	excludeMemoryIds: Iterable<number> = [],
+): number[] {
+	if (isEmbeddingDisabled() || !vectorStoreExists(db)) return [];
+	const vectorRows = readyValidatedCatalog(db)
+		? "SELECT 1 FROM validated_vector_rows v WHERE v.memory_id = mi.id AND v.model = ?"
+		: "SELECT 1 FROM memory_vectors v WHERE v.memory_id = mi.id AND v.model = ?";
+	try {
+		return db
+			.prepare(
+				`SELECT mi.id FROM memory_items mi
+				 WHERE mi.active = 1
+				   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''
+				   AND NOT EXISTS (${vectorRows})
+				   AND mi.id NOT IN (SELECT value FROM json_each(?))
+				 ORDER BY mi.id
+				 LIMIT ?`,
+			)
+			.pluck()
+			.all(
+				model,
+				JSON.stringify([...excludeMemoryIds]),
+				Math.max(1, Math.trunc(limit)),
+			) as number[];
+	} catch (error) {
+		if (isVecModuleMissingError(error)) return [];
+		throw error;
+	}
+}
+
 function countIndexedActiveMemoriesFast(db: Database, models: string[]): number {
 	if (isEmbeddingDisabled() || !vectorStoreExists(db)) return 0;
 	const placeholders = models.map(() => "?").join(", ");
@@ -1185,6 +1223,12 @@ function resolvePendingMemoryCount(
 	return fallbackPendingCount;
 }
 
+/** A coverage gap with no catch-up running: memories that have no vectors yet. */
+function missingVectorsSummary(count: number): string {
+	const noun = count === 1 ? "memory has" : "memories have";
+	return `${count} ${noun} no vectors yet; background catch-up adds them`;
+}
+
 function summarizeSemanticIndexState(
 	state: SemanticIndexState,
 	counts: { embeddable: number; indexed: number; pending: number },
@@ -1206,7 +1250,7 @@ function summarizeSemanticIndexState(
 	if (state === "pending") {
 		const jobActive = job?.status === "pending" || job?.status === "running";
 		const jobMessage = jobActive ? job?.message : null;
-		return jobMessage ?? `${counts.pending} memory(s) still need semantic indexing`;
+		return jobMessage ?? missingVectorsSummary(counts.pending);
 	}
 	if (counts.embeddable === 0) {
 		return "No embeddable memories need semantic indexing";
