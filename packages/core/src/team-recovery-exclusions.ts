@@ -65,6 +65,16 @@ export function teamRecoveryExcludedDeviceIds(db: Database, teamId: string): Set
 	return new Set(readExclusions(() => db.prepare(sql).pluck().all(teamId) as string[], []));
 }
 
+/**
+ * The Team's exclusions as rows of device, key and reason, in device order,
+ * for binding in a digest. A store from before the table has none.
+ */
+export function teamRecoveryExclusionRows(db: Database, teamId: string): unknown[][] {
+	const sql = `SELECT device_id, key_fingerprint, reason FROM policy_team_recovery_exclusions
+		WHERE team_id = ? ORDER BY device_id`;
+	return readExclusions(() => db.prepare(sql).raw().all(teamId) as unknown[][], []);
+}
+
 /** Whether a recovery left the device out of the Team. */
 export function isTeamRecoveryExcluded(db: Database, teamId: string, deviceId: string): boolean {
 	const sql = "SELECT 1 FROM policy_team_recovery_exclusions WHERE team_id = ? AND device_id = ?";

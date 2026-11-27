@@ -14,6 +14,8 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "./legacy-team-setup-draft.js";
 import { legacyTeamCandidateId, legacyTeamProjectRef } from "./recipient-policy-identifiers.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -229,3 +231,16 @@ export function inviteMember(
 		 VALUES (?, ?, 'included', 0, 'team_invite', 'r1', ?, ?)`,
 	).run(teamId, PHONE.deviceId, NOW, NOW);
 }
+
+/** A scope membership of the device, with the coordinator's proof of it, as a past refresh left them. */
+export async function keepScopeProof(db: Database, deviceId: string): Promise<void> {
+	db.prepare(
+		`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+		 VALUES ('scope-engineering', ?, 'member', 'active', 1, ?)`,
+	).run(deviceId, NOW);
+	await refreshTestScopeRows(db);
+}
+
+/** What a sync read of the Team's scope by the device is answered with, from the cache and the kept proof. */
+export const scopedRead = (db: Database, deviceId: string) =>
+	getEffectiveCachedScopeAuthorization(db, { deviceId, scopeId: "scope-engineering" });
