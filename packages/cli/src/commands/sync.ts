@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import net from "node:net";
 import { networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import * as p from "@clack/prompts";
 import {
@@ -44,6 +44,7 @@ import {
 	setPeerProjectFilterChecked,
 	updatePeerAddresses as storePeerAddresses,
 	syncPassPreflight,
+	viewerRuntimeDir,
 } from "@codemem/core";
 import { Command, Option } from "commander";
 import { desc, eq } from "drizzle-orm";
@@ -155,7 +156,7 @@ async function portOpen(host: string, port: number): Promise<boolean> {
 
 function readViewerBinding(dbPath: string): { host: string; port: number } | null {
 	try {
-		const raw = readFileSync(join(dirname(dbPath), "viewer.pid"), "utf8");
+		const raw = readFileSync(join(viewerRuntimeDir(dbPath), "viewer.pid"), "utf8");
 		const parsed = JSON.parse(raw) as Partial<{ host: string; port: number }>;
 		if (typeof parsed.host === "string" && typeof parsed.port === "number") {
 			return { host: parsed.host, port: parsed.port };

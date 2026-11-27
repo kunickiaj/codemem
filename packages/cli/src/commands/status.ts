@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
 	collectOperationalStatus,
 	connectReadOnly,
@@ -9,6 +9,7 @@ import {
 	readCodememConfigFileAtPath,
 	resolveDbPath,
 	VERSION,
+	viewerRuntimeDir,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -452,7 +453,7 @@ export async function collectStatusReport(
 		}
 	}
 
-	const pidPath = join(dirname(dbPath), "viewer.pid");
+	const pidPath = join(viewerRuntimeDir(dbPath), "viewer.pid");
 	const parsedPid = parseViewerPidRecord(deps.exists(pidPath) ? deps.readText(pidPath) : null);
 	const runtime = await observeViewerRuntime(
 		parsedPid,

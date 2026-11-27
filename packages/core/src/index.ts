@@ -1890,7 +1890,15 @@ export {
 } from "./viewer-probe.js";
 export {
 	acquireViewerWriterLock,
+	canonicalViewerDbPath,
+	isViewerWriterLockHeld,
+	processStartIdentity,
+	readViewerWriterLockOwner,
 	type ViewerWriterLock,
 	ViewerWriterLockHeldError,
+	type ViewerWriterLockOwner,
+	ViewerWriterLockUnavailableError,
+	viewerRuntimeDir,
+	viewerWriterLockOwnerPath,
 	viewerWriterLockPath,
 } from "./viewer-writer-lock.js";

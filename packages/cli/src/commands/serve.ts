@@ -4,12 +4,14 @@ import net, { type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
-	acquireViewerWriterLock,
+	canonicalViewerDbPath,
 	initDatabase,
 	isEmbeddingDisabled,
+	isViewerWriterLockHeld,
 	type MemoryStore,
 	ObserverClient,
 	probeRequiredNativeRuntime,
+	processStartIdentity,
 	RawEventSweeper,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
@@ -21,7 +23,7 @@ import {
 	type SyncDaemonTickCallback,
 	VERSION,
 	type ViewerWriterLock,
-	ViewerWriterLockHeldError,
+	viewerRuntimeDir,
 } from "@codemem/core";
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
 import { Command, Option } from "commander";
@@ -48,6 +50,16 @@ import {
 	resolveServeInvocation,
 	type ServeAction,
 } from "./serve-invocation.js";
+import {
+	claimViewerWriterLock,
+	reportViewerStartup,
+	VIEWER_LOCK_WAIT_MS,
+	VIEWER_STARTUP_REPORT_ENV,
+	type ViewerLockClaimDependencies,
+	verifiedViewerLockOwner,
+	waitForViewerStartup,
+	waitForViewerWriterLockRelease,
+} from "./viewer-lock-claim.js";
 
 export function extractViewerPid(payload: unknown): number | null {
 	if (!payload || typeof payload !== "object") return null;
@@ -139,12 +151,14 @@ function isTrustedViewerPid(
 	return isLikelyViewerCommand(command);
 }
 
+// Runtime files sit beside the canonical database, so a database reached through
+// a symlink shares them with its real path, as it shares the Viewer lock.
 function pidFilePath(dbPath: string): string {
-	return join(dirname(dbPath), "viewer.pid");
+	return join(viewerRuntimeDir(dbPath), "viewer.pid");
 }
 
 export function maintenanceWorkerPidFilePath(dbPath: string): string {
-	return join(dirname(dbPath), "maintenance-worker.pid");
+	return join(viewerRuntimeDir(dbPath), "maintenance-worker.pid");
 }
 
 function readMaintenanceWorkerPidRecord(
@@ -340,8 +354,9 @@ export async function terminateTrustedMaintenanceWorker(
 	const pidPath = maintenanceWorkerPidFilePath(dbPath);
 	const record = readMaintenanceWorkerPidRecord(dbPath);
 	if (!record) return true;
-	const expectedDbPath = resolveDbPath(dbPath);
-	if (record.dbPath && record.dbPath !== expectedDbPath) return false;
+	const isThisDb = (path: string | null): path is string =>
+		path !== null && canonicalViewerDbPath(path) === canonicalViewerDbPath(dbPath);
+	if (record.dbPath && !isThisDb(record.dbPath)) return false;
 	if (!isProcessRunning(record.pid)) {
 		try {
 			rmSync(pidPath);
@@ -352,9 +367,8 @@ export async function terminateTrustedMaintenanceWorker(
 	}
 	const command = readProcessCommand(record.pid);
 	if (!command || !isLikelyMaintenanceWorkerCommand(command)) return false;
-	if (record.dbPath !== expectedDbPath || !commandHasExactDbPath(command, expectedDbPath)) {
-		return false;
-	}
+	// The worker runs with the path it was started with, which may be a symlink.
+	if (!isThisDb(record.dbPath) || !commandHasExactDbPath(command, record.dbPath)) return false;
 	const stopped = await terminateProcessPid(record.pid, timeouts);
 	if (stopped) {
 		try {
@@ -375,7 +389,35 @@ async function waitForPortRelease(host: string, port: number, timeoutMs = 10000)
 	return false;
 }
 
-async function stopExistingViewer(
+export const viewerLockDependencies: ViewerLockClaimDependencies = {
+	isProcessRunning,
+	processStartIdentity,
+	readProcessCommand,
+	isViewerCommand: isLikelyViewerCommand,
+	isLockHeld: isViewerWriterLockHeld,
+	isLiveViewer: (owner) =>
+		respondsLikeCodememViewer({ pid: owner.pid, host: owner.host, port: owner.port }),
+	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * Stops this database's Viewer: the one serving at the target, else the one its
+ * PID record names when that answers, else the verified holder of the database's
+ * Viewer lock. The holder is found without HTTP, so a Viewer that took the lock
+ * but never started serving can still be stopped.
+ */
+export async function stopExistingViewer(
+	dbPath: string,
+	target: { host: string; port: number },
+): Promise<{ stopped: boolean; pid: number | null }> {
+	const served = await stopServingViewer(dbPath, target);
+	if (served.stopped || served.pid) return served;
+	const owner = verifiedViewerLockOwner(dbPath, viewerLockDependencies);
+	if (!owner) return served;
+	return { stopped: await terminateTrustedViewerPid(owner.pid), pid: owner.pid };
+}
+
+async function stopServingViewer(
 	dbPath: string,
 	target: { host: string; port: number },
 ): Promise<{ stopped: boolean; pid: number | null }> {
@@ -718,26 +760,40 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 	const child = spawn(process.execPath, buildForegroundRunnerArgs(scriptPath, invocation), {
 		cwd: process.cwd(),
 		detached: true,
-		stdio: "ignore",
+		// The IPC channel carries the startup result and closes once the Viewer reports it.
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
 		env: {
 			...process.env,
 			...(invocation.dbPath ? { CODEMEM_DB: invocation.dbPath } : {}),
 			...(invocation.configPath ? { CODEMEM_CONFIG: invocation.configPath } : {}),
+			[VIEWER_STARTUP_REPORT_ENV]: "1",
 		},
 	});
+	// The Viewer writes its own PID record once it holds the lock and serves, so a
+	// start that loses the lock never replaces the running Viewer's record.
+	const startup = await waitForViewerStartup(child, BACKGROUND_STARTUP_WAIT_MS);
 	child.unref();
-	if (invocation.dbPath) {
-		writeFileSync(
-			pidFilePath(invocation.dbPath),
-			JSON.stringify({ pid: child.pid, host: invocation.host, port: invocation.port }),
-			"utf-8",
-		);
-	}
 	p.intro("codemem viewer");
+	if (startup.state === "failed") {
+		p.log.error(startup.message);
+		process.exitCode = 1;
+		return;
+	}
+	const url = `http://${invocation.host}:${invocation.port}`;
 	p.outro(
-		`Viewer started in background (pid ${child.pid}) at http://${invocation.host}:${invocation.port}`,
+		startup.state === "listening"
+			? `Viewer started in background (pid ${child.pid}) at ${url}`
+			: `Viewer is starting in background (pid ${child.pid}) at ${url}`,
 	);
 }
+
+/**
+ * How long a background start waits for the Viewer's startup result. It covers
+ * the Viewer's own wait for a releasing lock holder and stays under the plugin's
+ * default 20-second command timeout. A Viewer that holds the lock but is still
+ * preparing its database at that point counts as starting.
+ */
+const BACKGROUND_STARTUP_WAIT_MS = 15_000;
 
 function startRawEventProcessing(
 	dbPath: string,
@@ -1110,32 +1166,26 @@ function createBoundApp(
 let heldViewerWriterLock: ViewerWriterLock | null = null;
 
 /**
- * Refuses to start a second Viewer on one database. The pid file check above is
- * advisory and can race; this lock cannot, so two Viewers never interleave Team
+ * Takes the database's Viewer lock, then stops a leftover maintenance worker;
+ * false when another Viewer holds the lock. The pid file check before it is
+ * advisory and can race. The lock cannot, so two Viewers never interleave Team
  * setup changes whose locks only work inside one process.
  */
-export function claimViewerWriterLock(dbPath: string): ViewerWriterLock | null {
-	try {
-		return acquireViewerWriterLock(dbPath);
-	} catch (error) {
-		if (!(error instanceof ViewerWriterLockHeldError)) throw error;
-		const running = readViewerPidRecord(dbPath);
-		const owner = running ? ` (viewer pid ${running.pid} at ${running.host}:${running.port})` : "";
+async function takeOverViewerRuntime(
+	dbPath: string,
+	target: { host: string; port: number },
+): Promise<boolean> {
+	const claim = await claimViewerWriterLock(dbPath, target, viewerLockDependencies);
+	if (claim.status === "refused") {
+		reportViewerStartup({ state: "failed", message: claim.message });
 		p.intro("codemem viewer");
-		p.log.error(`Another codemem viewer is already using ${dbPath}${owner}.`);
-		p.log.info(
-			"Stop it with `codemem service stop`, or use a separate database for another viewer.",
-		);
+		p.log.error(claim.message);
 		process.exitCode = 1;
-		return null;
+		return false;
 	}
-}
-
-/** Takes the Viewer lock, then stops a leftover maintenance worker; false when another Viewer runs. */
-async function takeOverViewerRuntime(dbPath: string): Promise<boolean> {
 	// Held until this process exits; the OS releases it even after a crash.
-	heldViewerWriterLock = claimViewerWriterLock(dbPath);
-	if (!heldViewerWriterLock) return false;
+	heldViewerWriterLock = claim.lock;
+	reportViewerStartup({ state: "lock_acquired" });
 	if (!(await terminateTrustedMaintenanceWorker(dbPath, { gracefulMs: 1000, forceMs: 5000 }))) {
 		p.log.warn(
 			"Existing maintenance worker is not trusted or did not stop; starting viewer anyway",
@@ -1157,7 +1207,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	if (invocation.configPath) process.env.CODEMEM_CONFIG = invocation.configPath;
 	warnIfViewerExposed(invocation.host, invocation.port);
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
-	if (!(await takeOverViewerRuntime(dbPath))) return;
+	if (!(await takeOverViewerRuntime(dbPath, invocation))) return;
 	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
@@ -1248,6 +1298,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		(info) => {
 			setBoundAddress(info);
 			announceViewerStartup({ pidPath, invocation, preparedDb, info });
+			reportViewerStartup({ state: "listening" });
 			maintenanceWorker = startMaintenanceWorkerProcess(invocation);
 			if (syncEnabled) {
 				scheduleServeSyncDaemon({
@@ -1265,11 +1316,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	);
 
 	server.on("error", (err: NodeJS.ErrnoException) => {
-		if (err.code === "EADDRINUSE") {
-			p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
-		} else {
-			p.log.error(err.message);
-		}
+		reportViewerListenError(err, invocation);
 		requestShutdown(1);
 	});
 
@@ -1305,6 +1352,8 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 				shutdownExitCode = 1;
 				logViewerShutdownError(error);
 			}
+			// The store is closed, so another Viewer may take the database now.
+			heldViewerWriterLock?.release();
 		}
 		process.exit(shutdownExitCode);
 	};
@@ -1318,6 +1367,20 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	};
 	process.on("SIGINT", () => requestShutdown());
 	process.on("SIGTERM", () => requestShutdown());
+}
+
+function reportViewerListenError(
+	err: NodeJS.ErrnoException,
+	invocation: ResolvedServeInvocation,
+): void {
+	if (err.code === "EADDRINUSE") {
+		const message = `Viewer already running at http://${invocation.host}:${invocation.port}`;
+		p.log.warn(message);
+		reportViewerStartup({ state: "failed", message });
+		return;
+	}
+	p.log.error(err.message);
+	reportViewerStartup({ state: "failed", message: err.message });
 }
 
 function logViewerShutdownError(error: unknown): void {
@@ -1363,6 +1426,7 @@ export async function runServeInvocation(
 	dependencies: {
 		nativeRuntimeAllowsServeStart: (invocation: ResolvedServeInvocation) => Promise<boolean>;
 		stopExistingViewer: typeof stopExistingViewer;
+		startViewer?: (invocation: ResolvedServeInvocation) => Promise<void>;
 	} = {
 		nativeRuntimeAllowsServeStart,
 		stopExistingViewer,
@@ -1385,56 +1449,82 @@ export async function runServeInvocation(
 		return;
 	}
 	if (!(await dependencies.nativeRuntimeAllowsServeStart(invocation))) return;
-	if (invocation.mode === "stop" || invocation.mode === "restart") {
-		const result = await dependencies.stopExistingViewer(dbPath, {
-			host: invocation.host,
-			port: invocation.port,
-		});
-		if (result.stopped) {
-			const workerStopped = await terminateTrustedMaintenanceWorker(dbPath, {
-				gracefulMs: 5000,
-				forceMs: 5000,
-			});
-			p.intro("codemem viewer");
-			p.log.success(`Stopped viewer${result.pid ? ` (pid ${result.pid})` : ""}`);
-			if (!workerStopped) {
-				p.log.warn("Maintenance worker pidfile exists but did not match trusted worker command");
-			}
-			if (invocation.mode === "stop") {
-				p.outro("done");
-				return;
-			}
-			// Wait for port to be fully released before restarting.
-			const released = await waitForPortRelease(invocation.host, invocation.port);
-			if (!released) {
-				p.log.warn(`Port ${invocation.port} still in use after stop — restart may fail`);
-			}
-		} else if (result.pid) {
-			p.intro("codemem viewer");
-			p.log.error(`Viewer is still shutting down (pid ${result.pid})`);
-			process.exitCode = 1;
-			return;
-		} else if (invocation.mode === "stop") {
-			const workerStopped = await terminateTrustedMaintenanceWorker(dbPath, {
-				gracefulMs: 5000,
-				forceMs: 5000,
-			});
-			p.intro("codemem viewer");
-			if (!workerStopped) {
-				p.log.warn("Maintenance worker pidfile exists but did not match trusted worker command");
-			}
-			p.outro("No background viewer found");
-			return;
-		}
-	}
+	const stopping = invocation.mode === "stop" || invocation.mode === "restart";
+	if (stopping && !(await stopBeforeStart(invocation, dbPath, dependencies.stopExistingViewer)))
+		return;
 
 	if (invocation.mode === "start" || invocation.mode === "restart") {
-		if (invocation.background) {
-			await startBackgroundViewer({ ...invocation, dbPath });
-			return;
-		}
-		await startForegroundViewer({ ...invocation, dbPath });
+		await (dependencies.startViewer ?? startViewer)({ ...invocation, dbPath });
 	}
+}
+
+async function stopMaintenanceWorkerAfterStop(dbPath: string): Promise<void> {
+	const workerStopped = await terminateTrustedMaintenanceWorker(dbPath, {
+		gracefulMs: 5000,
+		forceMs: 5000,
+	});
+	if (!workerStopped) {
+		p.log.warn("Maintenance worker pidfile exists but did not match trusted worker command");
+	}
+}
+
+/**
+ * Stops the existing Viewer for `stop` and `restart`. Returns true when a restart
+ * may start the new Viewer: the old one has stopped, its port is free or reported,
+ * and it no longer holds the database's lock.
+ */
+async function stopBeforeStart(
+	invocation: ResolvedServeInvocation,
+	dbPath: string,
+	stop: typeof stopExistingViewer,
+): Promise<boolean> {
+	const result = await stop(dbPath, { host: invocation.host, port: invocation.port });
+	if (result.pid && !result.stopped) {
+		p.intro("codemem viewer");
+		p.log.error(`Viewer is still shutting down (pid ${result.pid})`);
+		process.exitCode = 1;
+		return false;
+	}
+	if (!result.stopped) {
+		if (invocation.mode !== "stop") return true;
+		p.intro("codemem viewer");
+		await stopMaintenanceWorkerAfterStop(dbPath);
+		p.outro("No background viewer found");
+		return false;
+	}
+	p.intro("codemem viewer");
+	p.log.success(`Stopped viewer${result.pid ? ` (pid ${result.pid})` : ""}`);
+	await stopMaintenanceWorkerAfterStop(dbPath);
+	if (invocation.mode === "stop") {
+		p.outro("done");
+		return false;
+	}
+	return waitForStoppedViewer(invocation, dbPath);
+}
+
+async function waitForStoppedViewer(
+	invocation: ResolvedServeInvocation,
+	dbPath: string,
+): Promise<boolean> {
+	// Wait for port to be fully released before restarting.
+	const released = await waitForPortRelease(invocation.host, invocation.port);
+	if (!released) {
+		p.log.warn(`Port ${invocation.port} still in use after stop — restart may fail`);
+	}
+	// The stopped Viewer releases the database's lock only as its process exits.
+	const lockReleased = await waitForViewerWriterLockRelease(dbPath, viewerLockDependencies, {
+		timeoutMs: VIEWER_LOCK_WAIT_MS,
+	});
+	if (lockReleased) return true;
+	p.log.error(`The stopped viewer still holds ${dbPath}; not starting another one.`);
+	process.exitCode = 1;
+	return false;
+}
+
+function startViewer(invocation: ResolvedServeInvocation): Promise<void> {
+	return invocation.background
+		? startBackgroundViewer(invocation)
+		: startForegroundViewer(invocation);
 }
 
 const serveCmd = new Command("serve")
