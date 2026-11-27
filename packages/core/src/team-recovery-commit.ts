@@ -376,6 +376,7 @@ function decidingEvidence(evidence: TeamRecoveryEvidence, plan: TeamRecoveryPlan
 					check.deviceId,
 					checkedKey(check.publicKey),
 					String(check.blocked !== false),
+					String(check.removed !== false),
 				]),
 		),
 		removedMembers: memberRemovals.removals

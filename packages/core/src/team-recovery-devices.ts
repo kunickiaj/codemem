@@ -24,8 +24,8 @@ import {
  * or failing a pin, the key its coordinator enrollment binding was recorded
  * for. Without one, recovery stops, because nothing ties the roster's key to
  * the device.
- * - enrolled, enabled, holding that key, and reported not blocked by a block
- *   check made for that device and key: it keeps its decision;
+ * - enrolled, enabled, holding that key, and reported neither blocked nor
+ *   removed by a block check made for that device and key: it keeps its decision;
  * - not enrolled, with a removal record for that device and key in this group:
  *   recovery leaves it out;
  * - anything else stops recovery. A changed key is not a removal.
@@ -60,11 +60,17 @@ export interface TeamRecoveryDeviceRemoval {
  * reader fills `deviceId` and `publicKey` from the request it sent, never from
  * the reply: `publicKey` is the exact key string the question was asked with.
  * An answer without it says nothing about the key.
+ *
+ * `removed` is whether the same answer reports the device removed. The check
+ * is asked after the roster is read, so a device removed in between is listed
+ * as enrolled by the roster and as removed here. An answer that does not say
+ * the device is not removed clears nothing.
  */
 export interface TeamRecoveryDeviceBlockCheck {
 	deviceId: string;
 	publicKey: string;
 	blocked: boolean;
+	removed: boolean;
 }
 
 export type TeamRecoveryDeviceRefusal =
@@ -287,7 +293,11 @@ function enrolledVerdict(
 			record.device_id === deviceId &&
 			record.fingerprint === fingerprint,
 	);
-	if (removedHere) return { refusal: "device_evidence_contradictory" };
+	// The block check is asked after the roster, and reports a removal made in between.
+	const removedSince = input.deviceBlocks.some(
+		(check) => check.deviceId === deviceId && check.removed === true,
+	);
+	if (removedHere || removedSince) return { refusal: "device_evidence_contradictory" };
 	if (prior.contradicts(fingerprint)) return { refusal: "device_key_changed" };
 	if (!prior.matches(fingerprint)) return { refusal: "device_key_unverified" };
 	if (!enrolled.enabled) return { refusal: "device_disabled" };
@@ -296,6 +306,7 @@ function enrolledVerdict(
 		(check) =>
 			check.deviceId === deviceId &&
 			check.blocked === false &&
+			check.removed === false &&
 			provesKeyChecked(check, fingerprint),
 	);
 	return cleared ? { standing: "enrolled" } : { refusal: "device_block_unchecked" };

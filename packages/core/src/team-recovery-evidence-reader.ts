@@ -30,7 +30,7 @@ import type { TeamRecoveryEvidence } from "./team-recovery-preview.js";
  * The reader says where each part came from by what it asked: the coordinator
  * and the group of its own requests. Nothing in a reply decides that. The block
  * checks follow the same rule: each answer carries the device and the key this
- * machine sent, and only the blocked flag comes from the coordinator.
+ * machine sent, and only the blocked and removed flags come from the coordinator.
  */
 
 /** What the reader asks about. The coordinator is the one every read is sent to. */
@@ -52,14 +52,15 @@ export interface TeamRecoveryEvidenceActions {
 	/** The coordinator's device removal records, blocked devices included. */
 	listDeviceRemovals(deadlineMs: number): Promise<readonly TeamRecoveryDeviceRemoval[]>;
 	/**
-	 * The IDs among `peers` that the coordinator blocks, asked as a member of the
-	 * group. It fails unless the coordinator answered about every one of them.
+	 * The IDs among `peers` that the coordinator blocks, and the ones it reports
+	 * removed, asked as a member of the group. It fails unless the coordinator
+	 * answered about every one of them.
 	 */
 	blockedDeviceIds(
 		groupId: string,
 		peers: readonly Required<PeerRemovalLookupEntry>[],
 		deadlineMs: number,
-	): Promise<readonly string[]>;
+	): Promise<{ blocked: readonly string[]; removed: readonly string[] }>;
 	/** The coordinator's copy of the completed setup, or null when it holds none. */
 	getCompletion(groupId: string, candidateRef: string, deadlineMs: number): Promise<unknown>;
 	listMemberRemovals(
@@ -110,12 +111,16 @@ async function readRosterAndBlocks(
 		public_key: device.public_key,
 	}));
 	const deviceBlocks = await part(async () => {
-		const blocked = new Set(await actions.blockedDeviceIds(target.groupId, peers, deadlineMs));
+		const answer = await actions.blockedDeviceIds(target.groupId, peers, deadlineMs);
+		const blocked = new Set(answer.blocked);
+		// A device removed since the roster was read shows up here and nowhere else.
+		const removed = new Set(answer.removed);
 		// The device and key of each answer are the ones sent, never ones a reply names.
 		const checks = peers.map((peer) => ({
 			deviceId: peer.device_id,
 			publicKey: peer.public_key,
 			blocked: blocked.has(peer.device_id),
+			removed: removed.has(peer.device_id),
 		}));
 		return { source, checks };
 	});

@@ -60,7 +60,7 @@ function coordinator(overrides: Partial<TeamRecoveryEvidenceActions> = {}) {
 		blockedDeviceIds: async (groupId, peers) => {
 			asked.push(["blocks", groupId, peers]);
 			// A reply can name anything. Only the devices that were asked about count.
-			return ["device-b", "device-never-asked"];
+			return { blocked: ["device-b", "device-never-asked"], removed: ["device-never-asked"] };
 		},
 		getCompletion: async (groupId, candidateRef) => ({ groupId, candidateRef }),
 		listMemberRemovals: async () => [],
@@ -100,8 +100,8 @@ describe("Team recovery evidence reader", () => {
 			status: "read",
 			source: GROUP,
 			checks: [
-				{ deviceId: "device-a", publicKey: "key-of-device-a", blocked: false },
-				{ deviceId: "device-b", publicKey: "key-of-device-b", blocked: true },
+				{ deviceId: "device-a", publicKey: "key-of-device-a", blocked: false, removed: false },
+				{ deviceId: "device-b", publicKey: "key-of-device-b", blocked: true, removed: false },
 			],
 		});
 		expect(evidence.deviceRemovals).toMatchObject({ status: "read", source: HERE });
@@ -165,7 +165,8 @@ describe("Team recovery evidence reader", () => {
 		const actions: TeamRecoveryEvidenceActions = {
 			listDevices: (_groupId, deadlineMs) => seen(deadlineMs, [enrolled("device-a")]),
 			listDeviceRemovals: (deadlineMs) => seen(deadlineMs, []),
-			blockedDeviceIds: (_groupId, _peers, deadlineMs) => seen(deadlineMs, []),
+			blockedDeviceIds: (_groupId, _peers, deadlineMs) =>
+				seen(deadlineMs, { blocked: [], removed: [] }),
 			getCompletion: (_groupId, _candidateRef, deadlineMs) => seen(deadlineMs, null),
 			listMemberRemovals: (_groupId, deadlineMs) => seen(deadlineMs, []),
 			readGroupBinding: (teamId, deadlineMs) =>
@@ -264,7 +265,7 @@ describe("the block check a Team recovery sends", () => {
 
 		await expect(check(coordinatorUrl, [GROUP_ID])).rejects.toThrow();
 		// The same answer given directly is accepted, so the redirect is what was refused.
-		await expect(check(elsewhere, [GROUP_ID])).resolves.toEqual([]);
+		await expect(check(elsewhere, [GROUP_ID])).resolves.toEqual({ blocked: [], removed: [] });
 	});
 
 	it.each([
@@ -350,6 +351,71 @@ describe("the block check a Team recovery sends", () => {
 	});
 });
 
+/**
+ * A coordinator with this device and one other enrolled in the group, reached
+ * through its own routes. `beforeBlockCheck` runs on the coordinator's store
+ * once the roster has been read, just before the block check is answered.
+ */
+async function enrolledCoordinator(
+	local: ReturnType<typeof useLocalDevice>,
+	beforeBlockCheck?: (store: BetterSqliteCoordinatorStore) => Promise<unknown>,
+) {
+	const coordinatorDbPath = join(local.root, "coordinator.sqlite");
+	const onStore = async (act: (store: BetterSqliteCoordinatorStore) => Promise<unknown>) => {
+		const store = new BetterSqliteCoordinatorStore(coordinatorDbPath);
+		await act(store).finally(() => store.close());
+	};
+	const self = { deviceId: local.deviceId, publicKey: loadPublicKey(local.keysDir) ?? "" };
+	await onStore(async (store) => {
+		await store.createGroup(GROUP_ID);
+		await store.enrollDevice(GROUP_ID, { ...self, fingerprint: "fingerprint-local" });
+		await store.enrollDevice(GROUP_ID, {
+			deviceId: peer.device_id,
+			fingerprint: "fingerprint-peer",
+			publicKey: peer.public_key,
+		});
+	});
+	const app = createBetterSqliteCoordinatorApp({
+		dbPath: coordinatorDbPath,
+		runtime: { adminSecret: () => "synthetic-admin", now: () => new Date().toISOString() },
+	});
+	vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+		if (beforeBlockCheck && String(input).includes("/v1/peers/revocations"))
+			await onStore(beforeBlockCheck);
+		return app.request(String(input), init);
+	});
+	const url = "https://coordinator.example.test";
+	const config = {
+		...readCoordinatorSyncConfig({
+			sync_coordinator_url: url,
+			sync_coordinator_groups: [GROUP_ID],
+		}),
+		syncCoordinatorAdminSecret: "synthetic-admin",
+	};
+	const actions = coordinatorTeamRecoveryEvidenceActions(
+		{ db: local.db, dbPath: ":memory:" },
+		config,
+		{ localDeviceId: local.deviceId, keysDir: local.keysDir },
+	);
+	const target = {
+		coordinatorId: url,
+		groupId: GROUP_ID,
+		teamId: "team-engineering",
+		candidateRef: legacyTeamCandidateId(url, GROUP_ID),
+	};
+	return { self, read: () => readTeamRecoveryEvidence(target, actions) };
+}
+
+/** Exactly these entries. This device's ID is random, so where it sorts in a list is too. */
+const inAnyOrder = (...entries: object[]) => {
+	const matching = entries.map((entry) => expect.objectContaining(entry));
+	return expect.toSatisfy(
+		(list: unknown[]) =>
+			list.length === entries.length &&
+			matching.every((entry) => list.some((item) => entry.asymmetricMatch(item))),
+	);
+};
+
 describe("the Team recovery reads against a coordinator", () => {
 	const local = useLocalDevice();
 	const serve = useHttpServers();
@@ -398,53 +464,30 @@ describe("the Team recovery reads against a coordinator", () => {
 		expect(pages).toBe(pagesAtDeadline);
 	}, 5_000);
 
-	it("reads every part from a coordinator through its own routes, as an admin device of the group", async () => {
-		// Arrange: a coordinator with this device and one other enrolled in the group.
-		const coordinatorDbPath = join(local.root, "coordinator.sqlite");
-		const store = new BetterSqliteCoordinatorStore(coordinatorDbPath);
-		const self = { deviceId: local.deviceId, publicKey: loadPublicKey(local.keysDir) ?? "" };
-		try {
-			await store.createGroup(GROUP_ID);
-			await store.enrollDevice(GROUP_ID, { ...self, fingerprint: "fingerprint-local" });
-			await store.enrollDevice(GROUP_ID, {
-				deviceId: peer.device_id,
-				fingerprint: "fingerprint-peer",
-				publicKey: peer.public_key,
-			});
-		} finally {
-			await store.close();
-		}
-		const app = createBetterSqliteCoordinatorApp({
-			dbPath: coordinatorDbPath,
-			runtime: { adminSecret: () => "synthetic-admin", now: () => new Date().toISOString() },
-		});
-		vi.stubGlobal("fetch", (input: string | URL, init?: RequestInit) =>
-			app.request(String(input), init),
+	it("reports a device removed between the roster read and the block check as removed in its answer", async () => {
+		const { read } = await enrolledCoordinator(local, (store) =>
+			store.removeEnrollment({ groupId: GROUP_ID, deviceId: peer.device_id }),
 		);
-		const url = "https://coordinator.example.test";
-		const config = {
-			...readCoordinatorSyncConfig({
-				sync_coordinator_url: url,
-				sync_coordinator_groups: [GROUP_ID],
-			}),
-			syncCoordinatorAdminSecret: "synthetic-admin",
-		};
-		const actions = coordinatorTeamRecoveryEvidenceActions(
-			{ db: local.db, dbPath: ":memory:" },
-			config,
-			{
-				localDeviceId: local.deviceId,
-				keysDir: local.keysDir,
-			},
-		);
-		const target = {
-			coordinatorId: url,
-			groupId: GROUP_ID,
-			teamId: "team-engineering",
-			candidateRef: legacyTeamCandidateId(url, GROUP_ID),
-		};
 
-		const { evidence } = await readTeamRecoveryEvidence(target, actions);
+		const { evidence } = await read();
+
+		// Assert: the roster was read first and still lists the device. Only the check shows the removal.
+		expect(evidence).toMatchObject({
+			roster: { devices: inAnyOrder({ deviceId: local.deviceId }, { deviceId: peer.device_id }) },
+			deviceBlocks: {
+				status: "read",
+				checks: inAnyOrder(
+					{ deviceId: local.deviceId, blocked: false, removed: false },
+					{ deviceId: peer.device_id, blocked: false, removed: true },
+				),
+			},
+		});
+	});
+
+	it("reads every part from a coordinator through its own routes, as an admin device of the group", async () => {
+		const { self, read } = await enrolledCoordinator(local);
+
+		const { evidence } = await read();
 
 		const statuses = Object.fromEntries(
 			Object.entries(evidence).map(([name, read]) => [name, read.status]),
@@ -458,12 +501,12 @@ describe("the Team recovery reads against a coordinator", () => {
 			groupBinding: "read",
 		});
 		expect(evidence).toMatchObject({
-			roster: { devices: [{ deviceId: local.deviceId }, { deviceId: peer.device_id }] },
+			roster: { devices: inAnyOrder({ deviceId: local.deviceId }, { deviceId: peer.device_id }) },
 			deviceBlocks: {
-				checks: [
-					{ ...self, blocked: false },
-					{ deviceId: peer.device_id, publicKey: peer.public_key, blocked: false },
-				],
+				checks: inAnyOrder(
+					{ ...self, blocked: false, removed: false },
+					{ deviceId: peer.device_id, publicKey: peer.public_key, blocked: false, removed: false },
+				),
 			},
 			deviceRemovals: { removals: [] },
 			completion: { manifest: null },

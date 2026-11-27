@@ -396,18 +396,21 @@ export async function queryPeerRemoval(
 
 /**
  * Asks the coordinator, as a member of exactly this group, which of these
- * devices it blocks. Returns the blocked IDs among those sent. Unlike the
+ * devices it blocks. Returns the IDs among those sent that it blocks, and the
+ * ones it reports removed: a device can be removed after the caller listed it
+ * as enrolled, and then this answer is the only read that shows it. Unlike the
  * lookups above it does not try another group and does not follow a redirect,
  * and it throws unless every batch came back, before the deadline, as a
  * complete answer about every device sent: the caller records the coordinator
- * and group it asked, and treats a device that is not listed as not blocked.
+ * and group it asked, and treats a device in neither list as enrolled and not
+ * blocked.
  */
 export async function fetchBlockedDeviceIdsForGroup(
 	store: StoreLike,
 	config: CoordinatorSyncConfig,
 	request: { localDeviceId: string; keysDir?: string; groupId: string; deadlineMs?: number },
 	peers: readonly PeerRemovalLookupEntry[],
-): Promise<string[]> {
+): Promise<{ blocked: string[]; removed: string[] }> {
 	const entries = peers.map((peer) => {
 		const key = usableKey(peer.public_key);
 		// A device that cannot be asked about by ID and key cannot be cleared.
@@ -416,10 +419,12 @@ export async function fetchBlockedDeviceIdsForGroup(
 		return { device_id: peer.device_id, public_key: key };
 	});
 	const blocked: string[] = [];
+	const removed: string[] = [];
 	for (const batch of batchesOf(entries)) {
 		const strict = { ...request, redirect: "error", completeReply: true } as const;
 		const reply = await checkBatch(store, config, strict, batch);
 		blocked.push(...reply.revoked);
+		removed.push(...reply.removed);
 	}
-	return blocked;
+	return { blocked, removed };
 }

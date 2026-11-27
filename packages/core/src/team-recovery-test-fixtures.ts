@@ -101,9 +101,9 @@ export function pinDevice(db: Database, deviceId: string, publicKey: string): vo
 
 /**
  * The coordinator's answers to a block check of each device, asked with the
- * device's key. None is blocked unless its ID is listed. Each answer also
- * carries a `fingerprint`, as a reader could assert one beside the key. The
- * preview must ignore it and hash the key itself.
+ * device's key. None is blocked unless its ID is listed, and none is reported
+ * removed. Each answer also carries a `fingerprint`, as a reader could assert
+ * one beside the key. The preview must ignore it and hash the key itself.
  */
 export function blockChecks(
 	devices: ReadonlyArray<{ deviceId: string; publicKey: string }>,
@@ -114,6 +114,7 @@ export function blockChecks(
 		publicKey,
 		fingerprint: fingerprintPublicKey(publicKey),
 		blocked: blockedDeviceIds.includes(deviceId),
+		removed: false,
 	}));
 }
 

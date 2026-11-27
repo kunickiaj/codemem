@@ -441,6 +441,39 @@ describe("Team recovery check after the commit", () => {
 		expect(refused("device-b")).toBe(true);
 	});
 
+	it("quarantines the Team again and keeps its hold when a device is removed between the second roster read and its block check", async () => {
+		// Arrange: the second roster still lists the Desktop, and the block check asked after it reports it removed.
+		const checks = blockChecks([DESKTOP, TABLET]).map((check) => ({
+			...check,
+			removed: check.deviceId === "device-b",
+		}));
+		const second = evidence(undefined, {
+			deviceBlocks: { status: "read", source: GROUP, checks },
+		});
+
+		const result = await commit(reviewedDigest(), reader(evidence(), second));
+
+		expect(result).toEqual({ state: "quarantined_again", reason: "evidence_changed" });
+		expect(teamState()).toBe("inactive:needs_setup");
+		expect(value("SELECT COUNT(*) FROM policy_team_recovery_holds")).toBe(1);
+		expect(refused("device-b")).toBe(true);
+	});
+
+	it("refuses the recovery when a device is removed between the first roster read and its block check", async () => {
+		const digest = reviewedDigest();
+		const before = snapshot();
+		const checks = blockChecks([DESKTOP, TABLET]).map((check) => ({
+			...check,
+			removed: check.deviceId === "device-b",
+		}));
+		const first = evidence(undefined, { deviceBlocks: { status: "read", source: GROUP, checks } });
+
+		const result = await commit(digest, reader(first));
+
+		expect(result).toMatchObject({ state: "refused", reason: "device_evidence_contradictory" });
+		expect(snapshot()).toEqual(before);
+	});
+
 	it("quarantines the Team again when the evidence cannot be read again", async () => {
 		const unreadable = evidence(undefined, { roster: { status: "unavailable" } });
 
