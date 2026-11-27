@@ -4,6 +4,7 @@ import { isTeamMemberRemoved } from "./team-member-removal-lookup.js";
 import {
 	commitTeamMemberRemoval,
 	previewTeamMemberRemoval,
+	revokePendingTeamInvitations,
 	type TeamMemberRemovalContext,
 } from "./team-member-removal-review.js";
 import { linkTeamToCoordinatorGroup } from "./team-member-removal-test-fixtures.js";
@@ -283,5 +284,88 @@ describe("committing a Team member removal", () => {
 		expect(result).toEqual({ state: "rejected", error: "coordinator_unavailable" });
 		expect(actions.revokeInvitation).not.toHaveBeenCalled();
 		expect(isTeamMemberRemoved(db, team, "identity-removed")).toBe(false);
+	});
+});
+
+describe("committing a removal when a later step fails", () => {
+	async function reviewed() {
+		const { ctx, actions } = context();
+		const preview = await previewTeamMemberRemoval(db, subject(), ctx);
+		if (preview.state !== "ready") throw new Error("preview not ready");
+		return { ctx, actions, digest: preview.expectedDigest };
+	}
+
+	it("enforces the removal here even when an invitation revoke stalls, and the revoke can be retried", async () => {
+		const { ctx, actions, digest } = await reviewed();
+		const order: string[] = [];
+		actions.recordRemoval.mockImplementationOnce(async () => {
+			order.push("record");
+			return { status: "created" as const, removal: { ...REMOVAL, team_id: team } };
+		});
+		actions.revokeInvitation.mockImplementationOnce(async () => {
+			order.push(`revoke, removed here: ${isTeamMemberRemoved(db, team, "identity-removed")}`);
+			throw new Error("timed out");
+		});
+
+		const result = await commitTeamMemberRemoval(
+			db,
+			{ ...subject(), expectedDigest: digest, revokeInvitationIds: ["invite-pending"] },
+			ctx,
+		);
+		const retry = await revokePendingTeamInvitations(
+			db,
+			{ teamId: team, inviteIds: ["invite-pending", "invite-gone"] },
+			ctx,
+		);
+
+		expect(order).toEqual(["record", "revoke, removed here: true"]);
+		expect(result).toMatchObject({
+			state: "removed",
+			appliedHere: true,
+			invitations: [{ inviteId: "invite-pending", result: "unknown" }],
+		});
+		expect(retry).toEqual({
+			state: "revoked",
+			invitations: [
+				{ inviteId: "invite-pending", result: "revoked" },
+				{ inviteId: "invite-gone", result: "not_pending" },
+			],
+		});
+	});
+
+	it("reports the removal as not applied here when this machine ignores it", async () => {
+		const { ctx, actions, digest } = await reviewed();
+		actions.recordRemoval.mockImplementationOnce(async () => {
+			// The Team's setup goes away while the coordinator records the removal.
+			db.prepare("DELETE FROM legacy_team_setup_completions").run();
+			return { status: "created" as const, removal: { ...REMOVAL, team_id: team } };
+		});
+
+		const result = await commitTeamMemberRemoval(
+			db,
+			{ ...subject(), expectedDigest: digest, revokeInvitationIds: [] },
+			ctx,
+		);
+
+		expect(result).toMatchObject({ state: "removed", appliedHere: false });
+	});
+
+	it("reports the removal as not applied here when the local write fails, and still revokes", async () => {
+		const { ctx, actions, digest } = await reviewed();
+		db.exec(`CREATE TRIGGER fail_local_removal BEFORE INSERT ON policy_team_member_removals
+			BEGIN SELECT RAISE(ABORT, 'write failed'); END`);
+
+		const result = await commitTeamMemberRemoval(
+			db,
+			{ ...subject(), expectedDigest: digest, revokeInvitationIds: ["invite-pending"] },
+			ctx,
+		);
+
+		expect(result).toMatchObject({
+			state: "removed",
+			appliedHere: false,
+			invitations: [{ inviteId: "invite-pending", result: "revoked" }],
+		});
+		expect(actions.revokeInvitation).toHaveBeenCalledOnce();
 	});
 });

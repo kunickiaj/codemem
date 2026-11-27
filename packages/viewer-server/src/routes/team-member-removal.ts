@@ -4,6 +4,7 @@ import {
 	isCoordinatorAdminDevice,
 	previewTeamMemberRemoval,
 	readCoordinatorSyncConfig,
+	revokePendingTeamInvitations,
 	type TeamMemberRemovalContext,
 	type TeamMemberRemovalRejection,
 } from "@codemem/core";
@@ -67,6 +68,14 @@ function commitBody(
 	return { identityId, expectedDigest, revokeInvitationIds };
 }
 
+function revokeBody(body: unknown): string[] | null {
+	const data = body as Body | null;
+	if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+	if (Object.keys(data).length !== 1 || !Array.isArray(data.inviteIds)) return null;
+	const ids = data.inviteIds;
+	return ids.length > 0 && ids.length <= 200 && ids.every(isId) ? (ids as string[]) : null;
+}
+
 export function teamMemberRemovalRoutes(
 	getStore: StoreFactory,
 	options: TeamMemberRemovalRouteOptions = {},
@@ -121,6 +130,15 @@ export function teamMemberRemovalRoutes(
 			const input = commitBody(body);
 			if (!input) return { state: "rejected", error: "invalid_input" };
 			return commitTeamMemberRemoval(getStore().db, { teamId, ...input }, ctx);
+		}),
+	);
+
+	// Retries invitation revokes that failed during a removal. Only pending ones are revoked.
+	app.post("/api/sync/recipient-policy/v1/teams/:teamId/invitations/revoke", (c) =>
+		handle(c, async (teamId, body, ctx) => {
+			const inviteIds = revokeBody(body);
+			if (!inviteIds) return { state: "rejected", error: "invalid_input" };
+			return revokePendingTeamInvitations(getStore().db, { teamId, inviteIds }, ctx);
 		}),
 	);
 

@@ -200,9 +200,81 @@ async function revokeChosen(
 	return results;
 }
 
+/** Whether this machine now enforces the removal: recorded, and not ignored as another group's. */
+function applyHere(
+	db: Database,
+	link: Subject["link"],
+	removal: CoordinatorTeamMemberRemoval,
+	context: TeamMemberRemovalContext,
+): boolean {
+	try {
+		const result = applyTeamMemberRemovals(db, {
+			coordinatorId: link.coordinatorId,
+			groupId: link.groupId,
+			removals: [removal],
+			now: (context.now ?? (() => new Date().toISOString()))(),
+		});
+		return result.ignored.length === 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Revokes some of the Team's pending invitations, for retrying a revoke that
+ * failed during a removal. Only invitations still pending for the Team are
+ * revoked; any other ID is reported as not pending and left alone.
+ */
+export async function revokePendingTeamInvitations(
+	db: Database,
+	input: { teamId: string; inviteIds: readonly string[] },
+	context: TeamMemberRemovalContext,
+): Promise<
+	| { state: "rejected"; error: TeamMemberRemovalRejection }
+	| {
+			state: "revoked";
+			invitations: Array<{
+				inviteId: string;
+				result: TeamInvitationRevocation | "unknown" | "not_pending";
+			}>;
+	  }
+> {
+	const link = teamRemovalCoordinatorGroup(db, input.teamId);
+	if (!link) return reject("team_not_linked");
+	const list =
+		context.actions?.listPendingInvitations ?? coordinatorListPendingTeamInvitationsAction;
+	let pending: Set<string>;
+	try {
+		const invitations = await list(context.coordinator, {
+			groupId: link.groupId,
+			teamId: input.teamId,
+			now: (context.now ?? (() => new Date().toISOString()))(),
+		});
+		pending = new Set(invitations.map((invitation) => invitation.inviteId));
+	} catch {
+		return reject("invitations_unavailable");
+	}
+	const requested = [...new Set(input.inviteIds)];
+	const revoked = await revokeChosen(
+		context,
+		link.groupId,
+		requested.filter((inviteId) => pending.has(inviteId)),
+	);
+	const byId = new Map(revoked.map((row) => [row.inviteId, row.result]));
+	return {
+		state: "revoked",
+		invitations: requested.map((inviteId) => ({
+			inviteId,
+			result: byId.get(inviteId) ?? "not_pending",
+		})),
+	};
+}
+
 /**
  * Removes the person if the preview is unchanged. The coordinator records the
- * removal first, so every admin device learns of it even if a later step fails.
+ * removal first, so every admin device learns of it even if a later step fails,
+ * then enforces it here, then revokes the chosen invitations. A revoke that
+ * fails is reported as `unknown` and can be retried on its own.
  */
 export async function commitTeamMemberRemoval(
 	db: Database,
@@ -233,17 +305,8 @@ export async function commitTeamMemberRemoval(
 	} catch {
 		return reject("coordinator_unavailable");
 	}
+	// Enforce here before the slower invitation calls, so a stalled revoke cannot delay it.
+	const appliedHere = applyHere(db, subject.link, removal, context);
 	const invitations = await revokeChosen(context, subject.link.groupId, chosen);
-	let appliedHere = true;
-	try {
-		applyTeamMemberRemovals(db, {
-			coordinatorId: subject.link.coordinatorId,
-			groupId: subject.link.groupId,
-			removals: [removal],
-			now: (context.now ?? (() => new Date().toISOString()))(),
-		});
-	} catch {
-		appliedHere = false;
-	}
 	return { state: "removed", removal, invitations, appliedHere };
 }

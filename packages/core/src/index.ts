@@ -1771,6 +1771,7 @@ export { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 export {
 	commitTeamMemberRemoval,
 	previewTeamMemberRemoval,
+	revokePendingTeamInvitations,
 	type TeamMemberRemovalContext,
 	type TeamMemberRemovalRejection,
 } from "./team-member-removal-review.js";

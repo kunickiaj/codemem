@@ -131,6 +131,41 @@ describe("Team member removal routes", () => {
 		expect(actions.recordRemoval).toHaveBeenCalledOnce();
 	});
 
+	it("retries revoking a pending invitation on its own", async () => {
+		const { actions } = app();
+		actions.listPendingInvitations.mockResolvedValue([
+			{ inviteId: "invite-a", createdAt: NOW, expiresAt: "2099-01-01T00:00:00.000Z" },
+		] as never);
+		const store = {
+			db,
+			actorId: "identity-local",
+			deviceId: "device-local",
+		} as unknown as MemoryStore;
+		const routes = teamMemberRemovalRoutes(() => store, {
+			readCoordinatorConfig: () => ({
+				...readCoordinatorSyncConfig({}),
+				syncCoordinatorUrl: COORDINATOR,
+				syncCoordinatorGroups: ["group-a"],
+				syncCoordinatorAdminSecret: "synthetic-admin",
+			}),
+			actions,
+		});
+		const revoke = (body: unknown) =>
+			routes.request(`/api/sync/recipient-policy/v1/teams/${team}/invitations/revoke`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+		const response = await revoke({ inviteIds: ["invite-a"] });
+
+		expect(await response.json()).toEqual({
+			state: "revoked",
+			invitations: [{ inviteId: "invite-a", result: "revoked" }],
+		});
+		expect((await revoke({ inviteIds: [] })).status).toBe(400);
+	});
+
 	it("answers 409 for a stale preview and records nothing", async () => {
 		const { post, actions } = app();
 
