@@ -77,23 +77,22 @@ function reviewedSetup() {
 }
 
 /** What Team setup shows for the group, as discovery reads it from the roster. */
-const discoveredStatus = () =>
+const discoveredStatus = (devices = ROSTER) =>
 	discoverLegacyTeamCandidates(db, {
 		projection: { localActorId: "actor-local", localDeviceId: "device-local" },
-		groups: [{ ...TARGET, displayName: "Engineering", devices: ROSTER }],
+		groups: [{ ...TARGET, displayName: "Engineering", devices }],
 		now: NOW,
 	}).map((candidate) => candidate.status);
 
 describe("Team setup readiness after a Team recovery exclusion", () => {
-	it("reads the Team as ready after an activation that left the excluded device out", async () => {
-		// Arrange: a completed Team that reads as ready, then disabled.
+	/** A completed Team, disabled, whose recovery left the Laptop out. Returns its reapply. */
+	async function disabledWithLaptopLeftOut() {
 		const manifest = reviewedSetup();
-		const apply = () =>
-			applyLegacyTeamSetupCompletionManifest(db, { ...TARGET, manifest, freshRoster: ROSTER });
+		const apply = (freshRoster = ROSTER) =>
+			applyLegacyTeamSetupCompletionManifest(db, { ...TARGET, manifest, freshRoster });
 		await apply();
 		expect(discoveredStatus()).toEqual(["ready"]);
 		await containLegacyTeamSetupCompletionConflict(db, TARGET);
-		// A recovery left the Laptop out and its binding ended. It is on the roster again.
 		recordTeamRecoveryExclusions(db, {
 			teamId: manifest.team_id,
 			devices: [
@@ -102,6 +101,12 @@ describe("Team setup readiness after a Team recovery exclusion", () => {
 			now: NOW,
 		});
 		db.prepare("UPDATE identity_devices SET status = 'removed' WHERE device_id = 'device-a'").run();
+		return apply;
+	}
+
+	it("reads the Team as ready after an activation that left the excluded device out", async () => {
+		// Arrange: the Laptop is on the roster again.
+		const apply = await disabledWithLaptopLeftOut();
 
 		// Act: the completed setup is applied again. Its review still includes the Laptop.
 		await apply();
@@ -113,5 +118,15 @@ describe("Team setup readiness after a Team recovery exclusion", () => {
 				.get(),
 		).toBe("excluded");
 		expect(discoveredStatus()).toEqual(["ready"]);
+	});
+
+	it("reads the Team as ready after an activation while the excluded device is off the roster", async () => {
+		// Arrange: the coordinator no longer lists the Laptop, and the completed setup still does.
+		const apply = await disabledWithLaptopLeftOut();
+		const withoutLaptop = [DESKTOP, TABLET];
+
+		await apply(withoutLaptop);
+
+		expect(discoveredStatus(withoutLaptop)).toEqual(["ready"]);
 	});
 });

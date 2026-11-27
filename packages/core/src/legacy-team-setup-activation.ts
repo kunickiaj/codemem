@@ -2060,6 +2060,13 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		completionKey?: string;
 		allowCompletedDraft?: boolean;
 		allowStaleDraft?: boolean;
+		/**
+		 * Devices the completed setup lists that are no longer on the coordinator's
+		 * roster and that the caller has verified may be missing. They are left out
+		 * of the roster fingerprint this activation saves, because discovery
+		 * fingerprints the coordinator's roster and would never match otherwise.
+		 */
+		devicesOffRoster?: ReadonlySet<string>;
 	},
 ): LegacyTeamSetupActivationResultV1 {
 	if (!db.inTransaction) activationError("team_setup_failed");
@@ -2078,8 +2085,9 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		const model = loadModel(db, { ...input, allowInactiveCanonicalTeam: true });
 		const inspected = buildPreview(model);
 		requireLegacyTeamSetupAccessDeltaWithinLimit(inspected.accessDelta);
+		const offRoster = input.devicesOffRoster ?? new Set<string>();
 		const roster = model.devices
-			.filter((device) => device.decision !== "removed")
+			.filter((device) => device.decision !== "removed" && !offRoster.has(device.device_id))
 			.map((device) => ({
 				deviceId: device.device_id,
 				fingerprint: device.key_fingerprint,
