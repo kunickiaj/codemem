@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeCaptureContext } from "./capture-context.js";
 import type { Database } from "./db.js";
@@ -31,11 +31,7 @@ import {
 	toJson,
 	toJsonNullable,
 } from "./db.js";
-import {
-	buildFilterBranchesWithContext,
-	buildFilterClausesWithContext,
-	type OwnershipFilterContext,
-} from "./filters.js";
+import { buildFilterBranchesWithContext, type OwnershipFilterContext } from "./filters.js";
 import { assertLocalIdentityCurrent } from "./local-identity-generation.js";
 import {
 	recordForeignMemoryRevision,
@@ -48,6 +44,14 @@ import {
 	assertLocalCaptureAdoptionActors,
 	hasPendingLocalCapture,
 } from "./memory-local-capture.js";
+import {
+	cleanStr,
+	getMemory,
+	recentMemories,
+	recentMemoriesByKinds,
+	resolveOwnershipFilterContext,
+	snapshotOwnershipPredicate,
+} from "./memory-reads.js";
 import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import type { PackArtifacts } from "./pack.js";
@@ -99,7 +103,6 @@ import {
 	hasReadySemanticCatalog,
 } from "./semantic/semantic-worker-executor.js";
 import { summarySessionId } from "./semantic/semantic-worker-ranking.js";
-import { summaryContinuityFilter } from "./summary-memory.js";
 import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
@@ -263,44 +266,6 @@ function memoryCreatedAt(requested: string | undefined, now: string): string {
 	return new Date(occurredAt).toISOString();
 }
 
-function countQuestionPlaceholders(clause: string): number {
-	return (clause.match(/\?/g) ?? []).length;
-}
-
-function sqlFromParameterizedClause(clause: string, params: unknown[]): SQL {
-	const parts = clause.split("?");
-	let acc: SQL = sql.raw(parts[0] ?? "");
-	for (let i = 1; i < parts.length; i++) {
-		acc = sql`${acc}${params[i - 1]}${sql.raw(parts[i] ?? "")}`;
-	}
-	return acc;
-}
-
-function buildWhereSql(clauses: string[], params: unknown[]): SQL {
-	const sqlClauses: SQL[] = [];
-	let cursor = 0;
-	for (const clause of clauses) {
-		const count = countQuestionPlaceholders(clause);
-		const clauseParams = params.slice(cursor, cursor + count);
-		sqlClauses.push(sqlFromParameterizedClause(clause, clauseParams));
-		cursor += count;
-	}
-	if (cursor !== params.length) {
-		throw new Error("filter parameter mismatch while building SQL clauses");
-	}
-	if (sqlClauses.length === 1) return sqlClauses[0] ?? sql`1=1`;
-	const combined = and(...sqlClauses);
-	if (!combined) throw new Error("failed to combine filter SQL clauses");
-	return combined;
-}
-
-/** Trim a string value, returning null for empty/non-string. Matches Python's _clean_optional_str. */
-function cleanStr(value: unknown): string | null {
-	if (value == null || typeof value !== "string") return null;
-	const trimmed = value.trim();
-	return trimmed.length > 0 ? trimmed : null;
-}
-
 function parseJsonList(value: unknown): string[] {
 	if (typeof value !== "string" || !value.trim()) return [];
 	try {
@@ -354,15 +319,6 @@ function isSameSessionDedupConstraintError(error: unknown): boolean {
 		message.includes("idx_memory_items_same_session_dedup_unique") ||
 		(message.includes("unique constraint failed") && message.includes("memory_items.session_id"))
 	);
-}
-
-/**
- * Parse a row's metadata_json string into a plain object.
- * Returns a new MemoryItemResponse with metadata_json as a parsed object.
- */
-function parseMetadata(row: MemoryItem): MemoryItemResponse {
-	const { metadata_json, ...rest } = row;
-	return { ...rest, metadata_json: fromJson(metadata_json) };
 }
 
 function sessionMetadata(
@@ -943,22 +899,7 @@ export class MemoryStore {
 	ownershipFilterContext(
 		options: ScopeVisibilityOptions = this.scopeResolutionDeviceContext(),
 	): OwnershipFilterContext {
-		const claimedDeviceIds = this.sameActorPeerIds();
-		return {
-			actorId: this.actorId,
-			deviceId: this.deviceId,
-			claimedDeviceIds,
-			legacyActorIds: claimedDeviceIds.map((peerId) => `legacy-sync:${peerId}`),
-			enforceScopeVisibility: true,
-			// Resolve the visible scope set once per request so the SQL filter can
-			// use the index-eligible `scope_id IN (...)` fast path instead of the
-			// per-row EXISTS predicate. Fronts get()/recent()/recentByKinds() and
-			// every viewer-server route.
-			visibleScopeIds: resolveVisibleScopeIds(this.db, this.deviceId, options),
-			scopeVisibilityDb: this.db,
-			expectedPublicKey: options.expectedPublicKey,
-			loadExpectedPublicKey: options.loadExpectedPublicKey,
-		};
+		return resolveOwnershipFilterContext(this, options);
 	}
 
 	private scopeVisibleFilterContext(): OwnershipFilterContext {
@@ -992,16 +933,7 @@ export class MemoryStore {
 	 * Returns null if not found (does not filter by active status).
 	 */
 	get(memoryId: number): MemoryItemResponse | null {
-		const filterResult = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
-		const whereSql = buildWhereSql(
-			["memory_items.id = ?", ...filterResult.clauses],
-			[memoryId, ...filterResult.params],
-		);
-		const row = this.d.get<MemoryItem>(
-			sql`SELECT memory_items.* FROM memory_items WHERE ${whereSql}`,
-		);
-		if (!row) return null;
-		return parseMetadata(row);
+		return getMemory(this, memoryId);
 	}
 
 	// startSession / endSession
@@ -1619,25 +1551,7 @@ export class MemoryStore {
 	buildOwnershipPredicate(): (
 		item: MemoryItem | MemoryResult | Record<string, unknown>,
 	) => boolean {
-		const peerIds = this.sameActorPeerIds();
-		const claimedDeviceIds = new Set(peerIds);
-		const legacyActorIds = new Set(peerIds.map((peerId) => `legacy-sync:${peerId}`));
-		const ownerActorId = this.actorId;
-		const ownerDeviceId = this.deviceId;
-		return (item) => {
-			const rec = item as Record<string, unknown>;
-			let meta = (rec.metadata ?? {}) as Record<string, unknown>;
-			if (!rec.metadata && typeof rec.metadata_json === "string") {
-				meta = fromJson(rec.metadata_json);
-			}
-			const actorId = cleanStr(rec.actor_id) ?? cleanStr(meta.actor_id);
-			if (actorId === ownerActorId) return true;
-			const deviceId = cleanStr(rec.origin_device_id) ?? cleanStr(meta.origin_device_id);
-			if (deviceId === ownerDeviceId) return true;
-			if (deviceId && claimedDeviceIds.has(deviceId)) return true;
-			if (actorId && legacyActorIds.has(actorId)) return true;
-			return false;
-		};
+		return snapshotOwnershipPredicate(this);
 	}
 
 	// forget
@@ -1720,27 +1634,7 @@ export class MemoryStore {
 		offset = 0,
 		summarySessionId?: number | null,
 	): MemoryItemResponse[] {
-		const baseClauses = ["memory_items.active = 1"];
-		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
-		// Automatic continuity applies inside the query so LIMIT counts eligible rows only.
-		const continuity = summaryContinuityFilter(summarySessionId);
-		const allClauses = [...baseClauses, ...filterResult.clauses, ...continuity.clauses];
-		const whereSql = buildWhereSql(allClauses, [...filterResult.params, ...continuity.params]);
-
-		// Note: joinSessions is set by the project filter (not yet ported).
-		// Once project filtering lands, it will trigger the sessions JOIN.
-		const fromSql = filterResult.joinSessions
-			? sql.raw("memory_items JOIN sessions ON sessions.id = memory_items.session_id")
-			: sql.raw("memory_items");
-
-		const rows = this.d.all<MemoryItem>(
-			sql`SELECT memory_items.* FROM ${fromSql}
-				WHERE ${whereSql}
-				ORDER BY created_at DESC, id DESC
-				LIMIT ${limit} OFFSET ${Math.max(offset, 0)}`,
-		);
-
-		return rows.map((row) => parseMetadata(row));
+		return recentMemories(this, { limit, filters, offset, summarySessionId });
 	}
 
 	// recentByKinds
@@ -1755,29 +1649,7 @@ export class MemoryStore {
 		offset = 0,
 		summarySessionId?: number | null,
 	): MemoryItemResponse[] {
-		const kindsList = kinds.filter((k) => k.length > 0);
-		if (kindsList.length === 0) return [];
-
-		const kindPlaceholders = kindsList.map(() => "?").join(", ");
-		const baseClauses = ["memory_items.active = 1", `memory_items.kind IN (${kindPlaceholders})`];
-		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
-		const continuity = summaryContinuityFilter(summarySessionId);
-		const allClauses = [...baseClauses, ...filterResult.clauses, ...continuity.clauses];
-		const params = [...kindsList, ...filterResult.params, ...continuity.params];
-		const whereSql = buildWhereSql(allClauses, params);
-
-		const fromSql = filterResult.joinSessions
-			? sql.raw("memory_items JOIN sessions ON sessions.id = memory_items.session_id")
-			: sql.raw("memory_items");
-
-		const rows = this.d.all<MemoryItem>(
-			sql`SELECT memory_items.* FROM ${fromSql}
-				WHERE ${whereSql}
-				ORDER BY created_at DESC, id DESC
-				LIMIT ${limit} OFFSET ${Math.max(offset, 0)}`,
-		);
-
-		return rows.map((row) => parseMetadata(row));
+		return recentMemoriesByKinds(this, kinds, { limit, filters, offset, summarySessionId });
 	}
 
 	// usageAggregate
