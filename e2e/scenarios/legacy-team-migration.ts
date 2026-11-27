@@ -84,6 +84,13 @@ interface FixtureSummary {
 	}>;
 }
 
+/** The summary's last background check with the coordinator. */
+interface SummaryReconciliation {
+	state: "current" | "stale" | "never";
+	refreshing: boolean;
+	checked_at: string | null;
+}
+
 interface CandidateSummary {
 	candidateRef: string;
 	displayName: string;
@@ -567,6 +574,56 @@ function assertExactPolicies(
 	);
 }
 
+type PeerSummary = {
+	version: 1;
+	candidates: CandidateSummary[];
+	reconciliation: SummaryReconciliation;
+};
+
+/**
+ * Peer-b's Team setup list once it has checked with the coordinator after
+ * Alpha's Finish on peer-a. The list shows the Viewer's last background check,
+ * which runs at start, every 5 minutes, and when a read finds it over 30 seconds
+ * old, so it cannot show a completion published after that check. A check
+ * already running when this starts may have read the coordinator before the
+ * Finish, so it waits for one that starts later.
+ */
+async function peerBSummaryAfterFinish(ctx: ScenarioContext): Promise<PeerSummary> {
+	let beforeFinish: string | null | undefined;
+	let summary: PeerSummary | null = null;
+	await waitFor(
+		async () => {
+			const response = await request<PeerSummary>(
+				ctx,
+				"GET",
+				API,
+				"25-peer-b-summary-after-alpha",
+				undefined,
+				"peer-b",
+			);
+			assert(response.status === 200, "peer-b legacy Team summary failed");
+			const check = response.body.reconciliation;
+			if (beforeFinish === undefined) {
+				assert(!check.refreshing, "peer-b is finishing a check that began before the Finish");
+				beforeFinish = check.checked_at;
+				assert(false, "peer-b has not checked with the coordinator since the Finish");
+			}
+			assert(
+				!check.refreshing && check.checked_at !== beforeFinish && check.state === "current",
+				`peer-b has not finished a check since the Finish (${JSON.stringify(check)})`,
+			);
+			summary = response.body;
+		},
+		{
+			description: "peer-b background Team setup check after the Finish",
+			timeoutMs: 120_000,
+			intervalMs: 2_000,
+		},
+	);
+	if (!summary) throw new Error("peer-b summary missing");
+	return summary;
+}
+
 /**
  * A second viewer must apply Alpha's coordinator-owned completion before
  * hiding it: its policy, canonical completion metadata, and completion-to-draft
@@ -576,15 +633,7 @@ async function verifyCrossDeviceCanonicalCompletion(
 	ctx: ScenarioContext,
 	input: { afterAlpha: FixtureSummary; alphaCandidateRef: string; betaCandidateRef: string },
 ): Promise<void> {
-	const peerBSummary = await request<{ version: 1; candidates: CandidateSummary[] }>(
-		ctx,
-		"GET",
-		API,
-		"25-peer-b-summary-after-alpha",
-		undefined,
-		"peer-b",
-	);
-	assert(peerBSummary.status === 200, "peer-b legacy Team summary failed");
+	const peerBSummary = { body: await peerBSummaryAfterFinish(ctx) };
 	assert(
 		!peerBSummary.body.candidates.some(
 			(candidate) => candidate.candidateRef === input.alphaCandidateRef,
