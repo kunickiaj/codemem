@@ -16,6 +16,7 @@ import {
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
 	type ScopeMapping,
+	type ScopeResolution,
 } from "./scope-resolution.js";
 
 interface SessionScopeRow {
@@ -250,15 +251,22 @@ function loadSessionScopeRow(db: Database, sessionId: number): SessionScopeRow |
 	return row ?? null;
 }
 
-export function resolveSessionScopeId(db: Database, options: ResolveSessionScopeOptions): string {
-	const explicitScopeId = clean(options.explicitScopeId);
-	if (explicitScopeId) return explicitScopeId;
+/**
+ * The stamping decision for a session: the scope, and the mapping and reason
+ * that chose it. `local_default` is the fallback when nothing routes the
+ * session. A mapping can also name the local default scope, which is a route.
+ */
+export function resolveSessionScope(
+	db: Database,
+	options: ResolveSessionScopeOptions,
+): ScopeResolution {
 	const session = loadSessionScopeRow(db, options.sessionId);
 	const context = repositoryScopeContext(db, session, loadProjectScopeMappings(db), {
 		readOnly: options.readOnly,
 	});
-	const result = resolveProjectScope({
+	return resolveProjectScope({
 		allowRepositoryCwdFallback: context.allowRepositoryCwdFallback,
+		explicitScopeId: options.explicitScopeId,
 		gitRemote: session?.git_remote ?? null,
 		gitBranch: session?.git_branch ?? null,
 		repositoryIdentity: context.repositoryIdentity,
@@ -268,7 +276,12 @@ export function resolveSessionScopeId(db: Database, options: ResolveSessionScope
 		localDefaultScopeId: options.localDefaultScopeId ?? LOCAL_DEFAULT_SCOPE_ID,
 		mappings: context.mappings,
 	});
-	return result.scopeId;
+}
+
+export function resolveSessionScopeId(db: Database, options: ResolveSessionScopeOptions): string {
+	const explicitScopeId = clean(options.explicitScopeId);
+	if (explicitScopeId) return explicitScopeId;
+	return resolveSessionScope(db, options).scopeId;
 }
 
 function loadMemoryScopeRow(db: Database, memoryId: number): MemoryScopeRow | null {
