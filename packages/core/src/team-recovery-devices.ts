@@ -6,6 +6,11 @@ import type { LegacyTeamRosterDeviceSnapshot } from "./legacy-team-candidate.js"
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { compareCodepoints } from "./recipient-policy-identifiers.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import {
+	type TeamRecoveryExclusion,
+	teamRecoveryExcludedDeviceIds,
+	withTeamRecoveryExclusionsFor,
+} from "./team-recovery-exclusions.js";
 
 /*
  * The device half of the Team recovery preview: which devices would receive
@@ -35,16 +40,12 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
  * blocked answer always counts, for the device or for its key under any device,
  * because a block applies across the whole coordinator.
  *
- * Recovery leaves a device out by setting its decision to `excluded` under the
- * provenance below. Neither a setup nor an invitation owns a decision with that
- * provenance, so a later setup activation preserves it, and sync admission
- * refuses the device the Team's scopes while the Team is active without an
- * `included` decision for it. A device that carries the mark stays out for
- * good, whatever the roster says later.
+ * Recovery leaves a device out by recording a recovery exclusion for it, apart
+ * from its device decision. Every reader of device decisions applies the
+ * exclusion on top, so nothing that later rewrites or deletes the decision
+ * brings the device back. A device with an exclusion stays out for good,
+ * whatever the roster says later.
  */
-
-/** Provenance of the `excluded` decision recovery writes for a device it leaves out. */
-export const TEAM_RECOVERY_DECISION_PROVENANCE = "team_recovery";
 
 /** A coordinator device removal record. `revoked` marks a device blocked everywhere. */
 export interface TeamRecoveryDeviceRemoval {
@@ -120,8 +121,8 @@ export type TeamRecoveryDevicesResult =
 	| {
 			state: "planned";
 			devices: TeamRecoveryDevice[];
-			/** Devices this recovery leaves out, with the removed key the mark records. */
-			marks: Array<{ deviceId: string; fingerprint: string }>;
+			/** Devices this recovery leaves out, each with the key it was removed or blocked under. */
+			exclusions: TeamRecoveryExclusion[];
 	  }
 	| { state: "refused"; reason: TeamRecoveryDeviceRefusal; deviceIds: string[] }
 	/** The Team's policy rows would block the whole Team once it is active. */
@@ -132,20 +133,21 @@ type ManifestDecision = CoordinatorLegacyTeamCompletionManifestV1["device_decisi
 interface LocalDecision {
 	device_id: string;
 	decision: string;
-	provenance: string;
 	assignment_version: number;
 }
 
 interface DeviceFact {
 	deviceId: string;
 	manifest?: ManifestDecision;
+	/** The device's decision as policy reads it, with recovery exclusions applied. */
 	local?: LocalDecision;
+	leftOutEarlier: boolean;
 }
 
 type Verdict =
 	| { refusal: TeamRecoveryDeviceRefusal }
 	| { leftOut: "removed_from_group" | "blocked_by_coordinator"; fingerprint: string }
-	| { standing: "enrolled" | "marked" | "excluded_in_review" | "not_included" };
+	| { standing: "enrolled" | "left_out_earlier" | "excluded_in_review" | "not_included" };
 
 /** A key this machine trusted for a device before it read the roster. */
 interface PriorKey {
@@ -311,12 +313,8 @@ function rosterVerdict(
 
 function deviceVerdict(db: Database, input: TeamRecoveryDevicesInput, fact: DeviceFact): Verdict {
 	const { manifest, local } = fact;
-	if (local?.provenance === TEAM_RECOVERY_DECISION_PROVENANCE) {
-		// An earlier recovery left it out. The mark only ever excludes.
-		return local.decision === "excluded"
-			? { standing: "marked" }
-			: { refusal: "device_decision_changed" };
-	}
+	// An earlier recovery left it out, and that holds whatever the roster says now.
+	if (fact.leftOutEarlier) return { standing: "left_out_earlier" };
 	if (manifest?.decision === "included") {
 		if (!manifest.enabled) return { refusal: "device_disabled" };
 		const reviewed = manifest.key_fingerprint;
@@ -339,22 +337,28 @@ function deviceVerdict(db: Database, input: TeamRecoveryDevicesInput, fact: Devi
 
 /** Every device the setup reviewed and every device with a decision for the Team. */
 function deviceFacts(db: Database, input: TeamRecoveryDevicesInput): DeviceFact[] {
-	const local = db
-		.prepare(
-			`SELECT device_id, decision, provenance, assignment_version
-			 FROM policy_team_device_decisions WHERE team_id = ?`,
-		)
-		.all(input.teamId) as LocalDecision[];
+	const local = withTeamRecoveryExclusionsFor(
+		db,
+		input.teamId,
+		db
+			.prepare(
+				`SELECT device_id, decision, assignment_version
+				 FROM policy_team_device_decisions WHERE team_id = ?`,
+			)
+			.all(input.teamId) as LocalDecision[],
+	);
 	const localById = new Map(local.map((row) => [row.device_id, row]));
+	const leftOut = teamRecoveryExcludedDeviceIds(db, input.teamId);
 	const manifestById = new Map(
 		input.manifest.device_decisions.map((decision) => [decision.device_id, decision]),
 	);
-	return [...new Set([...manifestById.keys(), ...localById.keys()])]
+	return [...new Set([...manifestById.keys(), ...localById.keys(), ...leftOut])]
 		.toSorted(compareCodepoints)
 		.map((deviceId) => ({
 			deviceId,
 			manifest: manifestById.get(deviceId),
 			local: localById.get(deviceId),
+			leftOutEarlier: leftOut.has(deviceId),
 		}));
 }
 
@@ -416,7 +420,8 @@ function stayOutReason(
 	activeMembers: ReadonlySet<string>,
 ): TeamRecoveryDeviceReason {
 	if ("leftOut" in verdict) return verdict.leftOut;
-	if ("standing" in verdict && verdict.standing === "marked") return "left_out_by_recovery";
+	if ("standing" in verdict && verdict.standing === "left_out_earlier")
+		return "left_out_by_recovery";
 	if ("standing" in verdict && verdict.standing === "excluded_in_review")
 		return "excluded_in_review";
 	if (fact.local?.decision !== "included") return "not_included";
@@ -462,14 +467,16 @@ export function planTeamRecoveryDevices(
 	const verdicts = facts.map((fact) => ({ fact, verdict: deviceVerdict(db, input, fact) }));
 	const refusal = firstRefusal(verdicts);
 	if (refusal) return { state: "refused", ...refusal };
-	const marks = verdicts.flatMap(({ fact, verdict }) =>
-		"leftOut" in verdict ? [{ deviceId: fact.deviceId, fingerprint: verdict.fingerprint }] : [],
+	const exclusions = verdicts.flatMap(({ fact, verdict }): TeamRecoveryExclusion[] =>
+		"leftOut" in verdict
+			? [{ deviceId: fact.deviceId, fingerprint: verdict.fingerprint, reason: verdict.leftOut }]
+			: [],
 	);
 	const eligible = eligibleAfterRecovery(
 		db,
 		input,
 		facts,
-		new Set(marks.map((mark) => mark.deviceId)),
+		new Set(exclusions.map((exclusion) => exclusion.deviceId)),
 	);
 	if (!eligible) return { state: "blocked" };
 	const activeMembers = new Set(
@@ -483,5 +490,5 @@ export function planTeamRecoveryDevices(
 		const reason = stayOutReason(fact, verdict, described.identityId, activeMembers);
 		return { ...described, outcome: "stays_out", reason };
 	});
-	return { state: "planned", devices, marks };
+	return { state: "planned", devices, exclusions };
 }

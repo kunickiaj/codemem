@@ -483,7 +483,7 @@ function previewDigest(
 			device.outcome,
 			device.reason ?? null,
 		]),
-		deviceMarks: plan.devices.marks,
+		deviceExclusions: plan.devices.exclusions,
 		projects: plan.projects.map((project) => [
 			project.projectIdentity,
 			project.outcome,

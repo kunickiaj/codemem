@@ -1,5 +1,8 @@
 import type { Database } from "./db.js";
+import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { mappingsHoldProject, readScopeMappings } from "./scope-project-mappings.js";
+import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
+import { teamRecoveryExcludedDeviceIds } from "./team-recovery-exclusions.js";
 
 /**
  * Scope admission for devices tied to a reviewed Team setup, decided from the
@@ -11,8 +14,17 @@ import { mappingsHoldProject, readScopeMappings } from "./scope-project-mappings
  *   matches the Project), or stored memories from that Project;
  * - the device is tied to that Team: bound to a Team member in any binding
  *   state, or reviewed in the Team's setup. This device is never refused;
- * - the Team is quarantined (inactive, needing setup), or it is active and its
- *   reviewed allowlist does not include the device.
+ * - the Team is quarantined (inactive, needing setup), or it is active and the
+ *   device is not eligible for it now.
+ *
+ * On an active Team, a device with no `included` decision, or one a Team
+ * recovery left out, is refused outright. An `included` decision alone does not
+ * admit a device either: its person must still be an active member with an
+ * active identity, and its binding must be active at the decided version. A
+ * device that fails that is refused unless current policy gives it every Team
+ * Project the scope holds some other way, such as a direct share. A Project
+ * whose Team recipient quarantine revoked and recovery skipped still counts as
+ * a Team Project here.
  *
  * Devices with no tie to the Team keep their access, and a Team device keeps
  * scopes that hold none of the Team's Projects. Nothing is stored, so the Team
@@ -63,6 +75,12 @@ const SETUP_TARGET_SQL = `SELECT 1 FROM legacy_team_setup_draft_projects AS proj
 	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
 	WHERE draft.candidate_id = ? AND project.target_scope_id = ? LIMIT 1`;
 
+// The same, for one Project by its resolved or source identity.
+const SETUP_TARGET_PROJECT_SQL = `SELECT 1 FROM legacy_team_setup_draft_projects AS project
+	JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
+	WHERE draft.candidate_id = ? AND project.target_scope_id = ?
+	  AND (project.resolved_project_identity = ? OR project.source_project_identity = ?) LIMIT 1`;
+
 // Memories stored in the scope from a session of one of the Projects.
 const STORED_SQL = `SELECT 1 FROM memory_items AS memory
 	JOIN sessions AS session ON session.id = memory.session_id
@@ -90,17 +108,59 @@ function isTeamDevice(db: Database, team: SetupTeam, deviceId: string): boolean 
 	return hasRow(db, TEAM_DEVICE_SQL, deviceId, team.team_id, deviceId, team.candidate_id ?? "");
 }
 
-function scopeHoldsTeamProject(db: Database, team: SetupTeam, scopeId: string): boolean {
+function teamProjectIdentities(db: Database, team: SetupTeam): string[] {
 	const candidate = team.candidate_id ?? "";
-	if (hasRow(db, SETUP_TARGET_SQL, candidate, scopeId)) return true;
-	const identities = db
-		.prepare(TEAM_PROJECTS_SQL)
-		.pluck()
-		.all(team.team_id, candidate, candidate) as string[];
+	return db.prepare(TEAM_PROJECTS_SQL).pluck().all(team.team_id, candidate, candidate) as string[];
+}
+
+/** The Team's Project identities that the scope holds: a setup target, a mapping, or stored memories. */
+function teamProjectsInScope(db: Database, team: SetupTeam, scopeId: string): string[] {
+	const mappings = readScopeMappings(db, scopeId);
+	return teamProjectIdentities(db, team).filter((identity) => {
+		if (hasRow(db, SETUP_TARGET_PROJECT_SQL, team.candidate_id ?? "", scopeId, identity, identity))
+			return true;
+		if (mappingsHoldProject(mappings, [identity])) return true;
+		const json = JSON.stringify([identity]);
+		return hasRow(db, STORED_SQL, scopeId, json, json);
+	});
+}
+
+function scopeHoldsTeamProject(db: Database, team: SetupTeam, scopeId: string): boolean {
+	if (hasRow(db, SETUP_TARGET_SQL, team.candidate_id ?? "", scopeId)) return true;
+	const identities = teamProjectIdentities(db, team);
 	if (identities.length === 0) return false;
 	if (mappingsHoldProject(readScopeMappings(db, scopeId), identities)) return true;
 	const json = JSON.stringify(identities);
 	return hasRow(db, STORED_SQL, scopeId, json, json);
+}
+
+/** Whether current policy gives the device the Project by any path. */
+function policyAuthorizes(db: Database, projectIdentity: string, deviceId: string): boolean {
+	const derivation = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, projectIdentity);
+	if (derivation.status === "blocked") return false;
+	return derivation.devices.some((device) => device.deviceId === deviceId);
+}
+
+/**
+ * Whether an active Team refuses the scope to one of its devices. The cheap
+ * rows are read first: most devices are eligible and never reach the Projects.
+ */
+function activeTeamRefuses(
+	db: Database,
+	team: SetupTeam,
+	input: { scopeId: string; deviceId: string },
+): boolean {
+	const { scopeId, deviceId } = input;
+	const leftOut = teamRecoveryExcludedDeviceIds(db, team.team_id).has(deviceId);
+	if (leftOut || !hasRow(db, INCLUDED_SQL, team.team_id, deviceId))
+		return scopeHoldsTeamProject(db, team, scopeId);
+	const eligibility = readTeamDeviceEligibility(db, team.team_id);
+	if (eligibility?.status === "eligible" && eligibility.eligibleDeviceIds.includes(deviceId))
+		return false;
+	// Included, but its person or binding no longer makes it a Team device.
+	return teamProjectsInScope(db, team, scopeId).some(
+		(identity) => !policyAuthorizes(db, identity, deviceId),
+	);
 }
 
 // Answers are reused until any connection commits or this one writes, so a sync
@@ -149,10 +209,9 @@ function decideTeamSetupRefusal(
 		throw error;
 	}
 	if (teams.length === 0 || input.deviceId === localDeviceId(db)) return false;
-	return teams.some(
-		(team) =>
-			isTeamDevice(db, team, input.deviceId) &&
-			(team.status !== "active" || !hasRow(db, INCLUDED_SQL, team.team_id, input.deviceId)) &&
-			scopeHoldsTeamProject(db, team, input.scopeId),
-	);
+	return teams.some((team) => {
+		if (!isTeamDevice(db, team, input.deviceId)) return false;
+		if (team.status !== "active") return scopeHoldsTeamProject(db, team, input.scopeId);
+		return activeTeamRefuses(db, team, input);
+	});
 }

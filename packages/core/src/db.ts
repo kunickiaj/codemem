@@ -47,6 +47,7 @@ import {
 	ensureLegacyTeamSetupDraftSchema,
 	ensureMemoryAggregateIndex,
 	ensurePolicyTeamMemberRemovalsTable,
+	ensurePolicyTeamRecoveryExclusionsTable,
 	ensureRawEventCaptureContextSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
@@ -1079,6 +1080,7 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	ensureVectorCorpusEpoch(db);
 	ensureSyncPeerExplicitPairingColumns(db);
 	ensurePolicyTeamMemberRemovalsTable(db);
+	ensurePolicyTeamRecoveryExclusionsTable(db);
 	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "manual_addresses_json")) {
 		try {
 			db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");

@@ -2836,8 +2836,21 @@ describe("legacy Team setup completion manifests with cached scope access after 
 
 	afterEach(() => db.close());
 
+	it("defers when the removed device is cached only in the Team's mapped Project scope, which admission refuses it", async () => {
+		// Arrange: the binding ended, so the included decision alone no longer admits
+		// the Laptop to a scope that holds one of the Team's Projects.
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		await cacheScopeMembers(db, [["scope-engineering", "device-a"]]);
+
+		// Act and assert: this machine already denies the device, so nothing is written.
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
+		);
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+		expect(servesScope(db, "device-a", "scope-engineering")).toBe(false);
+	});
+
 	it.each([
-		["the Team's mapped Project scope", "scope-engineering"],
 		["another coordinator scope of the Team's group", "scope-group-default"],
 		["a scope of another group", "scope-other-group"],
 	] as const)(
@@ -2857,7 +2870,7 @@ describe("legacy Team setup completion manifests with cached scope access after 
 		},
 	);
 
-	it("quarantines when a Team Project was remapped to another group's scope that still caches the removed device", async () => {
+	it("refuses the removed device a scope of another group that a Team Project was remapped to", async () => {
 		// Arrange: after setup an admin moves the Project, and its memories, to
 		// another group's scope. The completed draft still names the old target.
 		const { reconcile } = await completeTeamThenRemoveLaptop(db);
@@ -2889,13 +2902,13 @@ describe("legacy Team setup completion manifests with cached scope access after 
 				.get(mapping.id),
 		).toBe("scope-other-group");
 
-		// Act and assert.
-		await expect(reconcile({ status: "unavailable" })).rejects.toThrow(
-			"team_setup_completion_invalid",
+		// Act and assert: the Laptop's binding ended, so admission already refuses it the
+		// scope the Project moved to. The Team is kept and the read can be retried.
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
 		);
-		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
-		// The remapped Project's scope is refused to the Team's Laptop at once, while a
-		// device outside the Team keeps that group's access.
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+		// A device outside the Team keeps that group's access.
 		expect(servesScope(db, "device-a", "scope-other-group")).toBe(false);
 		expect(servesScope(db, "device-c", "scope-other-group")).toBe(true);
 	});

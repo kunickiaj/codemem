@@ -1792,11 +1792,10 @@ export {
 	type TeamMemberRemovalContext,
 	type TeamMemberRemovalRejection,
 } from "./team-member-removal-review.js";
-export {
-	TEAM_RECOVERY_DECISION_PROVENANCE,
-	type TeamRecoveryDevice,
-	type TeamRecoveryDeviceBlockCheck,
-	type TeamRecoveryDeviceRemoval,
+export type {
+	TeamRecoveryDevice,
+	TeamRecoveryDeviceBlockCheck,
+	TeamRecoveryDeviceRemoval,
 } from "./team-recovery-devices.js";
 export {
 	previewTeamRecovery,

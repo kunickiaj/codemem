@@ -25,7 +25,6 @@ import {
 } from "./legacy-team-setup-limits.js";
 import { removePairingState } from "./pairing-removal.js";
 import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
-import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { listProjectScopeCandidates } from "./project-scope-settings.js";
 import type { LegacyTeamSetupActivationResultV1 } from "./recipient-policy-contract.js";
 import {
@@ -46,6 +45,8 @@ import {
 import { localRemovedDeviceIds } from "./removed-device-local-ids.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
 import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
+import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
+import { teamRecoveryExcludedDeviceIds } from "./team-recovery-exclusions.js";
 
 export type LegacyTeamSetupCompletionManifestErrorCode =
 	| "team_setup_completion_invalid"
@@ -1002,15 +1003,31 @@ function appendResolvedManifestProjects(
 	}
 }
 
+/**
+ * The devices the manifest included that still have to match the roster. A
+ * device a Team recovery left out no longer counts: the coordinator removed or
+ * blocked it, the recovered Team never serves it, and the manifest, which
+ * cannot change, will always list it.
+ */
+function includedDevicesToVerify(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): IncludedDeviceDecision[] {
+	const leftOut = teamRecoveryExcludedDeviceIds(db, manifest.team_id);
+	return manifest.device_decisions.filter(
+		(device) => device.decision === "included" && !leftOut.has(device.device_id),
+	);
+}
+
 function requireIncludedDeviceEvidence(
+	db: Database,
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[],
 ): void {
 	if (freshRoster.length > LEGACY_TEAM_SETUP_MAX_DEVICES) fail("team_setup_completion_invalid");
 	const freshByDeviceId = new Map(freshRoster.map((device) => [device.deviceId, device]));
 	if (freshByDeviceId.size !== freshRoster.length) fail("team_setup_completion_invalid");
-	for (const decision of manifest.device_decisions) {
-		if (decision.decision !== "included") continue;
+	for (const decision of includedDevicesToVerify(db, manifest)) {
 		const fresh = freshByDeviceId.get(decision.device_id);
 		if (!decision.enabled || !fresh?.enabled || fresh.fingerprint !== decision.key_fingerprint) {
 			fail("team_setup_completion_invalid");
@@ -1025,13 +1042,14 @@ type IncludedDeviceDecision = CoordinatorLegacyTeamCompletionManifestV1["device_
  * absent or a remaining device no longer matches its reviewed evidence.
  */
 function includedDevicesMissingOnlyFromRoster(
+	db: Database,
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[],
 ): IncludedDeviceDecision[] | undefined {
 	const roster = new Map(freshRoster.map((device) => [device.deviceId, device]));
 	if (roster.size !== freshRoster.length || roster.size > LEGACY_TEAM_SETUP_MAX_DEVICES)
 		return undefined;
-	const included = manifest.device_decisions.filter((device) => device.decision === "included");
+	const included = includedDevicesToVerify(db, manifest);
 	const missing = included.filter((device) => !roster.has(device.device_id));
 	if (!missing.length) return undefined;
 	const remainingDiverged = included.some((device) => {
@@ -1061,66 +1079,6 @@ function exactInstalledCompletionResult(
 		if (!(error instanceof LegacyTeamSetupCompletionManifestError)) throw error;
 		return undefined;
 	}
-}
-
-/** The Team's device eligibility from this machine's policy rows, as recipient policy derives it. */
-function localTeamDeviceEligibility(db: Database, teamId: string) {
-	const mode = db
-		.prepare("SELECT device_eligibility_mode FROM policy_teams WHERE team_id = ?")
-		.pluck()
-		.get(teamId) as string | undefined;
-	if (mode === undefined) return undefined;
-	const members = "SELECT identity_id FROM policy_team_memberships WHERE team_id = ?";
-	const memberships = db
-		.prepare("SELECT identity_id, status FROM policy_team_memberships WHERE team_id = ?")
-		.all(teamId) as Array<{ identity_id: string; status: string }>;
-	const identities = db
-		.prepare(
-			`SELECT actor_id, status, merged_into_actor_id FROM actors WHERE actor_id IN (${members})`,
-		)
-		.all(teamId) as Array<{
-		actor_id: string;
-		status: string;
-		merged_into_actor_id: string | null;
-	}>;
-	const devices = db
-		.prepare(
-			`SELECT identity_id, device_id, status, assignment_version FROM identity_devices
-			 WHERE identity_id IN (${members})`,
-		)
-		.all(teamId) as Array<{
-		identity_id: string;
-		device_id: string;
-		status: string;
-		assignment_version: number;
-	}>;
-	const decisions = db
-		.prepare(
-			`SELECT device_id, decision, assignment_version FROM policy_team_device_decisions
-			 WHERE team_id = ?`,
-		)
-		.all(teamId) as Array<{ device_id: string; decision: string; assignment_version: number }>;
-	return derivePolicyTeamDeviceEligibility({
-		teamId,
-		mode,
-		memberships: memberships.map((row) => ({ identityId: row.identity_id, status: row.status })),
-		identities: identities.map((row) => ({
-			identityId: row.actor_id,
-			status: row.status,
-			mergedIntoIdentityId: row.merged_into_actor_id,
-		})),
-		devices: devices.map((row) => ({
-			identityId: row.identity_id,
-			deviceId: row.device_id,
-			status: row.status,
-			assignmentVersion: row.assignment_version,
-		})),
-		decisions: decisions.map((row) => ({
-			deviceId: row.device_id,
-			decision: row.decision,
-			assignmentVersion: row.assignment_version,
-		})),
-	});
 }
 
 /**
@@ -1167,7 +1125,7 @@ function areDevicesDeniedLocallyForTeam(
 	const peerPin = db.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ? LIMIT 1");
 	if (deviceIds.some((deviceId) => activeBinding.get(deviceId) || peerPin.get(deviceId)))
 		return false;
-	const eligibility = localTeamDeviceEligibility(db, manifest.team_id);
+	const eligibility = readTeamDeviceEligibility(db, manifest.team_id);
 	if (eligibility?.status !== "eligible") return false;
 	if (deviceIds.some((deviceId) => eligibility.eligibleDeviceIds.includes(deviceId))) return false;
 	return deviceIds.every((deviceId) => !hasAnyCachedScopeAuthorization(db, deviceId));
@@ -1180,7 +1138,7 @@ function replayAfterVerifiedRemoval(
 ): LegacyTeamSetupActivationResultV1 | undefined {
 	const evidence = input.deviceRemovals;
 	if (!evidence || input.expectedDraftManifest) return undefined;
-	const missing = includedDevicesMissingOnlyFromRoster(manifest, input.freshRoster);
+	const missing = includedDevicesMissingOnlyFromRoster(db, manifest, input.freshRoster);
 	if (!missing) return undefined;
 	const installed = exactInstalledCompletionResult(db, manifest);
 	if (!installed) return undefined;
@@ -1597,7 +1555,7 @@ async function applyCompletionManifest(
 					const draft = loadDraft(db, manifest.candidate_ref);
 					requireExpectedDraftManifest(db, draft, input.expectedDraftManifest);
 					const hasCompletedDraft = draft.state === "completed";
-					requireIncludedDeviceEvidence(manifest, input.freshRoster);
+					requireIncludedDeviceEvidence(db, manifest, input.freshRoster);
 					if (hasCompletedDraft) {
 						try {
 							const local = reconstructLegacyTeamSetupCompletionManifest(db, {

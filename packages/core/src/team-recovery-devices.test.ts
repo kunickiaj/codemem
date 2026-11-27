@@ -5,10 +5,10 @@ import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import {
 	planTeamRecoveryDevices,
-	TEAM_RECOVERY_DECISION_PROVENANCE,
 	type TeamRecoveryDeviceBlockCheck,
 	type TeamRecoveryDeviceRemoval,
 } from "./team-recovery-devices.js";
+import { recordTeamRecoveryExclusions } from "./team-recovery-exclusions.js";
 import {
 	blockChecks,
 	DESKTOP,
@@ -72,12 +72,19 @@ function outcomes(result: ReturnType<typeof plan>): Record<string, string> {
 	);
 }
 
-const markLaptop = (decision: string) =>
-	run(
-		"UPDATE policy_team_device_decisions SET decision = ?, provenance = ? WHERE device_id = 'device-a'",
-		decision,
-		TEAM_RECOVERY_DECISION_PROVENANCE,
-	);
+const LAPTOP_EXCLUSION = {
+	deviceId: "device-a",
+	fingerprint: LAPTOP.fingerprint,
+	reason: "removed_from_group" as const,
+};
+
+/** Records what an earlier recovery wrote when it left the Laptop out. */
+const leaveOutLaptop = () =>
+	recordTeamRecoveryExclusions(db, {
+		teamId: manifest.team_id,
+		devices: [LAPTOP_EXCLUSION],
+		now: NOW,
+	});
 
 describe("Team recovery device plan", () => {
 	it("restores enrolled devices, leaves out the removed one and keeps the review's exclusion", () => {
@@ -88,9 +95,7 @@ describe("Team recovery device plan", () => {
 			"device-b": "regains_access",
 			"device-x": "stays_out:excluded_in_review",
 		});
-		expect(result).toMatchObject({
-			marks: [{ deviceId: "device-a", fingerprint: LAPTOP.fingerprint }],
-		});
+		expect(result).toMatchObject({ exclusions: [LAPTOP_EXCLUSION] });
 	});
 
 	it("leaves out a removed device that still has a pin and a cached scope membership", () => {
@@ -105,14 +110,14 @@ describe("Team recovery device plan", () => {
 		expect(outcomes(plan())["device-a"]).toBe("stays_out:removed_from_group");
 	});
 
-	it("plans a mark that makes sync admission refuse the removed device once the Team is active", () => {
-		// Arrange: the Team made active again without the mark, as a plain reactivation would.
+	it("plans an exclusion that makes sync admission refuse the removed device once the Team is active", () => {
+		// Arrange: the Team made active again with no exclusion, as a plain reactivation would.
 		const laptop = { scopeId: "scope-engineering", deviceId: "device-a" };
 		run("UPDATE policy_teams SET status = 'active', migration_state = 'completed'");
 		expect(isScopeDeviceAdmissionRefused(db, laptop)).toBe(false);
 
-		// Act: the decision recovery plans for a device it leaves out.
-		markLaptop("excluded");
+		// Act: the exclusion recovery plans for a device it leaves out.
+		leaveOutLaptop();
 
 		// Assert: refused from current state, with no cache refresh. The Desktop is served.
 		expect(isScopeDeviceAdmissionRefused(db, laptop)).toBe(true);
@@ -400,8 +405,8 @@ describe("Team recovery plan for invitation-added devices", () => {
 
 describe("Team recovery plan after an earlier recovery", () => {
 	it("keeps out a device an earlier recovery left out, even when it is enrolled again", () => {
-		// Arrange: marked earlier, then back on the roster under a new key with no removal record.
-		markLaptop("excluded");
+		// Arrange: left out earlier, then back on the roster under a new key with no removal record.
+		leaveOutLaptop();
 
 		const result = plan([rekeyed(LAPTOP), DESKTOP, TABLET], []);
 
@@ -409,12 +414,24 @@ describe("Team recovery plan after an earlier recovery", () => {
 			"device-a": "stays_out:left_out_by_recovery",
 			"device-b": "regains_access",
 		});
-		expect(result).toMatchObject({ marks: [] });
+		expect(result).toMatchObject({ exclusions: [] });
 	});
 
-	it("refuses a recovery mark that no longer excludes its device", () => {
-		markLaptop("included");
+	it("keeps it out after its decision is deleted and written again as included", () => {
+		// Arrange: deleting a binding deletes the decision, and a later setup can write a new one.
+		leaveOutLaptop();
+		run("DELETE FROM policy_team_device_decisions WHERE device_id = 'device-a'");
+		run(
+			`INSERT INTO policy_team_device_decisions(team_id, device_id, decision, assignment_version,
+			 provenance, revision, created_at, updated_at)
+			 VALUES (?, 'device-a', 'included', 0, 'reviewed_team_setup', 'r2', ?, ?)`,
+			manifest.team_id,
+			NOW,
+			NOW,
+		);
 
-		expect(plan()).toMatchObject({ reason: "device_decision_changed", deviceIds: ["device-a"] });
+		expect(outcomes(plan([LAPTOP, DESKTOP, TABLET], []))["device-a"]).toBe(
+			"stays_out:left_out_by_recovery",
+		);
 	});
 });
