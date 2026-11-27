@@ -1216,6 +1216,23 @@ export const policyTeamMemberRemovalEnforcements = sqliteTable(
 	(table) => [primaryKey({ columns: [table.team_id, table.identity_id] })],
 );
 
+/**
+ * Devices a Team recovery left out, each with the key it was removed or
+ * blocked under. Rows are only added, and nothing that rewrites or deletes a
+ * device decision touches them.
+ */
+export const policyTeamRecoveryExclusions = sqliteTable(
+	"policy_team_recovery_exclusions",
+	{
+		team_id: text("team_id").notNull(),
+		device_id: text("device_id").notNull(),
+		key_fingerprint: text("key_fingerprint").notNull(),
+		reason: text("reason").notNull(),
+		excluded_at: text("excluded_at").notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.team_id, table.device_id] })],
+);
+
 export type PolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferSelect;
 export type NewPolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferInsert;
 
@@ -1654,6 +1671,7 @@ export const schema = {
 	policyTeamMemberRemovals,
 	policyTeamCoordinatorLinks,
 	policyTeamMemberRemovalEnforcements,
+	policyTeamRecoveryExclusions,
 	identityDevices,
 	projectRecipients,
 	legacyTeamSetupDrafts,

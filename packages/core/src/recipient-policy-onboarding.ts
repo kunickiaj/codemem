@@ -34,6 +34,7 @@ import {
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
 } from "./team-ownership-transitions.js";
+import { teamRecoveryExclusionCheck } from "./team-recovery-exclusions.js";
 
 export type RecipientPolicyOnboardingJourneyV1 = "team" | "direct_project" | "add_device";
 
@@ -621,6 +622,51 @@ function addInheritedTeamSources(
 	}
 }
 
+interface InheritedTeamFactRow {
+	fact_kind: "membership" | "decision";
+	team_id: string;
+	reference_id: string;
+	value: string;
+	assignment_version: number | null;
+}
+
+/**
+ * The memberships and device decisions of every active Team that shares a
+ * Project with the person. A device a Team recovery left out reads as excluded,
+ * whatever its decision row says, as it does for recipient policy and admission.
+ */
+function readInheritedTeamFacts(db: Database, identityId: string): InheritedTeamFactRow[] {
+	const rows = db
+		.prepare(
+			`WITH referenced_teams AS (
+			 SELECT DISTINCT tm.team_id
+			 FROM policy_team_memberships tm
+				 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
+				 JOIN project_recipients pr ON pr.recipient_kind = 'team'
+				  AND pr.recipient_id = tm.team_id
+			 WHERE tm.identity_id = ?
+			)
+			SELECT 'membership' AS fact_kind, membership.team_id,
+			 membership.identity_id AS reference_id, membership.status AS value,
+			 NULL AS assignment_version
+			FROM policy_team_memberships membership
+			JOIN referenced_teams referenced ON referenced.team_id = membership.team_id
+			UNION ALL
+			SELECT 'decision' AS fact_kind, decision.team_id,
+			 decision.device_id AS reference_id, decision.decision AS value,
+			 decision.assignment_version
+			FROM policy_team_device_decisions decision
+			JOIN referenced_teams referenced ON referenced.team_id = decision.team_id`,
+		)
+		.all(identityId) as InheritedTeamFactRow[];
+	const leftOut = teamRecoveryExclusionCheck(db);
+	return rows.map((row) =>
+		row.fact_kind === "decision" && leftOut(row.team_id, row.reference_id)
+			? { ...row, value: "excluded" }
+			: row,
+	);
+}
+
 function inheritedSources(
 	db: Database,
 	identityId: string,
@@ -740,35 +786,7 @@ function inheritedSources(
 			decisions: Array<{ deviceId: string; decision: string; assignmentVersion: number }>;
 		}
 	>();
-	for (const row of db
-		.prepare(
-			`WITH referenced_teams AS (
-			 SELECT DISTINCT tm.team_id
-			 FROM policy_team_memberships tm
-				 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
-				 JOIN project_recipients pr ON pr.recipient_kind = 'team'
-				  AND pr.recipient_id = tm.team_id
-			 WHERE tm.identity_id = ?
-			)
-			SELECT 'membership' AS fact_kind, membership.team_id,
-			 membership.identity_id AS reference_id, membership.status AS value,
-			 NULL AS assignment_version
-			FROM policy_team_memberships membership
-			JOIN referenced_teams referenced ON referenced.team_id = membership.team_id
-			UNION ALL
-			SELECT 'decision' AS fact_kind, decision.team_id,
-			 decision.device_id AS reference_id, decision.decision AS value,
-			 decision.assignment_version
-			FROM policy_team_device_decisions decision
-			JOIN referenced_teams referenced ON referenced.team_id = decision.team_id`,
-		)
-		.all(identityId) as Array<{
-		fact_kind: "membership" | "decision";
-		team_id: string;
-		reference_id: string;
-		value: string;
-		assignment_version: number | null;
-	}>) {
+	for (const row of readInheritedTeamFacts(db, identityId)) {
 		const facts = factsByTeam.get(row.team_id) ?? { memberships: [], decisions: [] };
 		if (row.fact_kind === "membership") {
 			facts.memberships.push({ identityId: row.reference_id, status: row.value });

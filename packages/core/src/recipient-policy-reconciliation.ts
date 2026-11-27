@@ -4,7 +4,6 @@ import {
 	isWithdrawnPolicyIdentity,
 } from "./policy-team-device-eligibility.js";
 import { denyOverlayRow } from "./recipient-policy-deny-overlay.js";
-
 import {
 	isStrictRecipientPolicyId,
 	isStrictRecipientPolicyProjectIdentity,
@@ -14,6 +13,7 @@ import {
 	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 } from "./repository-mapping-aliases.js";
+import { readEffectiveTeamDeviceDecisions } from "./team-recovery-exclusions.js";
 
 export { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
 
@@ -629,16 +629,7 @@ export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 		status: string;
 		assignment_version: number;
 	}>;
-	const teamDeviceDecisions = db
-		.prepare(
-			"SELECT team_id, device_id, decision, assignment_version FROM policy_team_device_decisions ORDER BY team_id, device_id",
-		)
-		.all() as Array<{
-		team_id: string;
-		device_id: string;
-		decision: string;
-		assignment_version: number;
-	}>;
+	const teamDeviceDecisions = readEffectiveTeamDeviceDecisions(db);
 	return deriveRecipientPolicyEffectiveDevices({
 		canonicalProjectIdentity: canonicalIdentity,
 		projectRecipients: projectRecipients.map((row) => ({

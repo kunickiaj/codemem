@@ -924,6 +924,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerExplicitPairingColumns(db);
 		ensurePolicyTeamMemberRemovalsTable(db);
+		ensurePolicyTeamRecoveryExclusionsTable(db);
 		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
@@ -1000,6 +1001,23 @@ function backfillRemovalEnforcements(db: Database): void {
 		if (key !== null && setupGroups.has(JSON.stringify([removal.team_id, key])))
 			insert.run(removal.team_id, removal.identity_id, removal.recorded_at);
 	}
+}
+
+/**
+ * Devices a Team recovery left out, each with the key it was removed or
+ * blocked under. Rows are only added. They live apart from device decisions so
+ * that nothing that rewrites or deletes a decision can bring the device back.
+ */
+export function ensurePolicyTeamRecoveryExclusionsTable(db: Database): void {
+	if (db.readonly) return;
+	db.exec(`CREATE TABLE IF NOT EXISTS policy_team_recovery_exclusions (
+		team_id TEXT NOT NULL,
+		device_id TEXT NOT NULL,
+		key_fingerprint TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		excluded_at TEXT NOT NULL,
+		PRIMARY KEY(team_id, device_id)
+	)`);
 }
 
 export function ensurePolicyTeamMemberRemovalsTable(db: Database): void {

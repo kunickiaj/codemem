@@ -38,6 +38,12 @@ const roster = [
 	{ deviceId: "device-a", fingerprint: "key-a", displayName: "Laptop", enabled: true },
 	{ deviceId: "device-b", fingerprint: "key-b", displayName: "Desktop", enabled: true },
 ];
+/** What a canonical apply is given besides its draft: the roster is the one the draft was built from. */
+const CANONICAL_APPLY = {
+	policyRevision: "canonical-revision",
+	completedAt: NOW,
+	freshRoster: roster,
+};
 
 function snapshot() {
 	return {
@@ -394,8 +400,7 @@ describe("legacy Team setup activation", () => {
 				applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 					candidateRef: draft.candidateRef,
 					attemptId: draft.attemptId,
-					policyRevision: "canonical-revision",
-					completedAt: NOW,
+					...CANONICAL_APPLY,
 					completionKey,
 				}),
 			)
@@ -428,8 +433,7 @@ describe("legacy Team setup activation", () => {
 					applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 						candidateRef: draft.candidateRef,
 						attemptId: draft.attemptId,
-						policyRevision: "canonical-revision",
-						completedAt: NOW,
+						...CANONICAL_APPLY,
 						completionKey,
 						allowCompletedDraft: true,
 					}),

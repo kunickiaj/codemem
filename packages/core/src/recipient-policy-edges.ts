@@ -30,6 +30,7 @@ import {
 } from "./repository-mapping-aliases.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
+import { readEffectiveTeamDeviceDecisions } from "./team-recovery-exclusions.js";
 
 export type {
 	RecipientPolicyEdgeChangeV1,
@@ -401,12 +402,7 @@ function loadTeamFacts(
 			 ORDER BY team_id, identity_id`,
 		)
 		.all() as Array<Record<string, unknown>>;
-	const decisions = db
-		.prepare(
-			`SELECT team_id, device_id, decision, assignment_version FROM policy_team_device_decisions
-			 ORDER BY team_id, device_id`,
-		)
-		.all() as Array<Record<string, unknown>>;
+	const decisions = readEffectiveTeamDeviceDecisions(db);
 	const membershipsByTeam = new Map<string, Array<{ identityId: string; status: string }>>();
 	for (const row of memberships) {
 		const teamId = String(row.team_id ?? "");

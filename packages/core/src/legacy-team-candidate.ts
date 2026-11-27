@@ -11,6 +11,7 @@ import {
 	isFilesystemRootProjectIdentity,
 	isMigratableLegacyTeamProjectIdentity,
 } from "./legacy-team-project-policy.js";
+import { currentLegacyTeamRosterFingerprint } from "./legacy-team-roster-fingerprint.js";
 import {
 	type LegacyTeamSetupDraftState,
 	type LegacyTeamSetupDraftView,
@@ -32,7 +33,6 @@ import {
 	isStrictRecipientPolicyId,
 	legacyTeamCandidateId,
 	legacyTeamProjectRef,
-	legacyTeamRosterFingerprint,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import {
@@ -40,6 +40,7 @@ import {
 	type StrictRecipientPolicyEffectiveDeviceDerivation,
 } from "./recipient-policy-reconciliation.js";
 import { isTeamMemberRemoved } from "./team-member-removal-policy.js";
+import { withTeamRecoveryExclusionsFor } from "./team-recovery-exclusions.js";
 
 export interface LegacyTeamRosterDeviceSnapshot {
 	deviceId: string;
@@ -203,16 +204,6 @@ function effectiveGroupSnapshots(groups: LegacyTeamConfiguredGroupSnapshot[]): {
 	}
 	for (const candidateId of conflictedCandidateIds) byCandidate.delete(candidateId);
 	return { snapshots: [...byCandidate.values()], conflictedCandidateIds };
-}
-
-function activeAssignmentIdentityLookup(db: Database): (deviceId: string) => string | null {
-	const statement = db
-		.prepare(
-			`SELECT identity_id FROM identity_devices
-			 WHERE device_id = ? AND status = 'active' LIMIT 1`,
-		)
-		.pluck();
-	return (deviceId) => (statement.get(deviceId) as string | undefined) ?? null;
 }
 
 function projectInventory(
@@ -447,6 +438,45 @@ function expectIncludedDevice(
  * the header alone would keep advertising Ready while authoritative
  * eligibility already denies the Team's devices.
  */
+/*
+ * A device a Team recovery left out reads as excluded on both sides of the
+ * readiness comparison: in the completed draft's review and in the Team's
+ * decisions. The review cannot change, and an activation after the exclusion
+ * stores `excluded` for a device the review included. Without this the Team
+ * would read as needing setup, and repeating setup could not change that.
+ */
+
+/** The completed draft's reviewed devices, as readiness must read them. */
+function readinessDraftDevices(db: Database, attemptId: string, teamId: string) {
+	const rows = db
+		.prepare(
+			`SELECT device_id, decision, target_identity_id
+			 FROM legacy_team_setup_draft_devices WHERE attempt_id = ?`,
+		)
+		.all(attemptId) as Array<{
+		device_id: string;
+		decision: string;
+		target_identity_id: string | null;
+	}>;
+	return withTeamRecoveryExclusionsFor(db, teamId, rows);
+}
+
+/** The Team's device decisions, as readiness must read them. */
+function readinessDeviceDecisions(db: Database, teamId: string) {
+	const rows = db
+		.prepare(
+			`SELECT device_id, provenance, decision, assignment_version
+			 FROM policy_team_device_decisions WHERE team_id = ?`,
+		)
+		.all(teamId) as Array<{
+		device_id: string;
+		provenance: string;
+		decision: string;
+		assignment_version: number;
+	}>;
+	return withTeamRecoveryExclusionsFor(db, teamId, rows);
+}
+
 function isCompatibleReadyTeam(
 	db: Database,
 	candidateId: string,
@@ -496,16 +526,7 @@ function isCompatibleReadyTeam(
 			 WHERE team_id = ?`,
 		)
 		.all(completedTeamId) as Array<{ identity_id: string; status: string }>;
-	const deviceRows = db
-		.prepare(
-			`SELECT device_id, decision, target_identity_id
-			 FROM legacy_team_setup_draft_devices WHERE attempt_id = ?`,
-		)
-		.all(attemptId) as Array<{
-		device_id: string;
-		decision: string;
-		target_identity_id: string | null;
-	}>;
+	const deviceRows = readinessDraftDevices(db, attemptId, completedTeamId);
 	// The canonical decision set must equal the completion-bound set exactly:
 	// a decision row added after completion for a device outside the completed
 	// draft could grant unreviewed access while discovery still shows Ready.
@@ -516,17 +537,7 @@ function isCompatibleReadyTeam(
 			.filter((device) => device.decision === "included" || device.decision === "excluded")
 			.map((device) => device.device_id),
 	);
-	const canonicalDecisions = db
-		.prepare(
-			`SELECT device_id, provenance, decision, assignment_version
-			 FROM policy_team_device_decisions WHERE team_id = ?`,
-		)
-		.all(completedTeamId) as Array<{
-		device_id: string;
-		provenance: string;
-		decision: string;
-		assignment_version: number;
-	}>;
+	const canonicalDecisions = readinessDeviceDecisions(db, completedTeamId);
 	const identities = db
 		.prepare(
 			`SELECT actor.actor_id, actor.status, actor.merged_into_actor_id
@@ -993,15 +1004,7 @@ function candidateAuthority(
 		projects,
 		authorityRow?.attempt_id ?? null,
 	);
-	const activeAssignmentIdentity = activeAssignmentIdentityLookup(db);
-	const rosterFingerprint = legacyTeamRosterFingerprint(
-		rosterDevices.map((device) => ({
-			deviceId: device.deviceId,
-			fingerprint: device.fingerprint,
-			enabled: device.enabled,
-			identityId: activeAssignmentIdentity(device.deviceId),
-		})),
-	);
+	const rosterFingerprint = currentLegacyTeamRosterFingerprint(db, rosterDevices);
 	const completedRow = authorityRow?.state === "completed" ? authorityRow : canonicalCompletedRow;
 	const completionEvidenceMatches =
 		completedRow !== null &&

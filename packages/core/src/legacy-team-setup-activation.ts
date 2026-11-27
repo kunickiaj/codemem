@@ -13,6 +13,7 @@ import {
 } from "./legacy-recipient-policy-projection.js";
 import { isStoredLegacyTeamAssignmentExpectationWellFormed } from "./legacy-team-assignment-expectation.js";
 import { isLegacyTeamProjectCanonicalStateValid } from "./legacy-team-project-canonical-preflight.js";
+import { currentLegacyTeamRosterFingerprint } from "./legacy-team-roster-fingerprint.js";
 import {
 	type LegacyTeamSetupProjectInput,
 	legacyTeamProjectionFingerprint,
@@ -56,6 +57,10 @@ import {
 	planSetupDeviceDecisionTransition,
 	planSetupMembershipTransition,
 } from "./team-ownership-transitions.js";
+import {
+	readEffectiveTeamDeviceDecisions,
+	withTeamRecoveryExclusionsFor,
+} from "./team-recovery-exclusions.js";
 
 export type { LegacyTeamSetupActivationErrorCode } from "./legacy-team-setup-errors.js";
 
@@ -479,6 +484,18 @@ function planMembership(
 		: planSetupMembershipTransition(membership, desired);
 }
 
+/**
+ * A device a Team recovery left out stays out: this setup neither binds nor
+ * includes it, whatever the review says. Its person can still be a member.
+ */
+function withoutRecoveryExcludedDevices(
+	db: Database,
+	candidateId: string,
+	reviewed: DraftDeviceRow[],
+): DraftDeviceRow[] {
+	return withTeamRecoveryExclusionsFor(db, deterministicPolicyTeamId(candidateId), reviewed);
+}
+
 function loadModel(
 	db: Database,
 	input: PreviewLegacyTeamSetupActivationInput & {
@@ -512,7 +529,7 @@ function loadModel(
 		activationError("team_setup_confirmation_stale");
 	}
 
-	const devices = db
+	const reviewedDevices = db
 		.prepare(
 			`SELECT device_id, device_ref, key_fingerprint, display_name, enabled,
 			        existing_identity_id, existing_assignment_version, verified_evidence_kind,
@@ -521,6 +538,7 @@ function loadModel(
 			 FROM legacy_team_setup_draft_devices WHERE attempt_id = ? ORDER BY device_id`,
 		)
 		.all(input.attemptId) as DraftDeviceRow[];
+	const devices = withoutRecoveryExcludedDevices(db, draft.candidate_id, reviewedDevices);
 	const projects = db
 		.prepare(
 			`SELECT project_ref, source_project_identity, display_name, source_fingerprint,
@@ -555,7 +573,7 @@ function loadModel(
 		deterministicPolicyTeamId(draft.candidate_id),
 		{ settingUpFrom: { coordinatorId: draft.coordinator_id, groupId: draft.group_id } },
 	);
-	const desiredIdentityIds = desiredSetupMembers(devices, removedIdentityIds);
+	const desiredIdentityIds = desiredSetupMembers(reviewedDevices, removedIdentityIds);
 	if (desiredIdentityIds.some((identityId) => !activeIdentityIds.has(identityId))) {
 		activationError("team_setup_conflict");
 	}
@@ -611,12 +629,8 @@ function loadModel(
 			 ORDER BY device_id`,
 		)
 		.all() as AssignmentRow[];
-	const decisions = db
-		.prepare(
-			`SELECT device_id, decision, assignment_version FROM policy_team_device_decisions
-			 WHERE team_id = ? ORDER BY device_id`,
-		)
-		.all(teamId) as DecisionRow[];
+	const allDecisions = readEffectiveTeamDeviceDecisions(db);
+	const decisions: DecisionRow[] = allDecisions.filter((row) => row.team_id === teamId);
 	const mappings = db
 		.prepare(
 			`SELECT id, workspace_identity, project_pattern, scope_id, source
@@ -640,12 +654,6 @@ function loadModel(
 			 FROM policy_team_memberships ORDER BY team_id, identity_id`,
 		)
 		.all() as MembershipSnapshotRow[];
-	const allDecisions = db
-		.prepare(
-			`SELECT team_id, device_id, decision, assignment_version, provenance
-			 FROM policy_team_device_decisions ORDER BY team_id, device_id`,
-		)
-		.all() as DecisionSnapshotRow[];
 	const identityRows = db
 		.prepare("SELECT actor_id, status, merged_into_actor_id FROM actors ORDER BY actor_id")
 		.all() as IdentitySnapshotRow[];
@@ -1694,18 +1702,7 @@ function applyActivationRows(
 	// Team and (later) the completed draft so the next discovery, which
 	// fingerprints the same fresh roster against the new canonical assignments,
 	// matches instead of reopening a successful setup.
-	const activeIdentityForDevice = db.prepare(
-		"SELECT identity_id FROM identity_devices WHERE device_id = ? AND status = 'active' LIMIT 1",
-	);
-	const postRosterFingerprint = legacyTeamRosterFingerprint(
-		freshRoster.map((device) => ({
-			deviceId: device.deviceId,
-			fingerprint: device.fingerprint,
-			enabled: device.enabled,
-			identityId:
-				(activeIdentityForDevice.pluck().get(device.deviceId) as string | undefined) ?? null,
-		})),
-	);
+	const postRosterFingerprint = currentLegacyTeamRosterFingerprint(db, freshRoster);
 	db.prepare(
 		"UPDATE policy_teams SET source_fingerprint = ?, updated_at = ? WHERE team_id = ?",
 	).run(postRosterFingerprint, now, model.teamId);
@@ -2045,6 +2042,8 @@ function canonicalCompletionReplay(
  * to reuse the stored key; deriving a fresh preview from materialized policy
  * would otherwise rotate the key on every retry.
  */
+type FreshRoster = Awaited<ReturnType<FinishLegacyTeamSetupActivationInput["loadFreshRoster"]>>;
+
 export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 	db: Database,
 	input: PreviewLegacyTeamSetupActivationInput & {
@@ -2053,6 +2052,13 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		completionKey?: string;
 		allowCompletedDraft?: boolean;
 		allowStaleDraft?: boolean;
+		/**
+		 * The coordinator's roster the caller verified the setup against. The
+		 * activation saves this roster's fingerprint, which is the one discovery
+		 * computes, and never one built from the devices the setup lists: the two
+		 * differ for a device a Team recovery left out.
+		 */
+		freshRoster: FreshRoster;
 	},
 ): LegacyTeamSetupActivationResultV1 {
 	if (!db.inTransaction) activationError("team_setup_failed");
@@ -2071,15 +2077,7 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
 		const model = loadModel(db, { ...input, allowInactiveCanonicalTeam: true });
 		const inspected = buildPreview(model);
 		requireLegacyTeamSetupAccessDeltaWithinLimit(inspected.accessDelta);
-		const roster = model.devices
-			.filter((device) => device.decision !== "removed")
-			.map((device) => ({
-				deviceId: device.device_id,
-				fingerprint: device.key_fingerprint,
-				displayName: device.display_name,
-				enabled: device.enabled !== 0,
-			}));
-		return applyActivation(db, model, inspected, roster, input.completedAt, {
+		return applyActivation(db, model, inspected, input.freshRoster, input.completedAt, {
 			revisionOverride: input.policyRevision,
 			completionKey: input.completionKey,
 			allowExistingCompletion: input.allowCompletedDraft,

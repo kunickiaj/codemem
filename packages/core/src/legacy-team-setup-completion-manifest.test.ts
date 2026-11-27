@@ -59,6 +59,12 @@ const KEY_A = "a".repeat(64);
 const FRESH_ROSTER = [
 	{ deviceId: "device-a", fingerprint: KEY_A, displayName: "Laptop", enabled: true },
 ];
+/** What a canonical apply is given besides its draft. */
+const CANONICAL_APPLY = {
+	policyRevision: "canonical-revision",
+	completedAt: NOW,
+	freshRoster: FRESH_ROSTER,
+};
 
 function rawDigest(domain: string, value: unknown): string {
 	return recipientPolicyDigest(domain, value).slice(domain.length + 1);
@@ -472,8 +478,7 @@ describe("legacy Team setup completion manifests", () => {
 			applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 				candidateRef: draft.candidateRef,
 				attemptId: draft.attemptId,
-				policyRevision: "canonical-revision",
-				completedAt: NOW,
+				...CANONICAL_APPLY,
 				completionKey: "canonical-completion-key",
 			}),
 		).toThrow("team_setup_failed");
@@ -936,8 +941,8 @@ describe("legacy Team setup completion manifests", () => {
 			applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 				candidateRef: CANDIDATE,
 				attemptId: draft.attemptId,
+				...CANONICAL_APPLY,
 				policyRevision: "revision",
-				completedAt: NOW,
 			}),
 		).toThrow("team_setup_failed");
 		expect(() =>
@@ -2342,7 +2347,7 @@ describe("legacy Team setup completion manifests", () => {
 		);
 		await expect(applyCanonical()).resolves.toEqual(canonicalManifest);
 		// The reviewed activation includes the device again.
-		expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
+		expectServedOnceScopeDropsProject(db, "device-a", "project-private");
 		expect(
 			db
 				.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
@@ -2836,8 +2841,21 @@ describe("legacy Team setup completion manifests with cached scope access after 
 
 	afterEach(() => db.close());
 
+	it("defers when the removed device is cached only in the Team's mapped Project scope, which admission refuses it", async () => {
+		// Arrange: the binding ended, so the included decision alone no longer admits
+		// the Laptop to a scope that holds one of the Team's Projects.
+		const { reconcile } = await completeTeamThenRemoveLaptop(db);
+		await cacheScopeMembers(db, [["scope-engineering", "device-a"]]);
+
+		// Act and assert: this machine already denies the device, so nothing is written.
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
+		);
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+		expect(servesScope(db, "device-a", "scope-engineering")).toBe(false);
+	});
+
 	it.each([
-		["the Team's mapped Project scope", "scope-engineering"],
 		["another coordinator scope of the Team's group", "scope-group-default"],
 		["a scope of another group", "scope-other-group"],
 	] as const)(
@@ -2857,7 +2875,7 @@ describe("legacy Team setup completion manifests with cached scope access after 
 		},
 	);
 
-	it("quarantines when a Team Project was remapped to another group's scope that still caches the removed device", async () => {
+	it("refuses the removed device a scope of another group that a Team Project was remapped to", async () => {
 		// Arrange: after setup an admin moves the Project, and its memories, to
 		// another group's scope. The completed draft still names the old target.
 		const { reconcile } = await completeTeamThenRemoveLaptop(db);
@@ -2889,13 +2907,13 @@ describe("legacy Team setup completion manifests with cached scope access after 
 				.get(mapping.id),
 		).toBe("scope-other-group");
 
-		// Act and assert.
-		await expect(reconcile({ status: "unavailable" })).rejects.toThrow(
-			"team_setup_completion_invalid",
+		// Act and assert: the Laptop's binding ended, so admission already refuses it the
+		// scope the Project moved to. The Team is kept and the read can be retried.
+		await expect(reconcile({ status: "unavailable" })).rejects.toBeInstanceOf(
+			LegacyTeamSetupDeviceRemovalsUnavailableError,
 		);
-		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("inactive");
-		// The remapped Project's scope is refused to the Team's Laptop at once, while a
-		// device outside the Team keeps that group's access.
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+		// A device outside the Team keeps that group's access.
 		expect(servesScope(db, "device-a", "scope-other-group")).toBe(false);
 		expect(servesScope(db, "device-c", "scope-other-group")).toBe(true);
 	});
@@ -2967,6 +2985,30 @@ function servesScope(db: InstanceType<typeof Database>, deviceId: string, scopeI
 		peerDeviceId: deviceId,
 		authenticatedPeerSigningKey: CANONICAL_PUBLIC_KEY,
 	}).ok;
+}
+
+/**
+ * The setup that lost shared a Project the Team no longer shares. While the
+ * scope is still mapped to that Project, an included device is refused it.
+ */
+function expectServedOnceScopeDropsProject(
+	db: InstanceType<typeof Database>,
+	deviceId: string,
+	projectIdentity: string,
+) {
+	expect(servesScope(db, deviceId, "scope-engineering")).toBe(false);
+	db.prepare("DELETE FROM project_scope_mappings WHERE workspace_identity = ?").run(
+		projectIdentity,
+	);
+	expect(servesScope(db, deviceId, "scope-engineering")).toBe(true);
+}
+
+/** Makes the Team active with the Projects its setup shared, as leaving quarantine does. */
+function activateAsSetupLeftIt(db: InstanceType<typeof Database>) {
+	db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+	db.prepare(
+		"UPDATE project_recipients SET status = 'active', migration_state = 'completed'",
+	).run();
 }
 
 /** The Team's eligible devices, derived from this machine's policy rows. */
@@ -3214,7 +3256,7 @@ describe("legacy Team setup quarantine at scope admission", () => {
 		// Arrange
 		await quarantinedTeam(db);
 		const activateThenRollBack = db.transaction(() => {
-			db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+			activateAsSetupLeftIt(db);
 			// Act: an admission check inside the transaction sees the Team active.
 			expect(servesScope(db, "device-b", "scope-engineering")).toBe(true);
 			throw new Error("roll back");
@@ -3291,9 +3333,9 @@ describe("legacy Team setup quarantine at scope admission", () => {
 	});
 
 	it("serves included devices once the Team is active again and refuses a left-out device only its Projects", async () => {
-		// Arrange: the Team leaves quarantine with the devices its setup included.
+		// Arrange: the Team leaves quarantine with the devices and Projects its setup included.
 		await quarantinedTeam(db);
-		db.prepare("UPDATE policy_teams SET status = 'active', migration_state = 'completed'").run();
+		activateAsSetupLeftIt(db);
 
 		// Assert: Person A's second device was never included.
 		expect(servesScope(db, "device-a", "scope-engineering")).toBe(true);
