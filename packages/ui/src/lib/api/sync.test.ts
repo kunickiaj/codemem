@@ -164,6 +164,7 @@ describe("Team setup summary optional recovery blocker API", () => {
 describe("Team setup summary optional blocker detail", () => {
 	it.each([
 		["device_removals_unavailable", "device_removals_unavailable"],
+		["team_member_removals_unavailable", "team_member_removals_unavailable"],
 		["coordinator said https://coordinator.example.invalid", undefined],
 		[42, undefined],
 	] as const)("keeps only a known blocker detail: %s", async (blockingReason, expected) => {
