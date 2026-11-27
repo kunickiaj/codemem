@@ -1,6 +1,6 @@
 import type { Database } from "./db.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
-import { mappingsHoldProject, readScopeMappings } from "./scope-project-mappings.js";
+import { projectsHeldInScope } from "./scope-project-mappings.js";
 import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
 import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
 
@@ -11,7 +11,9 @@ import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
  * A device is refused a scope when all of these hold now:
  * - the scope holds a Project of a reviewed setup Team: a setup target, a
  *   current mapping of any provenance (an exact one, or a pattern-only one that
- *   matches the Project), or stored memories from that Project;
+ *   matches the Project), or stored memories of that Project, found the way
+ *   Team member removal admission finds them: by the memory's own Project, or
+ *   by the repository its session recorded;
  * - the device is tied to that Team: bound to a Team member in any binding
  *   state, reviewed in the Team's setup, or left out of the Team by a Team
  *   recovery. This device is never refused;
@@ -102,14 +104,6 @@ const SETUP_TARGET_PROJECT_SQL = `SELECT 1 FROM legacy_team_setup_draft_projects
 	WHERE draft.candidate_id = ? AND project.target_scope_id = ?
 	  AND (project.resolved_project_identity = ? OR project.source_project_identity = ?) LIMIT 1`;
 
-// Memories stored in the scope from a session of one of the Projects.
-const STORED_SQL = `SELECT 1 FROM memory_items AS memory
-	JOIN sessions AS session ON session.id = memory.session_id
-	WHERE memory.scope_id = ? AND (
-	  TRIM(session.git_remote) IN (SELECT value FROM json_each(?))
-	  OR TRIM(session.cwd) IN (SELECT value FROM json_each(?))
-	) LIMIT 1`;
-
 interface SetupTeam {
 	team_id: string;
 	status: string;
@@ -154,24 +148,20 @@ function scopeHoldsProject(
 	team: SetupTeam,
 	scopeId: string,
 	project: TeamProject,
-	mappings: ReturnType<typeof readScopeMappings>,
+	held: (projectId: string) => boolean,
 ): boolean {
 	const candidate = team.candidate_id ?? "";
 	const target = project.aliases.some((alias) =>
 		hasRow(db, SETUP_TARGET_PROJECT_SQL, candidate, scopeId, alias, alias),
 	);
-	if (target || mappingsHoldProject(mappings, project.aliases)) return true;
-	const json = JSON.stringify(project.aliases);
-	return hasRow(db, STORED_SQL, scopeId, json, json);
+	return target || project.aliases.some(held);
 }
 
 function scopeHoldsTeamProject(db: Database, team: SetupTeam, scopeId: string): boolean {
 	if (hasRow(db, SETUP_TARGET_SQL, team.candidate_id ?? "", scopeId)) return true;
 	const identities = teamProjects(db, team).flatMap((project) => project.aliases);
 	if (identities.length === 0) return false;
-	if (mappingsHoldProject(readScopeMappings(db, scopeId), identities)) return true;
-	const json = JSON.stringify(identities);
-	return hasRow(db, STORED_SQL, scopeId, json, json);
+	return identities.some(projectsHeldInScope(db, scopeId));
 }
 
 /** Whether current policy gives the device the Project by any path. */
@@ -204,10 +194,10 @@ function activeTeamRefuses(
 		? new Set(db.prepare(UNSHARED_PROJECTS_SQL).pluck().all(team.team_id) as string[])
 		: null;
 	if (unshared?.size === 0) return false;
-	const mappings = readScopeMappings(db, scopeId);
+	const held = projectsHeldInScope(db, scopeId);
 	return teamProjects(db, team)
 		.filter((project) => !unshared || unshared.has(project.identity))
-		.filter((project) => scopeHoldsProject(db, team, scopeId, project, mappings))
+		.filter((project) => scopeHoldsProject(db, team, scopeId, project, held))
 		.some((project) => !policyAuthorizes(db, project.identity, deviceId));
 }
 
