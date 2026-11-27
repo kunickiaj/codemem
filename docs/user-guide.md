@@ -1189,6 +1189,10 @@ Inspect current and completed maintenance jobs with:
 codemem maintenance status
 ```
 
+### Review older shared memories after an upgrade
+
+An install that shared memories before Spaces existed shows **Choose where older shared memories belong** when the Viewer opens. Codemem keeps those memories out of normal sync until each project has a destination. **Start review** opens the review in that dialog, so you do not need Advanced. Each project row offers **Preview reassignment** and, after the preview, **I understand, reassign memories**. The row's preview says how many memories the move covers and how many peer-owned copies stay where they are. Peer-owned memories cannot be moved from this device. **Manage all projects** opens Projects. **Close** leaves the review. The dialog appears again the next time the Viewer opens until every project is assigned or you choose **Don't show this again**. The same review is still under **Advanced → Sync**.
+
 ### Same-person device recovery
 
 - In **Advanced → Sync**, ownership summaries come from active `identity_devices` bindings. Use the device card's **Set up Identity in Devices** or **Review or rebind in Devices** action to confirm or change ownership.
