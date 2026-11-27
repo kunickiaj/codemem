@@ -403,6 +403,7 @@ export {
 	isCoordinatorAdminDevice,
 	readBoundaryMigrationMode,
 } from "./coordinator-sync-config.js";
+export { coordinatorReadTeamGroupBindingsAction } from "./coordinator-team-group-binding-client.js";
 export { coordinatorListTeamMemberRemovalsAction } from "./coordinator-team-member-removal-client.js";
 export type { CoordinatorTeamMemberRemoval } from "./coordinator-team-member-removals.js";
 export type { Database } from "./db.js";
@@ -1770,6 +1771,12 @@ export {
 	recordSyncTransferReceipts,
 } from "./sync-transfer-activity.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
+export {
+	type CoordinatorTeamGroupBindingReport,
+	teamCoordinatorLinkConflicts,
+	teamIdsForBindingRead,
+	teamInvitationGroup,
+} from "./team-member-removal-lookup.js";
 export { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 export {
 	commitTeamMemberRemoval,

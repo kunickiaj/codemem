@@ -96,6 +96,32 @@ function revokeRemovedMembership(
 	return active;
 }
 
+/** Marks the removal enforced here, so it keeps applying if the Team's group becomes a conflict. */
+function recordEnforcement(db: Database, record: TeamMemberRemovalRecord, now: string): void {
+	recordTeamMemberRemovalEnforcements(db, {
+		teamId: record.team_id,
+		identityIds: [record.identity_id],
+		now,
+	});
+}
+
+/**
+ * Marks removals of the Team enforced on this machine. Callers that honor a
+ * removal outside `applyTeamMemberRemovals`, such as a Team setup that leaves
+ * out a person removed before this machine set the Team up, call this in the
+ * same transaction, so a later conflict over the Team's group cannot forget it.
+ */
+export function recordTeamMemberRemovalEnforcements(
+	db: Database,
+	input: { teamId: string; identityIds: Iterable<string>; now: string },
+): void {
+	const insert = db.prepare(
+		`INSERT INTO policy_team_member_removal_enforcements(team_id, identity_id, enforced_at)
+		 VALUES (?, ?, ?) ON CONFLICT(team_id, identity_id) DO NOTHING`,
+	);
+	for (const identityId of input.identityIds) insert.run(input.teamId, identityId, input.now);
+}
+
 /**
  * Records removals from one coordinator group and revokes each removed
  * membership that is still active, in one transaction. From the moment a
@@ -133,6 +159,7 @@ export function applyTeamMemberRemovals(
 					result.ignored.push(pair);
 					continue;
 				}
+				recordEnforcement(db, record, input.now);
 				if (revokeRemovedMembership(db, record, input.now)) result.revoked.push(pair);
 			}
 			return result;

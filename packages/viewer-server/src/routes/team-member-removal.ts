@@ -8,6 +8,7 @@ import {
 	revokePendingTeamInvitations,
 	type TeamMemberRemovalContext,
 	type TeamMemberRemovalRejection,
+	teamCoordinatorLinkConflicts,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import { parseViewerJsonBody, type StoreFactory } from "./sync.js";
@@ -26,6 +27,7 @@ const STATUS: Record<TeamMemberRemovalRejection, 400 | 404 | 409 | 503> = {
 	team_not_found: 404,
 	member_not_found: 404,
 	team_not_linked: 409,
+	team_link_conflict: 409,
 	team_coordinator_not_configured: 409,
 	member_already_removed: 409,
 	cannot_remove_yourself: 409,
@@ -77,30 +79,33 @@ function revokeBody(body: unknown): string[] | null {
 	return ids.length > 0 && ids.length <= 200 && ids.every(isId) ? (ids as string[]) : null;
 }
 
+/** The removal context, or null when this device cannot change other people's access. */
+function removalContext(
+	getStore: StoreFactory,
+	options: TeamMemberRemovalRouteOptions,
+): TeamMemberRemovalContext | null {
+	const config = (options.readCoordinatorConfig ?? readCoordinatorSyncConfig)();
+	if (!isCoordinatorAdminDevice(config)) return null;
+	const store = getStore();
+	return {
+		coordinator: {
+			remoteUrl: buildBaseUrl(config.syncCoordinatorUrl),
+			adminSecret: config.syncCoordinatorAdminSecret,
+			groupIds: config.syncCoordinatorGroups,
+			timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		},
+		localIdentityId: store.actorId ?? null,
+		localDeviceId: store.deviceId ?? null,
+		actions: options.actions,
+	};
+}
+
 export function teamMemberRemovalRoutes(
 	getStore: StoreFactory,
 	options: TeamMemberRemovalRouteOptions = {},
 ) {
 	const app = new Hono();
-	const readConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
-
-	/** The removal context, or null when this device cannot change other people's access. */
-	const context = (): TeamMemberRemovalContext | null => {
-		const config = readConfig();
-		if (!isCoordinatorAdminDevice(config)) return null;
-		const store = getStore();
-		return {
-			coordinator: {
-				remoteUrl: buildBaseUrl(config.syncCoordinatorUrl),
-				adminSecret: config.syncCoordinatorAdminSecret,
-				groupIds: config.syncCoordinatorGroups,
-				timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
-			},
-			localIdentityId: store.actorId ?? null,
-			localDeviceId: store.deviceId ?? null,
-			actions: options.actions,
-		};
-	};
+	const context = () => removalContext(getStore, options);
 
 	const handle = async (
 		c: Context,
@@ -117,6 +122,11 @@ export function teamMemberRemovalRoutes(
 			return c.json({ error: result.error }, STATUS[result.error]);
 		return c.json(result);
 	};
+
+	// Teams whose coordinator group is a conflict: their removals do not apply, and the Viewer warns.
+	app.get("/api/sync/recipient-policy/v1/team-coordinator-link-conflicts", (c) =>
+		c.json({ teamIds: teamCoordinatorLinkConflicts(getStore().db) }),
+	);
 
 	app.post(`${BASE}/preview`, (c) =>
 		handle(c, async (teamId, body, ctx) => {

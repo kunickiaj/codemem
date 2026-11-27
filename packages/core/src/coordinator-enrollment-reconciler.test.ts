@@ -14,11 +14,25 @@ import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team
 
 const NOW = "2026-07-26T00:00:00.000Z";
 
-/** Each check here read the group's removals successfully, and the group has none. */
+/**
+ * Each check here read the group's removals successfully, and the group has
+ * none. The coordinator bound every Team its invitations name to that group.
+ */
 const reconcileCoordinatorEnrollmentSnapshot = (
 	db: DatabaseType,
 	input: CoordinatorEnrollmentSnapshotInput,
-) => reconcileSnapshot(db, { teamMemberRemovals: [], ...input });
+) =>
+	reconcileSnapshot(db, {
+		teamMemberRemovals: [],
+		teamGroupBindings: [
+			...new Set(
+				input.consumedTeamInvites
+					.filter((invite) => invite.group_id === input.groupId)
+					.map((invite) => String(invite.policy_team_id)),
+			),
+		].map((teamId) => ({ team_id: teamId, state: "bound" as const, group_id: input.groupId })),
+		...input,
+	});
 
 async function expectEnrollmentChangesWakePolicies(): Promise<void> {
 	const dir = mkdtempSync(join(tmpdir(), "coordinator-enrollment-wake-"));

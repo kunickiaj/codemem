@@ -22,6 +22,7 @@ import {
 	legacyTeamCandidateId,
 	legacyTeamDeviceRef,
 } from "./recipient-policy-identifiers.js";
+import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import {
 	applyTeamMemberRemovals,
 	isTeamMemberRemoved,
@@ -344,5 +345,56 @@ describe("a Team setup never restores a removed member", () => {
 
 		expect(memberships(target)).toContainEqual({ identity_id: "identity-c", status: "revoked" });
 		expect(discover(target, "device-fresh")[0]?.status).toBe("ready");
+	});
+});
+
+describe("a removal honored by a Team's first local setup", () => {
+	const PROJECT = "https://git.example.invalid/team/project.git";
+
+	/** A scope that holds the Team's Project, with the removed person's device bound and in it. */
+	function teamScopeWithRemovedDevice(db: Db) {
+		db.prepare(`INSERT OR IGNORE INTO identity_devices(device_id, identity_id, display_name, status,
+		 provenance, revision, migration_state, idempotency_key, created_at, updated_at)
+		 VALUES ('device-c', 'identity-c', 'Laptop c', 'active', 'test', 'r1', 'user_managed', 'bind-c', ?, ?)`).run(
+			NOW,
+			NOW,
+		);
+		db.prepare(`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
+		 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
+		 VALUES (?, 'team', ?, 'active', 'test', 'r1', 'completed', 'recipient-team', ?, ?)`).run(
+			PROJECT,
+			TEAM,
+			NOW,
+			NOW,
+		);
+		db.prepare(`INSERT INTO project_scope_mappings(workspace_identity, project_pattern, scope_id,
+		 priority, source, created_at, updated_at) VALUES (?, ?, 'scope-team', 0, 'user', ?, ?)`).run(
+			PROJECT,
+			PROJECT,
+			NOW,
+			NOW,
+		);
+	}
+
+	it("stays enforced when a conflicting binding arrives later, so admission keeps refusing the person", async () => {
+		// The removal arrives before this machine has set the Team up.
+		addActor(target, "identity-c");
+		remove(target, removal("identity-c"));
+		await apply(target);
+		teamScopeWithRemovedDevice(target);
+		expect(
+			isScopeDeviceAdmissionRefused(target, { scopeId: "scope-team", deviceId: "device-c" }),
+		).toBe(true);
+
+		// The coordinator reports the Team bound to another group.
+		target
+			.prepare(`INSERT INTO policy_team_coordinator_links(team_id, coordinator_id, group_id, source, recorded_at)
+			 VALUES (?, ?, 'group-other', 'coordinator_binding', ?)`)
+			.run(TEAM, COORDINATOR, NOW);
+
+		expect(isTeamMemberRemoved(target, TEAM, "identity-c")).toBe(true);
+		expect(
+			isScopeDeviceAdmissionRefused(target, { scopeId: "scope-team", deviceId: "device-c" }),
+		).toBe(true);
 	});
 });

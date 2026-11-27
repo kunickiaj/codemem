@@ -83,6 +83,7 @@ import {
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
 	coordinatorListTeamMemberRemovalsAction,
+	coordinatorReadTeamGroupBindingsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorRenameGroupAction,
@@ -208,6 +209,8 @@ import {
 	summarizeInboundScopeRejections,
 	supportsSyncFeature,
 	syncScopeResetRequiredPayload,
+	teamIdsForBindingRead,
+	teamInvitationGroup,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMappings,
@@ -2063,6 +2066,7 @@ interface ConfiguredCoordinatorEnrollmentOptions {
 		remoteUrl: string;
 		adminSecret: string;
 	}) => Promise<CoordinatorTeamMemberRemoval[]>;
+	readTeamGroupBindings?: typeof coordinatorReadTeamGroupBindingsAction;
 	reconcileSnapshot?: (
 		input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
 	) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
@@ -2169,6 +2173,44 @@ async function completeCoordinatorEnrollment(
 	return enrollments;
 }
 
+/**
+ * The group's Team member removals and the coordinator's binding of each Team
+ * this check handles, each undefined when its read fails. Read after the
+ * invitations: a removal recorded between the reads is still applied, so no
+ * invitation in this snapshot restores that member. A failed read still
+ * reconciles devices, but grants no Team access from an invitation, and
+ * reconciliation reports each invitation it held back. Each Team's group comes
+ * from its coordinator, never from its invitations.
+ */
+async function readTeamEvidence(
+	store: MemoryStore,
+	options: ConfiguredCoordinatorEnrollmentOptions,
+	input: {
+		groupId: string;
+		remoteUrl: string;
+		adminSecret: string;
+		invites: readonly CoordinatorConsumedTeamInvite[];
+	},
+) {
+	const { groupId, remoteUrl, adminSecret } = input;
+	const listRemovals = options.listTeamMemberRemovals ?? coordinatorListTeamMemberRemovalsAction;
+	const readBindings = options.readTeamGroupBindings ?? coordinatorReadTeamGroupBindingsAction;
+	const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret }).catch(
+		() => undefined,
+	);
+	const teamIds = teamIdsForBindingRead(store.db, {
+		coordinatorId: buildBaseUrl(remoteUrl),
+		invitedTeamIds: input.invites
+			.filter((invite) => invite.group_id === groupId)
+			.map((invite) => invite.policy_team_id),
+	});
+	const teamGroupBindings =
+		teamIds.length === 0
+			? []
+			: await readBindings({ remoteUrl, adminSecret, teamIds }).catch(() => undefined);
+	return { teamMemberRemovals, teamGroupBindings };
+}
+
 async function reconcileConfiguredCoordinatorGroup(
 	store: MemoryStore,
 	groupId: string,
@@ -2182,7 +2224,6 @@ async function reconcileConfiguredCoordinatorGroup(
 	const adminSecret = config.syncCoordinatorAdminSecret.trim();
 	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
 	const listInvites = options.listConsumedTeamInvites ?? coordinatorListConsumedTeamInvitesAction;
-	const listRemovals = options.listTeamMemberRemovals ?? coordinatorListTeamMemberRemovalsAction;
 	const reconcile =
 		options.reconcileSnapshot ??
 		((input) => reconcileCoordinatorEnrollmentSnapshot(store.db, input));
@@ -2209,13 +2250,12 @@ async function reconcileConfiguredCoordinatorGroup(
 		);
 		stage = "list_consumed_team_invites";
 		const invites = await listInvites({ groupId, remoteUrl, adminSecret });
-		// Read after the invitations: a removal recorded between the two reads is
-		// still applied, so no invitation in this snapshot restores that member.
-		// A failed read still reconciles devices, but grants no Team access from
-		// an invitation; reconciliation reports each invitation it held back.
-		const teamMemberRemovals = await listRemovals({ groupId, remoteUrl, adminSecret }).catch(
-			() => undefined,
-		);
+		const { teamMemberRemovals, teamGroupBindings } = await readTeamEvidence(store, options, {
+			groupId,
+			remoteUrl,
+			adminSecret,
+			invites,
+		});
 		stage = "complete_device_setup";
 		context.assertCurrent();
 		stage = "reconcile_snapshot";
@@ -2226,6 +2266,7 @@ async function reconcileConfiguredCoordinatorGroup(
 				enrollments,
 				consumedTeamInvites: invites,
 				teamMemberRemovals,
+				teamGroupBindings,
 				localDeviceId: store.deviceId,
 			}),
 		};
@@ -7078,6 +7119,34 @@ export function previewRecipientInvitation(
 	}
 }
 
+/**
+ * The group a recipient invitation goes through. A Team's first invitation
+ * binds it on the coordinator, so a Team whose group is known goes only through
+ * that group; anything else uses the requested or configured group.
+ */
+function recipientInvitationGroup(
+	store: MemoryStore,
+	input: {
+		body: Record<string, unknown>;
+		kind: RecipientInviteKind;
+		targetId: string;
+		config: ReturnType<typeof readCoordinatorSyncConfig>;
+		status: ReturnType<typeof coordinatorAdminStatusPayload>;
+	},
+): string | null {
+	const requestedGroupId = optionalViewerString(input.body, "group_id");
+	const teamGroupId =
+		input.kind === "team_member"
+			? teamInvitationGroup(store.db, {
+					teamId: input.targetId,
+					coordinatorId: input.config.syncCoordinatorUrl,
+					configuredGroupIds: input.config.syncCoordinatorGroups,
+					requestedGroupId,
+				})
+			: null;
+	return teamGroupId ?? resolveCoordinatorAdminGroup(requestedGroupId, input.status);
+}
+
 async function issueRecipientInvitation(
 	store: MemoryStore,
 	body: Record<string, unknown>,
@@ -7089,7 +7158,7 @@ async function issueRecipientInvitation(
 	const status = coordinatorAdminStatusPayload(config);
 	const reviewedIntent = recipientInviteReviewedIntent(store, kind, targetId, preview);
 	const reviewedPreviewDigest = await recipientReviewedIntentDigest(reviewedIntent);
-	const groupId = resolveCoordinatorAdminGroup(optionalViewerString(body, "group_id"), status);
+	const groupId = recipientInvitationGroup(store, { body, kind, targetId, config, status });
 	const ttlHours = parseInviteTtlHours(body.ttl_hours);
 	if (!groupId) throw new Error("group_id_required");
 	if (ttlHours == null) throw new Error("ttl_hours_invalid");
@@ -7153,6 +7222,9 @@ export async function createRecipientInvitation(
 		const invite = await issueRecipientInvitation(store, body, kind, targetId, preview);
 		return { httpStatus: 200, body: { ok: true, kind, preview, invite } };
 	} catch (error) {
+		const code = error instanceof Error ? error.message : "";
+		if (code === "team_group_mismatch" || code === "team_link_conflict")
+			return { httpStatus: 409, body: { error: code } };
 		return {
 			httpStatus: 400,
 			body: { error: error instanceof Error ? error.message : "recipient_invite_failed" },

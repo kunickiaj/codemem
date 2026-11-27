@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { listAuthorizedScopesForPeer, parseSyncScopeRequest } from "./sync-scope-protocol.js";
+import { isTeamMemberRemoved, recordTeamGroupBindings } from "./team-member-removal-lookup.js";
 import { applyTeamMemberRemovals } from "./team-member-removal-policy.js";
 import { linkTeamToCoordinatorGroup } from "./team-member-removal-test-fixtures.js";
 import { initTestSchema } from "./test-utils.js";
@@ -313,5 +314,121 @@ describe("sync admission after a Team member removal", () => {
 
 		expect(result.ignored).toEqual([{ teamId: team, identityId: "identity-removed" }]);
 		expect(admitted("team-scope", REMOVED)).toBe(true);
+	});
+});
+
+describe("sync admission while the Team's coordinator group is a conflict", () => {
+	const LOCAL_LAPTOP = "device-local-laptop";
+	const conflict = () =>
+		row("policy_team_coordinator_links", {
+			team_id: team,
+			coordinator_id: COORDINATOR,
+			group_id: "group-b",
+			source: "coordinator_binding",
+			recorded_at: NOW,
+		});
+
+	beforeEach(async () => {
+		row("sync_device", {
+			device_id: LOCAL,
+			public_key: "pk-local",
+			fingerprint: "fp-local",
+			created_at: NOW,
+		});
+		person("identity-local", LOCAL);
+		row("identity_devices", {
+			device_id: LOCAL_LAPTOP,
+			identity_id: "identity-local",
+			display_name: LOCAL_LAPTOP,
+			status: "active",
+			provenance: "test",
+			revision: "r1",
+			migration_state: "user_managed",
+			idempotency_key: `binding-${LOCAL_LAPTOP}`,
+			created_at: NOW,
+			updated_at: NOW,
+		});
+		row("policy_team_memberships", {
+			team_id: team,
+			identity_id: "identity-local",
+			role: "member",
+			status: "active",
+			provenance: "test",
+			revision: "r1",
+			migration_state: "user_managed",
+			idempotency_key: "membership-identity-local",
+			created_at: NOW,
+			updated_at: NOW,
+		});
+		scope("shared-scope", [LOCAL, LOCAL_LAPTOP, REMOVED, STAYING]);
+		map(TEAM_PROJECT, "shared-scope");
+		await refreshTestScopeRows(db);
+	});
+
+	it("refuses every other member's device the Team's scopes until the conflict is gone", () => {
+		expect(admitted("shared-scope", STAYING)).toBe(true);
+
+		conflict();
+
+		expect(admitted("shared-scope", STAYING)).toBe(false);
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+		expect(advertised(STAYING)).not.toContain("shared-scope");
+		db.prepare("DELETE FROM policy_team_coordinator_links").run();
+		expect(admitted("shared-scope", STAYING)).toBe(true);
+	});
+
+	it("keeps refusing a removed member after a conflicting binding arrives, without a cache refresh", () => {
+		remove();
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+
+		conflict();
+
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+		expect(admitted("team-scope", REMOVED)).toBe(false);
+		expect(isTeamMemberRemoved(db, team, "identity-removed")).toBe(true);
+	});
+
+	it("refuses a former member's device during a conflict even without an enforced removal", () => {
+		// Revoked here some other way, while the device keeps its cached scope membership.
+		db.prepare(
+			"UPDATE policy_team_memberships SET status = 'revoked' WHERE identity_id = 'identity-removed'",
+		).run();
+		expect(isTeamMemberRemoved(db, team, "identity-removed")).toBe(false);
+
+		conflict();
+
+		expect(admitted("shared-scope", REMOVED)).toBe(false);
+	});
+
+	it("keeps a Team's access when its coordinator reports it not bound yet", () => {
+		// An existing Team with no local evidence of its group, as after an upgrade.
+		db.prepare("DELETE FROM legacy_team_setup_completions").run();
+		recordTeamGroupBindings(db, {
+			coordinatorId: COORDINATOR,
+			bindings: [{ team_id: team, state: "unbound" }],
+			now: NOW,
+		});
+
+		expect(admitted("shared-scope", STAYING)).toBe(true);
+		expect(advertised(STAYING)).toContain("shared-scope");
+
+		recordTeamGroupBindings(db, {
+			coordinatorId: COORDINATOR,
+			bindings: [{ team_id: team, state: "conflict" }],
+			now: NOW,
+		});
+		expect(admitted("shared-scope", STAYING)).toBe(false);
+	});
+
+	it("keeps this device's own person, and scopes without the Team's Projects", async () => {
+		share(OTHER_PROJECT, "identity", "identity-staying");
+		scope("own-scope", [LOCAL, STAYING]);
+		map(OTHER_PROJECT, "own-scope");
+		await refreshTestScopeRows(db);
+
+		conflict();
+
+		expect(admitted("shared-scope", LOCAL_LAPTOP)).toBe(true);
+		expect(admitted("own-scope", STAYING)).toBe(true);
 	});
 });

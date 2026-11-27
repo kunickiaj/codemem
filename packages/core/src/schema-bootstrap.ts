@@ -14,6 +14,7 @@ import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
+import { teamMemberRemovalLinkKey } from "./team-member-removal-lookup.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
 import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
@@ -959,9 +960,58 @@ export function ensureSyncPeerExplicitPairingColumns(db: Database): void {
 	}
 }
 
-/** Per-Team member removals, for databases created before the table existed. */
+/** Per-Team member removals and Team coordinator groups, for databases created before them. */
+/**
+ * Before enforcements were recorded, a removal applied when its group set the
+ * Team up. Each such removal counts as enforced. Coordinator IDs are compared
+ * the way the removal lookup compares them, so two spellings of one
+ * coordinator match.
+ */
+function backfillRemovalEnforcements(db: Database): void {
+	if (!tableExists(db, "legacy_team_setup_drafts")) return;
+	const setups = db
+		.prepare(
+			`SELECT completed_team_id AS team_id, coordinator_id, group_id FROM legacy_team_setup_drafts
+			 WHERE state = 'completed' AND completed_team_id IS NOT NULL`,
+		)
+		.all() as Array<{ team_id: string; coordinator_id: string; group_id: string }>;
+	const setupGroups = new Set(
+		setups.map((row) =>
+			JSON.stringify([row.team_id, teamMemberRemovalLinkKey(row.coordinator_id, row.group_id)]),
+		),
+	);
+	const removals = db
+		.prepare(
+			"SELECT team_id, identity_id, coordinator_id, group_id, recorded_at FROM policy_team_member_removals",
+		)
+		.all() as Array<{
+		team_id: string;
+		identity_id: string;
+		coordinator_id: string;
+		group_id: string;
+		recorded_at: string;
+	}>;
+	const insert = db.prepare(
+		`INSERT OR IGNORE INTO policy_team_member_removal_enforcements(team_id, identity_id, enforced_at)
+		 VALUES (?, ?, ?)`,
+	);
+	for (const removal of removals) {
+		const key = teamMemberRemovalLinkKey(removal.coordinator_id, removal.group_id);
+		if (key !== null && setupGroups.has(JSON.stringify([removal.team_id, key])))
+			insert.run(removal.team_id, removal.identity_id, removal.recorded_at);
+	}
+}
+
 export function ensurePolicyTeamMemberRemovalsTable(db: Database): void {
 	if (db.readonly) return;
+	db.exec(`CREATE TABLE IF NOT EXISTS policy_team_coordinator_links (
+		team_id TEXT NOT NULL,
+		coordinator_id TEXT NOT NULL,
+		group_id TEXT NOT NULL,
+		source TEXT NOT NULL,
+		recorded_at TEXT NOT NULL,
+		PRIMARY KEY(team_id, coordinator_id, group_id)
+	)`);
 	db.exec(`CREATE TABLE IF NOT EXISTS policy_team_member_removals (
 		team_id TEXT NOT NULL,
 		identity_id TEXT NOT NULL,
@@ -973,6 +1023,14 @@ export function ensurePolicyTeamMemberRemovalsTable(db: Database): void {
 		recorded_at TEXT NOT NULL,
 		PRIMARY KEY(coordinator_id, group_id, team_id, identity_id)
 	)`);
+	if (tableExists(db, "policy_team_member_removal_enforcements")) return;
+	db.exec(`CREATE TABLE policy_team_member_removal_enforcements (
+		team_id TEXT NOT NULL,
+		identity_id TEXT NOT NULL,
+		enforced_at TEXT NOT NULL,
+		PRIMARY KEY(team_id, identity_id)
+	)`);
+	backfillRemovalEnforcements(db);
 }
 
 function ensureSyncPeerLastSuccessAddressColumn(db: Database): void {

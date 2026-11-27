@@ -6,6 +6,7 @@ import type {
 	RecipientPolicyTeamCreateResultV1,
 } from "./recipient-policy-contract.js";
 import { recipientPolicyDigest } from "./recipient-policy-identifiers.js";
+import { recordTeamCoordinatorLink } from "./team-member-removal-lookup.js";
 
 export {
 	RECIPIENT_POLICY_TEAM_CREATE_ERROR_CODES,
@@ -27,6 +28,11 @@ export interface CreateRecipientPolicyTeamInput {
 	now: string;
 	/** Tests pass a fixed ID; production generates one. */
 	teamId?: string;
+	/**
+	 * The coordinator group the Team's invitations go through. Recorded as the
+	 * Team's group, where removals of its members are recorded.
+	 */
+	coordinatorGroup?: { coordinatorId: string; groupId: string };
 }
 
 const PROVENANCE = "sharing_create";
@@ -121,6 +127,8 @@ export function createRecipientPolicyTeam(
 		assertCreatorActive(db, input.creatorIdentityId);
 		assertNameAvailable(db, displayName);
 		insertTeam(db, teamId, displayName, input.creatorIdentityId, input.now);
+		if (input.coordinatorGroup)
+			recordTeamCoordinatorLink(db, { teamId, ...input.coordinatorGroup, now: input.now });
 	}).immediate();
 	return { version: 1, teamId, displayName };
 }

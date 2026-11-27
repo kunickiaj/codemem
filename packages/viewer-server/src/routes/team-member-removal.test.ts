@@ -195,6 +195,19 @@ describe("Team member removal routes", () => {
 		expect(await response.json()).toMatchObject({ state: "ready", identityId });
 	});
 
+	it("lists Teams that two coordinator groups claim", async () => {
+		db.prepare(`INSERT INTO policy_team_coordinator_links(team_id, coordinator_id, group_id, source, recorded_at)
+		 VALUES (?, ?, 'group-b', 'coordinator_binding', ?)`).run(team, COORDINATOR, NOW);
+		const store = { db } as unknown as MemoryStore;
+
+		const response = await teamMemberRemovalRoutes(() => store).request(
+			"/api/sync/recipient-policy/v1/team-coordinator-link-conflicts",
+		);
+
+		expect(await response.json()).toEqual({ teamIds: [team] });
+		expect((await app().post("preview", { identityId: "identity-b" })).status).toBe(409);
+	});
+
 	it("answers 409 for a stale preview and records nothing", async () => {
 		const { post, actions } = app();
 

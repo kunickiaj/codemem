@@ -46,7 +46,10 @@ import {
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
-import { removedTeamMemberIdentityIds } from "./team-member-removal-policy.js";
+import {
+	recordTeamMemberRemovalEnforcements,
+	removedTeamMemberIdentityIds,
+} from "./team-member-removal-policy.js";
 import {
 	classifyTeamPolicyOwnership,
 	planRemovedMemberSetupTransition,
@@ -1604,7 +1607,31 @@ function recordChangedSetupAssignment(
 	changedIdentityIds.add(targetIdentityId);
 }
 
+/**
+ * Writes the reviewed setup. The setup leaves out each person removed from the
+ * Team, including one removed before this machine set it up, so each such
+ * removal is recorded as enforced in the same transaction: a later conflict
+ * over the Team's group must not forget it.
+ */
 function applyActivation(
+	db: Database,
+	model: ActivationModel,
+	...rest: ActivationRowArgs
+): LegacyTeamSetupActivationResultV1 {
+	recordTeamMemberRemovalEnforcements(db, {
+		teamId: model.teamId,
+		identityIds: model.removedIdentityIds,
+		now: rest[2],
+	});
+	return applyActivationRows(db, model, ...rest);
+}
+
+type ActivationRowArgs =
+	Parameters<typeof applyActivationRows> extends [Database, ActivationModel, ...infer Rest]
+		? Rest
+		: never;
+
+function applyActivationRows(
 	db: Database,
 	model: ActivationModel,
 	preview: LegacyTeamSetupActivationPreviewV1,

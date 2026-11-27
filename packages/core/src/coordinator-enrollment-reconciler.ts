@@ -17,6 +17,12 @@ import {
 import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
 import {
+	type CoordinatorTeamGroupBindingReport,
+	recordTeamGroupBindings,
+	teamCoordinatorLinkState,
+	teamMemberRemovalLinkKey,
+} from "./team-member-removal-lookup.js";
+import {
 	applyTeamMemberRemovals,
 	isTeamMemberRemoved,
 	type TeamMemberRemovalRecord,
@@ -328,16 +334,43 @@ export interface CoordinatorEnrollmentSnapshotInput {
 	 * invitation grants Team access.
 	 */
 	teamMemberRemovals?: readonly TeamMemberRemovalRecord[];
+	/**
+	 * The coordinator's binding of each Team the accepted invitations name, read
+	 * in this same check. A Team's invitations grant access only while the Team's
+	 * group is this group. Without a successful read, no accepted invitation
+	 * grants Team access.
+	 */
+	teamGroupBindings?: readonly CoordinatorTeamGroupBindingReport[];
 	localDeviceId?: string;
 	now?: string;
 }
 
+/** Why an accepted invitation of this group cannot grant its Team, or null when it can. */
+function teamGroupRefusal(
+	db: Database,
+	input: CoordinatorEnrollmentSnapshotInput,
+	invite: CoordinatorConsumedTeamInvite,
+): string | null {
+	const link = teamCoordinatorLinkState(db, invite.policy_team_id);
+	if (link.state === "conflict") return "team_group_conflict";
+	if (
+		link.state === "none" ||
+		teamMemberRemovalLinkKey(link.coordinatorId, link.groupId) !==
+			teamMemberRemovalLinkKey(input.coordinatorId, input.groupId)
+	)
+		return "team_group_unverified";
+	return null;
+}
+
 /**
- * Records the group's Team member removals, then returns the accepted Team
- * invitations whose person was not removed. A removed person stays removed,
- * whichever invitation they hold, so each of theirs is reported instead.
- * Without a fresh removal list, every invitation is held back and reported,
- * because this machine may not know of a removal yet.
+ * Records the coordinator's Team bindings and the group's Team member
+ * removals, then returns the accepted Team invitations that still grant: the
+ * Team's group is this group, and the person was not removed. A removed person
+ * stays removed, whichever invitation they hold, so each of theirs is reported
+ * instead. A fresh removal list applies to every Team whose group is already
+ * known, even when the bindings cannot be read. Without both reads, every
+ * invitation is held back and reported, because this machine may not know of
+ * a removal or of the Team's group yet.
  */
 function applyRemovalsBeforeInvites(
 	db: Database,
@@ -345,20 +378,29 @@ function applyRemovalsBeforeInvites(
 	now: string,
 	issue: (kind: "team_membership", referenceId: unknown, code: string) => void,
 ): CoordinatorConsumedTeamInvite[] {
-	const { coordinatorId, groupId, teamMemberRemovals: removals } = input;
-	if (!removals) {
+	const { coordinatorId, groupId, teamMemberRemovals: removals, teamGroupBindings } = input;
+	if (teamGroupBindings)
+		recordTeamGroupBindings(db, { coordinatorId, bindings: teamGroupBindings, now });
+	if (removals) {
+		const applied = applyTeamMemberRemovals(db, { coordinatorId, groupId, removals, now });
+		// A removal for a Team whose group is not this group has no effect here.
+		for (const ignored of applied.ignored)
+			issue("team_membership", ignored.teamId, "team_member_removal_other_group");
+	}
+	if (!removals || !teamGroupBindings) {
+		const code = removals ? "team_group_bindings_unavailable" : "team_member_removals_unavailable";
 		for (const invite of input.consumedTeamInvites)
-			issue("team_membership", invite.invite_id, "team_member_removals_unavailable");
+			issue("team_membership", invite.invite_id, code);
 		return [];
 	}
-	const applied = applyTeamMemberRemovals(db, { coordinatorId, groupId, removals, now });
-	// A removal for a Team this group did not set up has no effect here.
-	for (const ignored of applied.ignored)
-		issue("team_membership", ignored.teamId, "team_member_removal_other_group");
 	return input.consumedTeamInvites.filter((invite) => {
-		const removed =
-			invite.group_id === groupId &&
-			isTeamMemberRemoved(db, invite.policy_team_id, invite.assigned_identity_id);
+		if (invite.group_id !== groupId) return true;
+		const refusal = teamGroupRefusal(db, input, invite);
+		if (refusal) {
+			issue("team_membership", invite.invite_id, refusal);
+			return false;
+		}
+		const removed = isTeamMemberRemoved(db, invite.policy_team_id, invite.assigned_identity_id);
 		if (removed) issue("team_membership", invite.invite_id, "team_member_removed");
 		return !removed;
 	});
