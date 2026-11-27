@@ -348,6 +348,44 @@ describe("default join request source", () => {
 		expect(loaded).toEqual({ requests: [], failedGroups: 1 });
 	});
 
+	it("reads every group the coordinator lists, in batches, past the tenth", async () => {
+		const groups = Array.from({ length: 23 }, (_, index) => `group-${index + 1}`);
+		mocks.loadCoordinatorAdminStatus.mockResolvedValue({
+			readiness: "ready",
+			has_admin_secret: true,
+			groups: ["group-1"],
+		});
+		mocks.loadCoordinatorAdminGroupsFiltered.mockResolvedValue({
+			items: groups.map((group_id) => ({ group_id })),
+		});
+		let running = 0;
+		let mostAtOnce = 0;
+		mocks.loadCoordinatorAdminJoinRequests.mockImplementation(async (groupId: string) => {
+			running += 1;
+			mostAtOnce = Math.max(mostAtOnce, running);
+			await Promise.resolve();
+			running -= 1;
+			return {
+				items: groupId === "group-23" ? [{ request_id: "late-request", device_id: "late" }] : [],
+			};
+		});
+
+		const loaded = await defaultDeviceJoinRequestsApi.load(signal);
+
+		expect(mocks.loadCoordinatorAdminJoinRequests).toHaveBeenCalledTimes(23);
+		expect(loaded?.requests).toEqual([
+			{
+				requestId: "late-request",
+				groupId: "group-23",
+				deviceId: "late",
+				displayName: "",
+				fingerprint: "",
+			},
+		]);
+		expect(loaded?.failedGroups).toBe(0);
+		expect(mostAtOnce).toBeLessThanOrEqual(5);
+	});
+
 	it("fails when no group can be read", async () => {
 		mocks.loadCoordinatorAdminStatus.mockResolvedValue({
 			readiness: "ready",

@@ -6,8 +6,8 @@ import {
 	reviewCoordinatorAdminJoinRequest,
 } from "../lib/api/coordinator-admin";
 
-/** Most groups one Viewer asks the coordinator about for a single Devices refresh. */
-const MAX_GROUPS = 10;
+/** Groups asked about at once, so a coordinator with many groups is read in batches. */
+const GROUP_BATCH_SIZE = 5;
 
 export interface DeviceJoinRequest {
 	requestId: string;
@@ -54,12 +54,45 @@ async function administeredGroups(
 			.filter((group) => !group?.archived_at)
 			.map((group) => text(group?.group_id))
 			.filter(Boolean);
-		return { groups: groups.slice(0, MAX_GROUPS), listFailed: false };
+		return { groups, listFailed: false };
 	} catch {
 		if (signal.aborted) throw new DOMException("The request was aborted", "AbortError");
 		const groups = (Array.isArray(configured) ? configured : []).map(text).filter(Boolean);
-		return { groups: groups.slice(0, MAX_GROUPS), listFailed: true };
+		return { groups, listFailed: true };
 	}
+}
+
+async function readGroupRequests(
+	groupId: string,
+	signal: AbortSignal,
+): Promise<DeviceJoinRequest[]> {
+	const payload = (await loadCoordinatorAdminJoinRequests(groupId, { signal })) as {
+		items?: unknown;
+	};
+	if (!Array.isArray(payload?.items)) throw new Error("join_requests_invalid");
+	return (payload.items as RawRequest[]).flatMap((item) => {
+		const requestId = text(item?.request_id);
+		if (!requestId) return [];
+		return [
+			{
+				requestId,
+				groupId,
+				deviceId: text(item.device_id),
+				displayName: text(item.display_name),
+				fingerprint: text(item.fingerprint),
+			},
+		];
+	});
+}
+
+/** Runs `read` for every group, a few at a time, and keeps each group's own outcome. */
+async function readInBatches<T>(groups: string[], read: (groupId: string) => Promise<T>) {
+	const results: PromiseSettledResult<T>[] = [];
+	for (let start = 0; start < groups.length; start += GROUP_BATCH_SIZE) {
+		const batch = groups.slice(start, start + GROUP_BATCH_SIZE);
+		results.push(...(await Promise.allSettled(batch.map(read))));
+	}
+	return results;
 }
 
 async function loadFromViewer(signal: AbortSignal) {
@@ -71,27 +104,7 @@ async function loadFromViewer(signal: AbortSignal) {
 	// Approving needs the admin secret, so a device without it has nothing to review here.
 	if (status.readiness !== "ready" || status.has_admin_secret !== true) return null;
 	const { groups, listFailed } = await administeredGroups(status.groups, signal);
-	const results = await Promise.allSettled(
-		groups.map(async (groupId) => {
-			const payload = (await loadCoordinatorAdminJoinRequests(groupId, { signal })) as {
-				items?: unknown;
-			};
-			if (!Array.isArray(payload?.items)) throw new Error("join_requests_invalid");
-			return (payload.items as RawRequest[]).flatMap((item) => {
-				const requestId = text(item?.request_id);
-				if (!requestId) return [];
-				return [
-					{
-						requestId,
-						groupId,
-						deviceId: text(item.device_id),
-						displayName: text(item.display_name),
-						fingerprint: text(item.fingerprint),
-					},
-				];
-			});
-		}),
-	);
+	const results = await readInBatches(groups, (groupId) => readGroupRequests(groupId, signal));
 	if (signal.aborted) throw new DOMException("The request was aborted", "AbortError");
 	const requests = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 	const failedReads = results.filter((result) => result.status === "rejected").length;
