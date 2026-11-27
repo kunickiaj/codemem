@@ -398,6 +398,16 @@ interface NormalizedRawEventBatch {
 	skippedInvalid: number;
 }
 
+/** The newest event still stored for the session aliased `s`: one index seek. */
+const NEWEST_STORED_EVENT_SEQ_SQL = `(
+	SELECT MAX(e.event_seq) FROM raw_events e
+	WHERE e.source = s.source AND e.stream_id = s.stream_id
+)`;
+
+function toStreamIdentity(row: { source: string; stream_id: string }) {
+	return { source: String(row.source ?? "opencode"), streamId: String(row.stream_id ?? "") };
+}
+
 // MemoryStore
 
 export interface MemoryStoreOptions {
@@ -2482,114 +2492,68 @@ export class MemoryStore {
 		return this.rawEventSessionsPendingFlushQuery(limit, undefined, source);
 	}
 
+	/**
+	 * Sessions with events past their flush cursor, oldest activity first.
+	 *
+	 * Starts from the partial index over sessions whose received sequence is ahead of their
+	 * flushed one, so the cost follows the sessions with work and not the size of
+	 * `raw_events`. Every writer of raw events advances the received sequence. The newest
+	 * stored event is still checked per session, because retention can remove events a
+	 * session received.
+	 */
 	private rawEventSessionsPendingFlushQuery(
 		limit: number | null,
 		idleBeforeTsWallMs?: number,
 		source?: string,
 	): { source: string; streamId: string }[] {
-		const maxEvents = this.d
-			.select({
-				source: schema.rawEvents.source,
-				stream_id: schema.rawEvents.stream_id,
-				max_seq: sql<number>`MAX(${schema.rawEvents.event_seq})`.as("max_seq"),
-			})
-			.from(schema.rawEvents)
-			.groupBy(schema.rawEvents.source, schema.rawEvents.stream_id)
-			.as("max_events");
-
-		const rows = this.d
-			.select({
-				source: schema.rawEventSessions.source,
-				stream_id: schema.rawEventSessions.stream_id,
-			})
-			.from(schema.rawEventSessions)
-			.innerJoin(
-				maxEvents,
-				and(
-					eq(maxEvents.source, schema.rawEventSessions.source),
-					eq(maxEvents.stream_id, schema.rawEventSessions.stream_id),
-				),
+		const filters: string[] = [];
+		const parameters: Array<string | number> = [];
+		if (source !== undefined) {
+			filters.push("AND s.source = ?");
+			parameters.push(source);
+		}
+		if (idleBeforeTsWallMs != null) {
+			filters.push("AND s.last_seen_ts_wall_ms <= ?");
+			parameters.push(idleBeforeTsWallMs);
+		}
+		const rows = this.db
+			.prepare(
+				`SELECT s.source, s.stream_id FROM raw_event_sessions s
+				 WHERE s.last_received_event_seq > s.last_flushed_event_seq
+				 AND s.last_seen_ts_wall_ms IS NOT NULL
+				 ${filters.join(" ")}
+				 AND ${NEWEST_STORED_EVENT_SEQ_SQL} > s.last_flushed_event_seq
+				 ORDER BY s.last_seen_ts_wall_ms LIMIT ?`,
 			)
-			.where(
-				and(
-					source === undefined ? undefined : eq(schema.rawEventSessions.source, source),
-					isNotNull(schema.rawEventSessions.last_seen_ts_wall_ms),
-					idleBeforeTsWallMs == null
-						? undefined
-						: lte(schema.rawEventSessions.last_seen_ts_wall_ms, idleBeforeTsWallMs),
-					gt(maxEvents.max_seq, schema.rawEventSessions.last_flushed_event_seq),
-				),
-			)
-			.orderBy(schema.rawEventSessions.last_seen_ts_wall_ms)
-			.limit(limit ?? -1)
-			.all();
-
-		return rows
-			.filter((row) => row.stream_id)
-			.map((row) => ({
-				source: String(row.source ?? "opencode"),
-				streamId: String(row.stream_id ?? ""),
-			}));
+			.all(...parameters, limit ?? -1) as Array<{ source: string; stream_id: string }>;
+		return rows.filter((row) => row.stream_id).map(toStreamIdentity);
 	}
 
 	/**
-	 * Find sessions that have pending/failed flush batches with unflushed events.
-	 * Port of raw_event_sessions_with_pending_queue().
+	 * Sessions with unflushed events and a flush batch waiting to be retried, oldest
+	 * waiting batch first. Port of raw_event_sessions_with_pending_queue().
+	 *
+	 * Like the query above it starts from the sessions with work, so batches left in a
+	 * retry status by sessions that have nothing to flush are not read on every tick.
 	 */
 	rawEventSessionsWithPendingQueue(limit = 25): { source: string; streamId: string }[] {
-		const pendingBatches = this.d
-			.select({
-				source: schema.rawEventFlushBatches.source,
-				stream_id: schema.rawEventFlushBatches.stream_id,
-				oldest_pending_update: sql<string>`MIN(${schema.rawEventFlushBatches.updated_at})`.as(
-					"oldest_pending_update",
-				),
-			})
-			.from(schema.rawEventFlushBatches)
-			.where(inArray(schema.rawEventFlushBatches.status, ["pending", "failed", "started", "error"]))
-			.groupBy(schema.rawEventFlushBatches.source, schema.rawEventFlushBatches.stream_id)
-			.as("pending_batches");
-
-		const maxEvents = this.d
-			.select({
-				source: schema.rawEvents.source,
-				stream_id: schema.rawEvents.stream_id,
-				max_seq: sql<number>`MAX(${schema.rawEvents.event_seq})`.as("max_seq"),
-			})
-			.from(schema.rawEvents)
-			.groupBy(schema.rawEvents.source, schema.rawEvents.stream_id)
-			.as("max_events");
-
-		const rows = this.d
-			.select({ source: pendingBatches.source, stream_id: pendingBatches.stream_id })
-			.from(pendingBatches)
-			.innerJoin(
-				maxEvents,
-				and(
-					eq(maxEvents.source, pendingBatches.source),
-					eq(maxEvents.stream_id, pendingBatches.stream_id),
-				),
+		const rows = this.db
+			.prepare(
+				`SELECT source, stream_id FROM (
+					SELECT s.source, s.stream_id, (
+						SELECT MIN(b.updated_at) FROM raw_event_flush_batches b
+						WHERE b.source = s.source AND b.stream_id = s.stream_id
+						AND b.status IN ('pending', 'failed', 'started', 'error')
+					) AS oldest_pending_update
+					FROM raw_event_sessions s
+					WHERE s.last_received_event_seq > s.last_flushed_event_seq
+					AND ${NEWEST_STORED_EVENT_SEQ_SQL} > s.last_flushed_event_seq
+				 )
+				 WHERE oldest_pending_update IS NOT NULL
+				 ORDER BY oldest_pending_update LIMIT ?`,
 			)
-			.leftJoin(
-				schema.rawEventSessions,
-				and(
-					eq(schema.rawEventSessions.source, pendingBatches.source),
-					eq(schema.rawEventSessions.stream_id, pendingBatches.stream_id),
-				),
-			)
-			.where(
-				gt(maxEvents.max_seq, sql`COALESCE(${schema.rawEventSessions.last_flushed_event_seq}, -1)`),
-			)
-			.orderBy(sql`${pendingBatches.oldest_pending_update}`)
-			.limit(limit)
-			.all();
-
-		return rows
-			.filter((row) => row.stream_id)
-			.map((row) => ({
-				source: String(row.source ?? "opencode"),
-				streamId: String(row.stream_id ?? ""),
-			}));
+			.all(limit) as Array<{ source: string; stream_id: string }>;
+		return rows.filter((row) => row.stream_id).map(toStreamIdentity);
 	}
 
 	/**

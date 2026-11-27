@@ -15,17 +15,24 @@ type HealthPayload = {
 	database: { reachable: boolean };
 };
 
-function createStoreDouble(options?: { probeError?: Error }) {
+function createStoreDouble(options?: { probeError?: Error; open?: boolean }) {
 	const pragma = options?.probeError
 		? vi.fn(() => {
 				throw options.probeError;
 			})
 		: vi.fn(() => 17);
+	const prepare = vi.fn(() => {
+		throw new Error("health must not run a statement");
+	});
 	const stats = vi.fn(() => {
 		throw new Error("health must not aggregate database stats");
 	});
-	const store = { actorId: "actor-local", db: { pragma }, stats } as unknown as MemoryStore;
-	return { store, pragma, stats };
+	const store = {
+		actorId: "actor-local",
+		db: { open: options?.open ?? true, pragma, prepare },
+		stats,
+	} as unknown as MemoryStore;
+	return { store, pragma, prepare, stats };
 }
 
 function createMountedApp(storeFactory: () => MemoryStore) {
@@ -93,20 +100,24 @@ describe("GET /api/health", () => {
 		}
 	});
 
-	it("uses only a cheap schema-page database probe without stats aggregation or egress", async () => {
-		// Arrange
+	it("answers from memory without touching the database, stats aggregation or egress", async () => {
+		// Arrange: every way of reaching the database throws, as it would on a locked one.
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
-		const { store, pragma, stats } = createStoreDouble();
+		const { store, pragma, prepare, stats } = createStoreDouble({
+			probeError: new Error("database is locked"),
+		});
 		const { app, cleanup } = createMountedApp(() => store);
 
 		try {
 			// Act
 			const response = await app.request("/api/health");
+			const body = (await response.json()) as HealthPayload;
 
 			// Assert
 			expect(response.status).toBe(200);
-			expect(pragma).toHaveBeenCalledOnce();
-			expect(pragma).toHaveBeenCalledWith("schema_version", { simple: true });
+			expect(body).toMatchObject({ ready: true, database: { reachable: true } });
+			expect(pragma).not.toHaveBeenCalled();
+			expect(prepare).not.toHaveBeenCalled();
 			expect(stats).not.toHaveBeenCalled();
 			expect(fetchSpy).not.toHaveBeenCalled();
 		} finally {
@@ -143,12 +154,9 @@ describe("GET /api/health", () => {
 		}
 	});
 
-	it("reports database probe failure as degraded HTTP 200 without error details", async () => {
+	it("reports a closed database connection as degraded HTTP 200", async () => {
 		// Arrange
-		const privateErrorDetail = "private database probe detail";
-		const { store, pragma, stats } = createStoreDouble({
-			probeError: new Error(privateErrorDetail),
-		});
+		const { store, pragma, stats } = createStoreDouble({ open: false });
 		const { app, cleanup } = createMountedApp(() => store);
 
 		try {
@@ -165,8 +173,7 @@ describe("GET /api/health", () => {
 				ready: false,
 				database: { reachable: false },
 			});
-			expect(JSON.stringify(body)).not.toContain(privateErrorDetail);
-			expect(pragma).toHaveBeenCalledOnce();
+			expect(pragma).not.toHaveBeenCalled();
 			expect(stats).not.toHaveBeenCalled();
 		} finally {
 			cleanup();

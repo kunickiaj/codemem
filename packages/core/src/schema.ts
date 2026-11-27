@@ -181,6 +181,12 @@ export const memoryItems = sqliteTable(
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
 		index("idx_memory_items_created_id").on(table.created_at, table.id),
 		index("idx_memory_items_origin_device_active").on(table.origin_device_id, table.active),
+		// The sync pass lists a peer's scopes, and its rows in one scope, from this index alone.
+		index("idx_memory_items_origin_active_scope").on(
+			table.origin_device_id,
+			table.active,
+			table.scope_id,
+		),
 		// The replication backfill finds rows changed since its last pass by index range.
 		index("idx_memory_items_updated_at").on(table.updated_at),
 		index("idx_memory_items_session").on(table.session_id),
@@ -632,6 +638,18 @@ export const rawEventFlushBatches = sqliteTable(
 		index("idx_flush_batches_capture_status_updated")
 			.on(table.status, table.updated_at)
 			.where(sql`${table.observer_provider} IS NULL`),
+		// The sweeper's history recovery reads these two sets on every tick. Each index holds
+		// only its set, so a tick does not read every failed batch or the whole table.
+		index("idx_flush_batches_auth_missing")
+			.on(table.source, table.stream_id, table.created_at)
+			.where(
+				sql`${table.observer_error_code} = 'auth_missing' AND ${table.status} IN ('failed', 'gave_up')`,
+			),
+		index("idx_flush_batches_recovery_attempts")
+			.on(table.updated_at, table.attempt_count)
+			.where(
+				sql`${table.extractor_version} = 'raw_events_auth_recovery_v1' AND ${table.attempt_count} > 0`,
+			),
 	],
 );
 

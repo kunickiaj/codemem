@@ -2790,6 +2790,11 @@ export interface ReconcileStalePeerReceivedRowsOptions extends LocalCreationCont
 	keysDir?: string;
 	maxRows?: number | null;
 	peerDeviceId?: string | null;
+	/**
+	 * With a peer: read only its rows in scopes cleanup can delete from. The deletions are
+	 * the same; `checked`, `retained` and `ambiguous` then leave out its authorized scopes.
+	 */
+	onlyDeletableScopes?: boolean;
 }
 
 export type DiagnoseStalePeerReceivedRowsResult = Omit<
@@ -2855,16 +2860,57 @@ interface StalePeerReceivedRow {
 	scope_id: string | null;
 }
 
+const STALE_PEER_ROW_COLUMNS = "id, import_key, origin_device_id, scope_id";
+
 function stalePeerReceivedRows(
 	db: Database,
 	peerDeviceId: string | null,
 	maxRows: number,
 ): StalePeerReceivedRow[] {
+	if (peerDeviceId === null) {
+		return db
+			.prepare(
+				`SELECT ${STALE_PEER_ROW_COLUMNS} FROM memory_items WHERE active = 1 ORDER BY id LIMIT ?`,
+			)
+			.all(maxRows) as StalePeerReceivedRow[];
+	}
+	// A plain equality, so the (origin_device_id, active) index finds the peer's rows.
 	return db
-		.prepare(`SELECT id, import_key, origin_device_id, scope_id
-		FROM memory_items WHERE active = 1 AND (? IS NULL OR origin_device_id = ?)
-		ORDER BY id LIMIT ?`)
-		.all(peerDeviceId, peerDeviceId, maxRows) as StalePeerReceivedRow[];
+		.prepare(`SELECT ${STALE_PEER_ROW_COLUMNS} FROM memory_items
+		WHERE origin_device_id = ? AND active = 1 ORDER BY id LIMIT ?`)
+		.all(peerDeviceId, maxRows) as StalePeerReceivedRow[];
+}
+
+/** A scope whose received rows cleanup can delete: none, the default, or one not authorized. */
+function scopeMayHoldStaleRows(db: Database, localDeviceId: string, scopeId: string | null) {
+	const scope = cleanText(scopeId);
+	if (!scope || scope === DEFAULT_SYNC_SCOPE_ID) return true;
+	return !getCachedScopeAuthorization(db, { deviceId: localDeviceId, scopeId: scope }).authorized;
+}
+
+/**
+ * One peer's rows outside the scopes this device is authorized for. Cleanup retains or
+ * diagnoses every row in an authorized scope and deletes none of them, so a caller that
+ * only acts on deletions can skip those rows. The scope list comes from the
+ * (origin_device_id, active, scope_id) index alone, so a peer with nothing to clean up
+ * costs one short index range however many rows it sent.
+ */
+function stalePeerRowsOutsideAuthorizedScopes(
+	db: Database,
+	context: { localDeviceId: string; peerDeviceId: string },
+	maxRows: number,
+): StalePeerReceivedRow[] {
+	const scopes = db
+		.prepare("SELECT DISTINCT scope_id FROM memory_items WHERE origin_device_id = ? AND active = 1")
+		.pluck()
+		.all(context.peerDeviceId) as Array<string | null>;
+	const inScope = db.prepare(`SELECT ${STALE_PEER_ROW_COLUMNS} FROM memory_items
+		WHERE origin_device_id = ? AND active = 1 AND scope_id IS ? ORDER BY id`);
+	const rows = scopes
+		.filter((scopeId) => scopeMayHoldStaleRows(db, context.localDeviceId, scopeId))
+		.flatMap((scopeId) => inScope.all(context.peerDeviceId, scopeId) as StalePeerReceivedRow[])
+		.sort((left, right) => left.id - right.id);
+	return maxRows < 0 ? rows : rows.slice(0, maxRows);
 }
 
 function legacyLocalRetentionScope(db: Database, scopeId: string | null): boolean {
@@ -2912,6 +2958,17 @@ function retainOrDiagnoseLocalRow(
 	return true;
 }
 
+function stalePeerCandidateRows(
+	db: Database,
+	options: ReconcileStalePeerReceivedRowsOptions,
+	context: { localDeviceId: string; peerDeviceId: string | null; maxRows: number },
+): StalePeerReceivedRow[] {
+	const { localDeviceId, peerDeviceId, maxRows } = context;
+	if (options.onlyDeletableScopes && peerDeviceId)
+		return stalePeerRowsOutsideAuthorizedScopes(db, { localDeviceId, peerDeviceId }, maxRows);
+	return stalePeerReceivedRows(db, peerDeviceId, maxRows);
+}
+
 function reconcileStalePeerReceivedRowsInternal(
 	db: Database,
 	options: ReconcileStalePeerReceivedRowsOptions,
@@ -2924,7 +2981,7 @@ function reconcileStalePeerReceivedRowsInternal(
 		typeof options.maxRows === "number" && Number.isFinite(options.maxRows)
 			? Math.max(0, Math.trunc(options.maxRows))
 			: -1;
-	const rows = stalePeerReceivedRows(db, peerDeviceId, maxRows);
+	const rows = stalePeerCandidateRows(db, options, { localDeviceId, peerDeviceId, maxRows });
 	const result: ReconcileStalePeerReceivedRowsResult = {
 		checked: rows.length,
 		deleted: 0,

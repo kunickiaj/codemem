@@ -667,13 +667,17 @@ function ensureMemoryItemsPagingIndex(db: DatabaseType): void {
 }
 
 /**
- * Create the `updated_at` index the replication backfill reads to find rows changed since
- * its last pass. Runs outside the SCHEMA_VERSION-gated block so databases already at the
- * current version get it.
+ * Create the indexes the sync pass reads instead of scanning every memory: a peer's rows by
+ * scope, and rows by `updated_at`. Runs outside the SCHEMA_VERSION-gated block so databases
+ * already at the current version get them, and after it so `scope_id` exists.
  */
 function ensureMemoryItemsSyncIndexes(db: DatabaseType): void {
 	if (!tableExists(db, "memory_items")) return;
 	try {
+		if (columnExists(db, "memory_items", "scope_id")) {
+			db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_items_origin_active_scope
+				ON memory_items(origin_device_id, active, scope_id)`);
+		}
 		db.exec("CREATE INDEX IF NOT EXISTS idx_memory_items_updated_at ON memory_items(updated_at)");
 	} catch {
 		// Keep additive compatibility best-effort for index creation.
@@ -751,6 +755,12 @@ function ensureFlushBatchDiagnosticIndexes(db: DatabaseType): void {
 			CREATE INDEX IF NOT EXISTS idx_flush_batches_capture_status_updated
 				ON raw_event_flush_batches(status, updated_at)
 				WHERE observer_provider IS NULL;
+			CREATE INDEX IF NOT EXISTS idx_flush_batches_auth_missing
+				ON raw_event_flush_batches(source, stream_id, created_at)
+				WHERE observer_error_code = 'auth_missing' AND status IN ('failed', 'gave_up');
+			CREATE INDEX IF NOT EXISTS idx_flush_batches_recovery_attempts
+				ON raw_event_flush_batches(updated_at, attempt_count)
+				WHERE extractor_version = 'raw_events_auth_recovery_v1' AND attempt_count > 0;
 		`);
 	} catch {
 		// Keep additive compatibility best-effort for index creation.

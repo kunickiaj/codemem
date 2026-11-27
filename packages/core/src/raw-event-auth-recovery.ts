@@ -16,6 +16,7 @@ const MAX_ATTEMPTS = 3;
 const MAX_HOURLY_CALLS = 4;
 const SCOPE_DENIAL_RETRY_MS = 15_000;
 const CALL_CLOCK_PREFIX = "observer_recovery_call_clock:";
+const AUTH_MISSING_INDEX = "idx_flush_batches_auth_missing";
 
 interface RecoveryClaim {
 	batchId: number;
@@ -172,6 +173,18 @@ function eligibleRecoveryWindow(
 	return null;
 }
 
+/**
+ * Names the partial index over unrecovered auth failures, when the store has it. Without
+ * the hint the planner prefers the status index, which reads every failed batch on each
+ * tick. A store whose index could not be created yet keeps the planner's own choice.
+ */
+function authMissingIndexHint(store: MemoryStore): string {
+	const present = store.db
+		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
+		.get(AUTH_MISSING_INDEX);
+	return present ? `INDEXED BY ${AUTH_MISSING_INDEX}` : "";
+}
+
 function nextRecoveryWindow(
 	store: MemoryStore,
 	{
@@ -187,7 +200,7 @@ function nextRecoveryWindow(
 	const streams = store.db
 		.prepare(`
 		SELECT b.source, b.stream_id
-		FROM raw_event_flush_batches b
+		FROM raw_event_flush_batches b ${authMissingIndexHint(store)}
 		JOIN raw_event_sessions s ON s.source = b.source AND s.stream_id = b.stream_id
 		WHERE b.status IN ('failed', 'gave_up') AND b.observer_error_code = 'auth_missing'
 			AND b.extractor_version != ? AND s.last_flushed_event_seq >= b.end_event_seq
@@ -300,11 +313,13 @@ function hasPersistedRecoveryOutcome(store: MemoryStore, batchId: number): boole
 
 function withinHourlyBudget(store: MemoryStore): boolean {
 	const cutoff = new Date(Date.now() - 3_600_000).toISOString();
+	// The version is written into the statement, not bound, so the planner can match the
+	// partial index over recovery batches instead of reading every flush batch on each tick.
 	const calls = store.db
 		.prepare(`
 		SELECT (
 			SELECT COALESCE(SUM(attempt_count), 0) FROM raw_event_flush_batches b
-			WHERE extractor_version = ? AND attempt_count > 0 AND COALESCE((
+			WHERE extractor_version = '${RECOVERY_VERSION}' AND attempt_count > 0 AND COALESCE((
 				SELECT created_at FROM usage_events WHERE event = ? || b.id LIMIT 1
 			), b.updated_at) >= ?
 		) + (
@@ -312,7 +327,7 @@ function withinHourlyBudget(store: MemoryStore): boolean {
 			WHERE event = 'observer_recovery_scope_denial' AND created_at > ?
 		) AS count
 	`)
-		.get(RECOVERY_VERSION, CALL_CLOCK_PREFIX, cutoff, cutoff) as { count: number };
+		.get(CALL_CLOCK_PREFIX, cutoff, cutoff) as { count: number };
 	return calls.count < MAX_HOURLY_CALLS;
 }
 
