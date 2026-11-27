@@ -87,17 +87,20 @@ interface Subject {
 	devices: Array<{ deviceId: string; displayName: string }>;
 }
 
-/** The Team, its coordinator group and the member, or the reason removal cannot start. */
-function readSubject(
+/**
+ * The active Team and its coordinator group, when this device is configured
+ * for that coordinator and group; otherwise the reason nothing may be sent.
+ */
+function readTeamTarget(
 	db: Database,
-	input: { teamId: string; identityId: string },
+	teamId: string,
 	context: TeamMemberRemovalContext,
-): Subject | TeamMemberRemovalRejection {
+): { displayName: string; link: Subject["link"] } | TeamMemberRemovalRejection {
 	const team = db
 		.prepare("SELECT display_name, status FROM policy_teams WHERE team_id = ?")
-		.get(input.teamId) as { display_name: string; status: string } | undefined;
+		.get(teamId) as { display_name: string; status: string } | undefined;
 	if (team?.status !== "active") return "team_not_found";
-	const link = teamRemovalCoordinatorGroup(db, input.teamId);
+	const link = teamRemovalCoordinatorGroup(db, teamId);
 	if (!link) return "team_not_linked";
 	const configured = teamMemberRemovalCoordinatorKey(context.coordinator.remoteUrl);
 	if (
@@ -106,6 +109,18 @@ function readSubject(
 		!context.coordinator.groupIds.includes(link.groupId)
 	)
 		return "team_coordinator_not_configured";
+	return { displayName: team.display_name, link };
+}
+
+/** The Team, its coordinator group and the member, or the reason removal cannot start. */
+function readSubject(
+	db: Database,
+	input: { teamId: string; identityId: string },
+	context: TeamMemberRemovalContext,
+): Subject | TeamMemberRemovalRejection {
+	const target = readTeamTarget(db, input.teamId, context);
+	if (typeof target === "string") return target;
+	const { link } = target;
 	if (input.identityId === context.localIdentityId) return "cannot_remove_yourself";
 	if (isTeamMemberRemoved(db, input.teamId, input.identityId)) return "member_already_removed";
 	const member = db
@@ -123,7 +138,7 @@ function readSubject(
 			 WHERE identity_id = ? AND status = 'active' ORDER BY device_id`,
 		)
 		.all(input.identityId) as Subject["devices"];
-	return { teamName: team.display_name, link, displayName: member.display_name, devices };
+	return { teamName: target.displayName, link, displayName: member.display_name, devices };
 }
 
 function previewDigest(
@@ -239,8 +254,9 @@ export async function revokePendingTeamInvitations(
 			}>;
 	  }
 > {
-	const link = teamRemovalCoordinatorGroup(db, input.teamId);
-	if (!link) return reject("team_not_linked");
+	const target = readTeamTarget(db, input.teamId, context);
+	if (typeof target === "string") return reject(target);
+	const { link } = target;
 	const list =
 		context.actions?.listPendingInvitations ?? coordinatorListPendingTeamInvitationsAction;
 	let pending: Set<string>;

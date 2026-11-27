@@ -369,3 +369,22 @@ describe("committing a removal when a later step fails", () => {
 		expect(actions.revokeInvitation).toHaveBeenCalledOnce();
 	});
 });
+
+describe("retrying invitation revokes for a Team set up elsewhere", () => {
+	it.each([
+		["another coordinator", { remoteUrl: "https://other.example.test" }],
+		["a group this device does not use", { groupIds: ["group-b"] }],
+	] as const)("refuses a Team set up from %s and sends nothing", async (_label, coordinator) => {
+		const { ctx, actions } = context();
+
+		const result = await revokePendingTeamInvitations(
+			db,
+			{ teamId: team, inviteIds: ["invite-pending"] },
+			{ ...ctx, coordinator: { ...ctx.coordinator, ...coordinator } },
+		);
+
+		expect(result).toEqual({ state: "rejected", error: "team_coordinator_not_configured" });
+		expect(actions.listPendingInvitations).not.toHaveBeenCalled();
+		expect(actions.revokeInvitation).not.toHaveBeenCalled();
+	});
+});
