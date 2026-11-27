@@ -1233,6 +1233,17 @@ export const policyTeamRecoveryExclusions = sqliteTable(
 	(table) => [primaryKey({ columns: [table.team_id, table.device_id] })],
 );
 
+/**
+ * Teams whose last recovery has not been verified against the coordinator,
+ * each with the recovery that placed the hold.
+ */
+export const policyTeamRecoveryHolds = sqliteTable("policy_team_recovery_holds", {
+	team_id: text("team_id").primaryKey().notNull(),
+	recovery_id: text("recovery_id").notNull(),
+	reason: text("reason").notNull(),
+	held_at: text("held_at").notNull(),
+});
+
 export type PolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferSelect;
 export type NewPolicyTeamDeviceDecisionRow = typeof policyTeamDeviceDecisions.$inferInsert;
 
@@ -1672,6 +1683,7 @@ export const schema = {
 	policyTeamCoordinatorLinks,
 	policyTeamMemberRemovalEnforcements,
 	policyTeamRecoveryExclusions,
+	policyTeamRecoveryHolds,
 	identityDevices,
 	projectRecipients,
 	legacyTeamSetupDrafts,

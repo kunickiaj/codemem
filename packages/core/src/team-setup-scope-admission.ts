@@ -3,6 +3,7 @@ import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-p
 import { projectsHeldInScope } from "./scope-project-mappings.js";
 import { readTeamDeviceEligibility } from "./team-device-eligibility-read.js";
 import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
+import { isTeamRecoveryHeld } from "./team-recovery-holds.js";
 
 /**
  * Scope admission for devices tied to a reviewed Team setup, decided from the
@@ -17,8 +18,9 @@ import { isTeamRecoveryExcluded } from "./team-recovery-exclusions.js";
  * - the device is tied to that Team: bound to a Team member in any binding
  *   state, reviewed in the Team's setup, or left out of the Team by a Team
  *   recovery. This device is never refused;
- * - the Team is quarantined (inactive, needing setup), or it is active and the
- *   device is not eligible for it now.
+ * - the Team is quarantined (inactive, needing setup) or held by a recovery
+ *   that is not verified yet, or it is active and the device is not eligible
+ *   for it now.
  *
  * On an active Team, a device with no `included` decision, or one a Team
  * recovery left out, is refused outright. A recovery exclusion ties the device
@@ -251,7 +253,9 @@ function decideTeamSetupRefusal(
 		// A device a recovery left out stays tied to the Team whoever it is bound to now.
 		const leftOut = isTeamRecoveryExcluded(db, team.team_id, input.deviceId);
 		if (!leftOut && !isTeamDevice(db, team, input.deviceId)) return false;
-		if (team.status !== "active") return scopeHoldsTeamProject(db, team, input.scopeId);
+		// A Team whose recovery is not verified yet serves its devices nothing, as if quarantined.
+		if (team.status !== "active" || isTeamRecoveryHeld(db, team.team_id))
+			return scopeHoldsTeamProject(db, team, input.scopeId);
 		return activeTeamRefuses(db, team, { ...input, leftOut });
 	});
 }
