@@ -14,7 +14,7 @@ import type {
 export type AdminSection = "groups" | "invites" | "devices";
 
 export type GroupActionKind = "create" | "rename" | "archive" | "unarchive" | "";
-export type DeviceActionKind = "rename" | "disable" | "enable" | "remove" | "";
+export type DeviceActionKind = "disable" | "enable" | "remove" | "";
 export type InvitePolicy = "auto_admit" | "approval_required";
 export type ScopeManagementActionKind = "load" | "create" | "grant" | "revoke" | "";
 
@@ -93,8 +93,6 @@ export interface CoordinatorAdminState {
 	devicesSnapshotTarget: CoordinatorAdminSnapshotTarget | null;
 	groupRenameDrafts: Map<string, string>;
 	groupPresentationAliases: Map<string, string>;
-	deviceRenameDrafts: Map<string, string>;
-	deviceRenameServerNames: Map<string, string>;
 	unnamedDeviceAliases: UnnamedDeviceAliasRegistry;
 	groupPreferencesOpen: Set<string>;
 	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
@@ -132,8 +130,6 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	devicesSnapshotTarget: null,
 	groupRenameDrafts: new Map<string, string>(),
 	groupPresentationAliases: new Map<string, string>(),
-	deviceRenameDrafts: new Map<string, string>(),
-	deviceRenameServerNames: new Map<string, string>(),
 	unnamedDeviceAliases: createUnnamedDeviceAliasRegistry(),
 	groupPreferencesOpen: new Set<string>(),
 	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),

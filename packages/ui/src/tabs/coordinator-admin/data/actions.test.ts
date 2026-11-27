@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
 	enableCoordinatorAdminDevice: vi.fn(),
 	openSyncConfirmDialog: vi.fn(),
 	renameCoordinatorAdminGroup: vi.fn(),
-	renameCoordinatorAdminDevice: vi.fn(),
 	removeCoordinatorAdminDevice: vi.fn(),
 	showGlobalNotice: vi.fn(),
 	unarchiveCoordinatorAdminGroup: vi.fn(),
@@ -26,7 +25,6 @@ vi.mock("../../../lib/api", () => ({
 	disableCoordinatorAdminDevice: mocks.disableCoordinatorAdminDevice,
 	enableCoordinatorAdminDevice: mocks.enableCoordinatorAdminDevice,
 	renameCoordinatorAdminGroup: mocks.renameCoordinatorAdminGroup,
-	renameCoordinatorAdminDevice: mocks.renameCoordinatorAdminDevice,
 	removeCoordinatorAdminDevice: mocks.removeCoordinatorAdminDevice,
 	unarchiveCoordinatorAdminGroup: mocks.unarchiveCoordinatorAdminGroup,
 }));
@@ -57,7 +55,6 @@ describe("coordinator admin actions", () => {
 		mocks.openSyncConfirmDialog.mockReset();
 		mocks.openSyncConfirmDialog.mockResolvedValue(true);
 		mocks.renameCoordinatorAdminGroup.mockReset();
-		mocks.renameCoordinatorAdminDevice.mockReset();
 		mocks.removeCoordinatorAdminDevice.mockReset();
 		mocks.showGlobalNotice.mockReset();
 		mocks.unarchiveCoordinatorAdminGroup.mockReset();
@@ -86,7 +83,6 @@ describe("coordinator admin actions", () => {
 			coordinatorUrl: "https://coordinator.example",
 			groupId: "group-alpha",
 		};
-		coordinatorAdminState.deviceRenameDrafts.clear();
 		coordinatorAdminState.inviteGroup = "";
 		coordinatorAdminState.invitePending = false;
 		coordinatorAdminState.invitePolicy = "auto_admit";
@@ -287,15 +283,14 @@ describe("coordinator admin actions", () => {
 
 	it("refuses enrollment mutations from a snapshot loaded for another group", async () => {
 		state.coordinatorAdminTargetGroup = "group-beta";
-		coordinatorAdminState.deviceRenameDrafts.set("device-a", "Renamed Laptop");
 		const actions = createCoordinatorAdminActions({
 			renderShell: vi.fn(),
 			reloadData: vi.fn().mockResolvedValue(undefined),
 		});
 
-		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", "rename");
+		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", "enable");
 
-		expect(mocks.renameCoordinatorAdminDevice).not.toHaveBeenCalled();
+		expect(mocks.enableCoordinatorAdminDevice).not.toHaveBeenCalled();
 	});
 
 	it("aborts a confirmed group mutation when refresh starts during confirmation", async () => {
@@ -556,55 +551,15 @@ describe("coordinator admin actions", () => {
 		);
 	});
 
-	it.each([
-		["display_name_required", "Enter a device name before renaming it."],
-		["display_name_invalid", "Enter a valid device name and retry."],
-		["display_name_too_long", "The device name is too long. Use a shorter name and retry."],
-	])("shows a useful notice for the known device rename error %s", async (error, notice) => {
-		mocks.renameCoordinatorAdminDevice.mockRejectedValue(new Error(error));
-		coordinatorAdminState.deviceRenameDrafts.set("device-a", "New device name");
-		const reloadData = vi.fn().mockResolvedValue(undefined);
-		const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
-
-		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", "rename");
-
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(notice, "warning");
-		expect(reloadData).not.toHaveBeenCalled();
-	});
-
-	it("does not expose unknown coordinator details after a device rename failure", async () => {
-		mocks.renameCoordinatorAdminDevice.mockRejectedValue(new Error("private coordinator detail"));
-		coordinatorAdminState.deviceRenameDrafts.set("device-a", "New device name");
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockResolvedValue(undefined),
-		});
-
-		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", "rename");
-
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Could not rename the legacy coordinator device. Sharing policy is unchanged; check coordinator recovery status and retry.",
-			"warning",
-		);
-		expect(mocks.showGlobalNotice).not.toHaveBeenCalledWith(
-			expect.stringContaining("private coordinator detail"),
-			expect.anything(),
-		);
-	});
-
-	it.each(["rename", "disable", "enable", "remove"] as const)(
+	it.each(["disable", "enable", "remove"] as const)(
 		"refreshes devices when %s finds a missing enrollment",
 		async (kind) => {
-			const mutation =
-				kind === "rename"
-					? mocks.renameCoordinatorAdminDevice
-					: kind === "disable"
-						? mocks.disableCoordinatorAdminDevice
-						: kind === "enable"
-							? mocks.enableCoordinatorAdminDevice
-							: mocks.removeCoordinatorAdminDevice;
+			const mutation = {
+				disable: mocks.disableCoordinatorAdminDevice,
+				enable: mocks.enableCoordinatorAdminDevice,
+				remove: mocks.removeCoordinatorAdminDevice,
+			}[kind];
 			mutation.mockRejectedValue(new Error("device_not_found: private-device-id"));
-			coordinatorAdminState.deviceRenameDrafts.set("device-a", "New device name");
 			const reloadData = vi.fn().mockResolvedValue(undefined);
 			const actions = createCoordinatorAdminActions({ renderShell: vi.fn(), reloadData });
 
@@ -632,21 +587,6 @@ describe("coordinator admin actions", () => {
 
 		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
 			"This legacy coordinator device no longer exists. Refresh enrolled devices before trying another action.",
-			"warning",
-		);
-	});
-
-	it("reports a renamed device accurately when the follow-up refresh fails", async () => {
-		coordinatorAdminState.deviceRenameDrafts.set("device-a", "New device name");
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockRejectedValue(new Error("refresh failed")),
-		});
-
-		await actions.runDeviceAction("device-a", "group-alpha", "Laptop", "rename");
-
-		expect(mocks.showGlobalNotice).toHaveBeenLastCalledWith(
-			"Device renamed, but coordinator data could not refresh. Check coordinator recovery status before retrying.",
 			"warning",
 		);
 	});

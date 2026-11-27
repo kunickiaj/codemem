@@ -38,7 +38,6 @@ import {
 	currentAdminSnapshotTarget,
 	currentAdminTargetGroup,
 	currentAdminTargetGroupRecord,
-	reconcileDeviceRenameDrafts,
 	reconcileGroupRenameDrafts,
 	resolveAdminTargetGroup,
 } from "./data/target-group";
@@ -283,16 +282,7 @@ function latestCoordinatorAdminLoadResult(generation: number): boolean | Promise
 	return latestCoordinatorAdminLoad?.operation ?? false;
 }
 
-export function loadCoordinatorAdminData(
-	options: { deferWhileRenaming?: boolean; signal?: AbortSignal } = {},
-): Promise<boolean> {
-	if (
-		options.deferWhileRenaming &&
-		coordinatorAdminState.activeSection === "devices" &&
-		document.activeElement?.closest("#coordinatorAdminMount .coordinator-admin-form")
-	) {
-		return Promise.resolve(true);
-	}
+export function loadCoordinatorAdminData(options: { signal?: AbortSignal } = {}): Promise<boolean> {
 	const generation = beginCoordinatorAdminLoadGeneration();
 	const operation = runCoordinatorAdminLoad(generation, options.signal);
 	latestCoordinatorAdminLoad = { generation, operation };
@@ -378,7 +368,6 @@ async function runCoordinatorAdminLoad(generation: number, signal?: AbortSignal)
 			state.lastCoordinatorAdminDevices = devicesPayload.items;
 			coordinatorAdminState.devicesSnapshotTarget = snapshotTarget;
 			completeSurfaceRefresh(coordinatorAdminState.recovery, "devices");
-			reconcileDeviceRenameDrafts();
 		} catch {
 			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			failSurfaceRefresh(

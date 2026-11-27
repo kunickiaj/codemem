@@ -20,11 +20,11 @@ import {
 	setAdminTargetGroup,
 } from "./target-group";
 
-const DEVICE_RENAME_ERROR_MESSAGES = new Map([
-	["display_name_required", "Enter a device name before renaming it."],
-	["display_name_invalid", "Enter a valid device name and retry."],
-	["display_name_too_long", "The device name is too long. Use a shorter name and retry."],
-]);
+const COMPLETED_DEVICE_ACTION = {
+	disable: "disabled",
+	enable: "enabled",
+	remove: "removed",
+} as const;
 
 function isStaleGroupMutationError(cause: unknown): boolean {
 	if (!(cause instanceof Error)) return false;
@@ -54,7 +54,7 @@ export interface CoordinatorAdminActions {
 		deviceId: string,
 		groupId: string,
 		displayName: string,
-		kind: "rename" | "disable" | "enable" | "remove",
+		kind: "disable" | "enable" | "remove",
 	) => Promise<void>;
 }
 
@@ -306,7 +306,7 @@ export function createCoordinatorAdminActions(
 		deviceId: string,
 		groupId: string,
 		displayName: string,
-		kind: "rename" | "disable" | "enable" | "remove",
+		kind: "disable" | "enable" | "remove",
 	) {
 		if (!adminSnapshotTargetMatchesCurrent(coordinatorAdminState.devicesSnapshotTarget)) return;
 		if (!requireFresh("status", "devices")) return;
@@ -354,24 +354,7 @@ export function createCoordinatorAdminActions(
 		coordinatorAdminState.deviceActionPendingKind = kind;
 		renderShell();
 		try {
-			const completedAction =
-				kind === "rename"
-					? "renamed"
-					: kind === "disable"
-						? "disabled"
-						: kind === "enable"
-							? "enabled"
-							: "removed";
-			if (kind === "rename") {
-				const nextName = String(
-					coordinatorAdminState.deviceRenameDrafts.get(deviceId) || "",
-				).trim();
-				if (!nextName) {
-					showGlobalNotice("Enter a device name before renaming it.", "warning");
-					return;
-				}
-				await api.renameCoordinatorAdminDevice(deviceId, groupId, nextName);
-			}
+			const completedAction = COMPLETED_DEVICE_ACTION[kind];
 			if (kind === "disable") {
 				await api.disableCoordinatorAdminDevice(deviceId, groupId);
 			}
@@ -392,10 +375,6 @@ export function createCoordinatorAdminActions(
 			}
 			showGlobalNotice(`Device ${completedAction}.`, "success");
 		} catch (error) {
-			const knownRenameError =
-				kind === "rename" && error instanceof Error
-					? DEVICE_RENAME_ERROR_MESSAGES.get(error.message.trim())
-					: undefined;
 			if (isMissingDeviceError(error)) {
 				try {
 					await reloadData();
@@ -411,8 +390,7 @@ export function createCoordinatorAdminActions(
 				}
 			} else {
 				showGlobalNotice(
-					knownRenameError ||
-						`Could not ${kind} the legacy coordinator device. Sharing policy is unchanged; check coordinator recovery status and retry.`,
+					`Could not ${kind} the legacy coordinator device. Sharing policy is unchanged; check coordinator recovery status and retry.`,
 					"warning",
 				);
 			}

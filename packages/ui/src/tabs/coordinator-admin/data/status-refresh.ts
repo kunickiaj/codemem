@@ -26,8 +26,6 @@ function invalidateCoordinatorScopedState(): void {
 	coordinatorAdminState.devicesSnapshotTarget = null;
 	coordinatorAdminState.groupRenameDrafts.clear();
 	coordinatorAdminState.groupPresentationAliases.clear();
-	coordinatorAdminState.deviceRenameDrafts.clear();
-	coordinatorAdminState.deviceRenameServerNames.clear();
 	coordinatorAdminState.groupPreferencesOpen.clear();
 	coordinatorAdminState.groupPreferencesDrafts.clear();
 	coordinatorAdminState.groupScopeManagementOpen.clear();

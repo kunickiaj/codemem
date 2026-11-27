@@ -229,24 +229,6 @@ export async function reviewCoordinatorAdminJoinRequest(
 	return data;
 }
 
-export async function renameCoordinatorAdminDevice(
-	deviceId: string,
-	groupId: string,
-	displayName: string,
-): Promise<unknown> {
-	const resp = await fetch(
-		`/api/coordinator/admin/devices/${encodeURIComponent(deviceId)}/rename`,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ group_id: groupId, display_name: displayName }),
-		},
-	);
-	const { text, payload: data } = await readJsonPayload(resp);
-	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
-	return data;
-}
-
 export async function disableCoordinatorAdminDevice(
 	deviceId: string,
 	groupId: string,

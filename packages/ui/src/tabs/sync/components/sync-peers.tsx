@@ -1,9 +1,7 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
-import type { TargetedInputEvent } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../../components/primitives/chip";
 import { PresencePip, type PresenceState } from "../../../components/primitives/presence-pip";
-import { TextInput } from "../../../components/primitives/text-input";
 import type { DeviceIdentityInventoryItemV1 } from "../../../lib/api/sync";
 import { formatTimestamp } from "../../../lib/format";
 import { isSyncRedactionEnabled, type SyncActor, state } from "../../../lib/state";
@@ -137,7 +135,6 @@ type SyncPeerStatus = NonNullable<SyncPeer["status"]> & {
 type SyncPeerCardProps = {
 	peer: SyncPeer;
 	onRemove: (peerId: string, label: string) => Promise<SyncActionFeedback>;
-	onRename: (peerId: string, name: string) => Promise<SyncActionFeedback>;
 	onSync: (peer: SyncPeer, address: string | undefined) => Promise<SyncActionFeedback | null>;
 };
 
@@ -273,7 +270,29 @@ export function canManageLegacyCoordinatorSpaces(
 	return status?.readiness === "ready" && status.has_admin_secret === true;
 }
 
-function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
+function ScopeReviewNote({
+	canManageSpaces,
+	pending,
+	requested,
+}: {
+	canManageSpaces: boolean;
+	pending: boolean;
+	requested: boolean;
+}) {
+	if (requested) {
+		return (
+			<div className="peer-meta">
+				{canManageSpaces
+					? "Review this device's legacy Space access and advanced rules in Coordinator Administration if the defaults are too broad."
+					: "A coordinator operator can review this device's legacy Space access and advanced rules in Coordinator Administration if the defaults are too broad."}
+			</div>
+		);
+	}
+	if (!pending) return null;
+	return <div className="peer-meta">Advanced rule review is still pending for this device.</div>;
+}
+
+function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 	const peerId = String(peer.peer_device_id || "");
 	const displayName = peer.name || (peerId ? peerId.slice(0, 8) : "unknown");
 	const destructiveLabel = peer.name || peerId || displayName;
@@ -323,12 +342,9 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	const scopeReviewRequested = consumePeerScopeReviewRequest(peerId);
 	const cardRef = useRef<HTMLDivElement | null>(null);
 
-	const [renameValue, setRenameValue] = useState(displayName);
 	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(
 		() => state.syncPeerFeedbackById.get(peerId) ?? null,
 	);
-	const [renameBusy, setRenameBusy] = useState(false);
-	const [renameLabel, setRenameLabel] = useState("Save name");
 	const [syncBusy, setSyncBusy] = useState(false);
 	const [removeBusy, setRemoveBusy] = useState(false);
 	const [removeLabel, setRemoveLabel] = useState("Remove device");
@@ -338,10 +354,7 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	}, [authorizedDomains.total, peerId, rawPendingScopeReview]);
 
 	useEffect(() => {
-		setRenameValue(displayName);
 		setFeedback(state.syncPeerFeedbackById.get(peerId) ?? null);
-		setRenameBusy(false);
-		setRenameLabel("Save name");
 		setSyncBusy(false);
 		setRemoveBusy(false);
 		setRemoveLabel("Remove device");
@@ -356,36 +369,6 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 			}),
 		);
 	}, [scopeReviewRequested]);
-
-	async function rename() {
-		if (!peerId) return;
-		const nextName = renameValue.trim();
-		if (!nextName) {
-			const warning = {
-				message: "Enter a friendly name for this device.",
-				tone: "warning",
-			} satisfies SyncActionFeedback;
-			setFeedback(warning);
-			state.syncPeerFeedbackById.set(peerId, warning);
-			const input = document.querySelector(
-				`[data-device-name-input="${CSS.escape(peerId)}"]`,
-			) as HTMLInputElement | null;
-			input?.focus();
-			return;
-		}
-		setRenameBusy(true);
-		setRenameLabel("Saving…");
-		try {
-			const nextFeedback = await onRename(peerId, nextName);
-			setFeedback(nextFeedback);
-			state.syncPeerFeedbackById.set(peerId, nextFeedback);
-			setRenameLabel("Save name");
-		} catch {
-			setRenameLabel("Retry");
-		} finally {
-			setRenameBusy(false);
-		}
-	}
 
 	async function sync() {
 		if (pendingScopeReview) {
@@ -549,35 +532,6 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 						>
 							{syncBusy ? "Syncing…" : "Sync now"}
 						</button>
-						<div className="sync-labeled-field">
-							<label
-								className="sync-labeled-field-caption"
-								htmlFor={`device-name-${peerId || "unknown"}`}
-							>
-								Device name
-							</label>
-							<TextInput
-								aria-label={`Friendly name for ${displayName}`}
-								className="peer-scope-input"
-								data-device-name-input={peerId || undefined}
-								disabled={renameBusy}
-								id={`device-name-${peerId || "unknown"}`}
-								placeholder="Friendly device name"
-								type="text"
-								value={renameValue}
-								onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
-									setRenameValue(event.currentTarget.value)
-								}
-							/>
-						</div>
-						<button
-							type="button"
-							className="settings-button"
-							disabled={renameBusy}
-							onClick={() => void rename()}
-						>
-							{renameLabel}
-						</button>
 						<button
 							type="button"
 							className="settings-button danger"
@@ -589,17 +543,11 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 					</div>
 
 					<div className="peer-scope">
-						{scopeReviewRequested ? (
-							<div className="peer-meta">
-								{canManageSpaces
-									? "Review this device's legacy Space access and advanced rules in Coordinator Administration if the defaults are too broad."
-									: "A coordinator operator can review this device's legacy Space access and advanced rules in Coordinator Administration if the defaults are too broad."}
-							</div>
-						) : pendingScopeReview ? (
-							<div className="peer-meta">
-								Advanced rule review is still pending for this device.
-							</div>
-						) : null}
+						<ScopeReviewNote
+							canManageSpaces={canManageSpaces}
+							pending={pendingScopeReview}
+							requested={scopeReviewRequested}
+						/>
 
 						<div className="peer-scope-summary">Device details</div>
 						<div className="peer-addresses">{addressLine}</div>

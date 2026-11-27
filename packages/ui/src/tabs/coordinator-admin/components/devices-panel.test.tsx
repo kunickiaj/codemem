@@ -50,8 +50,6 @@ describe("DevicesPanel", () => {
 		state.lastCoordinatorAdminDevices = [
 			{ device_id: "dev-1", display_name: "NAS", enabled: true, group_id: "team-a" },
 		];
-		coordinatorAdminState.deviceRenameDrafts.clear();
-		coordinatorAdminState.deviceRenameServerNames.clear();
 		coordinatorAdminState.unnamedDeviceAliases.aliases.clear();
 		coordinatorAdminState.unnamedDeviceAliases.duplicateDisplayNames.clear();
 		coordinatorAdminState.unnamedDeviceAliases.reservedDisplayNames.clear();
@@ -69,42 +67,10 @@ describe("DevicesPanel", () => {
 		document.body.innerHTML = "";
 		state.lastCoordinatorAdminStatus = null;
 		state.lastCoordinatorAdminDevices = [];
-		coordinatorAdminState.deviceRenameDrafts.clear();
-		coordinatorAdminState.deviceRenameServerNames.clear();
 		coordinatorAdminState.unnamedDeviceAliases.aliases.clear();
 		coordinatorAdminState.unnamedDeviceAliases.duplicateDisplayNames.clear();
 		coordinatorAdminState.unnamedDeviceAliases.reservedDisplayNames.clear();
 		vi.clearAllMocks();
-	});
-
-	it("keeps the device title on the saved display name while editing a rename draft", () => {
-		const root = renderPanel();
-		const title = root.querySelector(".peer-title strong");
-		const input = root.querySelector("input") as HTMLInputElement | null;
-		if (!title || !input) throw new Error("device row did not render");
-
-		expect(title.textContent).toBe("NAS");
-
-		act(() => {
-			input.value = "NAS storage box";
-			input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-			render(
-				renderDevicesPanel({
-					runDevice: vi.fn(),
-					fresh: true,
-					snapshotMatchesTarget: true,
-					summary: {
-						detail: "Ready",
-						readiness: "ready",
-						title: "Ready",
-					},
-				}),
-				root,
-			);
-		});
-
-		expect(root.querySelector("input")?.value).toBe("NAS storage box");
-		expect(root.querySelector(".peer-title strong")?.textContent).toBe("NAS");
 	});
 
 	it("retains technical details but disables coordinator mutations while device data is stale", () => {

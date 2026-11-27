@@ -777,8 +777,6 @@ Entries with the same Project name in the same Space form one row when they belo
 
 **Advanced → Coordinator Administration** keeps the last successfully loaded coordinator groups, Spaces, devices, and status visible if a refresh fails. A bounded notice names stale or unavailable sections and provides **Retry**. Mutations that require current coordinator state remain disabled until refresh succeeds; retained rows and counts do not imply deletion, and a section that has never loaded is shown as unavailable rather than empty.
 
-While you edit an enrolled device's display name, background polling leaves the rename form alone. It resumes after you leave the form; saving a rename and choosing **Retry** still request current coordinator data. An outage continues to disable changes until the data loads again.
-
 To start a new Team, open **Sharing → Teams** and choose **Create Team**. Enter a name that no other active Team uses. You become the Team's admin, with all of your devices included. The new Team shares nothing until you add Projects to it, and you can then invite people from **Invitations**. Create Team is available only on a device that holds the coordinator admin secret and has a coordinator URL and group set in **Settings**. On other devices the button is disabled and says which of those is missing. The Team uses the coordinator group this device is already configured with.
 
 To rename an active Team, open **Sharing → Teams**, choose **Team settings**, and save a human-readable Team name. For Teams created by finishing Team setup and still linked to the configured coordinator group, this one action updates both names; local Teams update only their policy metadata. If that exact Team and coordinator group has repeated completed setup records, all of those historical summaries receive the new name while remaining completed. Renaming never changes Team membership, device decisions, or Project access. If the connected service cannot be updated, the local name remains unchanged; retry the same name after the connection recovers.
@@ -927,6 +925,8 @@ These screenshots use fictional devices. **Laptop** is the local device. **Studi
 </picture>
 
 Use **Rename device** on a configured row in **Devices** to change its friendly name. A coordinator-enrolled device is renamed in every configured group where it is enrolled; if one group fails, retry the same name after the coordinator recovers. A device without coordinator enrollment gets a name local to this installation. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
+
+Devices is the only place to rename a device. **Advanced → Sync** has no **Save name** field and **Coordinator administration** has no **Rename**. A device that has no Identity yet keeps the name it had when it was paired or enrolled. Set up its Identity in **Devices**, then rename it.
 
 Each device name carries its overall sync state. The **Sync** column shows **Sent** and **Received** activity for the **Last 24h**, with relative freshness. Sent counts **acknowledged operations**, and Received counts **applied operations**, starting when this installation began recording activity. Retried operations count once. An acknowledgment means the remote endpoint accepted the batch without reporting apply errors. It can include operations the peer already had or intentionally skipped.
 
