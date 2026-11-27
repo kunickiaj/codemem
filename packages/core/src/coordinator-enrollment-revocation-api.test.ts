@@ -100,7 +100,13 @@ describe("SQLite enrollment API revocation rollback", () => {
 			// Arrange: request a grant from an enrolled, unrelated seed to exercise the full approval.
 			// The request follows the removal, which denies the requests that are pending at that time.
 			if (scenario === "revoked") await revokeAndRemove(f);
-			const request = await f.store.createJoinRequest({ ...f.input, token: "fixture-token" });
+			// Approval resolves the request's invitation by its token digest.
+			const invite = await f.store.createInvite({
+				groupId: f.input.groupId,
+				policy: "approval_required",
+				expiresAt: "2099-01-01T00:00:00.000Z",
+			});
+			const request = await f.store.createJoinRequest({ ...f.input, token: invite.token });
 			const before = enrollmentSnapshot(f);
 			const requestsBefore = rows(f, "coordinator_join_requests");
 			// Act

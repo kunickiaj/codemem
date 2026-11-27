@@ -13,7 +13,9 @@ const RECIPIENT_MATCH = `(t.device_id = s.device_id OR
  (s.key_id IS NOT NULL AND t.key_id = s.key_id) OR
  (s.key_id IS NULL AND t.key_id IS NULL AND t.public_key = s.public_key))`;
 
-// Read the issue sequence from the live invitation row, not from request data.
+// Read the issue sequence from the live invitation row, not from request data. A
+// join request whose invitation cannot be resolved has no inviter to check, so it
+// is refused instead of passing without the inviter check.
 const STALE_SQL = `CASE
  WHEN EXISTS (SELECT 1 FROM coordinator_device_removals t
   LEFT JOIN enrolled_devices seed ON seed.group_id = i.group_id AND seed.device_id = i.inviter_device_id
@@ -24,6 +26,7 @@ const STALE_SQL = `CASE
  WHEN EXISTS (SELECT 1 FROM coordinator_device_removals t
   WHERE ${RECIPIENT_MATCH} AND t.removal_seq > COALESCE(i.issued_after_removal_seq, 0))
  THEN 'device_removed'
+ WHEN i.invite_id IS NULL THEN 'invite_invalid'
  ELSE 'fresh' END`;
 
 export function invitationRemovalFence(ready: boolean, subject: InviteRemovalSubject) {
@@ -41,9 +44,9 @@ export function joinRequestRemovalFence(
 ) {
 	return removalFence(ready, subject, {
 		source: `(SELECT jr.request_id, jr.group_id, jr.issued_after_removal_seq,
-		 (SELECT invite.inviter_device_id FROM coordinator_invites invite
-		  WHERE invite.group_id = jr.group_id AND (invite.token = jr.token OR invite.token_digest = ?)
-		  LIMIT 1) AS inviter_device_id FROM coordinator_join_requests jr) i`,
+		 invite.invite_id, invite.inviter_device_id FROM coordinator_join_requests jr
+		 LEFT JOIN coordinator_invites invite
+		  ON invite.group_id = jr.group_id AND invite.token_digest = ?) i`,
 		match: "i.request_id = s.source_id",
 		id: subject.requestId,
 		values: [tokenDigest],

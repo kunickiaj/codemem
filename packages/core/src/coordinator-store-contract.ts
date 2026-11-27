@@ -3,6 +3,8 @@ import type { CoordinatorBoundaryReadinessStore } from "./coordinator-boundary-r
 import type { CoordinatorDeviceRemovalStore } from "./coordinator-device-removal.js";
 import type { CoordinatorDeviceRevocationStore } from "./coordinator-device-revocation.js";
 import type { CoordinatorInviteRevocationStore } from "./coordinator-invite-revocation.js";
+import type { InviteTokenLookupFence } from "./coordinator-invite-token-fence.js";
+import type { InviteTokenDigestProgress } from "./coordinator-invite-token-storage.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -578,8 +580,20 @@ export interface CoordinatorStore
 	cleanupNonces(cutoff: string): Promise<void>;
 	createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite>;
 	getInviteByOperationId(groupId: string, operationId: string): Promise<CoordinatorInvite | null>;
+	/** Looks an invitation up by the digest of a presented token only. A lookup writes nothing. */
 	getInviteByToken(token: string): Promise<CoordinatorInvite | null>;
 	getInviteByTokenForInspection(token: string): Promise<CoordinatorInvite | null>;
+	/** One batch of the admin backfill of invitation token digests. */
+	fillInviteTokenDigests(limit: number): Promise<InviteTokenDigestProgress>;
+	/**
+	 * Records this build's invitation token lookup version in the database's metadata.
+	 * Only admin steps call it: the digest backfill and the lookup floor routes.
+	 */
+	recordInviteTokenLookupVersion(): Promise<boolean>;
+	/** The invitation token lookup versions the database records. */
+	inviteTokenLookupFence(): Promise<InviteTokenLookupFence>;
+	/** Records an operator's confirmation of the minimum lookup version of every serving build. */
+	raiseInviteTokenLookupFloor(version: number): Promise<InviteTokenLookupFence>;
 	inspectRecipientInvite(
 		opts: CoordinatorInspectRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteInspection | null>;

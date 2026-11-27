@@ -134,6 +134,23 @@ function createInviteLookupMocks() {
 		getInviteByTokenForInspection: vi.fn(
 			async (_: string): Promise<CoordinatorInvite | null> => null,
 		),
+		recordInviteTokenLookupVersion: vi.fn(async () => true),
+		inviteTokenLookupFence: vi.fn(async () => ({
+			build_lookup_version: 1,
+			lookup_version_seen: 1,
+			min_serving_lookup_version: null,
+		})),
+		raiseInviteTokenLookupFloor: vi.fn(async () => ({
+			build_lookup_version: 1,
+			lookup_version_seen: 1,
+			min_serving_lookup_version: 1,
+		})),
+		fillInviteTokenDigests: vi.fn(async () => ({
+			filled_invites: 0,
+			hashed_join_requests: 0,
+			remaining_invites_without_digest: 0,
+			remaining_plaintext_join_requests: 0,
+		})),
 	};
 }
 

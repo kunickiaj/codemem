@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +48,7 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_invites",
 	"coordinator_join_requests",
 	"coordinator_legacy_team_completions",
+	"coordinator_metadata",
 	"coordinator_owner_enrollment_attempts",
 	"coordinator_reciprocal_approvals",
 	"coordinator_scope_membership_audit_log",
@@ -263,9 +265,10 @@ describe("CoordinatorStore", () => {
 						 FROM coordinator_invites`,
 					)
 					.get();
+				// Opening the file also gives the row its token digest, which lookups use.
 				expect(row).toEqual({
 					token: "token",
-					token_digest: null,
+					token_digest: createHash("sha256").update("token").digest("hex"),
 					consumed_at: null,
 					bound_device_id: null,
 					trust_state: null,

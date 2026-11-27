@@ -69,6 +69,11 @@ import {
 } from "./coordinator-device-setup-http.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { registerCoordinatorInviteRevocationRoute } from "./coordinator-invite-revocation.js";
+import {
+	inviteTokenRefusals,
+	registerCoordinatorInviteTokenRoutes,
+} from "./coordinator-invite-token-route.js";
+import { assertBearerInviteToken } from "./coordinator-invite-token-seal.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import { registerCoordinatorKeyIdFillRoute } from "./coordinator-key-id-fill-api.js";
@@ -392,17 +397,14 @@ function registerCoordinatorRuntimeRoutes(
 	registerCoordinatorInviteRevocationRoute(app, existingStoreAdmin);
 	registerCoordinatorTeamMemberRemovalRoutes(app, existingStoreAdmin);
 	registerCoordinatorTeamGroupBindingRoutes(app, existingStoreAdmin);
+	registerCoordinatorInviteTokenRoutes(app, existingStoreAdmin);
 	registerCoordinatorBoundaryReadinessRoute(app, {
 		...deps,
 		storeFactory: () => createStore(),
 		authorizeRequest: (store, request) =>
 			authorizeRequest(store, opts.runtime, opts.requestVerifier, request),
 	});
-	registerCoordinatorDeviceRemovalCommands(app, {
-		...deps,
-		storeFactory: () => createStore({ existingOnly: true }),
-		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
-	});
+	registerCoordinatorDeviceRemovalCommands(app, existingStoreAdmin);
 	registerOptionalCoordinatorAuth(app, opts, {
 		...deps,
 		authorizeRequest: (store, request) =>
@@ -906,8 +908,45 @@ async function peerDiscoveryResponse(
 	}
 }
 
+/**
+ * The link of a project invitation that is still open, rebuilt from its stored
+ * token, or null. A row whose `token` column holds no bearer token, such as one a
+ * later Worker sealed, is refused with `409 invite_link_unavailable`, so the link
+ * never carries a placeholder.
+ */
+function projectInviteLinkValue(
+	c: Context,
+	invite: CoordinatorInvite,
+	options: {
+		projects: ReadonlyArray<{ display_name?: unknown; existing_memory_count?: unknown }>;
+		now: string;
+	},
+): string | null {
+	if (invite.consumed_at || invite.token.startsWith("consumed:")) return null;
+	if (invite.revoked_at || new Date(invite.expires_at) <= new Date(options.now)) return null;
+	assertBearerInviteToken(invite.token);
+	const payload: InvitePayload = {
+		v: 1,
+		kind: "coordinator_team_invite",
+		coordinator_url: new URL(c.req.url).origin,
+		group_id: invite.group_id,
+		policy: invite.policy,
+		token: invite.token,
+		expires_at: invite.expires_at,
+		team_name: invite.team_name_snapshot,
+		operation_id: String(invite.operation_id),
+		inviter_name: invite.inviter_display_name ?? null,
+		project_summaries: options.projects.map((project) => ({
+			display_name: String(project.display_name ?? ""),
+			existing_memory_count: Number(project.existing_memory_count ?? 0),
+		})),
+	};
+	return inviteLink(encodeInvitePayload(payload));
+}
+
 function coordinatorAppWithRelay(options?: CoordinatorRelayAdmissionOptions): Hono {
 	const app = new Hono();
+	app.use(inviteTokenRefusals);
 	registerCoordinatorRelayAdmissionRoute(app, options);
 	return app;
 }
@@ -2714,33 +2753,10 @@ export function createCoordinatorApp(
 			} catch {
 				return c.json({ error: "operation_intent_invalid" }, 409);
 			}
-			let inviteLinkValue: string | null = null;
-			if (
-				!invite.consumed_at &&
-				!invite.revoked_at &&
-				new Date(invite.expires_at) > new Date(runtime.now()) &&
-				invite.token &&
-				!invite.token.startsWith("consumed:")
-			) {
-				const summaries = projects.map((project) => ({
-					display_name: String(project.display_name ?? ""),
-					existing_memory_count: Number(project.existing_memory_count ?? 0),
-				}));
-				const payload: InvitePayload = {
-					v: 1,
-					kind: "coordinator_team_invite",
-					coordinator_url: new URL(c.req.url).origin,
-					group_id: invite.group_id,
-					policy: invite.policy,
-					token: invite.token,
-					expires_at: invite.expires_at,
-					team_name: invite.team_name_snapshot,
-					operation_id: operationId,
-					inviter_name: invite.inviter_display_name ?? null,
-					project_summaries: summaries,
-				};
-				inviteLinkValue = inviteLink(encodeInvitePayload(payload));
-			}
+			const inviteLinkValue = projectInviteLinkValue(c, invite, {
+				projects,
+				now: runtime.now(),
+			});
 			return c.json({
 				operation_id: invite.operation_id,
 				group_id: invite.group_id,

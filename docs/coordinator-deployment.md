@@ -38,6 +38,11 @@ The coordinator is now listening on port 7347. Devices on the same network can c
 **Important:** Save the admin secret — you'll need it in your client config to create invites from the UI or API. The
 coordinator rejects admin operations (invite creation, join request review) without it.
 
+When you upgrade the coordinator, stop the earlier release before you start the new one on the same database, and
+do not open that database with an earlier release afterwards. Join requests now keep only the digest of their
+invitation token. An earlier release cannot find their invitation, so it would
+approve them without checking whether the inviter was removed.
+
 ## CLI reference
 
 ### Coordinator server

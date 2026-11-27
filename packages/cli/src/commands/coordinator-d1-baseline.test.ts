@@ -41,6 +41,7 @@ it("says that each migration after 0047 is recorded only when its objects exist"
 		"0050_add_boundary_readiness.sql",
 		"0051_add_device_rejoin.sql",
 		"0052_add_team_member_removals.sql",
+		"0054_add_coordinator_metadata.sql",
 	];
 	const unconditional = coordinatorD1BaselineMigrations("current").length - conditional.length;
 	expect(current?.[0]).toBe(
