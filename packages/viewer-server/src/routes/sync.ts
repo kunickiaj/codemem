@@ -5549,7 +5549,7 @@ function serveChannelRead(c: Context, options: SyncChannelReadOptions): Response
 	}
 	const limited = rateLimitedResponse(c, auth.deviceId, true);
 	if (limited) return limited;
-	if (c.req.path === "/v1/status") return serveChannelStatus(c, store, auth);
+	if (c.req.path === "/v1/status") return serveScopedStatus(c, store, auth);
 	return serveAuthorizedSnapshot(c, store, auth, { syncChannelPeerPin });
 }
 
@@ -5572,7 +5572,11 @@ function syncScopeResetResponse(c: Context, preciseReason: SyncScopeResetReason)
 	return c.json(peerFacingScopeReset(reason, null), 409);
 }
 
-function serveChannelStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
+/**
+ * Status for one named scope, from the channel or from a direct request that
+ * names a scope. A scope the peer may not use gets the minimal refusal.
+ */
+function serveScopedStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
 	try {
 		const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const authorization = syncScopeAuthorizationContext(store, auth, deviceId);
@@ -5602,6 +5606,31 @@ function serveChannelStatus(c: Context, store: MemoryStore, auth: AuthenticatedS
 	} catch {
 		return c.json({ error: "internal_error" }, 500);
 	}
+}
+
+/** Status for a direct request that names no scope: the default stream and every authorized scope. */
+function serveDefaultStatus(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
+	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	const syncReset = getSyncResetState(store.db);
+	const negotiated = negotiatedSyncCapability(c);
+	const authorizedScopes = isScopedSyncCapability(negotiated)
+		? listAuthorizedScopesForPeer(store.db, {
+				...syncScopeAuthorizationContext(store, auth, deviceId),
+			})
+		: null;
+	const response: Record<string, unknown> = {
+		device_id: deviceId,
+		protocol_version: SYNC_PROTOCOL_VERSION,
+		fingerprint,
+		runtime_version: VERSION,
+		sync_reset: addSyncScopeToBoundary(syncReset, null),
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		sync_features: LOCAL_SYNC_FEATURES,
+	};
+	if (authorizedScopes !== null) {
+		response.authorized_scopes = authorizedScopes;
+	}
+	return c.json(response);
 }
 
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
@@ -5691,29 +5720,11 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 						dbPath: store.dbPath,
 					});
 				}
-				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
-					keysDir: syncKeysDir(),
-				});
-				const syncReset = getSyncResetState(store.db);
-				const negotiated = negotiatedSyncCapability(c);
-				const authorizedScopes = isScopedSyncCapability(negotiated)
-					? listAuthorizedScopesForPeer(store.db, {
-							...syncScopeAuthorizationContext(store, auth, deviceId),
-						})
-					: null;
-				const response: Record<string, unknown> = {
-					device_id: deviceId,
-					protocol_version: SYNC_PROTOCOL_VERSION,
-					fingerprint,
-					runtime_version: VERSION,
-					sync_reset: addSyncScopeToBoundary(syncReset, null),
-					sync_capability: LOCAL_SYNC_CAPABILITY,
-					sync_features: LOCAL_SYNC_FEATURES,
-				};
-				if (authorizedScopes !== null) {
-					response.authorized_scopes = authorizedScopes;
+				// Naming a scope asks for that scope's status, never the default stream's.
+				if (c.req.query(SYNC_SCOPE_QUERY_PARAM) !== undefined) {
+					return serveScopedStatus(c, store, auth);
 				}
-				return c.json(response);
+				return serveDefaultStatus(c, store, auth);
 			} catch {
 				return c.json({ error: "internal_error" }, 500);
 			}

@@ -453,6 +453,7 @@ describe("direct requests for a scope the peer may not use", () => {
 		],
 		["an ops read", "/v1/ops?scope_id=not-granted", {}],
 		["a snapshot read", "/v1/snapshot?scope_id=not-granted", {}],
+		["a status read", "/v1/status?scope_id=not-granted", {}],
 	])("refuses %s without the default stream's reset boundary", async (_label, path, options) => {
 		// Arrange: the default stream has a boundary the refusal could disclose.
 		getSyncResetState(root.store.db);
@@ -463,6 +464,17 @@ describe("direct requests for a scope the peer may not use", () => {
 		expect(response.status).toBe(409);
 		expect(await response.json()).toEqual(refusal);
 		expect(contentState()).toEqual(contentBefore);
+	});
+});
+
+describe("direct status without a named scope", () => {
+	it("still returns the default stream's reset boundary", async () => {
+		const boundary = getSyncResetState(root.store.db);
+
+		const response = await root.request("/v1/status", root.peer.keysDir);
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ sync_reset: { ...boundary, scope_id: null } });
 	});
 });
 
