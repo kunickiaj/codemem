@@ -273,6 +273,41 @@ describe("runReplicationBackfillSlice limits", () => {
 	});
 });
 
+describe("memories changed at the same instant", () => {
+	/** Deactivates every memory with one statement, as a maintenance command does. */
+	function deactivateAllAt(at: Date): void {
+		db.prepare("UPDATE memory_items SET active = 0, updated_at = ?").run(at.toISOString());
+	}
+
+	it("records every delete across pages of one timestamp", () => {
+		for (let index = 0; index < 450; index++) insertMemory(db);
+		slice();
+		deactivateAllAt(minutesAfter(30));
+		// Each slice sees its limit spent after one page of changed rows.
+		let tick = 0;
+		const onePage = { maxRuntimeMs: 1, now: () => minutesAfter(31), clock: () => tick++ * 10 };
+
+		const created = [0, 1, 2, 3].map(() => runReplicationBackfillSlice(db, onePage).opsCreated);
+
+		expect(created).toEqual([200, 200, 50, 0]);
+		expect(ops(db).filter((op) => op.op_type === "delete")).toHaveLength(450);
+	});
+
+	it("starts each page after the previous position by index seek", () => {
+		for (let index = 0; index < 5; index++) insertMemory(db);
+		slice();
+		deactivateAllAt(minutesAfter(30));
+
+		const plans = capturePlans(db, () => slice(db, minutesAfter(31)));
+
+		const withinTimestamp = plans.find(({ sql }) => sql.includes("WHERE updated_at = ?"));
+		expect(withinTimestamp?.steps.join(" ")).toContain("(updated_at=? AND rowid>?)");
+		// No statement seeks to the timestamp alone and filters the ID afterwards.
+		expect(plans.filter(({ sql }) => sql.includes("updated_at >= ?"))).toEqual([]);
+		expect(statementsScanning(plans, "memory_items")).toEqual([]);
+	});
+});
+
 describe("recheck after replication ops are pruned", () => {
 	it("gives a memory a new op when its current one was removed", () => {
 		insertMemory(db, { importKey: "key:pruned" });
