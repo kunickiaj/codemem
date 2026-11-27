@@ -3411,6 +3411,53 @@ describe("Device removal menu", () => {
 	});
 });
 
+describe("Devices header actions", () => {
+	it("offers Sync all devices next to Pair a device, and runs the host's sync", async () => {
+		const onSyncAll = vi.fn(async () => true);
+		state.viewerActorId = "actor-one";
+		mount(intent(), reconciliation(), { onSyncAll });
+
+		const buttons = [...document.querySelectorAll(".devices-header-actions button")];
+		expect(buttons.map((button) => button.textContent)).toEqual([
+			"Sync all devices",
+			"Pair a device",
+		]);
+		await act(async () => (buttons[0] as HTMLButtonElement).click());
+
+		expect(onSyncAll).toHaveBeenCalledOnce();
+	});
+
+	it("keeps Sync all devices off until the person is known", () => {
+		state.viewerActorId = null;
+		mount(intent(), reconciliation(), { onSyncAll: vi.fn(async () => true) });
+
+		const button = document.querySelector<HTMLButtonElement>(".devices-header-actions button");
+		expect(button?.textContent).toBe("Sync all devices");
+		expect(button?.disabled).toBe(true);
+	});
+
+	it("lists older device history from the host and refreshes Devices after attaching", async () => {
+		const attach = vi.fn(async () => ({}));
+		const onCommitted = vi.fn(async () => true);
+		mount(intent(), reconciliation(), {
+			legacyDevices: [{ originDeviceId: "old-laptop", memoryCount: 2, lastSeenAt: "" }],
+			historyApi: { confirm: vi.fn(async () => true), attach },
+			onCommitted,
+		});
+
+		expect(document.getElementById("devices-history-heading")?.textContent).toBe(
+			"Older device history",
+		);
+		await act(async () =>
+			document.querySelector<HTMLButtonElement>(".devices-history-row button")?.click(),
+		);
+		await act(async () => {});
+
+		expect(attach).toHaveBeenCalledExactlyOnceWith("old-laptop");
+		expect(onCommitted).toHaveBeenCalledOnce();
+	});
+});
+
 describe("Device unpair menu", () => {
 	const deviceId = "device-address-fingerprint-secret";
 

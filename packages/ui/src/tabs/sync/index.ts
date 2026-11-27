@@ -22,7 +22,6 @@ import {
 import { hideSkeleton, readDuplicatePersonDecisions } from "./helpers";
 import {
 	initPeopleEvents,
-	renderLegacyDeviceClaims,
 	renderProjectSharingOperations,
 	renderSyncActors,
 	renderSyncActorsUnavailable,
@@ -167,13 +166,9 @@ function hideStaleSyncSecondarySections() {
 	const sharingReview = document.getElementById("syncSharingReview");
 	const sharingReviewList = document.getElementById("syncSharingReviewList");
 	const sharingReviewMeta = document.getElementById("syncSharingReviewMeta");
-	const legacyClaims = document.getElementById("syncLegacyClaims");
-	const legacyClaimsMeta = document.getElementById("syncLegacyClaimsMeta");
 	if (sharingReview) sharingReview.hidden = true;
 	if (sharingReviewList) sharingReviewList.textContent = "";
 	if (sharingReviewMeta) sharingReviewMeta.textContent = "";
-	if (legacyClaims) legacyClaims.hidden = true;
-	if (legacyClaimsMeta) legacyClaimsMeta.textContent = "";
 }
 
 export interface SyncDataLoadOptions {
@@ -400,7 +395,6 @@ async function runLoadSyncData(
 		renderProjectSharingOperations();
 		renderSyncSharingReview();
 		renderSyncPeers();
-		renderLegacyDeviceClaims();
 		renderSyncAttempts();
 		// Detailed health is current only while Health owns this refresh.
 		refreshHealthStatusAfterSync();
@@ -527,7 +521,7 @@ export function initSyncTab(refreshCallback: () => void) {
 	setPeopleLoadData(reloadSyncData);
 	setRenderSyncPeers(renderSyncPeers);
 
-	initTeamSyncEvents(refreshCallback);
+	initTeamSyncEvents();
 	initPeopleEvents(reloadSyncData);
 	initDiagnosticsEvents(refreshCallback);
 

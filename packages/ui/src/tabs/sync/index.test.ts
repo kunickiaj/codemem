@@ -29,7 +29,6 @@ vi.mock("./people", () => ({
 	renderSyncActorsUnavailable: vi.fn(),
 	renderSyncPeers: vi.fn(),
 	renderSyncPeopleUnavailable: vi.fn(),
-	renderLegacyDeviceClaims: vi.fn(),
 	renderProjectSharingOperations: vi.fn(),
 	initPeopleEvents: vi.fn(),
 	setLoadSyncData: vi.fn(),

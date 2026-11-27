@@ -1,40 +1,37 @@
+import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../../../lib/api", () => ({ triggerSync: vi.fn() }));
-vi.mock("../../../../lib/form", () => ({
-	clearFieldError: vi.fn(),
-	friendlyError: vi.fn((_error: unknown, fallback: string) => fallback),
-	markFieldError: vi.fn(() => false),
-}));
-vi.mock("../../../../lib/keyboard", () => ({ handlePrimaryActionKeyboard: vi.fn() }));
-vi.mock("../../../../lib/notice", () => ({ showGlobalNotice: vi.fn() }));
-vi.mock("../../../../lib/state", () => ({ state: {} }));
-vi.mock("../../view-model", () => ({ summarizeSyncRunResult: vi.fn() }));
-vi.mock("../data/state", () => ({ teamSyncState: { invitePolicy: "auto_admit" } }));
-vi.mock("../helpers/invite-panel-dom", () => ({
-	renderAdminSetupDisclosure: vi.fn(),
-	renderInvitePolicySelect: vi.fn(),
-	setInviteOutputVisibility: vi.fn(),
-	setJoinFeedbackVisibility: vi.fn(),
-}));
-vi.mock("../../../project-sharing", () => ({ openProjectShareFlow: vi.fn() }));
+vi.mock("../lib/api", () => ({ triggerSync: vi.fn() }));
+vi.mock("../lib/notice", () => ({ showGlobalNotice: vi.fn() }));
+vi.mock("../lib/state", () => ({ state: {} }));
+vi.mock("./sync/view-model", () => ({ summarizeSyncRunResult: vi.fn() }));
 
-import { mountOperationStatusHost } from "../../../../components/operation-status";
-import * as api from "../../../../lib/api";
-import { showGlobalNotice } from "../../../../lib/notice";
-import { state } from "../../../../lib/state";
-import { summarizeSyncRunResult } from "../../view-model";
-import { summarizeSyncRunResult as realSummary } from "../../view-model/coordinator-approval";
-import { initTeamSyncEvents } from "./init-team-sync-events";
+import { mountOperationStatusHost } from "../components/operation-status";
+import * as api from "../lib/api";
+import { runManualSync } from "../lib/manual-sync";
+import { showGlobalNotice } from "../lib/notice";
+import { state } from "../lib/state";
+import { SyncAllDevicesButton } from "./device-sync-all";
+import { summarizeSyncRunResult } from "./sync/view-model";
+import { summarizeSyncRunResult as realSummary } from "./sync/view-model/coordinator-approval";
 
+/** Settling returns a promise, so `act` also waits for the button to finish its own update. */
 function deferred<T>() {
-	let resolve!: (value: T) => void;
-	let reject!: (reason: unknown) => void;
+	let settleResolve!: (value: T) => void;
+	let settleReject!: (reason: unknown) => void;
 	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-		resolve = resolvePromise;
-		reject = rejectPromise;
+		settleResolve = resolvePromise;
+		settleReject = rejectPromise;
 	});
+	const resolve = async (value: T) => {
+		settleResolve(value);
+		await vi.advanceTimersByTimeAsync(0);
+	};
+	const reject = async (reason: unknown) => {
+		settleReject(reason);
+		await vi.advanceTimersByTimeAsync(0);
+	};
 	return { promise, resolve, reject };
 }
 
@@ -55,11 +52,10 @@ beforeEach(() => {
 	document.body.innerHTML = `
 		<header><div id="operationStatusRoot"></div><button id="navDummy">Projects</button></header>
 		<main>
-			<section id="syncPanel" role="tabpanel"><button id="syncNowButton">Sync now</button></section>
+			<section id="syncPanel" role="tabpanel"></section>
 			<section id="projectsPanel" role="tabpanel" hidden>Projects</section>
 		</main>`;
 	host = document.getElementById("operationStatusRoot") as HTMLElement;
-	syncButton = document.getElementById("syncNowButton") as HTMLButtonElement;
 	navigation = document.getElementById("navDummy") as HTMLButtonElement;
 	navigation.addEventListener("click", () => {
 		(document.getElementById("syncPanel") as HTMLElement).hidden = true;
@@ -70,16 +66,24 @@ beforeEach(() => {
 	act(() => {
 		disposeHost = mountOperationStatusHost(host);
 	});
-	initTeamSyncEvents(refresh);
+	act(() =>
+		render(
+			<SyncAllDevicesButton disabled={false} onSyncAll={() => runManualSync(refresh)} />,
+			document.getElementById("syncPanel") as HTMLElement,
+		),
+	);
+	syncButton = document.querySelector("#syncPanel button") as HTMLButtonElement;
 });
 
-afterEach(() => {
+afterEach(async () => {
+	// A sync left waiting would keep later tests locked out, so finish it first.
+	await act(async () => request.reject(new Error("test finished")));
 	act(() => disposeHost());
 	vi.useRealTimers();
 	document.body.innerHTML = "";
 });
 
-describe("manual sync header status", () => {
+describe("Sync all devices header status", () => {
 	it("names the pending sync immediately without moving focus or blocking navigation", async () => {
 		// Arrange: no task is visible until the user starts one.
 		expect(host.textContent).toBe("");
@@ -176,7 +180,7 @@ describe("manual sync header status", () => {
 	});
 });
 
-describe("manual sync response validation", () => {
+describe("Sync all devices response validation", () => {
 	it.each([
 		{ actor: "actor-one", changed: false },
 		{ actor: "actor-two", changed: true },

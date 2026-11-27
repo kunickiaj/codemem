@@ -26,7 +26,7 @@ afterEach(() => {
 describe("project sharing entry", () => {
 	it("opens the shared project flow from Sync", () => {
 		vi.mocked(openProjectShareFlow).mockReturnValueOnce(true);
-		initTeamSyncEvents(() => {});
+		initTeamSyncEvents();
 
 		(document.getElementById("syncShareProjectsButton") as HTMLButtonElement).click();
 
@@ -35,7 +35,7 @@ describe("project sharing entry", () => {
 
 	it("explains when the shared project flow is unavailable", () => {
 		vi.mocked(openProjectShareFlow).mockReturnValueOnce(false);
-		initTeamSyncEvents(() => {});
+		initTeamSyncEvents();
 
 		(document.getElementById("syncShareProjectsButton") as HTMLButtonElement).click();
 

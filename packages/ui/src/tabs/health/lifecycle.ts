@@ -65,11 +65,6 @@ export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 	const status = await api.loadViewerStatus(options);
 	if (options.signal?.aborted) return;
 	state.viewerActorId = status.identity.actor_id;
-	const syncNowButton = document.getElementById("syncNowButton") as HTMLButtonElement | null;
-	if (syncNowButton) {
-		syncNowButton.disabled =
-			state.viewerActorId === null || syncNowButton.getAttribute("aria-busy") === "true";
-	}
 	if (previousActorId === state.viewerActorId) return;
 	if (previousActorId !== null && state.activeTab === "feed") {
 		// Feed reports its own read error. The status read still succeeded for other tabs.

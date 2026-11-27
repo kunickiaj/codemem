@@ -43,6 +43,11 @@ import {
 	type DiscoveredDevicesApi,
 	discoveredDevicesApi,
 } from "./device-discovered";
+import {
+	type DeviceHistoryApi,
+	DeviceHistoryAttach,
+	type LegacyDeviceHistory,
+} from "./device-history-attach";
 import { DeviceJoinRequests, type DeviceJoinRequestsApi } from "./device-join-requests";
 import { type DevicePairingApi, DevicePairingForm } from "./device-pairing-form";
 import { DeviceRejoinHistory } from "./device-rejoin-history";
@@ -57,6 +62,7 @@ import {
 } from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
 import type { CoordinatorAccess } from "./recipient-policy-team-create";
+import { SyncAllDevicesButton } from "./device-sync-all";
 import type { TeamSyncDiscoveredRow } from "./sync/team-sync/discovered-devices";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
@@ -111,6 +117,11 @@ export interface DevicesRendererOptions {
 	peerSyncMetadata?: DevicePeerSyncInput[];
 	syncStatusUnavailable?: boolean;
 	onSyncDevice?: (peerDeviceId: string) => Promise<DeviceSyncFeedback>;
+	/** Syncs every paired device. Its result shows in the header status. */
+	onSyncAll?: () => Promise<unknown>;
+	/** Older devices whose synced memories are not attached to a current device. */
+	legacyDevices?: LegacyDeviceHistory[];
+	historyApi?: DeviceHistoryApi;
 	inventory?: DeviceIdentityInventoryV1;
 	rejoinHistoryRevision?: number;
 	rejoinHistoryProfile?: string;
@@ -2652,15 +2663,43 @@ function useDevicePairing(options: DevicesRendererOptions) {
 	return { open: pairingOpen, onOpen: openPairing, panel };
 }
 
-function DevicesRoot({
-	intent,
+function DevicesHeader({
+	count,
 	options,
-	projection,
+	pairing,
 }: {
-	intent: RecipientPolicyIntentGraphV1;
+	/** Null while the list is loading or failed, when a count would mislead. */
+	count: number | null;
 	options: DevicesRendererOptions;
-	projection: DevicesProjection;
+	pairing: ReturnType<typeof useDevicePairing>;
 }) {
+	return (
+		<div className="recipient-policy-sharing-header">
+			<h2 id="devices-heading" tabIndex={-1}>
+				Devices {count !== null ? <span className="devices-heading-count">· {count}</span> : null}
+			</h2>
+			<div className="devices-header-actions">
+				{options.onSyncAll ? (
+					<SyncAllDevicesButton
+						disabled={options.loading === true || options.loadError === true}
+						onSyncAll={options.onSyncAll}
+					/>
+				) : null}
+				<button
+					aria-controls="devices-pairing-panel"
+					aria-expanded={pairing.open}
+					className="settings-save"
+					onClick={(event) => pairing.onOpen(event.currentTarget)}
+					type="button"
+				>
+					Pair a device
+				</button>
+			</div>
+		</div>
+	);
+}
+
+function visibleDevicesCount(options: DevicesRendererOptions, projection: DevicesProjection) {
 	const visibleProjectedDevices = projection.devices.filter(
 		(device) =>
 			!options.inventory?.items.some(
@@ -2674,10 +2713,23 @@ function DevicesRoot({
 				item.state === "configured" &&
 				!item.evidenceDeviceIds.some((deviceId) => projectedDeviceIds.has(deviceId)),
 		).length ?? 0;
-	const visibleDeviceCount =
+	return (
 		visibleProjectedDevices.length +
 		deviceIdentityAttentionItems(options.inventory).length +
-		configuredFallbackCount;
+		configuredFallbackCount
+	);
+}
+
+function DevicesRoot({
+	intent,
+	options,
+	projection,
+}: {
+	intent: RecipientPolicyIntentGraphV1;
+	options: DevicesRendererOptions;
+	projection: DevicesProjection;
+}) {
+	const visibleDeviceCount = visibleDevicesCount(options, projection);
 	const showDeviceCount = !options.loading && !options.loadError;
 	const pairing = useDevicePairing(options);
 	return (
@@ -2685,23 +2737,11 @@ function DevicesRoot({
 			aria-labelledby="devices-heading"
 			className="recipient-policy-sharing recipient-policy-sharing-responsive-surface"
 		>
-			<div className="recipient-policy-sharing-header">
-				<h2 id="devices-heading" tabIndex={-1}>
-					Devices{" "}
-					{showDeviceCount ? (
-						<span className="devices-heading-count">· {visibleDeviceCount}</span>
-					) : null}
-				</h2>
-				<button
-					aria-controls="devices-pairing-panel"
-					aria-expanded={pairing.open}
-					className="settings-save"
-					onClick={(event) => pairing.onOpen(event.currentTarget)}
-					type="button"
-				>
-					Pair a device
-				</button>
-			</div>
+			<DevicesHeader
+				count={showDeviceCount ? visibleDeviceCount : null}
+				options={options}
+				pairing={pairing}
+			/>
 			{pairing.panel}
 			<DevicesSyncSummary options={options} />
 			{options.joinRequestsRevision !== undefined && !options.loading && !options.loadError ? (
@@ -2716,6 +2756,13 @@ function DevicesRoot({
 					api={options.discoveredApi ?? discoveredDevicesApi(() => void options.onCommitted?.())}
 					onDone={() => options.onCommitted?.()}
 					rows={options.discoveredRows ?? []}
+				/>
+			) : null}
+			{!options.loading && !options.loadError ? (
+				<DeviceHistoryAttach
+					api={options.historyApi}
+					devices={options.legacyDevices ?? []}
+					onAttached={() => options.onCommitted?.()}
 				/>
 			) : null}
 			<DevicesView

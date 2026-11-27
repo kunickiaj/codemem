@@ -31,6 +31,7 @@ import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollmen
 import { $, $button } from "./lib/dom";
 import { friendlyError } from "./lib/form";
 import { initializeViewerIcons } from "./lib/icons";
+import { runManualSync } from "./lib/manual-sync";
 import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
 import { createRefreshSessionOwner, type RefreshSession } from "./lib/refresh-session";
 import { SHARING_HANDOFF_EVENT, type SharingHandoff } from "./lib/sharing-handoff";
@@ -57,6 +58,7 @@ import {
 	beginStandaloneCoordinatorAdminStatusRefresh,
 	refreshCoordinatorAdminStatusForGeneration,
 } from "./tabs/coordinator-admin/data/status-refresh";
+import { legacyDeviceHistories } from "./tabs/device-history-attach";
 import { mountRemovedDevices, refreshRemovedDevices } from "./tabs/device-removal-list";
 import {
 	type DeviceAvailabilityInput,
@@ -744,6 +746,8 @@ function deviceRendererActions(
 	| "rejoinHistoryProfile"
 	| "joinRequestsRevision"
 	| "discoveredRows"
+	| "onSyncAll"
+	| "legacyDevices"
 > {
 	return {
 		...(lifecycleAvailable ? { removalConfirmation: {}, enrolledDeviceBlock: true } : {}),
@@ -756,6 +760,8 @@ function deviceRendererActions(
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),
 		onSyncDevice: syncDeviceFromDevices,
+		onSyncAll: () => runManualSync(() => void refresh()),
+		legacyDevices: legacyDeviceHistories(state.lastSyncLegacyDevices),
 	};
 }
 

@@ -16,9 +16,9 @@ This page covers what relay does and doesn't do, how to turn it on and off, and 
 
 Each sync pass with a peer tries the peer's direct addresses first. Relay is used only when every direct address fails, the coordinator offers relay for the group that owns a Space both devices share, and the device trusts that coordinator's relay key. A peer that shares no coordinator-managed Space with you syncs directly or not at all.
 
-The Viewer's **Sync now** action uses the same relay fallback as background sync. A recent direct check that identifies a pre-0.48 peer without relay support keeps that peer on direct sync. That observation expires after 24 hours so an upgraded peer can be tried again even if its direct addresses remain unreachable. Peers whose version is unknown can still be tried through relay.
+The Viewer's **Sync all devices** action uses the same relay fallback as background sync. A recent direct check that identifies a pre-0.48 peer without relay support keeps that peer on direct sync. That observation expires after 24 hours so an upgraded peer can be tried again even if its direct addresses remain unreachable. Peers whose version is unknown can still be tried through relay.
 
-Before choosing a relay route, **Sync now** refreshes stale Space permissions from the coordinator. If that refresh fails, relay stays unavailable and the pass can still try direct sync. An all-peers request does not repeat the same failed refresh for each peer.
+Before choosing a relay route, **Sync all devices** refreshes stale Space permissions from the coordinator. If that refresh fails, relay stays unavailable and the pass can still try direct sync. An all-peers request does not repeat the same failed refresh for each peer.
 
 Background sync also revalidates stale permissions before selecting each peer's relay route. A failed on-demand refresh is attempted only once per background tick, and direct sync remains available.
 

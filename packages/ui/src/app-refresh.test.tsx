@@ -220,7 +220,7 @@ async function setupRefreshAppTest(
 		mocks.refreshViewerStatus.mockImplementation(refreshViewerStatus);
 		mocks.loadViewerStatus.mockResolvedValue({ identity: { actor_id: "actor-one" } });
 		if (options.initialStatus) mocks.loadViewerStatus.mockReturnValueOnce(options.initialStatus);
-		mocks.initSyncTab.mockImplementation((refresh: () => void) => initTeamSyncEvents(refresh));
+		mocks.initSyncTab.mockImplementation(() => initTeamSyncEvents());
 	}
 	await import("./app");
 	await act(async () => {
@@ -242,46 +242,44 @@ describe("manual sync app lifecycle", () => {
 		window.location.hash = "";
 	});
 
-	it("disables the static startup control before app initialization", () => {
-		// Arrange: the served HTML must be safe before any status request can finish.
-		document.body.innerHTML = bodyMarkup();
-		// Act
-		const button = document.getElementById("syncNowButton") as HTMLButtonElement;
-		// Assert
-		expect(button.disabled).toBe(true);
-	});
+	async function devicesSyncAll() {
+		const { mountDevices } = await import("./tabs/devices");
+		const options = vi.mocked(mountDevices).mock.calls.at(-1)?.[5];
+		if (!options?.onSyncAll) throw new Error("Devices did not receive Sync all devices");
+		return options.onSyncAll;
+	}
 
-	it("rejects forced manual sync while the initial actor request is pending", async () => {
+	it("rejects Sync all devices while the initial actor request is pending", async () => {
 		// Arrange: keep the real status loader waiting with the production null actor.
 		const status = deferred<{ identity: { actor_id: string } }>();
-		await setupRefreshAppTest({ manualSync: true, initialStatus: status.promise });
+		await setupRefreshAppTest({ manualSync: true, tab: "devices", initialStatus: status.promise });
 		const { state } = await import("./lib/state");
-		const button = document.getElementById("syncNowButton") as HTMLButtonElement;
-		// Act: dispatchEvent bypasses the browser's disabled-button click suppression.
+		const syncAll = await devicesSyncAll();
+		// Act
 		await act(async () => {
-			button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+			await syncAll();
 		});
 		// Assert
 		expect(state.viewerActorId).toBeNull();
 		expect(mocks.triggerSync).not.toHaveBeenCalled();
-		expect(button.disabled).toBe(true);
 		expect(document.getElementById("operationStatusRoot")?.textContent).toBe("");
 	});
 
-	it("enables manual sync after actual initial status completion without auto-starting", async () => {
-		// Arrange: initialization must enable the control through the real status load path.
+	it("starts Sync all devices only on request, after the initial status completes", async () => {
+		// Arrange: initialization must know the person through the real status load path.
 		const status = deferred<{ identity: { actor_id: string } }>();
 		const sync = deferred<{ items: [] }>();
-		await setupRefreshAppTest({ manualSync: true, initialStatus: status.promise });
+		await setupRefreshAppTest({ manualSync: true, tab: "devices", initialStatus: status.promise });
 		mocks.triggerSync.mockReturnValueOnce(sync.promise);
-		const button = document.getElementById("syncNowButton") as HTMLButtonElement;
+		const syncAll = await devicesSyncAll();
 		// Act
 		await act(async () => status.resolve({ identity: { actor_id: "actor-one" } }));
 		// Assert: loading identity alone does not request a sync.
-		expect(button.disabled).toBe(false);
 		expect(mocks.triggerSync).not.toHaveBeenCalled();
 		// Act: only the subsequent user action starts work under the known actor.
-		await act(async () => button.click());
+		await act(async () => {
+			void syncAll();
+		});
 		await act(async () => sync.resolve({ items: [] }));
 		await elapse(80);
 		// Assert: the post-sync status refresh cannot turn this into an actor-switch warning.
@@ -297,20 +295,24 @@ describe("manual sync app lifecycle", () => {
 		"preserves the confirmed result after a debounced view refresh: %s",
 		async (outcome) => {
 			// Arrange: use the app's actual refresh callback, not a rejected callback promise.
-			await setupRefreshAppTest({ manualSync: true });
+			await setupRefreshAppTest({ manualSync: true, tab: "devices" });
 			mocks.triggerSync.mockResolvedValueOnce({ items: [] });
+			const syncAll = await devicesSyncAll();
+			mocks.loadSyncData.mockClear();
 			if (outcome === "read failure") {
-				mocks.loadProjectsData.mockRejectedValueOnce(new Error("View unavailable"));
+				mocks.loadSyncData.mockRejectedValueOnce(new Error("View unavailable"));
 			} else {
-				mocks.loadProjectsData.mockResolvedValueOnce(outcome === "success");
+				mocks.loadSyncData.mockResolvedValueOnce(outcome === "success");
 			}
 			// Act
-			await act(async () => document.getElementById("syncNowButton")?.click());
+			await act(async () => {
+				await syncAll();
+			});
 			const host = document.getElementById("operationStatusRoot");
 			const confirmed = host?.textContent;
 			await elapse(80);
 			// Assert: refresh feedback belongs to the existing refresh channel, not the sync result.
-			expect(mocks.loadProjectsData).toHaveBeenCalledOnce();
+			expect(mocks.loadSyncData).toHaveBeenCalledOnce();
 			expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe(
 				outcome === "success" ? "idle" : "error",
 			);
