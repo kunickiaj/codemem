@@ -14,7 +14,13 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
-import { ambiguousCopiesRecorded, recordedAmbiguousScopes } from "./memory-copy-ambiguity.js";
+import {
+	ambiguousCopiesRecorded,
+	forgetHeldOp,
+	holdAmbiguousOp,
+	recordedAmbiguousScopes,
+	releasedHeldOps,
+} from "./memory-copy-ambiguity.js";
 import { recordOpCopy } from "./memory-copy-provenance.js";
 import {
 	hasMatchingLocalCreation,
@@ -4350,9 +4356,10 @@ function rejectUnretiredScopeFailures(
 }
 
 /**
- * Whether an op would change a memory this device stores more than one copy of.
- * Its clock would be compared against one copy and the others left to diverge,
- * so it applies to none of them until all but one are removed. A cleanup notice
+ * Whether an op would change a memory this device stores, or has recorded as
+ * storing, more than one copy of. Its clock would be compared against one copy
+ * and the others left to diverge, so it applies to none of them and is held until
+ * the duplicates are repaired (replayReleasedHeldOps). A cleanup notice
  * still applies, since it only removes copies.
  */
 function opTargetsAmbiguousCopies(db: Database, op: ReplicationOp): boolean {
@@ -4373,19 +4380,64 @@ function skipOwnRetiredOrAppliedOp(
 	d: ReturnType<typeof drizzle>,
 	op: ReplicationOp,
 	localDeviceId: string,
+	options: ApplyReplicationOpsOptions,
 ): boolean {
 	if (skipOwnOrRetiredMemoryOp(db, op, localDeviceId)) return true;
 	// Not recorded as applied, so a re-pull after the withdrawal ends applies it.
 	if (opInWithdrawnScope(db, op)) return true;
-	// Not recorded either: which copy the op would change is unclear until repaired.
-	if (opTargetsAmbiguousCopies(db, op)) return true;
-	return (
+	const applied =
 		d
 			.select({ one: sql<number>`1` })
 			.from(schema.replicationOps)
 			.where(eq(schema.replicationOps.op_id, op.op_id))
-			.get() !== undefined
-	);
+			.get() !== undefined;
+	if (applied) return true;
+	// Held, not applied or failed: which copy the op would change is unclear. The
+	// sender's cursor moves on, and replayReleasedHeldOps applies the op once the
+	// memory is repaired or its copies are gone.
+	if (!opTargetsAmbiguousCopies(db, op)) return false;
+	holdAmbiguousOp(db, op, inboundSender(options));
+	return true;
+}
+
+/** The peer an inbound batch came from, when the caller names one. */
+function inboundSender(options: ApplyReplicationOpsOptions): string | null {
+	return cleanText(options.inboundScopeValidation?.peerDeviceId ?? options.activityPeerDeviceId);
+}
+
+/**
+ * Applies the changes held for memories that are no longer stored or recorded
+ * more than once, one at a time, each checked again against its sender's current
+ * access to the scopes it writes. A change that fails stays held; one the sender
+ * may no longer write is dropped. Returns their vector work.
+ */
+export function replayReleasedHeldOps(
+	db: Database,
+	localDeviceId: string,
+	scanner?: SecretScanner,
+): ReplicationVectorWork {
+	const work: ReplicationVectorWork = { upsertMemoryIds: [], deleteMemoryIds: [] };
+	for (const held of releasedHeldOps(db)) {
+		const validation = held.senderDeviceId ? { peerDeviceId: held.senderDeviceId } : null;
+		const replay = db.transaction(() => {
+			forgetHeldOp(db, held.op.op_id);
+			const result = applyReplicationOpsInternal(db, [held.op], localDeviceId, scanner, {
+				inboundScopeValidation: validation,
+			});
+			// A rejected op is dropped. Any other failure rolls back, keeping it held.
+			if (result.rejected === 0 && result.errors.length > 0)
+				throw new Error(result.errors.join("; "));
+			return result;
+		});
+		try {
+			const { vectorWork } = replay();
+			work.upsertMemoryIds.push(...vectorWork.upsertMemoryIds);
+			work.deleteMemoryIds.push(...vectorWork.deleteMemoryIds);
+		} catch {
+			// Still held; a later apply or repair tries again.
+		}
+	}
+	return work;
 }
 
 function rollbackReplicationOp(
@@ -4482,6 +4534,31 @@ export function applyReplicationOps(
 	scanner?: SecretScanner,
 	options: ApplyReplicationOpsOptions = {},
 ): ApplyResult {
+	// Changes held while a memory was stored twice apply once its copies are gone.
+	const replayed = replayReleasedHeldOps(db, localDeviceId, scanner);
+	return withReplayedVectorWork(applyBatch(db, ops, localDeviceId, scanner, options), replayed);
+}
+
+function withReplayedVectorWork(result: ApplyResult, replayed: ReplicationVectorWork): ApplyResult {
+	if (replayed.upsertMemoryIds.length === 0 && replayed.deleteMemoryIds.length === 0) return result;
+	result.vectorWork = {
+		upsertMemoryIds: [
+			...new Set([...result.vectorWork.upsertMemoryIds, ...replayed.upsertMemoryIds]),
+		],
+		deleteMemoryIds: [
+			...new Set([...result.vectorWork.deleteMemoryIds, ...replayed.deleteMemoryIds]),
+		],
+	};
+	return result;
+}
+
+function applyBatch(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	scanner: SecretScanner | undefined,
+	options: ApplyReplicationOpsOptions,
+): ApplyResult {
 	const peer = options.activityPeerDeviceId;
 	if (!peer) return applyReplicationOpsInternal(db, ops, localDeviceId, scanner, options);
 	ensureSyncTransferActivitySchema(db);
@@ -4555,7 +4632,7 @@ function applyReplicationOpsInternal(
 			db.exec("SAVEPOINT codemem_replication_op");
 			try {
 				// Skip own, retired, and already-applied ops.
-				if (skipOwnRetiredOrAppliedOp(db, d, op, localDeviceId)) {
+				if (skipOwnRetiredOrAppliedOp(db, d, op, localDeviceId, options)) {
 					result.skipped++;
 					continue;
 				}

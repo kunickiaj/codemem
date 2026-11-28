@@ -106,3 +106,20 @@ it("counts a new row's siblings on the import key index, not by scanning its sco
 		expect.stringContaining("INDEX idx_memory_items_import_key (import_key=?)"),
 	]);
 });
+
+it("clears a record once its scope holds no copy under the key", () => {
+	insertCopy("scope-a");
+	insertCopy("scope-a");
+	const moving = insertCopy("scope-b");
+	insertCopy("scope-b");
+
+	db.prepare("DELETE FROM memory_items WHERE import_key = 'key:a' AND scope_id = 'scope-a'").run();
+	db.prepare("UPDATE memory_items SET scope_id = 'scope-c' WHERE id = ?").run(moving);
+	const afterOneMove = listAmbiguousMemoryCopies(db).map((group) => group.scope_id);
+	db.prepare("UPDATE memory_items SET scope_id = 'scope-c' WHERE scope_id = 'scope-b'").run();
+
+	expect(afterOneMove).toEqual(["scope-b"]);
+	expect(listAmbiguousMemoryCopies(db)).toEqual([
+		{ scope_id: "scope-c", memory_ids: expect.any(Array) },
+	]);
+});

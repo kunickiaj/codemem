@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { repairAmbiguousMemoryCopy } from "./memory-copy-ambiguity.js";
+import { repairAmbiguousMemory } from "./memory-copy-repair.js";
 import { applyReplicationOps } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
@@ -51,26 +51,83 @@ function incomingUpsert(rev: number): ReplicationOp {
 	};
 }
 
-it("applies nothing to the copy left after a duplicate is removed, until a repair confirms it", () => {
+function heldOpIds(): string[] {
+	return db.prepare("SELECT op_id FROM memory_ambiguous_held_ops").pluck().all() as string[];
+}
+
+function insertOther(rev: number): number {
+	return Number(
+		db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+				 visibility, origin_device_id, active, metadata_json, import_key, scope_id, rev)
+				 VALUES (?, 'discovery', 'Other', 'Other 1', ?, ?, 'shared', 'peer-a', 1,
+				 '{"clock_device_id":"peer-a"}', 'key:other', 'scope-a', ?)`,
+			)
+			.run(insertTestSession(db), NOW, NOW, rev).lastInsertRowid,
+	);
+}
+
+function otherUpsert(rev: number): ReplicationOp {
+	return { ...incomingUpsert(rev), op_id: `other-${rev}`, entity_id: "key:other" };
+}
+
+it("holds a revision for the copy left after a duplicate is removed, and repair applies it", () => {
 	// Arrange: one of two copies goes away.
 	const kept = insertCopy(1, "Revision 1");
 	const removed = insertCopy(1, "Revision 1, again");
 	db.prepare("DELETE FROM memory_items WHERE id = ?").run(removed);
 
-	// Act + Assert: still skipped while the key is recorded as stored twice.
+	// Act + Assert: the revision is held without an error, so the sender's cursor moves on.
 	expect(applyReplicationOps(db, [incomingUpsert(3)], "local")).toMatchObject({
 		applied: 0,
 		skipped: 1,
+		errors: [],
 	});
+	expect(heldOpIds()).toEqual(["incoming-3"]);
 	expect(db.prepare("SELECT rev FROM memory_items WHERE id = ?").pluck().get(kept)).toBe(1);
 
-	// Act + Assert: after the repair, the next revision applies.
-	expect(repairAmbiguousMemoryCopy(db, kept)).toMatchObject({ status: "repaired" });
-	expect(applyReplicationOps(db, [incomingUpsert(4)], "local")).toMatchObject({ applied: 1 });
-	expect(db.prepare("SELECT rev, body_text FROM memory_items WHERE id = ?").get(kept)).toEqual({
-		rev: 4,
-		body_text: "Revision 4",
+	// Act + Assert: the repair applies the held revision.
+	expect(repairAmbiguousMemory(db, kept, { localDeviceId: "local" })).toMatchObject({
+		status: "repaired",
 	});
+	expect(db.prepare("SELECT rev, body_text FROM memory_items WHERE id = ?").get(kept)).toEqual({
+		rev: 3,
+		body_text: "Revision 3",
+	});
+	expect(heldOpIds()).toEqual([]);
+});
+
+it("keeps applying later changes from the same peer while one memory is held", () => {
+	// Arrange: a duplicated memory and an ordinary one.
+	insertCopy(1, "Revision 1");
+	insertCopy(1, "Revision 1, again");
+	const other = insertOther(1);
+
+	// Act: two batches, the first carrying a change for the duplicated memory.
+	const first = applyReplicationOps(db, [incomingUpsert(3), otherUpsert(2)], "local");
+	const second = applyReplicationOps(db, [otherUpsert(3)], "local");
+
+	// Assert: neither batch fails, so the cursor advances, and the other memory keeps up.
+	expect(first).toMatchObject({ applied: 1, skipped: 1, errors: [] });
+	expect(second).toMatchObject({ applied: 1, errors: [] });
+	expect(db.prepare("SELECT rev FROM memory_items WHERE id = ?").pluck().get(other)).toBe(3);
+	expect(heldOpIds()).toEqual(["incoming-3"]);
+});
+
+it("applies a held change once every copy is gone", () => {
+	// Arrange: a change held while two copies exist, then both copies removed.
+	insertCopy(1, "Revision 1");
+	insertCopy(1, "Revision 1, again");
+	applyReplicationOps(db, [incomingUpsert(3)], "local");
+	db.prepare("DELETE FROM memory_items").run();
+
+	// Act: the next batch, even an empty one.
+	applyReplicationOps(db, [], "local");
+
+	// Assert: the held change is the only copy now.
+	expect(db.prepare("SELECT body_text FROM memory_items").pluck().all()).toEqual(["Revision 3"]);
+	expect(heldOpIds()).toEqual([]);
 });
 
 it("applies to none of a memory's copies when this device stores more than one", () => {
@@ -100,8 +157,8 @@ it("applies to none of a memory's copies when this device stores more than one",
 	// Act
 	const result = applyReplicationOps(db, [op], "local");
 
-	// Assert: both copies stay as they were, and the op is not recorded as applied.
-	expect(result).toMatchObject({ applied: 0, skipped: 1 });
+	// Assert: both copies stay as they were, and the op is held, not recorded as applied.
+	expect(result).toMatchObject({ applied: 0, skipped: 1, errors: [] });
 	expect(db.prepare("SELECT id, rev, body_text FROM memory_items ORDER BY id").all()).toEqual([
 		{ id: older, rev: 1, body_text: "Revision 1" },
 		{ id: newer, rev: 5, body_text: "Revision 5" },

@@ -11,6 +11,7 @@
 
 import type { Database } from "./db.js";
 import { columnExists, tableExists } from "./schema-lookups.js";
+import type { ReplicationOp } from "./types.js";
 
 /** A memory seen with more than one copy in one scope, with the copies stored now. */
 export interface AmbiguousMemoryCopies {
@@ -35,12 +36,41 @@ export const SIBLING_COUNT_SQL = `SELECT COUNT(*) FROM memory_items
 	WHERE import_key = NEW.import_key AND +scope_id IS NEW.scope_id`;
 const HAS_SIBLING = `NEW.import_key IS NOT NULL AND (${SIBLING_COUNT_SQL}) > 1`;
 
+/**
+ * Changes a peer sent for a memory while it was stored, or recorded as stored,
+ * more than once. The sender's cursor moves on; the change waits here and is
+ * applied once the memory is repaired or its copies are gone. Payloads are memory
+ * content, so a store transition moves this table (transitioned-store-names.ts).
+ */
+const HELD_OPS_TABLE = `CREATE TABLE IF NOT EXISTS memory_ambiguous_held_ops (
+	op_id TEXT PRIMARY KEY,
+	import_key TEXT NOT NULL,
+	scope_key TEXT NOT NULL,
+	sender_device_id TEXT,
+	op_json TEXT NOT NULL,
+	held_at TEXT NOT NULL
+);`;
+
+/**
+ * Clears a record once its scope holds no copy under the key: with nothing left
+ * to choose between, the next copy a peer sends is the only one.
+ */
+const CLEAR_WHEN_GONE = `NOT EXISTS (SELECT 1 FROM memory_items
+		WHERE import_key = OLD.import_key AND +scope_id IS OLD.scope_id)
+	BEGIN DELETE FROM memory_ambiguous_copies
+		WHERE import_key = OLD.import_key AND scope_key = COALESCE(OLD.scope_id, ''); END;`;
+
 const CREATE_TRIGGERS = `CREATE TRIGGER IF NOT EXISTS memory_ambiguous_copies_on_insert
 	AFTER INSERT ON memory_items WHEN ${HAS_SIBLING}
 	BEGIN ${RECORD_DUPLICATE}; END;
 	CREATE TRIGGER IF NOT EXISTS memory_ambiguous_copies_on_move
 	AFTER UPDATE OF import_key, scope_id ON memory_items WHEN ${HAS_SIBLING}
-	BEGIN ${RECORD_DUPLICATE}; END;`;
+	BEGIN ${RECORD_DUPLICATE}; END;
+	CREATE TRIGGER IF NOT EXISTS memory_ambiguous_copies_clear_on_delete
+	AFTER DELETE ON memory_items WHEN OLD.import_key IS NOT NULL AND ${CLEAR_WHEN_GONE}
+	CREATE TRIGGER IF NOT EXISTS memory_ambiguous_copies_clear_on_move
+	AFTER UPDATE OF import_key, scope_id ON memory_items
+	WHEN OLD.import_key IS NOT NULL AND ${CLEAR_WHEN_GONE}`;
 
 /**
  * Creates the record and its triggers. The transaction that creates the table
@@ -55,7 +85,7 @@ export function ensureMemoryCopyAmbiguitySchema(db: Database): void {
 	)
 		return;
 	if (tableExists(db, "memory_ambiguous_copies")) {
-		db.exec(CREATE_TRIGGERS);
+		db.exec(`${HELD_OPS_TABLE}\n${CREATE_TRIGGERS}`);
 		return;
 	}
 	db.transaction(() => {
@@ -69,8 +99,53 @@ export function ensureMemoryCopyAmbiguitySchema(db: Database): void {
 		SELECT import_key, COALESCE(scope_id, ''), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		FROM memory_items WHERE import_key IS NOT NULL
 		GROUP BY import_key, COALESCE(scope_id, '') HAVING COUNT(*) > 1;`);
-		db.exec(CREATE_TRIGGERS);
+		db.exec(`${HELD_OPS_TABLE}\n${CREATE_TRIGGERS}`);
 	})();
+}
+
+/** A change held for a memory stored more than once, with the peer that sent it. */
+export interface HeldReplicationOp {
+	op: ReplicationOp;
+	senderDeviceId: string | null;
+}
+
+/** Keeps a change for later instead of applying it to one of several copies. */
+export function holdAmbiguousOp(
+	db: Database,
+	op: ReplicationOp,
+	senderDeviceId: string | null,
+): void {
+	db.prepare(
+		`INSERT OR REPLACE INTO memory_ambiguous_held_ops
+		 (op_id, import_key, scope_key, sender_device_id, op_json, held_at)
+		 VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
+	).run(op.op_id, op.entity_id, op.scope_id ?? "", senderDeviceId, JSON.stringify(op));
+}
+
+/**
+ * Held changes whose memory is neither recorded nor stored more than once any
+ * more, in the order they arrived.
+ */
+export function releasedHeldOps(db: Database): HeldReplicationOp[] {
+	if (!tableExists(db, "memory_ambiguous_held_ops")) return [];
+	const rows = db
+		.prepare(
+			`SELECT sender_device_id, op_json FROM memory_ambiguous_held_ops AS held
+			 WHERE NOT EXISTS (SELECT 1 FROM memory_ambiguous_copies AS record
+			                   WHERE record.import_key = held.import_key)
+			   AND (SELECT COUNT(*) FROM memory_items WHERE import_key = held.import_key) <= 1
+			 ORDER BY held_at, op_id`,
+		)
+		.all() as Array<{ sender_device_id: string | null; op_json: string }>;
+	return rows.map((row) => ({
+		op: JSON.parse(row.op_json) as ReplicationOp,
+		senderDeviceId: row.sender_device_id,
+	}));
+}
+
+/** Forgets a held change once it has been replayed. */
+export function forgetHeldOp(db: Database, opId: string): void {
+	db.prepare("DELETE FROM memory_ambiguous_held_ops WHERE op_id = ?").run(opId);
 }
 
 /** Whether the key was seen with duplicates in this scope, or in any scope when none is named. */

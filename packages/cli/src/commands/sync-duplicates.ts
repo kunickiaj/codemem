@@ -3,7 +3,7 @@ import type { AmbiguousCopyRepair } from "@codemem/core";
 import {
 	listAmbiguousMemoryCopies,
 	MemoryStore,
-	repairAmbiguousMemoryCopy,
+	repairAmbiguousMemory,
 	resolveDbPath,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -18,8 +18,9 @@ interface SyncDuplicatesOptions {
 
 /** Prints the memories this device stores more than one copy of in one scope. */
 function runSyncDuplicates(opts: SyncDuplicatesOptions): void {
-	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+	let store: MemoryStore | null = null;
 	try {
+		store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 		const duplicates = listAmbiguousMemoryCopies(store.db);
 		if (opts.json) {
 			console.log(JSON.stringify({ duplicates, count: duplicates.length }));
@@ -45,7 +46,7 @@ function runSyncDuplicates(opts: SyncDuplicatesOptions): void {
 		p.log.error(message);
 		process.exitCode = 1;
 	} finally {
-		store.close();
+		store?.close();
 	}
 }
 
@@ -57,16 +58,22 @@ const REPAIR_MESSAGES: Record<Exclude<AmbiguousCopyRepair["status"], "repaired">
 
 /** Confirms that a memory is the only copy left in its scope, so sync serves it again. */
 function runSyncDuplicatesRepair(memoryId: string, opts: SyncDuplicatesOptions): void {
-	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+	let store: MemoryStore | null = null;
 	try {
-		const outcome = repairAmbiguousMemoryCopy(store.db, Number.parseInt(memoryId, 10));
+		store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+		const outcome = repairAmbiguousMemory(store.db, Number.parseInt(memoryId, 10), {
+			localDeviceId: store.deviceId,
+			scanner: store.scanner,
+		});
 		if (opts.json) {
 			console.log(JSON.stringify(outcome));
 			if (outcome.status !== "repaired") process.exitCode = 1;
 			return;
 		}
 		if (outcome.status === "repaired") {
-			p.log.success(`Memory #${memoryId} is the only copy left; sync sends and applies it again.`);
+			p.log.success(
+				`Memory #${memoryId} is the only copy left. Sync sends and applies it again, and the changes held for it were applied.`,
+			);
 			return;
 		}
 		p.log.error(REPAIR_MESSAGES[outcome.status]);
@@ -80,7 +87,7 @@ function runSyncDuplicatesRepair(memoryId: string, opts: SyncDuplicatesOptions):
 		p.log.error(message);
 		process.exitCode = 1;
 	} finally {
-		store.close();
+		store?.close();
 	}
 }
 

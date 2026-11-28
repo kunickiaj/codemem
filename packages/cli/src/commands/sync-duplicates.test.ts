@@ -85,3 +85,21 @@ it("opens the store `repair --db` names, not the default one", async () => {
 	});
 	expect(existsSync(defaultDbPath)).toBe(false);
 });
+
+it.each([[[]], [["repair", "1"]]])(
+	"reports a store that cannot be opened as a JSON error (%j)",
+	async (args: string[]) => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		// A directory cannot be opened as a store.
+		await buildSyncDuplicatesCommand().parseAsync([...args, "--db", dir, "--json"], {
+			from: "user",
+		});
+
+		const output = [...log.mock.calls].map(([line]) => String(line)).join("\n");
+		expect(output).toContain('"error"');
+		expect(process.exitCode).toBe(1);
+		process.exitCode = undefined;
+	},
+);

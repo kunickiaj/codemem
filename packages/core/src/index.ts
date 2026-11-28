@@ -897,6 +897,7 @@ export {
 	listAmbiguousMemoryCopies,
 	repairAmbiguousMemoryCopy,
 } from "./memory-copy-ambiguity.js";
+export { repairAmbiguousMemory } from "./memory-copy-repair.js";
 export * from "./memory-filter-schema.js";
 export * from "./memory-kinds.js";
 export {

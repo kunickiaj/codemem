@@ -724,3 +724,81 @@ describe("a Project this device withdrew from", () => {
 		expect(other).toMatchObject({ applied: 1, rejected: 0 });
 	});
 });
+
+describe("a change held while a memory was stored twice", () => {
+	let fixture: MixedFixture;
+
+	beforeEach(async () => {
+		fixture = await setupMixedFixture();
+	});
+
+	afterEach(() => {
+		fixture.db.close();
+	});
+
+	const KEY = "key:oss-twice";
+	const fromOssPeer = (): ReplicationOp => ({
+		...makeOp({
+			opId: "held-oss",
+			entityId: KEY,
+			scopeId: OSS_SCOPE,
+			createdAt: "2026-05-03T00:00:06Z",
+			payload: {
+				project: "oss",
+				visibility: "shared",
+				scope_id: OSS_SCOPE,
+				body_text: "Held body",
+			},
+		}),
+		clock_rev: 2,
+		clock_device_id: PEER_OSS,
+		device_id: PEER_OSS,
+	});
+	const validated = { inboundScopeValidation: { peerDeviceId: PEER_OSS } };
+	const storedBodies = () =>
+		fixture.db.prepare("SELECT body_text FROM memory_items WHERE import_key = ?").pluck().all(KEY);
+
+	beforeEach(() => {
+		const session = insertSessionWithProject(fixture.db, "oss");
+		for (let copy = 0; copy < 2; copy++)
+			insertMemory(fixture.db, session, {
+				importKey: KEY,
+				scopeId: OSS_SCOPE,
+				visibility: "shared",
+				project: "oss",
+			});
+		const held = applyReplicationOps(
+			fixture.db,
+			[fromOssPeer()],
+			LOCAL_DEVICE,
+			undefined,
+			validated,
+		);
+		expect(held).toMatchObject({ applied: 0, rejected: 0, skipped: 1, errors: [] });
+		fixture.db.prepare("DELETE FROM memory_items WHERE import_key = ?").run(KEY);
+	});
+
+	it("applies once the copies are gone, on the next batch from any peer", () => {
+		applyReplicationOps(fixture.db, [], LOCAL_DEVICE);
+
+		expect(storedBodies()).toEqual(["Held body"]);
+	});
+
+	it("is dropped at replay when its sender may no longer write the scope", () => {
+		putRecipientPolicyDenyOverlay(fixture.db, {
+			canonicalProjectIdentity: "project:oss",
+			scopeId: OSS_SCOPE,
+			deviceId: PEER_OSS,
+			generation: 4,
+			reasonCode: "pending_revoke",
+			now: "2026-05-03T00:00:05Z",
+		});
+
+		applyReplicationOps(fixture.db, [], LOCAL_DEVICE);
+
+		expect(storedBodies()).toEqual([]);
+		expect(fixture.db.prepare("SELECT COUNT(*) FROM memory_ambiguous_held_ops").pluck().get()).toBe(
+			0,
+		);
+	});
+});

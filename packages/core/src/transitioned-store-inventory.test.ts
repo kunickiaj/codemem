@@ -34,6 +34,7 @@ const reviewedMetadata: Record<string, string> = {
 	local_identity_generation: "Current local actor.",
 	local_identity_switches: "Identity switch attempts and receipts.",
 	maintenance_jobs: "Job titles, progress and errors from maintenance runs.",
+	memory_ambiguous_copies: "Import keys and scopes seen with more than one copy, with times.",
 	memory_copy_creations: "Copy IDs this device created, with times.",
 	memory_copy_identities: "Random copy ID for each memory row.",
 	memory_foreign_revisions: "Which write path created a received memory.",
