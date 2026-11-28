@@ -14,8 +14,6 @@ function renderPanels(overrides: Partial<Parameters<typeof SyncInviteJoinPanels>
 				invitePanel={null}
 				invitePanelOpen={false}
 				inviteRestoreParent={null}
-				joinPanel={null}
-				joinRestoreParent={null}
 				presenceStatus="posted"
 				onToggleInvitePanel={() => {}}
 				{...overrides}
@@ -48,13 +46,16 @@ describe("SyncInviteJoinPanels", () => {
 		expect(root.textContent).not.toContain("Copy pairing command");
 	});
 
-	it("shows the invite review form without an extra disclosure", () => {
-		const joinPanel = document.createElement("div");
-		joinPanel.textContent = "Invite or pairing code";
-		joinPanel.hidden = true;
-		const root = renderPanels({ joinPanel });
+	it("offers no invitation form, because Sharing accepts invitations", () => {
+		const root = renderPanels();
 
-		expect(root.textContent).toContain("Invite or pairing code");
-		expect(joinPanel.hidden).toBe(false);
+		expect(root.textContent).not.toContain("Invite or pairing code");
+		expect(root.querySelector("textarea")).toBeNull();
+	});
+
+	it("shows nothing for a device that is not enrolled yet", () => {
+		const root = renderPanels({ presenceStatus: "not_enrolled" });
+
+		expect(root.textContent).toBe("");
 	});
 });

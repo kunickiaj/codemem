@@ -452,10 +452,8 @@ export const state = {
 	lastProjectCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminDevices: [] as CachedCoordinatorAdminDevice[],
-	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],
 	lastTeamInvite: null as CachedTeamInvite | null,
 	lastTeamJoin: null as CachedTeamJoin | null,
-	syncJoinFlowFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncPeerFeedbackById: new Map<string, { message: string; tone: "success" | "warning" }>(),
 	syncPeersSectionFeedback: null as {
 		message: string;
@@ -466,7 +464,6 @@ export const state = {
 		// be cleared on the next render — see shouldClearStalePeersFeedback.
 		relatedPeerDeviceId?: string;
 	} | null,
-	syncJoinRequestsFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	pendingCoordinatorApprovalsByDeviceId: new Map<string, PendingCoordinatorApproval>(),
 	lastSyncAttempts: [] as unknown[],
 	lastSyncLegacyDevices: [] as unknown[],

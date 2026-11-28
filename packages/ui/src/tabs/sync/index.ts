@@ -38,7 +38,6 @@ import {
 	renderTeamSync,
 	setLoadSyncData as setTeamSyncLoadData,
 } from "./team-sync";
-import { ensureJoinPanelInSetupSection } from "./team-sync/helpers/invite-panel-dom";
 import { deriveSyncViewModel, type TeamSyncReconciliationState } from "./view-model";
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
@@ -382,7 +381,6 @@ async function runLoadSyncData(
 			coordinatorAdminStatus && typeof coordinatorAdminStatus === "object"
 				? coordinatorAdminStatus
 				: null;
-		state.lastSyncJoinRequests = Array.isArray(payload.join_requests) ? payload.join_requests : [];
 		state.lastSyncAttempts = payload.attempts || [];
 		state.lastSyncLegacyDevices = payload.legacy_devices || [];
 		state.lastSyncDuplicatePersonDecisions = duplicatePersonDecisions;
@@ -452,13 +450,8 @@ function renderSyncLoadFailure(): void {
 	hideSkeleton("syncPeersSkeleton");
 	hideSkeleton("syncDiagSkeleton");
 	hideStaleSyncSecondarySections();
-	// Import does not require status. Return the panel through the same handoff as a
-	// successful render so Devices observes its updated restore visibility.
-	ensureJoinPanelInSetupSection();
 	const setupPanel = document.getElementById("syncSetupPanel");
-	const joinPanel = document.getElementById("syncJoinPanel");
 	if (setupPanel) setupPanel.hidden = false;
-	if (joinPanel) joinPanel.hidden = false;
 	renderSyncPeopleUnavailable();
 	renderSyncDiagnosticsUnavailable();
 }
@@ -534,7 +527,7 @@ export function initSyncTab(refreshCallback: () => void) {
 	setPeopleLoadData(reloadSyncData);
 	setRenderSyncPeers(renderSyncPeers);
 
-	initTeamSyncEvents(refreshCallback, reloadSyncData);
+	initTeamSyncEvents(refreshCallback);
 	initPeopleEvents(reloadSyncData);
 	initDiagnosticsEvents(refreshCallback);
 

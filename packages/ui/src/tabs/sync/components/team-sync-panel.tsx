@@ -1,24 +1,12 @@
 import type { ComponentChildren } from "preact";
-import { createPortal } from "preact/compat";
 import { useState } from "preact/hooks";
-import { state } from "../../../lib/state";
 import type { UiSyncAttentionItem, UiTeamSyncPrimaryStatus } from "../view-model";
-import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
-
-export interface TeamSyncPendingJoinRequest {
-	displayName: string;
-	requestId: string;
-}
 
 type TeamSyncPanelProps = {
 	actionItems: UiSyncAttentionItem[];
 	actionableCount: number;
 	children?: ComponentChildren;
-	joinRequestsMount: HTMLElement | null;
-	onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 	onAttentionAction: (item: UiSyncAttentionItem) => Promise<void>;
-	onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-	pendingJoinRequests: TeamSyncPendingJoinRequest[];
 	presenceStatus: string;
 	primaryStatus: UiTeamSyncPrimaryStatus;
 };
@@ -66,74 +54,6 @@ function AttentionRow({
 	);
 }
 
-function PendingJoinRequestRow({
-	request,
-	onApprove,
-	onDeny,
-}: {
-	request: TeamSyncPendingJoinRequest;
-	onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-	onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-}) {
-	const [busyAction, setBusyAction] = useState<"approve" | "deny" | null>(null);
-	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
-	const [approveLabel, setApproveLabel] = useState("Approve");
-	const [denyLabel, setDenyLabel] = useState("Deny");
-
-	return (
-		<div className="actor-row">
-			<div className="actor-details">
-				<div className="actor-title" title={request.requestId || undefined}>
-					{request.displayName}
-				</div>
-			</div>
-			<div className="actor-actions">
-				<button
-					type="button"
-					className="settings-button"
-					aria-label={`${approveLabel} join request from ${request.displayName}`}
-					disabled={busyAction !== null}
-					onClick={async () => {
-						setBusyAction("approve");
-						setApproveLabel("Approving…");
-						try {
-							setFeedback((await onApprove(request)) || null);
-							setApproveLabel("Approve");
-						} catch {
-							setApproveLabel("Retry");
-						} finally {
-							setBusyAction(null);
-						}
-					}}
-				>
-					{approveLabel}
-				</button>
-				<button
-					type="button"
-					className="settings-button"
-					aria-label={`${denyLabel} join request from ${request.displayName}`}
-					disabled={busyAction !== null}
-					onClick={async () => {
-						setBusyAction("deny");
-						setDenyLabel("Denying…");
-						try {
-							setFeedback((await onDeny(request)) || null);
-							setDenyLabel("Deny");
-						} catch {
-							setDenyLabel("Retry");
-						} finally {
-							setBusyAction(null);
-						}
-					}}
-				>
-					{denyLabel}
-				</button>
-			</div>
-			<SyncInlineFeedback feedback={feedback} />
-		</div>
-	);
-}
-
 function ActionContent(props: TeamSyncPanelProps) {
 	const hasAttentionItems = props.actionItems.length > 0;
 	const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
@@ -174,35 +94,6 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	);
 }
 
-function PendingRequestsPortal({
-	mount,
-	requests,
-	onApprove,
-	onDeny,
-}: {
-	mount: HTMLElement | null;
-	requests: TeamSyncPendingJoinRequest[];
-	onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-	onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-}) {
-	if (!mount || (!requests.length && !state.syncJoinRequestsFeedback)) return null;
-	return createPortal(
-		<>
-			<SectionHeading count={requests.length || undefined} label="Join requests to review" />
-			<SyncInlineFeedback feedback={state.syncJoinRequestsFeedback} />
-			{requests.map((request) => (
-				<PendingJoinRequestRow
-					key={request.requestId}
-					request={request}
-					onApprove={onApprove}
-					onDeny={onDeny}
-				/>
-			))}
-		</>,
-		mount,
-	);
-}
-
 export function TeamSyncPanel(props: TeamSyncPanelProps) {
 	// The Team status > Overview portal is intentionally NOT rendered here:
 	// its data is already surfaced by the header presence chip ("Online"
@@ -213,12 +104,6 @@ export function TeamSyncPanel(props: TeamSyncPanelProps) {
 		<>
 			<ActionContent {...props} />
 			<TeamActionsContent>{props.children}</TeamActionsContent>
-			<PendingRequestsPortal
-				mount={props.joinRequestsMount}
-				requests={props.pendingJoinRequests}
-				onApprove={props.onApproveJoinRequest}
-				onDeny={props.onDenyJoinRequest}
-			/>
 		</>
 	);
 }

@@ -1,62 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../../../lib/api", () => ({
-	createCoordinatorInvite: vi.fn(),
-	importCoordinatorInvite: vi.fn(),
-	inspectCoordinatorInvite: vi.fn(),
-	runSyncNow: vi.fn(),
-}));
-vi.mock("../../../../lib/form", () => ({
-	clearFieldError: vi.fn(),
-	friendlyError: vi.fn((_error: unknown, fallback: string) => fallback),
-	markFieldError: vi.fn(() => false),
-}));
-vi.mock("../../../../lib/keyboard", () => ({ handlePrimaryActionKeyboard: vi.fn() }));
+vi.mock("../../../../lib/api", () => ({ runSyncNow: vi.fn() }));
 vi.mock("../../../../lib/notice", () => ({ showGlobalNotice: vi.fn() }));
 vi.mock("../../../../lib/state", () => ({ state: {} }));
 vi.mock("../../view-model", () => ({ summarizeSyncRunResult: vi.fn() }));
-vi.mock("../data/state", () => ({ teamSyncState: { invitePolicy: "auto_admit" } }));
 vi.mock("../helpers/invite-panel-dom", () => ({
 	renderAdminSetupDisclosure: vi.fn(),
 	renderInvitePolicySelect: vi.fn(),
-	setInviteOutputVisibility: vi.fn(),
-	setJoinFeedbackVisibility: vi.fn(),
 }));
 vi.mock("../../../project-sharing", () => ({ openProjectShareFlow: vi.fn() }));
 
-import * as api from "../../../../lib/api";
-import { markFieldError } from "../../../../lib/form";
 import { showGlobalNotice } from "../../../../lib/notice";
-import { state } from "../../../../lib/state";
 import { openProjectShareFlow } from "../../../project-sharing";
 import { initTeamSyncEvents } from "./init-team-sync-events";
 
 beforeEach(() => {
-	document.body.innerHTML = `
-			<textarea id="syncJoinInvite"></textarea>
-			<div id="syncPairingReview" hidden>
-				<h4 id="syncPairingReviewHeading" tabindex="-1">Review device pairing</h4>
-				<dd id="syncPairingDeviceId"></dd><dd id="syncPairingFingerprint"></dd><dd id="syncPairingAddresses"></dd>
-			</div>
-			<div id="syncProjectInviteReview" role="region" aria-labelledby="syncProjectInviteReviewHeading" hidden>
-				<h4 id="syncProjectInviteReviewHeading" tabindex="-1">Review project invitation</h4>
-				<div id="syncProjectInviteContext"></div>
-				<input id="syncRecipientName" />
-			<input id="syncRecipientDeviceName" />
-			</div>
-			<button id="syncShareProjectsButton">Share projects</button>
-			<button id="syncJoinButton">Review invite</button>
-		`;
-	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
-		device_name: "Brian's Mac",
-		inviter_name: "Adam",
-		kind: "project_share_invite",
-		operation_id: `share_${"a".repeat(40)}`,
-		projects: [{ display_name: "codemem", existing_memory_count: 3 }],
-		recipient_name: "Brian",
-		team_name: "Team",
-	});
-	vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "joined" });
+	document.body.innerHTML = `<button id="syncShareProjectsButton">Share projects</button>`;
 });
 
 afterEach(() => {
@@ -64,353 +23,25 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
-describe("pairing preview and project sharing entry", () => {
-	it("previews pairing as text before acceptance and clears it after success", async () => {
-		const preview = {
-			kind: "pair" as const,
-			device_id: "<img src=x onerror=alert(1)>",
-			fingerprint: "full-fingerprint",
-			addresses: ["http://peer.example.test:7337", "<script>alert(1)</script>"],
-		};
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce(preview);
-		vi.mocked(api.importCoordinatorInvite).mockResolvedValueOnce({ ok: true, type: "pair" });
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		const review = document.getElementById("syncPairingReview") as HTMLDivElement;
-		invite.value = "pairing";
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Save pairing"));
-		expect(review.hidden).toBe(false);
-		expect(document.getElementById("syncPairingDeviceId")?.textContent).toBe(preview.device_id);
-		expect(document.getElementById("syncPairingFingerprint")?.textContent).toBe(
-			preview.fingerprint,
-		);
-		expect(document.getElementById("syncPairingAddresses")?.textContent).toBe(
-			preview.addresses.join("\n"),
-		);
-		expect(review.querySelector("img, script, a")).toBeNull();
-		expect(document.activeElement?.id).toBe("syncPairingReviewHeading");
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-		button.click();
-		await vi.waitFor(() => expect(invite.value).toBe(""));
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("pairing", undefined, "pair");
-		expect(state.syncJoinFlowFeedback?.message).toBe(
-			"Pairing saved on this device. Team and Project access is unchanged.",
-		);
-		expect(review.hidden).toBe(true);
-		expect(document.getElementById("syncPairingDeviceId")?.textContent).toBe("");
-	});
-
-	it("reports a saved pairing when the view fails to refresh", async () => {
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce({
-			kind: "pair",
-			device_id: "fixture-peer",
-			fingerprint: "fixture-pin",
-			addresses: ["http://127.0.0.1:7337"],
-		});
-		vi.mocked(api.importCoordinatorInvite).mockResolvedValueOnce({ ok: true, type: "pair" });
-		initTeamSyncEvents(
-			() => {},
-			async () => {
-				throw new Error("fixture refresh failure");
-			},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "pairing";
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Save pairing"));
-		button.click();
-		await vi.waitFor(() =>
-			expect(state.syncJoinFlowFeedback).toMatchObject({
-				message:
-					"Pairing saved on this device. Refresh to see the pairing. Team and Project access is unchanged.",
-				tone: "warning",
-			}),
-		);
-	});
-
-	it("keeps failed inspection non-actionable on repeated clicks", async () => {
-		vi.mocked(api.inspectCoordinatorInvite).mockRejectedValue(new Error("invalid pairing"));
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "invalid";
-		button.click();
-		await vi.waitFor(() => expect(markFieldError).toHaveBeenCalled());
-		button.click();
-		await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledTimes(2));
-		expect(button.textContent).toBe("Review invite");
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-	});
-
+describe("project sharing entry", () => {
 	it("opens the shared project flow from Sync", () => {
 		vi.mocked(openProjectShareFlow).mockReturnValueOnce(true);
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
+		initTeamSyncEvents(() => {});
 
 		(document.getElementById("syncShareProjectsButton") as HTMLButtonElement).click();
 
-		expect(openProjectShareFlow).toHaveBeenCalledOnce();
-		expect(openProjectShareFlow).toHaveBeenCalledWith();
+		expect(openProjectShareFlow).toHaveBeenCalledExactlyOnceWith();
 	});
 
 	it("explains when the shared project flow is unavailable", () => {
 		vi.mocked(openProjectShareFlow).mockReturnValueOnce(false);
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
+		initTeamSyncEvents(() => {});
 
 		(document.getElementById("syncShareProjectsButton") as HTMLButtonElement).click();
 
 		expect(showGlobalNotice).toHaveBeenCalledWith(
 			"Project sharing is unavailable. Refresh Projects and try again.",
 			"warning",
-		);
-	});
-});
-
-describe("project invite review events", () => {
-	it("moves focus into the labelled review region before acceptance", async () => {
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "project-invite";
-
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
-
-		const review = document.getElementById("syncProjectInviteReview") as HTMLDivElement;
-		const heading = document.getElementById("syncProjectInviteReviewHeading") as HTMLHeadingElement;
-		expect(review.hidden).toBe(false);
-		expect(review.getAttribute("aria-labelledby")).toBe(heading.id);
-		expect(document.activeElement).toBe(heading);
-		expect(document.getElementById("syncProjectInviteContext")?.textContent).toContain(
-			"Adam invited you through Team to share codemem",
-		);
-
-		invite.value = "different-invite";
-		invite.dispatchEvent(new Event("input", { bubbles: true }));
-		expect(review.hidden).toBe(true);
-		expect(button.textContent).toBe("Review invite");
-	});
-
-	it("does not prefill project invite identity fields with machine labels", async () => {
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce({
-			device_name: "device_abc123def",
-			inviter_name: "Adam",
-			kind: "project_share_invite",
-			projects: [{ display_name: "codemem", existing_memory_count: 3 }],
-			recipient_name: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
-		});
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "project-invite";
-
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
-
-		expect((document.getElementById("syncRecipientName") as HTMLInputElement).value).toBe("");
-		expect((document.getElementById("syncRecipientDeviceName") as HTMLInputElement).value).toBe("");
-	});
-
-	it.each([
-		["Identity", "syncRecipientName", "local:0ea043cc-c61c-427d-8b77-572331b9855c"],
-		["device", "syncRecipientDeviceName", "device_abc123def"],
-	])("rejects a machine-shaped project invite %s name", async (_label, inputId, value) => {
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "project-invite";
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
-		const input = document.getElementById(inputId) as HTMLInputElement;
-		input.value = value;
-
-		button.click();
-
-		expect(markFieldError).toHaveBeenCalledWith(input, expect.stringContaining("human-readable"));
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-	});
-});
-
-describe("stale invite review results", () => {
-	it.each(["project_share_invite", "pair"] as const)(
-		"ignores stale %s inspection results after the invite input changes",
-		async (kind) => {
-			let resolveInspection: (
-				value: Awaited<ReturnType<typeof api.inspectCoordinatorInvite>>,
-			) => void = () => {};
-			vi.mocked(api.inspectCoordinatorInvite).mockReturnValueOnce(
-				new Promise((resolve) => {
-					resolveInspection = resolve;
-				}),
-			);
-			initTeamSyncEvents(
-				() => {},
-				async () => {},
-			);
-			const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-			const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-			const review = document.getElementById("syncProjectInviteReview") as HTMLDivElement;
-			invite.value = "old-invite";
-			button.click();
-			invite.value = "new-invite";
-			invite.dispatchEvent(new Event("input", { bubbles: true }));
-			invite.focus();
-			const projectPreview = {
-				device_name: "Brian's Mac",
-				inviter_name: "Adam",
-				kind: "project_share_invite" as const,
-				projects: [{ display_name: "codemem", existing_memory_count: 3 }],
-				recipient_name: "Brian",
-			};
-			resolveInspection(
-				kind === "pair"
-					? {
-							kind,
-							device_id: "old-device",
-							fingerprint: "old-fingerprint",
-							addresses: ["http://old.example.test"],
-						}
-					: projectPreview,
-			);
-			await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledOnce());
-			await Promise.resolve();
-
-			expect(review.hidden).toBe(true);
-			expect((document.getElementById("syncPairingReview") as HTMLDivElement).hidden).toBe(true);
-			expect(button.textContent).toBe("Review invite");
-			expect(document.activeElement).toBe(invite);
-			expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-		},
-	);
-
-	it("clears pairing details and requires fresh review when input changes", async () => {
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
-			kind: "pair",
-			device_id: "peer",
-			fingerprint: "fingerprint",
-			addresses: ["http://peer.example.test"],
-		});
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "pairing";
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Save pairing"));
-		invite.value = "different";
-		invite.dispatchEvent(new Event("input", { bubbles: true }));
-		expect((document.getElementById("syncPairingReview") as HTMLDivElement).hidden).toBe(true);
-		expect(document.getElementById("syncPairingFingerprint")?.textContent).toBe("");
-		expect(document.getElementById("syncPairingAddresses")?.textContent).toBe("");
-		expect(button.textContent).toBe("Review invite");
-		button.click();
-		await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledTimes(2));
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-	});
-
-	it("requires a second truthful action before importing a legacy invite", async () => {
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce({ kind: "legacy_team_invite" });
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "legacy-invite";
-
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept invite"));
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-
-		button.click();
-		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
-			"legacy-invite",
-			undefined,
-			"legacy_team_invite",
-		);
-		await vi.waitFor(() => expect(invite.value).toBe(""));
-		await vi.waitFor(() => expect(button.textContent).toBe("Review invite"));
-	});
-
-	it("forwards confirmed project identity only after review", async () => {
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "project-invite";
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
-		(document.getElementById("syncRecipientName") as HTMLInputElement).value = "Brian Updated";
-
-		button.click();
-		await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
-		expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
-			"project-invite",
-			{
-				device_name: "Brian's Mac",
-				recipient_name: "Brian Updated",
-			},
-			"project_share_invite",
-		);
-		await vi.waitFor(() => expect(button.textContent).toBe("Review invite"));
-	});
-
-	it.each([
-		["restart-required", { restart_required: true }],
-		["pending inviter", { setup_state: "pending_inviter" }],
-		["pending-setup status", { status: "pending_setup" }],
-	])("reports project invitation %s detail as a warning", async (_label, pendingState) => {
-		vi.mocked(api.importCoordinatorInvite).mockResolvedValueOnce({
-			type: "project_share",
-			status: "accepted",
-			detail: "Restart codemem to finish project setup.",
-			...pendingState,
-		});
-		initTeamSyncEvents(
-			() => {},
-			async () => {},
-		);
-		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
-		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
-		invite.value = "project-invite";
-
-		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept and start syncing"));
-		button.click();
-
-		await vi.waitFor(() =>
-			expect(state.syncJoinFlowFeedback).toEqual({
-				message: "Restart codemem to finish project setup.",
-				tone: "warning",
-			}),
 		);
 	});
 });

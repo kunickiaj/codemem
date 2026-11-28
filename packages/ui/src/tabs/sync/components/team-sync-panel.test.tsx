@@ -17,11 +17,7 @@ function renderPrimaryStatus(
 			<TeamSyncPanel
 				actionItems={actionItems}
 				actionableCount={actionItems.length}
-				joinRequestsMount={null}
-				onApproveJoinRequest={async () => null}
 				onAttentionAction={async () => {}}
-				onDenyJoinRequest={async () => null}
-				pendingJoinRequests={[]}
 				presenceStatus="posted"
 				primaryStatus={primaryStatus}
 			/>,
@@ -111,7 +107,7 @@ describe("TeamSyncPanel primary status", () => {
 					coordinator: { ...coordinator, presence_status: "not_enrolled" },
 				},
 				"Not enrolled",
-				"Paste a Team invite",
+				"Accept a Team invitation",
 			],
 			[
 				"configured unreachable",
