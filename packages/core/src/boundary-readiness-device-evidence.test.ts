@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GroupReadinessRequest } from "./boundary-readiness-device-evidence.js";
 import { submitGroupBoundaryReadiness } from "./coordinator-boundary-readiness-client.js";
@@ -112,6 +112,71 @@ function sent() {
 	const headers = new Headers(init.headers);
 	return { body, bodyBytes, init, headers, target };
 }
+
+it.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
+	"signs restored-device readiness with the enrolled Keychain key despite an unrelated device.key",
+	async () => {
+		const restored = join(directory, "enrolled-key");
+		const keyDir = join(directory, "keys");
+		copyFileSync(join(keyDir, "device.key"), restored);
+		const otherDir = join(directory, "other-keys");
+		const other = connect(join(directory, "other.sqlite"));
+		try {
+			ensureDeviceIdentity(other, { keysDir: otherDir });
+		} finally {
+			other.close();
+		}
+		copyFileSync(join(otherDir, "device.key"), join(keyDir, "device.key"));
+		const mac = process.platform === "darwin";
+		const lookupMarker = join(directory, "keychain-read");
+		const lookup = mac
+			? ["find-generic-password", "-a", deviceId, "-s", "codemem-sync", "-w"]
+			: ["lookup", "service", "codemem-sync", "account", deviceId];
+		writeFileSync(
+			join(directory, mac ? "security" : "secret-tool"),
+			`#!/usr/bin/env node
+if (JSON.stringify(process.argv.slice(2)) !== ${JSON.stringify(JSON.stringify(lookup))}) process.exit(1);
+require("node:fs").writeFileSync(${JSON.stringify(lookupMarker)}, "");
+process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(restored)}));`,
+			{ mode: 0o700 },
+		);
+		vi.stubEnv("PATH", `${directory}${delimiter}${process.env.PATH}`);
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+		expect(await submitGroupBoundaryReadiness(input)).toEqual({
+			kind: "stored",
+			sequence: 7,
+			rejected: [],
+		});
+		const { bodyBytes, target, headers } = sent();
+		expect(
+			verifySignature({
+				method: "POST",
+				pathWithQuery: target.pathname + target.search,
+				publicKey,
+				deviceId,
+				bodyBytes,
+				timestamp: headers.get("X-Opencode-Timestamp") ?? "",
+				nonce: headers.get("X-Opencode-Nonce") ?? "",
+				signature: headers.get("X-Opencode-Signature") ?? "",
+			}),
+		).toBe(true);
+		// Even when both stores hold the enrolled key, consult Keychain first.
+		copyFileSync(restored, join(keyDir, "device.key"));
+		rmSync(lookupMarker);
+		expect(await submitGroupBoundaryReadiness(input)).toMatchObject({ kind: "stored" });
+		expect(existsSync(lookupMarker)).toBe(true);
+		// A stale Keychain entry permits only a matching file fallback.
+		copyFileSync(join(otherDir, "device.key"), restored);
+		expect(await submitGroupBoundaryReadiness(input)).toMatchObject({ kind: "stored" });
+		copyFileSync(restored, join(keyDir, "device.key"));
+		transport.mockClear();
+		expect(await submitGroupBoundaryReadiness(input)).toEqual({
+			kind: "failed",
+			reason: "signing_failed",
+		});
+		expect(transport).not.toHaveBeenCalled();
+	},
+);
 
 it.each([
 	[

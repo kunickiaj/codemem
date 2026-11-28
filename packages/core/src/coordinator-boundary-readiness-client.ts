@@ -10,6 +10,7 @@ import {
 	type BoundaryReadinessRejection,
 } from "./coordinator-boundary-readiness.js";
 import { BOUNDARY_READINESS_PATH } from "./coordinator-boundary-readiness-route.js";
+import type { CoordinatorDeviceLocalEvidence } from "./coordinator-device-local.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { buildAuthHeaders, verifySignature } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -205,9 +206,9 @@ export async function submitGroupBoundaryReadiness(
 	try {
 		const evidence = collectGroupReadiness(input);
 		if (!evidence) return failed("inventory_unavailable");
-		const keyId = await ed25519KeyId(evidence.publicKey);
+		const keyId = await ed25519KeyId(evidence.identity.publicKey);
 		if (!keyId) return failed("signing_failed");
-		return sendRecord(evidence, url, groupRecord(evidence, keyId), evidence.publicKey);
+		return sendRecord(evidence, url, groupRecord(evidence, keyId), evidence.identity);
 	} catch {
 		return failed("inventory_unavailable");
 	}
@@ -217,7 +218,7 @@ async function sendRecord(
 	input: SubmitBoundaryReadinessInput,
 	url: string,
 	record: WireRecord,
-	publicKey?: string,
+	identity?: CoordinatorDeviceLocalEvidence,
 ): Promise<SubmitBoundaryReadinessResult> {
 	const bodyBytes = Buffer.from(JSON.stringify(record), "utf8");
 	if (bodyBytes.byteLength > BOUNDARY_READINESS_MAX_BODY_BYTES) return failed("request_too_large");
@@ -225,6 +226,7 @@ async function sendRecord(
 	// Key hashing yielded after collection. Check the exact serialized record
 	// in a new read, with no await between this check, signing and starting fetch.
 	if (record.version === 2) {
+		if (!identity) return failed("signing_failed");
 		try {
 			if (
 				!isCurrentGroupRefresh(input.dbPath, {
@@ -240,28 +242,29 @@ async function sendRecord(
 		}
 	}
 	try {
-		headers = buildAuthHeaders({
+		const request = {
 			deviceId: input.deviceId,
-			// V2 already read the identity in the inventory transaction. Supplying
-			// a path here would open a second, writable store to look it up again.
-			dbPath: record.version === 1 ? input.dbPath : undefined,
 			keysDir: input.keysDir,
 			method: "POST",
 			url,
 			bodyBytes,
-		});
+		};
+		// V2 selects the key against the inventory snapshot without opening a writable store.
+		headers = identity
+			? buildAuthHeaders(request, identity)
+			: buildAuthHeaders({ ...request, dbPath: input.dbPath });
 		if (record.version === 2) {
 			const target = new URL(url);
 			// Copying or restoring a store must not sign its inventory with an
 			// unrelated private key that happens to occupy the configured key path.
 			if (
-				!publicKey ||
+				!identity ||
 				!verifySignature({
 					method: "POST",
 					pathWithQuery: `${target.pathname}${target.search}`,
 					bodyBytes,
 					deviceId: record.device_id,
-					publicKey,
+					publicKey: identity.publicKey,
 					timestamp: headers["X-Opencode-Timestamp"],
 					nonce: headers["X-Opencode-Nonce"],
 					signature: headers["X-Opencode-Signature"],

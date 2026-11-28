@@ -18,7 +18,11 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
-import { loadPrivateKey } from "./sync-identity.js";
+import {
+	loadEnrolledSigningKey,
+	loadPrivateKey,
+	type StoredDeviceIdentity,
+} from "./sync-identity.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,8 +122,16 @@ function requestPath(url: string): string {
 	return `${parsed.pathname || "/"}${parsed.search}`;
 }
 
-function signCanonicalRequest(canonical: Buffer, options: SigningKeyOptions): string {
-	const keyData = loadPrivateKey(options.keysDir, options.dbPath, options.deviceId);
+function signCanonicalRequest(
+	canonical: Buffer,
+	options: SigningKeyOptions,
+	identity?: StoredDeviceIdentity,
+): string {
+	if (identity && identity.deviceId !== options.deviceId)
+		throw new Error("signing device mismatch");
+	const keyData = identity
+		? loadEnrolledSigningKey(options.keysDir, identity)
+		: loadPrivateKey(options.keysDir, options.dbPath, options.deviceId);
 	if (!keyData) throw new Error("private key missing");
 
 	let privateKeyObj: ReturnType<typeof createPrivateKey>;
@@ -137,13 +149,16 @@ function signCanonicalRequest(canonical: Buffer, options: SigningKeyOptions): st
  * Uses Node's native Ed25519 crypto.sign() — no ssh-keygen shelling.
  * Returns X-Opencode-Timestamp, X-Opencode-Nonce, X-Opencode-Signature headers.
  */
-export function signRequest(options: SignRequestOptions): SignedRequestHeaders {
+export function signRequest(
+	options: SignRequestOptions,
+	identity?: StoredDeviceIdentity,
+): SignedRequestHeaders {
 	const ts = options.timestamp ?? String(Math.floor(Date.now() / 1000));
 	const nonceValue = options.nonce ?? randomBytes(16).toString("hex");
 
 	const path = requestPath(options.url);
 	const canonical = buildCanonicalRequest(options.method, path, ts, nonceValue, options.bodyBytes);
-	const signature = signCanonicalRequest(canonical, options);
+	const signature = signCanonicalRequest(canonical, options, identity);
 
 	return {
 		"X-Opencode-Timestamp": ts,
@@ -394,20 +409,26 @@ export type AuthHeaders = Record<string, string> &
 /**
  * Build full auth headers including device ID and request signature.
  */
-export function buildAuthHeaders(options: BuildAuthHeadersOptions): AuthHeaders {
+export function buildAuthHeaders(
+	options: BuildAuthHeadersOptions,
+	identity?: StoredDeviceIdentity,
+): AuthHeaders {
 	return {
 		"X-Opencode-Device": options.deviceId,
 		...(options.bootstrapGrantId ? { "X-Codemem-Bootstrap-Grant": options.bootstrapGrantId } : {}),
-		...signRequest({
-			method: options.method,
-			url: options.url,
-			bodyBytes: options.bodyBytes,
-			keysDir: options.keysDir,
-			deviceId: options.deviceId,
-			dbPath: options.dbPath,
-			timestamp: options.timestamp,
-			nonce: options.nonce,
-		}),
+		...signRequest(
+			{
+				method: options.method,
+				url: options.url,
+				bodyBytes: options.bodyBytes,
+				keysDir: options.keysDir,
+				deviceId: options.deviceId,
+				dbPath: options.dbPath,
+				timestamp: options.timestamp,
+				nonce: options.nonce,
+			},
+			identity,
+		),
 	};
 }
 

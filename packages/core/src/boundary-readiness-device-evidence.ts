@@ -1,5 +1,6 @@
 import { readBoundaryFilterEvidence } from "./boundary-filter-evidence.js";
 import { buildBoundaryReadinessInventory } from "./boundary-readiness-inventory.js";
+import { readCoordinatorDeviceLocalEvidence } from "./coordinator-device-local.js";
 import { readBoundaryMigrationMode, readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { connectReadOnly, type Database } from "./db.js";
 import { getCodememConfigPath, readCodememConfigFileForMutation } from "./observer-config.js";
@@ -23,17 +24,6 @@ function reportConfig(path?: string) {
 	if (config.status === "valid") return config.data;
 	if (config.status === "missing" && !path && !process.env.CODEMEM_CONFIG) return {};
 	throw new Error("readiness_config_unavailable");
-}
-
-function localIdentity(db: Database) {
-	const rows = db.prepare("SELECT device_id, public_key FROM sync_device LIMIT 2").all() as {
-		device_id: string;
-		public_key: string;
-	}[];
-	const identity = rows[0];
-	if (rows.length !== 1 || !identity?.device_id?.trim() || !identity.public_key?.trim())
-		return null;
-	return identity;
 }
 
 type GroupRefresh = Pick<
@@ -62,20 +52,20 @@ export function isCurrentGroupRefresh(dbPath: string, refresh: GroupRefresh): bo
 }
 
 function snapshot(db: Database, config: Record<string, unknown>, refresh: GroupRefresh) {
-	const identity = localIdentity(db);
+	const identity = readCoordinatorDeviceLocalEvidence(db);
 	if (!identity) return null;
 	const cache = matchingGeneration(db, refresh);
 	if (typeof cache !== "string") return null;
 	const inventory = buildBoundaryReadinessInventory(db, {
 		coordinatorId: refresh.coordinatorUrl,
 		groupId: refresh.groupId,
-		deviceId: identity.device_id,
+		deviceId: identity.deviceId,
 	});
 	return {
 		...inventory,
 		groupGeneration: cache,
-		deviceId: identity.device_id,
-		publicKey: identity.public_key,
+		deviceId: identity.deviceId,
+		identity,
 		filterEvidence: readBoundaryFilterEvidence(db, config),
 	};
 }
