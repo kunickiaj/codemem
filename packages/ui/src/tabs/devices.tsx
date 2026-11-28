@@ -37,6 +37,7 @@ import { hasPendingPairingCode, onPendingPairingCode } from "../lib/pairing-hand
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
+import { confirmAndDisconnectDevice, type DeviceDisconnectDependencies } from "./device-disconnect";
 import {
 	DevicesToReview,
 	type DiscoveredDevicesApi,
@@ -120,6 +121,7 @@ export interface DevicesRendererOptions {
 	/** Team devices the coordinator lists that this device can pair with or approve. */
 	discoveredRows?: TeamSyncDiscoveredRow[];
 	discoveredApi?: DiscoveredDevicesApi;
+	disconnect?: Partial<DeviceDisconnectDependencies>;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
@@ -502,11 +504,11 @@ export function deviceIdentitySetupError(error: unknown): string {
 		device_inventory_truncated:
 			"The complete device inventory is unavailable. Refresh after coordinator evidence is available.",
 		binding_write_conflict:
-			"Device evidence conflicts with this setup. Refresh Devices or use Advanced review.",
+			"Device evidence conflicts with this setup. Refresh Devices and review the device again.",
 		binding_commit_conflict:
-			"Device evidence conflicts with this setup. Refresh Devices or use Advanced review.",
+			"Device evidence conflicts with this setup. Refresh Devices and review the device again.",
 		device_evidence_conflict:
-			"Device evidence conflicts with this setup. Refresh Devices or use Advanced review.",
+			"Device evidence conflicts with this setup. Refresh Devices and review the device again.",
 		target_identity_unavailable:
 			"A selected device or Identity is no longer available. Refresh Devices and choose again.",
 		device_unavailable:
@@ -520,7 +522,7 @@ export function deviceIdentitySetupError(error: unknown): string {
 	if (exactMessage) return exactMessage;
 	if (error.statusCode === 503) return "Identity setup is busy. Wait a moment, then retry.";
 	if (error.statusCode === 409) {
-		return "Device evidence conflicts with this setup. Refresh Devices or use Advanced review.";
+		return "Device evidence conflicts with this setup. Refresh Devices and review the device again.";
 	}
 	if (error.statusCode === 404) {
 		return "A selected device or Identity is no longer available. Refresh Devices and choose again.";
@@ -626,23 +628,28 @@ function SetupRecoveryAction({
 	}
 	if (item.state !== "conflicted") return null;
 	return (
-		<>
-			<p>Device evidence conflicts. Review and repair it before assigning an Identity.</p>
-			<div className="device-identity-card-actions">
-				<button
-					aria-label={`Open Advanced review for ${item.displayName}`}
-					className="settings-button"
-					onClick={() => options.onNavigate?.("advanced_sync")}
-					type="button"
-				>
-					Open Advanced review
-				</button>
-			</div>
-		</>
+		<p>
+			Device evidence conflicts, so {item.displayName} cannot be assigned an Identity yet. Unpair or
+			remove it below, then pair it again.
+		</p>
 	);
 }
 
 /** Lets a person remove an unused device without pairing or setting it up first. */
+/** A card that has no Identity projection still needs the paired ID to unpair by. */
+function inventoryItemTarget(
+	item: DeviceIdentityInventoryItemV1,
+	options: DevicesRendererOptions,
+): DeviceTarget {
+	return {
+		deviceId: item.deviceId,
+		displayName: item.displayName,
+		syncPeer: options.peerSyncMetadata
+			? deviceSyncPeer(item.deviceId, options.inventory, syncPeerLookup(options.peerSyncMetadata))
+			: undefined,
+	};
+}
+
 function SetupCardRemoval({
 	item,
 	options,
@@ -650,8 +657,7 @@ function SetupCardRemoval({
 	item: DeviceIdentityInventoryItemV1;
 	options: DevicesRendererOptions;
 }) {
-	const device = { deviceId: item.deviceId, displayName: item.displayName };
-	const actions = deviceRemovalMenuActions(device, item, options);
+	const actions = deviceRemovalMenuActions(inventoryItemTarget(item, options), item, options);
 	if (actions.length === 0) return null;
 	return (
 		<div className="device-identity-card-actions">
@@ -1441,44 +1447,71 @@ function deviceRenameMenuAction(options: DevicesRendererOptions, onRename: () =>
 }
 
 /** Removal and block act on a person's device other than this one. */
-type DeviceTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
+type DeviceTarget = Pick<DeviceProjection, "deviceId" | "displayName" | "syncPeer">;
 
 function deviceRemovalMenuActions(
 	device: DeviceTarget,
 	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
 	options: DevicesRendererOptions,
 ): MenuAction[] {
-	const confirmation = options.removalConfirmation;
 	if (
-		!confirmation ||
-		!inventoryItem ||
-		inventoryItem.state === "service" ||
-		inventoryItem.isLocal ||
+		inventoryItem?.state === "service" ||
+		inventoryItem?.isLocal ||
 		directLocalDeviceId(options) === device.deviceId
 	)
 		return [];
-	const enrolled = inventoryItem.sources.includes("coordinator_enrollment");
-	if (!enrolled && !inventoryItem.sources.includes("sync_peer")) return [];
-	const block: MenuAction[] =
-		options.enrolledDeviceBlock && enrolled
-			? [
-					{
-						ariaLabel: `Block ${device.displayName} permanently`,
-						disabled: identityMutationsBlocked(options),
-						label: "Block device permanently…",
-						onSelect: () => void blockFromMenu(device, options, confirmation.confirm),
-					},
-				]
-			: [];
-	return [
-		{
+	const confirmation = options.removalConfirmation;
+	const enrolled = inventoryItem?.sources.includes("coordinator_enrollment") === true;
+	// Unpair needs only the saved pairing, so it does not wait for the ownership inventory.
+	// The sync status reports a pairing even when the inventory failed to load.
+	const inventoryPaired = inventoryItem?.sources.includes("sync_peer") === true;
+	const paired = inventoryPaired || device.syncPeer?.paired === true;
+	const blocked = identityMutationsBlocked(options);
+	const actions: MenuAction[] = [];
+	if (confirmation && inventoryItem && (enrolled || inventoryPaired)) {
+		actions.push({
 			ariaLabel: `Remove ${device.displayName}`,
-			disabled: identityMutationsBlocked(options),
+			disabled: blocked,
 			label: "Remove device…",
 			onSelect: () => void removeFromMenu(device, options, confirmation),
-		},
-		...block,
-	];
+		});
+	}
+	if (paired) {
+		actions.push({
+			ariaLabel: `Unpair ${device.displayName}`,
+			disabled: false,
+			label: "Unpair device…",
+			onSelect: () => void disconnectFromMenu(device, options),
+		});
+	}
+	if (confirmation && options.enrolledDeviceBlock && enrolled) {
+		actions.push({
+			ariaLabel: `Block ${device.displayName} permanently`,
+			disabled: blocked,
+			label: "Block device permanently…",
+			onSelect: () => void blockFromMenu(device, options, confirmation.confirm),
+		});
+	}
+	return actions;
+}
+
+async function disconnectFromMenu(device: DeviceTarget, options: DevicesRendererOptions) {
+	// The pairing may be saved under another ID than the one shown, and the route needs that ID.
+	const pairedId = device.syncPeer?.deviceId ?? device.deviceId;
+	const feedback = await confirmAndDisconnectDevice(
+		{ deviceId: pairedId, displayName: device.displayName },
+		options.disconnect,
+	);
+	if (!feedback) return;
+	const refreshed = await Promise.resolve()
+		.then(() => options.onCommitted?.())
+		.catch(() => false);
+	const stale = refreshed === false;
+	setDeviceCommitStatus(
+		stale ? `${feedback.message} Refresh Devices to update this list.` : feedback.message,
+		stale ? "warning" : feedback.tone,
+	);
+	document.getElementById("devices-heading")?.focus();
 }
 
 async function blockFromMenu(
@@ -1550,7 +1583,7 @@ function removalFailureMessage(name: string, error: unknown): string {
 			case "coordinator_update_required":
 				return `Could not review removal of ${name}. Update the coordinator and apply its pending migrations, then try again. No removal was sent.`;
 			case "coordinator_admin_required":
-				return `Could not review removal of ${name}. This Viewer needs the coordinator admin secret. Contact your coordinator administrator. No removal was sent.`;
+				return `Could not review removal of ${name}. This Viewer needs the coordinator admin secret. Contact your coordinator administrator. No removal was sent. To stop syncing with it from this device only, choose Unpair device.`;
 			case "device_removal_unavailable":
 				if (error.statusCode === 0)
 					return `Could not load the removal preview for ${name}. Check your connection to the Viewer and refresh Devices before trying again. No removal was sent.`;
@@ -2383,6 +2416,7 @@ function ConfiguredFallbackInventory({
 								options={options}
 								previousIdentityName={previousIdentityName}
 							/>
+							<SetupCardRemoval item={item} options={options} />
 						</article>
 					</li>
 				);

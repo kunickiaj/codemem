@@ -70,7 +70,6 @@ describe("Sync peer badge compatibility", () => {
 		act(() =>
 			renderSyncPeersList(mount, {
 				peers: [peer],
-				onRemove: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);
@@ -117,7 +116,6 @@ describe("Sync peer card actions", () => {
 		act(() =>
 			renderSyncPeersList(mount, {
 				peers: [{ peer_device_id: "peer-a", name: "Peer", status: { peer_state: "online" } }],
-				onRemove: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);
@@ -174,7 +172,6 @@ describe("Sync peer observed activity labels", () => {
 			act(() =>
 				renderSyncPeersList(mount, {
 					peers: [peer],
-					onRemove: vi.fn(),
 					onSync: vi.fn(),
 				}),
 			);
@@ -290,7 +287,6 @@ describe("Advanced device Identity ownership", () => {
 		act(() =>
 			renderSyncPeersList(mount, {
 				peers: [{ peer_device_id: "peer-a", name: "Peer A", actor_id: "identity-hint" }],
-				onRemove: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);
@@ -314,7 +310,6 @@ describe("Advanced device Identity ownership", () => {
 		act(() =>
 			renderSyncPeersList(mount, {
 				peers: [{ peer_device_id: "peer-a", name: "Peer A", actor_id: "identity-hint" }],
-				onRemove: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);

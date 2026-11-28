@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import * as api from "../../lib/api";
 import { state } from "../../lib/state";
-import { renderSyncPeersList } from "./components/sync-peers";
-import { renderSyncActors, renderSyncPeers, setLoadSyncData } from "./people";
+import { renderSyncActors } from "./people";
 
-vi.mock("../../lib/api", () => ({ deletePeer: vi.fn() }));
+vi.mock("../../lib/api", () => ({}));
 vi.mock("./components/sync-peers", () => ({
 	renderSyncPeersList: vi.fn(),
 	canManageLegacyCoordinatorSpaces: () => false,
@@ -16,17 +14,6 @@ beforeEach(() => {
 	state.lastSyncPeers = [];
 	state.syncPeersSectionFeedback = null;
 	state.syncPeerFeedbackById.clear();
-	setLoadSyncData(async () => {});
-});
-
-it("says the device stays in its Teams after unpairing", async () => {
-	vi.mocked(api.deletePeer).mockResolvedValue({ binding: "kept" });
-	renderSyncPeers();
-	const options = vi.mocked(renderSyncPeersList).mock.calls[0]?.[1];
-	const feedback = await options?.onRemove("fixture-peer", "Desk");
-	expect(feedback?.message).toBe("Unpaired this device from Desk.");
-	expect(state.syncPeersSectionFeedback?.message).toBe(feedback?.message);
-	expect(api.deletePeer).toHaveBeenCalledWith("fixture-peer");
 });
 
 describe("people on a device that may not change them", () => {

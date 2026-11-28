@@ -5,7 +5,6 @@ import { PresencePip, type PresenceState } from "../../../components/primitives/
 import type { DeviceIdentityInventoryItemV1 } from "../../../lib/api/sync";
 import { formatTimestamp } from "../../../lib/format";
 import { isSyncRedactionEnabled, type SyncActor, state } from "../../../lib/state";
-import { coordinatorIsConfigured, unpairDescription } from "../../device-disconnect";
 import {
 	clearPeerScopeReview,
 	consumePeerScopeReviewRequest,
@@ -135,7 +134,6 @@ type SyncPeerStatus = NonNullable<SyncPeer["status"]> & {
 
 type SyncPeerCardProps = {
 	peer: SyncPeer;
-	onRemove: (peerId: string, label: string) => Promise<SyncActionFeedback>;
 	onSync: (peer: SyncPeer, address: string | undefined) => Promise<SyncActionFeedback | null>;
 };
 
@@ -293,10 +291,9 @@ function ScopeReviewNote({
 	return <div className="peer-meta">Advanced rule review is still pending for this device.</div>;
 }
 
-function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
+function SyncPeerCard({ peer, onSync }: SyncPeerCardProps) {
 	const peerId = String(peer.peer_device_id || "");
 	const displayName = peer.name || (peerId ? peerId.slice(0, 8) : "unknown");
-	const destructiveLabel = peer.name || peerId || displayName;
 	const trustSummary = derivePeerTrustSummary(peer);
 	const directionHint = DIRECTION_GLYPH[derivePeerDirection(peer)];
 	const peerStatus: SyncPeerStatus = peer.status || {};
@@ -347,8 +344,6 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 		() => state.syncPeerFeedbackById.get(peerId) ?? null,
 	);
 	const [syncBusy, setSyncBusy] = useState(false);
-	const [removeBusy, setRemoveBusy] = useState(false);
-	const [removeLabel, setRemoveLabel] = useState("Unpair device");
 
 	useEffect(() => {
 		if (rawPendingScopeReview && authorizedDomains.total > 0) clearPeerScopeReview(peerId);
@@ -357,8 +352,6 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 	useEffect(() => {
 		setFeedback(state.syncPeerFeedbackById.get(peerId) ?? null);
 		setSyncBusy(false);
-		setRemoveBusy(false);
-		setRemoveLabel("Unpair device");
 	}, [displayName, peer.actor_id, peerId]);
 
 	useEffect(() => {
@@ -391,30 +384,6 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 			if (nextFeedback) state.syncPeerFeedbackById.set(peerId, nextFeedback);
 		} finally {
 			setSyncBusy(false);
-		}
-	}
-
-	async function remove() {
-		if (!peerId) return;
-		const confirmed = await openSyncConfirmDialog({
-			title: `Unpair ${destructiveLabel}?`,
-			description: unpairDescription(destructiveLabel, coordinatorIsConfigured()),
-			confirmLabel: "Unpair",
-			cancelLabel: "Keep paired",
-			tone: "danger",
-		});
-		if (!confirmed) return;
-		setRemoveBusy(true);
-		setRemoveLabel("Removing…");
-		let ok = false;
-		try {
-			await onRemove(peerId, destructiveLabel);
-			ok = true;
-		} catch {
-			setRemoveLabel("Retry unpair");
-		} finally {
-			setRemoveBusy(false);
-			if (ok) setRemoveLabel("Unpair device");
 		}
 	}
 
@@ -532,14 +501,6 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 							}
 						>
 							{syncBusy ? "Syncing…" : "Sync now"}
-						</button>
-						<button
-							type="button"
-							className="settings-button danger"
-							disabled={removeBusy}
-							onClick={() => void remove()}
-						>
-							{removeLabel}
 						</button>
 					</div>
 
