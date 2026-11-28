@@ -5764,8 +5764,32 @@ interface SyncChannelReadOptions {
  * Channel requests never reach the bootstrap-grant fallback in the plain read
  * handlers: their reads are answered here, after the channel binding check.
  */
+/**
+ * Once direct Noise is on, the plain listener serves no device recorded as
+ * noise_required, whichever way it would authenticate. Both the device
+ * signature and a bootstrap grant authenticate the X-Opencode-Device named
+ * here, so the refusal comes first and uses no nonce. The marked pin-only
+ * status is the one exception: a grant worker needs it to be pinned.
+ */
+function registerPlaintextRefusal(app: Hono, options: SyncChannelReadOptions): void {
+	app.use("*", async (c, next) => {
+		const deviceId = (c.req.header("X-Opencode-Device") ?? "").trim();
+		const store = deviceId && !marksNoiseStatus(c) ? options.getStore() : null;
+		if (store && readPeerTransportPolicy(store.db, deviceId) === "noise_required") {
+			logDirectPeerAuthDiagnostic("transport_downgrade_refused");
+			return (
+				options.rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(), 401)
+			);
+		}
+		await next();
+	});
+}
+
 function registerSyncChannelRestriction(app: Hono, options: SyncChannelReadOptions): void {
-	if (options.mode.kind === "plain-direct") return;
+	if (options.mode.kind === "plain-direct") {
+		if (noiseActive(options.mode)) registerPlaintextRefusal(app, options);
+		return;
+	}
 	app.use("*", async (c, next) => {
 		if (!channelRouteAllowed(options.mode, c.req.method, c.req.path)) {
 			return c.json({ error: "not found" }, 404);
@@ -5960,32 +5984,21 @@ function refusedPeerRead(
 	return c.json(unauthorizedPayload(), 401);
 }
 
+/** A status request marked transport=noise1 inside its signed target. */
+function marksNoiseStatus(c: Context): boolean {
+	return c.req.path === "/v1/status" && c.req.query("transport") === "noise1";
+}
+
 /**
- * The answer to a status request a bootstrap grant authorized, or null to
- * serve the full status. A worker that marks its request transport=noise1
- * (inside the signed target) gets only the pin, and fetches the rest over
- * Noise. Once direct Noise is on, an unmarked grant status from a worker
- * this device knows speaks Noise is refused.
+ * The pin-only answer to a marked status, or null to serve the full status.
+ * Only while direct Noise is on, and for either auth path: a worker that the
+ * grant already pinned still gets only the pin when it retries. The rest of
+ * the status, with its reset metadata, comes over Noise.
  */
-function grantStatusAnswer(
-	c: Context,
-	store: MemoryStore,
-	read: PeerRead,
-	mode: SyncServerMode,
-): Response | null {
-	if (!read.viaGrant) return null;
-	if (c.req.query("transport") === "noise1") {
-		const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-		return c.json({ device_id: deviceId, fingerprint, transport: "noise1" });
-	}
-	if (
-		noiseActive(mode) &&
-		readPeerTransportPolicy(store.db, read.auth.deviceId) === "noise_required"
-	) {
-		logDirectPeerAuthDiagnostic("bootstrap_grant_plaintext_refused");
-		return c.json(unauthorizedPayload(), 401);
-	}
-	return null;
+function grantStatusAnswer(c: Context, store: MemoryStore, mode: SyncServerMode): Response | null {
+	if (!noiseActive(mode) || !marksNoiseStatus(c)) return null;
+	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	return c.json({ device_id: deviceId, fingerprint, transport: "noise1" });
 }
 
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
@@ -6019,9 +6032,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		return (async () => {
 			const read = await authorizePeerRead(c, store, rateLimitedResponse, { allowGrant: true });
 			if (read instanceof Response) return read;
-			return (
-				grantStatusAnswer(c, store, read, mode) ?? serveAuthenticatedStatus(c, store, read.auth)
-			);
+			return grantStatusAnswer(c, store, mode) ?? serveAuthenticatedStatus(c, store, read.auth);
 		})();
 	});
 

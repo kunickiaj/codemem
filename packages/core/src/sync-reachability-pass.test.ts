@@ -17,6 +17,7 @@ import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
 import { runSyncPass } from "./sync-orchestration.js";
 import { consecutiveConnectivityFailures, type SyncPassOptions, syncOnce } from "./sync-pass.js";
+import { PeerTransportRefused } from "./sync-peer-transport.js";
 import {
 	maintainSyncReachability,
 	runReachableSyncPass,
@@ -387,6 +388,20 @@ it.each([
 	expect(result).toMatchObject({ ok: false, transport: "wait" });
 	expect(execute).toHaveBeenCalledTimes(2);
 	expect(scoped).not.toHaveBeenCalled();
+});
+
+it("falls back to the encrypted relay when the policy refuses a plaintext downgrade", async () => {
+	// Arrange: every direct address refuses the upgrade of a noise_required peer.
+	const relay = approvedClient();
+	const execute = vi
+		.fn<RequestJsonExecutor>()
+		.mockRejectedValue(new PeerTransportRefused("noise_required: plaintext refused"));
+	// Act.
+	const result = await runReachableSyncPass(db, "peer", addresses, options(execute, relay));
+	// Assert.
+	expect(result).toMatchObject({ ok: true, transport: "relay" });
+	expect(execute).toHaveBeenCalledTimes(2);
+	expect(scoped).toHaveBeenCalledOnce();
 });
 
 it("falls back using the approved relay, selected scope, current pin and caller lifetime", async () => {

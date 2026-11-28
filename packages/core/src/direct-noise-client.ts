@@ -125,7 +125,7 @@ function upgradeRequest(endpoint: DirectNoiseEndpoint, target: string): string {
 async function openStream(
 	endpoint: DirectNoiseEndpoint,
 	options: { signal: AbortSignal; deadlineMs: number },
-): Promise<OwnedPeerHttpConnection> {
+): Promise<OwnedPeerHttpConnection & { pin: string }> {
 	const pin = currentPeerPin(endpoint.db, endpoint.peerDeviceId);
 	if (!pin) throw new Error("peer not pinned");
 	const sessionId = randomBytes(16);
@@ -150,10 +150,16 @@ async function openStream(
 		socket.resume();
 		prepared.release(performance.now());
 		const secured = await prepared.authenticated;
+		// A re-pin during the handshake means this stream proved a key the store no longer trusts.
+		if (currentPeerPin(endpoint.db, endpoint.peerDeviceId) !== pin) {
+			secured.duplex.destroy();
+			throw new Error("peer key changed during the handshake");
+		}
 		const raw = socket;
 		const completion = Promise.all([finished(secured.duplex), finished(raw)]).then(() => {});
 		void completion.catch(() => {});
 		return {
+			pin,
 			duplex: secured.duplex,
 			completion,
 			async dispose(error) {
@@ -175,18 +181,26 @@ async function openStream(
  */
 export function directNoiseConnectionFactory(
 	endpoint: DirectNoiseEndpoint,
-): PeerHttpConnectionFactory & { lastFailure(): Error | undefined } {
+): PeerHttpConnectionFactory & {
+	lastFailure(): Error | undefined;
+	/** The pin the last opened stream authenticated, checked again just before inner traffic. */
+	authenticatedPin(): string | null;
+} {
 	let failure: Error | undefined;
+	let pin: string | null = null;
 	return {
 		async open(options) {
 			try {
 				failure = undefined;
-				return await openStream(endpoint, options);
+				const stream = await openStream(endpoint, options);
+				pin = stream.pin;
+				return stream;
 			} catch (error) {
 				failure = error instanceof Error ? error : new Error("Direct Noise open failed");
 				throw failure;
 			}
 		},
 		lastFailure: () => failure,
+		authenticatedPin: () => pin,
 	};
 }

@@ -1,22 +1,32 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import {
 	applyReplicationOps,
+	buildDirectPeerAuthHeaders,
 	fingerprintPublicKey,
+	generateKeypair,
+	loadPublicKey,
 	MemoryStore,
 	PeerTransportRefused,
 	peerTransportExecutor,
 	readPeerTransportPolicy,
+	resolveKeyPaths,
 	syncOnce,
 } from "@codemem/core";
 import { serve } from "@hono/node-server";
 import { afterEach, expect, it, vi } from "vitest";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
+import { runReachableSyncPass } from "../../core/src/sync-reachability-pass.js";
 import { promotePeerToNoiseRequired } from "../../core/src/sync-transport-policy.js";
 import { createSyncApp } from "./sync-app.js";
-import { channelStore, memoryOp } from "./sync-channel-dispatch-test-fixtures.js";
+import {
+	channelStore,
+	memoryOp,
+	nonceCount,
+	SCOPE,
+} from "./sync-channel-dispatch-test-fixtures.js";
 import { createGuardedSyncServer } from "./sync-listener-guard.js";
 
 const cleanups: (() => unknown)[] = [];
@@ -27,18 +37,33 @@ afterEach(async () => {
 });
 
 /** A real server store behind the guarded listener, and a client store that pinned it. */
-async function pair(options: { gate: boolean }) {
+async function pair(options: {
+	gate: boolean;
+	/** Runs as the plain listener receives each request, before it answers. */
+	onPlain?: (path: string) => void;
+	/** Runs each time the upgrade gate opens the server store, during admission. */
+	onGate?: () => void;
+}) {
 	const f = await channelStore();
 	cleanups.push(f.cleanup);
 	const plainPaths: string[] = [];
 	const app = createSyncApp({ storeFactory: f.storeFactory });
 	const fetch = (request: Request) => {
-		plainPaths.push(new URL(request.url).pathname);
+		const path = new URL(request.url).pathname;
+		plainPaths.push(path);
+		options.onPlain?.(path);
 		return app.fetch(request);
 	};
 	const keysDir = join(dirname(f.peerKeysDir), "local-keys");
 	const createServer = createGuardedSyncServer({
-		directNoise: { storeFactory: f.storeFactory, keysDir, active: options.gate },
+		directNoise: {
+			storeFactory: () => {
+				options.onGate?.();
+				return f.storeFactory();
+			},
+			keysDir,
+			active: options.gate,
+		},
 	});
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const started = serve({ fetch, hostname: "127.0.0.1", port: 0, createServer }, () =>
@@ -254,4 +279,137 @@ it("pins with a grant in plaintext, then clears the grant only after a Noise sta
 			.pluck()
 			.get(p.localDeviceId),
 	).toBeNull();
+});
+
+it("refuses plaintext when the peer is promoted while its upgrade is pending", async () => {
+	let client: MemoryStore | undefined;
+	let serverDeviceId = "";
+	// The old listener answers the upgrade as an ordinary 404, and the promotion lands first.
+	const p = await pair({
+		gate: false,
+		onPlain: (path) => {
+			if (path === "/v1/noise" && client)
+				promotePeerToNoiseRequired(client.db, serverDeviceId, "transport_statement");
+		},
+	});
+	client = p.client;
+	serverDeviceId = p.localDeviceId;
+
+	const result = await p.sync();
+
+	expect(result.ok).toBe(false);
+	expect(result.error).toContain("noise_required");
+	expect(syncPaths(p.plainPaths)).toEqual([]);
+});
+
+it("does not let a plaintext status unlock a snapshot over Noise", async () => {
+	const p = await pair({ gate: false });
+	const execute = peerTransportExecutor({
+		db: p.client.db,
+		peerDeviceId: p.localDeviceId,
+		localDeviceId: p.peerDeviceId,
+		keysDir: p.peerKeysDir,
+		active: true,
+	});
+	const statusUrl = `http://${p.address}/v1/status`;
+	const headers = buildDirectPeerAuthHeaders({
+		deviceId: p.peerDeviceId,
+		recipientId: p.localDeviceId,
+		method: "GET",
+		url: statusUrl,
+		bodyBytes: Buffer.alloc(0),
+		keysDir: p.peerKeysDir,
+	});
+	expect((await execute("GET", statusUrl, { headers }))[0]).toBe(200);
+	promotePeerToNoiseRequired(p.client.db, p.localDeviceId, "transport_statement");
+
+	await expect(execute("GET", `http://${p.address}/v1/snapshot?limit=1`)).rejects.toThrow(
+		/status_first/,
+	);
+	expect(syncPaths(p.plainPaths)).toEqual(["/v1/status"]);
+});
+
+it("sends no inner request and promotes nothing when the pin rotates during the handshake", async () => {
+	let rotate = () => {};
+	const p = await pair({ gate: true, onGate: () => rotate() });
+	const otherDir = join(dirname(p.peerKeysDir), "local-keys-other");
+	mkdirSync(otherDir, { recursive: true });
+	generateKeypair(...resolveKeyPaths(otherDir));
+	const other = loadPublicKey(otherDir);
+	if (!other) throw new Error("second fixture key missing");
+	rotate = () => {
+		rotate = () => {};
+		p.client.db
+			.prepare(
+				"UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ? WHERE peer_device_id = ?",
+			)
+			.run(other, fingerprintPublicKey(other), p.localDeviceId);
+	};
+
+	const result = await p.sync();
+
+	expect(result.ok).toBe(false);
+	expect(result.error).toContain("peer key changed during the handshake");
+	expect(p.policy()).toBe("legacy_plaintext");
+	// Only the upgrade request used a nonce. No signed request crossed the stream.
+	expect(nonceCount(p)).toBe(1);
+});
+
+it("sends no plaintext to any address when a reachability pass meets a required peer", async () => {
+	const p = await pair({ gate: false });
+	const second = await pair({ gate: false });
+	promotePeerToNoiseRequired(p.client.db, p.localDeviceId, "pairing_payload");
+
+	const result = await runReachableSyncPass(
+		p.client.db,
+		p.localDeviceId,
+		[p.address, second.address],
+		{
+			keysDir: p.peerKeysDir,
+			dbPath: p.client.dbPath,
+			scanner: p.client.scanner,
+			directNoise: { active: true },
+			reachability: { scopeId: SCOPE, logicalOrigin: "https://relay.codemem.invalid" },
+		},
+	);
+
+	expect(result.ok).toBe(false);
+	expect(syncPaths(p.plainPaths)).toEqual([]);
+	expect(syncPaths(second.plainPaths)).toEqual([]);
+});
+
+it("does not follow a redirect on the plaintext grant status", async () => {
+	const p = await pair({ gate: false });
+	promotePeerToNoiseRequired(p.client.db, p.localDeviceId, "transport_statement");
+	p.client.db
+		.prepare(
+			"UPDATE sync_peers SET pending_bootstrap_grant_id = 'grant-1' WHERE peer_device_id = ?",
+		)
+		.run(p.localDeviceId);
+	const redirected: string[] = [];
+	const target = createHttpServer((request, response) => {
+		redirected.push(request.url ?? "");
+		response.writeHead(404).end();
+	});
+	await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+	cleanups.push(() => new Promise((resolve) => target.close(resolve)));
+	const targetPort = (target.address() as AddressInfo).port;
+	const redirector = createHttpServer((_request, response) => {
+		response.writeHead(307, {
+			location: `http://127.0.0.1:${targetPort}/v1/status?transport=noise1`,
+		});
+		response.end();
+	});
+	await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+	cleanups.push(() => new Promise((resolve) => redirector.close(resolve)));
+
+	const result = await syncOnce(
+		p.client.db,
+		p.localDeviceId,
+		[`127.0.0.1:${(redirector.address() as AddressInfo).port}`],
+		{ keysDir: p.peerKeysDir, dbPath: p.client.dbPath, directNoise: { active: true } },
+	);
+
+	expect(result.ok).toBe(false);
+	expect(redirected).toEqual([]);
 });

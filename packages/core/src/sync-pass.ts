@@ -60,7 +60,7 @@ import {
 } from "./sync-failure-classification.js";
 import { buildBaseUrl, type RequestJsonExecutor } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
-import { peerTransportExecutor } from "./sync-peer-transport.js";
+import { peerTransportExecutorFor } from "./sync-peer-transport.js";
 import {
 	ACCESS_CLEANUP_OP_TYPE,
 	applyReplicationOps,
@@ -2389,23 +2389,6 @@ function peerPin(
 	};
 }
 
-/** Every direct exchange without an injected executor goes through the shared transport policy. */
-function defaultPeerExecutor(
-	db: Database,
-	peer: { peerDeviceId: string; localDeviceId: string; pendingBootstrapGrantId?: string },
-	options: SyncPassOptions | undefined,
-): RequestJsonExecutor {
-	return peerTransportExecutor({
-		db,
-		peerDeviceId: peer.peerDeviceId,
-		localDeviceId: peer.localDeviceId,
-		bootstrapGrantId: peer.pendingBootstrapGrantId,
-		keysDir: options?.keysDir,
-		dbPath: options?.dbPath,
-		...options?.directNoise,
-	});
-}
-
 function unavailableIdentityResult(
 	db: Database,
 	peerDeviceId: string,
@@ -2465,12 +2448,7 @@ function prepareSyncExchange(
 		kind: "ready",
 		context: {
 			requestExecutor:
-				options?.requestExecutor ??
-				defaultPeerExecutor(
-					db,
-					{ peerDeviceId, localDeviceId: deviceId, pendingBootstrapGrantId },
-					options,
-				),
+				options?.requestExecutor ?? peerTransportExecutorFor(db, peerDeviceId, options),
 			recordAttempt: (attemptDb, peerId, attempt) => {
 				const record = options?.attemptRecorder ?? recordSyncAttempt;
 				// This exchange dials a peer directly. Relay selection happens outside syncOnce.

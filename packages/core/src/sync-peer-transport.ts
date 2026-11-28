@@ -1,8 +1,13 @@
 import type { Database } from "./db.js";
-import { DirectNoiseNotOffered, directNoiseConnectionFactory } from "./direct-noise-client.js";
+import {
+	currentPeerPin,
+	DirectNoiseNotOffered,
+	directNoiseConnectionFactory,
+} from "./direct-noise-client.js";
 import { DIRECT_NOISE_LOGICAL_ORIGIN } from "./direct-noise-upgrade.js";
 import { createPeerHttpExecutor } from "./peer-http-client.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
 import {
 	DIRECT_NOISE_ACTIVE,
@@ -18,11 +23,13 @@ import {
  *   plaintext retry on this or any later request.
  * - legacy_plaintext: one Noise attempt per address. If the peer does not
  *   switch, plaintext for the rest of the executor's life, when legacy is
- *   allowed. A status answered over Noise promotes the peer to noise_required.
+ *   allowed. The policy is read again just before every plaintext request.
  *
- * A snapshot request is refused until a status exchange has succeeded at the
- * same address. While direct Noise is switched off this returns the
- * plaintext executor unchanged.
+ * A status counts only when it names the peer's current pin. It unlocks
+ * snapshots only on the transport that carried it and only while that pin
+ * stays current. A status over Noise, on a stream the current pin
+ * authenticated, promotes the peer to noise_required. While direct Noise is
+ * switched off this returns the plaintext executor unchanged.
  */
 export interface PeerTransportOptions {
 	readonly db: Database;
@@ -45,9 +52,12 @@ export interface PeerTransportOptions {
 	readonly bootstrapGrantId?: string;
 }
 
+type Transport = "noise" | "plaintext";
+
 type AddressState = {
-	mode: "untried" | "noise" | "plaintext";
-	statusSeen: boolean;
+	mode: "untried" | Transport;
+	/** The transport and pin of the last status that named the current pin. */
+	validated: { transport: Transport; pin: string } | null;
 	grantPinned: boolean;
 };
 
@@ -66,77 +76,105 @@ function endpointOf(url: URL) {
 
 type ExecutorArgs = Parameters<RequestJsonExecutor>;
 type ExecutorResult = Awaited<ReturnType<RequestJsonExecutor>>;
+type Sent = { result: ExecutorResult; transport: Transport; pin: string | null };
 
 class PeerTransport {
 	private readonly states = new Map<string, AddressState>();
-	private readonly plaintext: RequestJsonExecutor;
+	private readonly plaintextExecutor: RequestJsonExecutor;
 
 	constructor(private readonly options: PeerTransportOptions) {
-		this.plaintext = options.plaintext ?? requestJson;
+		this.plaintextExecutor = options.plaintext ?? requestJson;
 	}
 
 	async execute(...request: ExecutorArgs): Promise<ExecutorResult> {
 		const parsed = new URL(request[1]);
 		const state = this.stateFor(parsed.origin);
-		if (parsed.pathname === "/v1/snapshot" && !state.statusSeen)
-			throw new PeerTransportRefused("status_first: a snapshot needs a status exchange first");
-		const result = await this.attempt(state, request);
-		if (parsed.pathname === "/v1/status" && result[0] === 200) this.statusSucceeded(state);
-		return result;
+		const sent = await this.attempt(state, request, parsed.pathname === "/v1/snapshot");
+		if (parsed.pathname === "/v1/status") this.recordStatus(state, sent);
+		return sent.result;
 	}
 
 	private stateFor(origin: string): AddressState {
 		const state = this.states.get(origin) ?? {
 			mode: "untried",
-			statusSeen: false,
+			validated: null,
 			grantPinned: false,
 		};
 		this.states.set(origin, state);
 		return state;
 	}
 
-	private statusSucceeded(state: AddressState): void {
-		state.statusSeen = true;
-		if (state.mode !== "noise") return;
-		promotePeerToNoiseRequired(
-			this.options.db,
-			this.options.peerDeviceId,
-			"authenticated_exchange",
-		);
+	private policy() {
+		return readPeerTransportPolicy(this.options.db, this.options.peerDeviceId);
 	}
 
-	private async attempt(state: AddressState, request: ExecutorArgs): Promise<ExecutorResult> {
-		const policy = readPeerTransportPolicy(this.options.db, this.options.peerDeviceId);
-		if (state.mode === "plaintext" && policy !== "noise_required")
-			return this.plaintext(...request);
-		if (policy === "noise_required") await this.pinWithGrant(state, new URL(request[1]).origin);
+	/** Snapshots need a status on the same transport, naming the pin that is current now. */
+	private requireStatusFor(state: AddressState, transport: Transport): void {
+		const pin = currentPeerPin(this.options.db, this.options.peerDeviceId);
+		const validated = state.validated;
+		if (!validated || validated.transport !== transport || validated.pin !== pin)
+			throw new PeerTransportRefused(
+				"status_first: a snapshot needs a status on the same transport and pin",
+			);
+	}
+
+	private recordStatus(state: AddressState, sent: Sent): void {
+		const pin = currentPeerPin(this.options.db, this.options.peerDeviceId);
+		const [status, payload] = sent.result;
+		const names =
+			status === 200 && pin !== null && payload?.fingerprint === fingerprintPublicKey(pin);
+		// A Noise status counts only if the stream that carried it proved the current pin.
+		const valid = names && (sent.transport === "plaintext" || sent.pin === pin);
+		state.validated = valid && pin ? { transport: sent.transport, pin } : null;
+		// Promote only for this request: over Noise, on a stream the current pin authenticated.
+		if (valid && sent.transport === "noise")
+			promotePeerToNoiseRequired(
+				this.options.db,
+				this.options.peerDeviceId,
+				"authenticated_exchange",
+			);
+	}
+
+	private async attempt(
+		state: AddressState,
+		request: ExecutorArgs,
+		snapshot: boolean,
+	): Promise<Sent> {
+		if (state.mode === "plaintext" && this.policy() !== "noise_required")
+			return this.sendPlaintext(state, request, snapshot);
+		if (snapshot) this.requireStatusFor(state, "noise");
+		if (this.policy() === "noise_required") await this.pinWithGrant(state, request);
 		try {
-			const result = await this.overNoise(request);
+			const sent = await this.overNoise(request);
 			state.mode = "noise";
-			return result;
+			return sent;
 		} catch (error) {
 			if (!(error instanceof DirectNoiseNotOffered)) throw error;
-			this.refuseDowngrade(policy, state, error);
+			if (state.mode === "noise")
+				throw new PeerTransportRefused(`noise_required: ${error.message}; plaintext refused`);
+			if (this.options.allowLegacy === false)
+				throw new PeerTransportRefused(`legacy_not_allowed: ${error.message}`);
 			state.mode = "plaintext";
-			return this.plaintext(...request);
+			return this.sendPlaintext(state, request, snapshot);
 		}
 	}
 
-	private refuseDowngrade(
-		policy: ReturnType<typeof readPeerTransportPolicy>,
+	/** Reads the policy immediately before sending, so a promotion during an await still counts. */
+	private async sendPlaintext(
 		state: AddressState,
-		error: DirectNoiseNotOffered,
-	): void {
-		if (policy === "noise_required" || state.mode === "noise")
-			throw new PeerTransportRefused(`noise_required: ${error.message}; plaintext refused`);
-		if (this.options.allowLegacy === false)
-			throw new PeerTransportRefused(`legacy_not_allowed: ${error.message}`);
+		request: ExecutorArgs,
+		snapshot: boolean,
+	): Promise<Sent> {
+		if (this.policy() === "noise_required")
+			throw new PeerTransportRefused("noise_required: plaintext refused");
+		if (snapshot) this.requireStatusFor(state, "plaintext");
+		return { result: await this.plaintextExecutor(...request), transport: "plaintext", pin: null };
 	}
 
-	private async pinWithGrant(state: AddressState, origin: string): Promise<void> {
+	private async pinWithGrant(state: AddressState, request: ExecutorArgs): Promise<void> {
 		const grantId = this.options.bootstrapGrantId;
 		if (!grantId || state.grantPinned) return;
-		const url = `${origin}/v1/status?transport=noise1`;
+		const url = `${new URL(request[1]).origin}/v1/status?transport=noise1`;
 		const headers = buildDirectPeerAuthHeaders({
 			deviceId: this.options.localDeviceId,
 			recipientId: this.options.peerDeviceId,
@@ -147,22 +185,23 @@ class PeerTransport {
 			dbPath: this.options.dbPath,
 			bootstrapGrantId: grantId,
 		});
-		const [status] = await this.plaintext("GET", url, { headers });
+		const [status] = await this.plaintextExecutor("GET", url, { headers, redirect: "error" });
 		if (status !== 200) throw new PeerTransportRefused(`bootstrap_pin_failed: status ${status}`);
 		state.grantPinned = true;
 	}
 
-	private async overNoise([method, url, requestOptions]: ExecutorArgs): Promise<ExecutorResult> {
+	private async overNoise([method, url, requestOptions = {}]: ExecutorArgs): Promise<Sent> {
 		const parsed = new URL(url);
 		const endpoint = endpointOf(parsed);
 		if (!endpoint) throw new DirectNoiseNotOffered(`${parsed.protocol} address`);
 		const factory = directNoiseConnectionFactory({ ...this.options, ...endpoint });
-		const execute = createPeerHttpExecutor({ factory });
+		const execute = createPeerHttpExecutor({ factory, signal: requestOptions.signal });
 		// The caller signed the path and query, which the logical origin keeps unchanged.
 		const logical = `${DIRECT_NOISE_LOGICAL_ORIGIN}${parsed.pathname}${parsed.search}`;
-		return execute(method, logical, requestOptions).catch((error: unknown) => {
+		const result = await execute(method, logical, requestOptions).catch((error: unknown) => {
 			throw factory.lastFailure() ?? error;
 		});
+		return { result, transport: "noise", pin: factory.authenticatedPin() };
 	}
 }
 
@@ -170,4 +209,34 @@ export function peerTransportExecutor(options: PeerTransportOptions): RequestJso
 	if (!(options.active ?? DIRECT_NOISE_ACTIVE)) return options.plaintext ?? requestJson;
 	const transport = new PeerTransport(options);
 	return (method, url, requestOptions) => transport.execute(method, url, requestOptions);
+}
+
+/**
+ * The policy executor for a sync pass, reading this device's identity and any
+ * pending bootstrap grant for the peer from the store. Every direct sync path
+ * gets its executor here.
+ */
+export function peerTransportExecutorFor(
+	db: Database,
+	peerDeviceId: string,
+	options: {
+		keysDir?: string;
+		dbPath?: string;
+		directNoise?: { active?: boolean; allowLegacy?: boolean };
+	} = {},
+): RequestJsonExecutor {
+	const local = db.prepare("SELECT device_id FROM sync_device LIMIT 1").pluck().get();
+	const grant = db
+		.prepare("SELECT pending_bootstrap_grant_id FROM sync_peers WHERE peer_device_id = ?")
+		.pluck()
+		.get(peerDeviceId);
+	return peerTransportExecutor({
+		db,
+		peerDeviceId,
+		localDeviceId: typeof local === "string" ? local : "",
+		bootstrapGrantId: typeof grant === "string" && grant.trim() ? grant.trim() : undefined,
+		keysDir: options.keysDir,
+		dbPath: options.dbPath,
+		...options.directNoise,
+	});
 }

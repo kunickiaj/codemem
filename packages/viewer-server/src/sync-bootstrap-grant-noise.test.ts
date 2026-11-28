@@ -65,7 +65,7 @@ async function seed(noiseActive: boolean) {
 		storeFactory: f.storeFactory,
 		mode: { kind: "plain-direct", noiseActive },
 	});
-	const read = async (target: string) => {
+	const read = async (target: string, auth: { grant: boolean } = { grant: true }) => {
 		const url = `${ORIGIN}${target}`;
 		const headers = buildDirectPeerAuthHeaders({
 			deviceId: f.peerDeviceId,
@@ -74,7 +74,7 @@ async function seed(noiseActive: boolean) {
 			url,
 			bodyBytes: Buffer.alloc(0),
 			keysDir: f.peerKeysDir,
-			bootstrapGrantId: "grant-1",
+			bootstrapGrantId: auth.grant ? "grant-1" : undefined,
 		});
 		const response = await app.fetch(new Request(url, { headers }));
 		return { status: response.status, body: (await response.json()) as Record<string, unknown> };
@@ -123,4 +123,48 @@ it("does not accept a grant on snapshots once Noise is on", async () => {
 
 	expect(status).toBe(401);
 	expect(s.fetch).not.toHaveBeenCalled();
+});
+
+const pinOnly = (s: Awaited<ReturnType<typeof seed>>) => ({
+	device_id: s.localDeviceId,
+	fingerprint: fingerprintPublicKey(s.localPublicKey),
+	transport: "noise1",
+});
+
+it("answers a pinned worker's marked retry with the pin only, with or without the grant", async () => {
+	const s = await seed(true);
+	expect((await s.read("/v1/status?transport=noise1")).status).toBe(200);
+
+	const signedOnly = await s.read("/v1/status?transport=noise1", { grant: false });
+	const withGrant = await s.read("/v1/status?transport=noise1");
+
+	expect(signedOnly).toEqual({ status: 200, body: pinOnly(s) });
+	expect(withGrant).toEqual({ status: 200, body: pinOnly(s) });
+});
+
+it("refuses a pinned noise_required worker's signed plaintext reads once Noise is on", async () => {
+	const s = await seed(true);
+	expect((await s.read("/v1/status?transport=noise1")).status).toBe(200);
+	promotePeerToNoiseRequired(s.store.db, s.peerDeviceId, "authenticated_exchange");
+
+	const status = await s.read("/v1/status", { grant: false });
+	const snapshot = await s.read("/v1/snapshot?generation=1&snapshot_id=x&limit=1", {
+		grant: false,
+	});
+
+	expect(status).toEqual({ status: 401, body: { error: "unauthorized" } });
+	expect(snapshot).toEqual({ status: 401, body: { error: "unauthorized" } });
+});
+
+it("treats the marker as an ordinary status and serves required workers while Noise is off", async () => {
+	const s = await seed(false);
+	const marked = await s.read("/v1/status?transport=noise1");
+	promotePeerToNoiseRequired(s.store.db, s.peerDeviceId, "authenticated_exchange");
+	const unmarked = await s.read("/v1/status", { grant: false });
+
+	expect(marked.status).toBe(200);
+	expect(marked.body).not.toHaveProperty("transport");
+	expect(marked.body).toHaveProperty("sync_reset");
+	expect(unmarked.status).toBe(200);
+	expect(Object.keys(marked.body).sort()).toEqual(Object.keys(unmarked.body).sort());
 });
