@@ -4,6 +4,7 @@ import {
 	ensureMemoryCopyAmbiguitySchema,
 	listAmbiguousMemoryCopies,
 	repairAmbiguousMemoryCopy,
+	SIBLING_COUNT_SQL,
 } from "./memory-copy-ambiguity.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 
@@ -93,5 +94,15 @@ it("scans for stored duplicates only when it creates the record", () => {
 	expect(afterReopen).toEqual([]);
 	expect(listAmbiguousMemoryCopies(db)).toEqual([
 		{ scope_id: "scope-b", memory_ids: [third, third + 1] },
+	]);
+});
+
+it("counts a new row's siblings on the import key index, not by scanning its scope", () => {
+	const plan = db
+		.prepare(`EXPLAIN QUERY PLAN ${SIBLING_COUNT_SQL.replaceAll(/NEW\.\w+/g, "?")}`)
+		.all("key:a", "scope-a") as Array<{ detail: string }>;
+
+	expect(plan.map((step) => step.detail)).toEqual([
+		expect.stringContaining("INDEX idx_memory_items_import_key (import_key=?)"),
 	]);
 });

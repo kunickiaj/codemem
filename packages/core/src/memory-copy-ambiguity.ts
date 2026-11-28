@@ -26,8 +26,14 @@ export type AmbiguousCopyRepair =
 
 const RECORD_DUPLICATE = `INSERT OR IGNORE INTO memory_ambiguous_copies(import_key, scope_key, first_seen_at)
 	VALUES (NEW.import_key, COALESCE(NEW.scope_id, ''), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
-const HAS_SIBLING = `NEW.import_key IS NOT NULL AND (SELECT COUNT(*) FROM memory_items
-	WHERE import_key = NEW.import_key AND scope_id IS NEW.scope_id) > 1`;
+/**
+ * Copies stored under the new row's key in its scope. The unary plus keeps SQLite
+ * off the scope index, which would scan the whole scope on every insert, so the
+ * count reads the import key index instead.
+ */
+export const SIBLING_COUNT_SQL = `SELECT COUNT(*) FROM memory_items
+	WHERE import_key = NEW.import_key AND +scope_id IS NEW.scope_id`;
+const HAS_SIBLING = `NEW.import_key IS NOT NULL AND (${SIBLING_COUNT_SQL}) > 1`;
 
 const CREATE_TRIGGERS = `CREATE TRIGGER IF NOT EXISTS memory_ambiguous_copies_on_insert
 	AFTER INSERT ON memory_items WHEN ${HAS_SIBLING}
