@@ -2193,7 +2193,7 @@ describe("Device safe rendering", () => {
 	});
 });
 describe("Device setup review", () => {
-	it("routes missing-Identity recovery to Sharing", () => {
+	it("routes missing-Identity recovery to Identity administration", () => {
 		const onNavigate = vi.fn();
 		mount(intent({ identities: [] }), reconciliation(), {
 			inventory: inventory([inventoryItem("setup-device", "Home Laptop", "setup_required")]),
@@ -2203,12 +2203,12 @@ describe("Device setup review", () => {
 		act(() =>
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Open Sharing",
+					(button) => button.textContent === "Open Identity administration",
 				) as HTMLButtonElement
 			).click(),
 		);
 
-		expect(onNavigate).toHaveBeenCalledWith("sharing");
+		expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
 	});
 
 	it("reviews exactly the selected devices without per-device confirmation", async () => {
@@ -2501,6 +2501,8 @@ describe("Device setup state", () => {
 		>(
 			".device-identity-setup-summary button, .device-identity-setup-card input, .device-identity-setup-card select, .device-identity-setup-card button, .device-identity-review-panel input, .device-identity-review-panel .sync-dialog-confirm",
 		)) {
+			// Unpairing changes no Identity, so it stays available while the inventory is down.
+			if (control.getAttribute("aria-label")?.startsWith("Unpair ")) continue;
 			expect(control.disabled).toBe(true);
 		}
 		expect(previewBindings).toHaveBeenCalledOnce();
@@ -3313,7 +3315,7 @@ describe("Device setup errors", () => {
 		[503, "binding_write_stale", "changed after review"],
 		[409, "binding_write_conflict", "evidence conflicts"],
 		[404, "target_identity_unavailable", "no longer available"],
-		[503, "deciding_identity_unavailable", "Restore or replace it in Sharing"],
+		[503, "deciding_identity_unavailable", "Open Identity administration"],
 		[404, "unavailable_but_unknown", "no longer available"],
 		[500, "binding_commit_failed", "could not be completed"],
 	])("maps safe binding failure %s/%s to actionable recovery", (status, code, expected) => {
@@ -3530,6 +3532,63 @@ describe("Device unpair menu", () => {
 		expect(card?.textContent).toContain("Unpair or remove it below, then pair it again.");
 		expect(card?.querySelector('[aria-label="Unpair Server"]')).not.toBeNull();
 		expect(card?.textContent).not.toContain("Advanced");
+	});
+});
+
+describe("Unpair device when the ownership inventory failed to load", () => {
+	const deviceId = "device-address-fingerprint-secret";
+	const pairedPeer = {
+		deviceId,
+		paired: true,
+		status: "ok" as const,
+		lastSyncAt: null,
+		recentIn: 0,
+		recentOut: 0,
+		statusAvailable: true,
+	};
+
+	function menuItems() {
+		const row = document.getElementById(`device-identity-card-${deviceId}`);
+		return [
+			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		];
+	}
+
+	it("stays available from a kept inventory, while Remove device waits for it", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "sync_peer"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			inventoryUnavailable: true,
+			refreshError: true,
+			peerSyncMetadata: [pairedPeer],
+			removalConfirmation: {},
+		});
+
+		const items = menuItems();
+		expect(items.find((item) => item.textContent === "Unpair device…")?.disabled).toBe(false);
+		expect(items.find((item) => item.textContent === "Remove device…")?.disabled).toBe(true);
+	});
+
+	it("stays available from the sync status when there is no inventory at all", () => {
+		mount(intent(), reconciliation(), {
+			inventoryUnavailable: true,
+			peerSyncMetadata: [pairedPeer],
+			removalConfirmation: {},
+		});
+
+		const items = menuItems();
+		expect(items.find((item) => item.textContent === "Unpair device…")?.disabled).toBe(false);
+		expect(items.find((item) => item.textContent === "Remove device…")).toBeUndefined();
+	});
+
+	it("is not offered for a device the sync status does not report as paired", () => {
+		mount(intent(), reconciliation(), { inventoryUnavailable: true, removalConfirmation: {} });
+
+		expect(menuItems().find((item) => item.textContent === "Unpair device…")).toBeUndefined();
 	});
 });
 

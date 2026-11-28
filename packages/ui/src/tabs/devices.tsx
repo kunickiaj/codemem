@@ -516,7 +516,7 @@ export function deviceIdentitySetupError(error: unknown): string {
 		device_not_found:
 			"A selected device or Identity is no longer available. Refresh Devices and choose again.",
 		deciding_identity_unavailable:
-			"The deciding Identity is unavailable. Restore or replace it in Sharing, then try again.",
+			"The deciding Identity is unavailable. Open Identity administration to restore or replace it, then try again.",
 	};
 	const exactMessage = exactMessages[error.errorCode];
 	if (exactMessage) return exactMessage;
@@ -965,12 +965,12 @@ function SetupWorkflow({
 										<div className="device-identity-card-actions">
 											{identities.length === 0 ? (
 												<button
-													aria-label={`Open Sharing to add a person for ${item.displayName}`}
+													aria-label={`Open Identity administration for ${item.displayName}`}
 													className="settings-button"
-													onClick={() => options.onNavigate?.("sharing")}
+													onClick={() => options.onNavigate?.("advanced_sync")}
 													type="button"
 												>
-													Open Sharing
+													Open Identity administration
 												</button>
 											) : null}
 											<button
@@ -1455,18 +1455,20 @@ function deviceRemovalMenuActions(
 	options: DevicesRendererOptions,
 ): MenuAction[] {
 	if (
-		!inventoryItem ||
-		inventoryItem.state === "service" ||
-		inventoryItem.isLocal ||
+		inventoryItem?.state === "service" ||
+		inventoryItem?.isLocal ||
 		directLocalDeviceId(options) === device.deviceId
 	)
 		return [];
 	const confirmation = options.removalConfirmation;
-	const enrolled = inventoryItem.sources.includes("coordinator_enrollment");
-	const paired = inventoryItem.sources.includes("sync_peer");
+	const enrolled = inventoryItem?.sources.includes("coordinator_enrollment") === true;
+	// Unpair needs only the saved pairing, so it does not wait for the ownership inventory.
+	// The sync status reports a pairing even when the inventory failed to load.
+	const inventoryPaired = inventoryItem?.sources.includes("sync_peer") === true;
+	const paired = inventoryPaired || device.syncPeer?.paired === true;
 	const blocked = identityMutationsBlocked(options);
 	const actions: MenuAction[] = [];
-	if (confirmation && (enrolled || paired)) {
+	if (confirmation && inventoryItem && (enrolled || inventoryPaired)) {
 		actions.push({
 			ariaLabel: `Remove ${device.displayName}`,
 			disabled: blocked,
@@ -1477,7 +1479,7 @@ function deviceRemovalMenuActions(
 	if (paired) {
 		actions.push({
 			ariaLabel: `Unpair ${device.displayName}`,
-			disabled: blocked,
+			disabled: false,
 			label: "Unpair device…",
 			onSelect: () => void disconnectFromMenu(device, options),
 		});
