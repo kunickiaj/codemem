@@ -7,9 +7,19 @@ import {
 	fingerprintPublicKey,
 	initTestSchema,
 	loadPublicKey,
+	readPeerTransportPolicy,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "../../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { syncCommand } from "./sync.js";
+
+const PEER = "peer-1";
+const BASE = {
+	device_id: PEER,
+	fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+	public_key: CANONICAL_PUBLIC_KEY,
+	addresses: ["127.0.0.1:1"],
+};
 
 let dir: string;
 let dbPath: string;
@@ -58,8 +68,6 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-// The CLI still builds its payload inline. This keeps it identical to the shared builder until
-// the pair command is split and calls the builder directly.
 it("emits the shared pairing payload, without transports while Noise is off", async () => {
 	const payload = await pair("--payload-only", "--address", "127.0.0.1:7337");
 	const publicKey = loadPublicKey(join(dir, "keys"));
@@ -73,4 +81,53 @@ it("emits the shared pairing payload, without transports while Noise is off", as
 		}),
 	);
 	expect(payload).not.toHaveProperty("transports");
+});
+
+const accept = (payload: Record<string, unknown>, ...flags: string[]) =>
+	pair("--accept", JSON.stringify(payload), ...flags);
+
+it("records Noise from an accepted payload that lists it, and never downgrades", async () => {
+	expect(await accept({ ...BASE, transports: ["noise1"] })).toEqual({
+		ok: true,
+		peer_device_id: PEER,
+	});
+	expect(readPeerTransportPolicy(db, PEER)).toBe("noise_required");
+	expect(await accept(BASE)).toMatchObject({ ok: true });
+	expect(readPeerTransportPolicy(db, PEER)).toBe("noise_required");
+});
+
+it("records an accepted payload without transports as legacy plaintext", async () => {
+	expect(await accept(BASE)).toMatchObject({ ok: true });
+	expect(readPeerTransportPolicy(db, PEER)).toBe("legacy_plaintext");
+});
+
+it("records nothing when the pairing itself is refused", async () => {
+	writeFileSync(
+		join(dir, "config.json"),
+		JSON.stringify({ sync_coordinator_url: "http://127.0.0.1:1", sync_coordinator_group: "g1" }),
+	);
+	db.prepare(
+		`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, addresses_json,
+		 projects_include_json, projects_exclude_json, created_at)
+		 VALUES (?, ?, ?, '["127.0.0.1:1"]', '[]', '["secret"]', '2026-11-18T00:00:00.000Z')`,
+	).run(PEER, BASE.fingerprint, BASE.public_key);
+
+	const result = await accept({ ...BASE, transports: ["noise1"] }, "--all");
+
+	expect(result).toEqual({
+		error: "pairing_failed",
+		message: expect.stringContaining("Nothing was changed"),
+	});
+	expect(readPeerTransportPolicy(db, PEER)).toBe("legacy_plaintext");
+});
+
+it.each([
+	[["--payload-only", "--accept", "{}"], "usage_error"],
+	[["--accept", "{}", "--accept-file", "x"], "usage_error"],
+	[["--accept", "  "], "usage_error"],
+	[["--include", "work"], "usage_error"],
+	[["--accept", "not json"], "invalid_payload"],
+	[["--accept", JSON.stringify({ ...BASE, fingerprint: "wrong" })], "fingerprint_mismatch"],
+])("keeps the JSON error code for %o", async (args, code) => {
+	expect(await pair(...args)).toMatchObject({ error: code });
 });
