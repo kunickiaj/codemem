@@ -1,5 +1,6 @@
 import { applyReplicationOps } from "@codemem/core";
 import { afterEach, expect, it, vi } from "vitest";
+import { recordOpCopy } from "../../core/src/memory-copy-provenance.js";
 import { syncScopedChannelOnce } from "../../core/src/sync-channel-pass.js";
 import { getSyncChannelProgress } from "../../core/src/sync-channel-progress.js";
 import { getReplicationCursor, setReplicationCursor } from "../../core/src/sync-replication.js";
@@ -85,6 +86,12 @@ it("names the op in a channel's 409 while the plain listener still sends it", as
 	op.payload_json = JSON.stringify({ ...JSON.parse(op.payload_json), body_text: OVERSIZED });
 	const applied = applyReplicationOps(f.store.db, [op], f.peerDeviceId, f.store.scanner);
 	expect(applied.applied).toBe(1);
+	// Bind the op to its stored copy, as recording an op on this device does.
+	const memoryId = f.store.db
+		.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+		.pluck()
+		.get(op.entity_id) as number;
+	recordOpCopy(f.store.db, op.op_id, memoryId);
 	const options = { storeFactory: f.storeFactory, maxEntryBytes: LIMIT };
 	const plainApp = createSyncApp({ storeFactory: f.storeFactory });
 	const plain = async (dto: SyncChannelRequest) => {

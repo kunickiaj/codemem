@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import { finished } from "node:stream/promises";
 import { applyReplicationOps, fingerprintPublicKey, MemoryStore } from "@codemem/core";
 import { vi } from "vitest";
+import { recordOpCopy } from "../../core/src/memory-copy-provenance.js";
 import type { OwnedPeerHttpConnection } from "../../core/src/peer-http-client.js";
 import { servePeerHttpConnection } from "../../core/src/peer-http-server.js";
 import {
@@ -214,6 +215,12 @@ function seed(
 	const result = applyReplicationOps(store.db, [op], receiver, store.scanner);
 	if (result.applied !== 1 || result.errors.length || result.rejected)
 		throw new Error(JSON.stringify(result));
+	// As this device's own op, it names the copy it was recorded from.
+	const memoryId = store.db
+		.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+		.pluck()
+		.get(op.entity_id) as number;
+	recordOpCopy(store.db, op.op_id, memoryId);
 	return op;
 }
 

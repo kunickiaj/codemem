@@ -33,7 +33,7 @@ import {
 	syncPassPreflight,
 } from "./sync-pass.js";
 import * as syncReplication from "./sync-replication.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, insertTestMemoryForOp } from "./test-utils.js";
 import * as vectorMigration from "./vector-migration.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 import * as vectors from "./vectors.js";
@@ -502,23 +502,7 @@ describe("syncOnce", () => {
 			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
 		});
 		await grantProvenScopeForSyncPass(db, "acme-work", ["peer-push", "local-device-id"]);
-		for (const index of [1, 2]) {
-			db.prepare(
-				`INSERT INTO replication_ops(
-					op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
-					clock_updated_at, clock_device_id, device_id, created_at, scope_id
-				 ) VALUES (?, 'memory_item', ?, 'upsert', ?, 1, ?, ?, ?, ?, ?)`,
-			).run(
-				`local-op-${index}`,
-				`memory:${index}`,
-				JSON.stringify({ visibility: "shared", scope_id: "acme-work" }),
-				`2026-01-01T00:00:0${index}Z`,
-				"local-device-id",
-				"local-device-id",
-				`2026-01-01T00:00:0${index}Z`,
-				"acme-work",
-			);
-		}
+		insertLocalScopedOps(db, "acme-work", "local-device-id", [1, 2]);
 		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
 			"local-device-id",
 			"ed25519 AAAA",
@@ -3486,6 +3470,66 @@ describe("sync_attempts.failure_category", () => {
 	});
 });
 
+describe("syncOnce when a memory changes during a push", () => {
+	const { SCOPE, PEER, LOCAL, statusResponse, defaultOpsResponse } = WITHDRAWN;
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		addSyncTables(db);
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run(PEER, "fp-scoped", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([LOCAL, "ed25519 AAAA"]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		db.close();
+	});
+
+	it.each([
+		[
+			"moves to another scope",
+			"UPDATE memory_items SET scope_id = 'elsewhere' WHERE import_key = ?",
+		],
+		["turns private", "UPDATE memory_items SET visibility = 'private' WHERE import_key = ?"],
+	])(
+		"sends no later batch with a memory that %s while the first batch is in flight",
+		async (_case, change) => {
+			// Arrange: three ops split into batches; the second memory changes while the first batch is sent.
+			syncReplication.setReplicationCursor(db, PEER, {
+				lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
+			});
+			insertLocalScopedOps(db, SCOPE, LOCAL, [1, 2, 3]);
+			await grantProvenScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
+			const request = vi
+				.spyOn(syncHttpClient, "requestJson")
+				.mockResolvedValueOnce([200, { ...statusResponse, sync_capability: "enforcing" }])
+				.mockResolvedValueOnce([200, defaultOpsResponse])
+				.mockResolvedValueOnce([413, { error: "too_many_ops" }])
+				.mockImplementationOnce(async () => {
+					db.prepare(change).run("memory:2");
+					return [200, {}];
+				})
+				.mockResolvedValue([200, {}]);
+
+			// Act
+			await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+			// Assert: the split retry rechecks the stored copy and leaves the changed memory out.
+			expect(postedOpIds(request)).toEqual([
+				["local-op-1", "local-op-2", "local-op-3"],
+				["local-op-1"],
+				["local-op-3"],
+			]);
+		},
+	);
+});
+
 function insertLocalScopedOps(
 	db: InstanceType<typeof Database>,
 	scopeId: string,
@@ -3508,6 +3552,11 @@ function insertLocalScopedOps(
 			`2026-01-01T00:00:0${index}Z`,
 			scopeId,
 		);
+		insertTestMemoryForOp(db, {
+			op_id: `local-op-${index}`,
+			entity_id: `memory:${index}`,
+			scope_id: scopeId,
+		});
 	}
 }
 

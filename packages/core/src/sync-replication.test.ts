@@ -35,7 +35,12 @@ import {
 	setSyncResetState,
 	summarizeInboundScopeRejections,
 } from "./sync-replication.js";
-import { initTestSchema, initTestSchemaWithPeers, insertTestSession } from "./test-utils.js";
+import {
+	initTestSchema,
+	initTestSchemaWithPeers,
+	insertTestMemoryForOp,
+	insertTestSession,
+} from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 /** Grants a coordinator scope to the devices with retained proofs, as a trusted refresh would. */
@@ -1985,6 +1990,30 @@ describe("legacy key migration + replication backfill", () => {
 	});
 });
 
+/** The op, with the copy it was recorded from stored in its scope, since only such an op sends content. */
+function withStoredMemory(db: InstanceType<typeof Database>, op: ReplicationOp): ReplicationOp {
+	if (op.payload_json != null) insertTestMemoryForOp(db, op);
+	return op;
+}
+
+const FILTER_TEST_OP: ReplicationOp = {
+	op_id: "op-1",
+	entity_type: "memory_item",
+	entity_id: "key-1",
+	op_type: "upsert",
+	payload_json: toJson({
+		project: "proj-a",
+		scope_id: "work-scope",
+		visibility: "shared",
+	}),
+	clock_rev: 1,
+	clock_updated_at: "2026-01-01T00:00:00Z",
+	clock_device_id: "peer-1",
+	device_id: "peer-1",
+	created_at: "2026-01-01T00:00:00Z",
+	scope_id: "work-scope",
+};
+
 describe("filterReplicationOpsForSyncWithStatus", () => {
 	let db: InstanceType<typeof Database>;
 	let prevInclude: string | undefined;
@@ -2008,24 +2037,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 	});
 
 	function makeOp(overrides: Partial<ReplicationOp> = {}): ReplicationOp {
-		return {
-			op_id: "op-1",
-			entity_type: "memory_item",
-			entity_id: "key-1",
-			op_type: "upsert",
-			payload_json: toJson({
-				project: "proj-a",
-				scope_id: "work-scope",
-				visibility: "shared",
-			}),
-			clock_rev: 1,
-			clock_updated_at: "2026-01-01T00:00:00Z",
-			clock_device_id: "peer-1",
-			device_id: "peer-1",
-			created_at: "2026-01-01T00:00:00Z",
-			scope_id: "work-scope",
-			...overrides,
-		};
+		return withStoredMemory(db, { ...FILTER_TEST_OP, ...overrides });
 	}
 
 	function grantScope(scopeId: string, deviceIds: string[], authorityType = "coordinator") {
@@ -2060,6 +2072,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		});
 		const op2 = makeOp({
 			op_id: "op-2",
+			entity_id: "key-2",
 			payload_json: toJson({ project: "proj-a", visibility: "shared" }),
 			created_at: "2026-01-01T00:00:02Z",
 		});

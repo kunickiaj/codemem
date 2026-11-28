@@ -16,7 +16,7 @@ import * as http from "./sync-http-client.js";
 import * as identity from "./sync-identity.js";
 import { syncOnce } from "./sync-pass.js";
 import { getReplicationCursor, setReplicationCursor } from "./sync-replication.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, insertTestMemoryForOp } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 // The direct legacy push carries scoped ops with one interleaved cursor, while the
@@ -108,6 +108,7 @@ function seedOps(count: number): ReplicationOp[] {
 			VALUES (@op_id, @entity_type, @entity_id, @op_type, @payload_json, @clock_rev,
 			@clock_updated_at, @clock_device_id, @device_id, @created_at, @scope_id)`)
 			.run(op);
+		insertTestMemoryForOp(source, op);
 		return op;
 	});
 }

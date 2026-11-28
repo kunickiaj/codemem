@@ -4,6 +4,7 @@
 
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import type { Database } from "./db.js";
+import { recordOpCopy } from "./memory-copy-provenance.js";
 import { bootstrapSchema } from "./schema-bootstrap.js";
 import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -35,6 +36,67 @@ export function insertTestPeer(db: Database, peerDeviceId: string): void {
 export function initTestSchemaWithPeers(db: Database, peerDeviceIds: string[]): void {
 	initTestSchema(db);
 	for (const peerDeviceId of peerDeviceIds) insertTestPeer(db, peerDeviceId);
+}
+
+/**
+ * Store the copy a hand-built outbound op was recorded from, in the op's scope,
+ * at the op's revision and with the content and Project its payload names, and
+ * name it as the op's copy. Sync sends an op's content only from its own copy.
+ */
+export function insertTestMemoryForOp(
+	db: Database,
+	op: {
+		op_id?: string;
+		entity_id: string;
+		scope_id?: string | null;
+		payload_json?: string | null;
+		clock_rev?: number;
+	},
+): number {
+	const payload = (op.payload_json ? JSON.parse(op.payload_json) : {}) as Record<string, unknown>;
+	const text = (field: string, fallback: string | null = null) =>
+		typeof payload[field] === "string" ? (payload[field] as string) : fallback;
+	const list = (field: string) =>
+		Array.isArray(payload[field]) ? JSON.stringify(payload[field]) : null;
+	const now = new Date().toISOString();
+	const session = db
+		.prepare("INSERT INTO sessions(started_at, project, user, tool_version) VALUES (?, ?, ?, ?)")
+		.run(now, text("project"), "test-user", "test");
+	const info = db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, subtitle, body_text, narrative, tags_text,
+			 facts, concepts, files_read, files_modified, actor_id, visibility, workspace_id,
+			 workspace_kind, active, deleted_at, created_at, updated_at, metadata_json, import_key, scope_id, rev)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)`,
+		)
+		.run(
+			Number(session.lastInsertRowid),
+			text("kind", "discovery"),
+			text("title", "Fixture memory"),
+			text("subtitle"),
+			text("body_text", "fixture content"),
+			text("narrative"),
+			text("tags_text", ""),
+			list("facts"),
+			list("concepts"),
+			list("files_read"),
+			list("files_modified"),
+			text("actor_id"),
+			Object.hasOwn(payload, "visibility") ? text("visibility") : "shared",
+			text("workspace_id"),
+			text("workspace_kind"),
+			typeof payload.active === "number" ? payload.active : 1,
+			text("deleted_at"),
+			now,
+			now,
+			op.entity_id,
+			op.scope_id ?? null,
+			op.clock_rev ?? 1,
+		);
+	const memoryId = Number(info.lastInsertRowid);
+	// The op names the copy it was recorded from, as recorded ops do.
+	if (op.op_id) recordOpCopy(db, op.op_id, memoryId);
+	return memoryId;
 }
 
 /**

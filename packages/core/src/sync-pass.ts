@@ -71,6 +71,7 @@ import {
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
+	opsStillSendableToPeer,
 	parseReassignScopePayload,
 	REASSIGN_SCOPE_OP_TYPE,
 	reconcileStalePeerReceivedRows,
@@ -2183,7 +2184,7 @@ async function pushDefaultScope(
 		stillSendable: (ops) => {
 			const sendable = withoutWithdrawnScopeOps(context.db, ops);
 			requirePeerStillAuthorized(context, sendable);
-			return sendable;
+			return opsStillSendableToPeer(context.db, sendable, context.peerDeviceId, context.deviceId);
 		},
 		keysDir: context.keysDir,
 		dbPath: context.dbPath,
