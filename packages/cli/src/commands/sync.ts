@@ -68,6 +68,7 @@ import {
 	parseProjectList,
 	type SyncLifecycleOptions,
 } from "./sync-helpers.js";
+import { buildSyncMigrationCommand } from "./sync-migration.js";
 import { buildSyncRejoinCommand } from "./sync-rejoin.js";
 import { approveRelayKeyCommand, relayKeysCommand } from "./sync-relay-keys.js";
 
@@ -1540,6 +1541,8 @@ connectCmd.action((url: string, opts: SyncConnectOptions) => {
 });
 syncCommand.addCommand(connectCmd);
 syncCommand.addCommand(buildSyncRejoinCommand());
+
+syncCommand.addCommand(buildSyncMigrationCommand());
 
 // ---- Deprecation alias: sync coordinator → coordinator ----
 // Build a separate coordinator command tree for the sync alias (Commander

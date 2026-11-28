@@ -79,15 +79,23 @@ Backward compatibility:
 `sync_boundary_migration` has the environment override
 `CODEMEM_SYNC_BOUNDARY_MIGRATION` and defaults to `off`.
 
-| Value | Planned behavior |
+| Value | `codemem sync migration status` behavior |
 | --- | --- |
-| `off` | Leave existing sharing setups unchanged. |
-| `report` | Publish readiness and report proposed changes without committing them. |
-| `on` | Run the per-Project boundary migration. |
+| `off` | Report that the migration is off. |
+| `report`, `on` | Read the local database and report Project candidates and filter evidence. Neither setting starts a migration. |
 
-The configuration reader is available, but these modes do not activate migration
-work yet. Setting `on` does not advertise readiness or move data until the device
-can adopt a migration record and move its own memories.
+Use `--json` for counts or `--db-path` and `--config` to inspect a particular install.
+The report sends no requests and does not change sharing or advertise readiness. A
+candidate is a Project found locally. It does not imply that every device would keep
+the same access. `projects: null` means the inventory is unavailable. `local_filters`
+includes restrictions on pairings, retained pairing settings, active group templates
+and effective config settings. `unknown` means the report could not classify them.
+
+An install that has only used basic peer sync needs no Project migration. Pairing
+connects two devices. It does not give either device access to local Project history.
+Teams, verified identities, linking a device to a person and choosing a person as a
+recipient require a coordinator. A managed install does not become a basic peer
+install when its coordinator goes offline.
 
 Values are case-insensitive and trimmed. Invalid nonempty settings select `off`.
 An empty environment value leaves the saved setting in effect, as with other sync
