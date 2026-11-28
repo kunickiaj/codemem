@@ -28,6 +28,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { codememHomeDir } from "./home.js";
+import { assertNotRealCodememPath } from "./test-real-path-guard.js";
 
 // ---------------------------------------------------------------------------
 // JSONC helpers
@@ -433,9 +434,8 @@ export function resolveCodememConfigPath(
 	if (resolvedIndex < 0) resolvedIndex = candidates.length - 1;
 
 	const resolved = candidates[resolvedIndex] ?? candidates[candidates.length - 1];
-	if (!resolved) {
-		throw new Error("No config path candidates were generated");
-	}
+	if (!resolved) throw new Error("No config path candidates were generated");
+	assertNotRealCodememPath(resolved.path, "config");
 	const fallbackChain = candidates.filter((_, i) => i !== resolvedIndex);
 
 	// Annotate skipped candidates with why they were not selected

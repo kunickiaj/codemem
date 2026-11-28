@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach } from "vitest";
 import { isolateTestKeys } from "./test-environment-keys.js";
+import { removeDeveloperCredentials } from "./test-process-isolation.js";
 
 /**
  * The setup file of every vitest project that runs in Node. It keeps a test from
@@ -23,18 +24,17 @@ import { isolateTestKeys } from "./test-environment-keys.js";
  * that expects a refused connection empties the `blocked` list of the guard
  * state, which is stored on `globalThis` under `Symbol.for(GUARD_KEY_NAME)`.
  *
- * The guard covers the test process only. A child process or a worker thread
- * that a test starts loads its own `node:net` and is not guarded. A child
- * process does inherit the environment set here.
+ * The process-wide isolation, shared with `node --test` scripts, comes from
+ * `test-process-isolation.ts`: a temporary HOME, removed credentials, and child processes
+ * that keep the isolation variables. On top of it each test file gets its own config,
+ * keys directory and store (CODEMEM_DB). The store opener, the keys directory and the
+ * config resolver also refuse the developer's real `~/.codemem` and `~/.config/codemem`
+ * under test (`test-real-path-guard.ts`).
+ *
+ * The connection guard covers the test process only. A child process or a worker thread
+ * that a test starts loads its own `node:net` and is not guarded. A child process does
+ * inherit the environment set here.
  */
-
-/** Read from the environment in preference to the config file, so they are removed. */
-const DEVELOPER_COORDINATOR_VARIABLES = [
-	"CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
-	"CODEMEM_SYNC_COORDINATOR_URL",
-	"CODEMEM_INVITE_TOKEN_KEY",
-	"CODEMEM_INVITE_TOKEN_KEY_PREVIOUS",
-];
 
 /** The embedding tests download their model. Tracked separately; allowed until then. */
 const ALLOWED_HOST_SUFFIXES = ["huggingface.co", "hf.co"];
@@ -100,7 +100,8 @@ const configDirectory = mkdtempSync(join(tmpdir(), "codemem-test-config-"));
 const configPath = join(configDirectory, "config.json");
 writeFileSync(configPath, "{}\n");
 process.env.CODEMEM_CONFIG = configPath;
-for (const name of DEVELOPER_COORDINATOR_VARIABLES) delete process.env[name];
+process.env.CODEMEM_DB = join(configDirectory, "mem.sqlite");
+removeDeveloperCredentials(process.env);
 process.env.CODEMEM_INVITE_TOKEN_KEY = randomBytes(32).toString("hex");
 isolateTestKeys(process.env, configDirectory);
 

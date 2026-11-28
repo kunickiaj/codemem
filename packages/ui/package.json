@@ -15,7 +15,7 @@
 		"visual:test": "node scripts/visual-runner.mjs",
 		"visual:update": "node scripts/visual-runner.mjs --update",
 		"visual:control": "node scripts/visual-runner.mjs --control",
-		"visual:test-harness": "node --test scripts/visual-policy.test.mjs",
+		"visual:test-harness": "node --import ../core/src/test-process-isolation.ts --test scripts/visual-policy.test.mjs",
 		"visual:typecheck": "tsc -p tsconfig.visual.json --noEmit",
 		"typecheck": "tsc -p tsconfig.json --noEmit",
 		"typecheck:health-strict": "tsc -p tsconfig.health-strict.json --noEmit"
