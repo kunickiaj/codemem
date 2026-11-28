@@ -248,8 +248,7 @@ import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
 import { readInventoryWithRejoinEvidence } from "./device-rejoin-evidence.js";
-import { listAllEnrollments } from "./device-rename.js";
-import { deviceRoutes } from "./device-retire.js";
+import { deviceRenameRoutes, listAllEnrollments } from "./device-rename.js";
 import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
 
 export type StoreFactory = () => MemoryStore;
@@ -7760,7 +7759,7 @@ export function syncRoutes(
 		);
 	});
 
-	app.route("/", deviceRoutes(getStore)).get("/api/sync/recipient-policy/v1/intent", (c) => {
+	app.route("/", deviceRenameRoutes(getStore)).get("/api/sync/recipient-policy/v1/intent", (c) => {
 		const store = getStore();
 		return c.json(listRecipientPolicyIntent(store.db));
 	});

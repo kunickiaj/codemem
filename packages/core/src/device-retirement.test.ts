@@ -1,14 +1,10 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
-import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import { listDeviceIdentityInventory } from "./device-identity-inventory.js";
-import {
-	removeRevokedPeers,
-	resolveRetireTarget,
-	retireDeviceLocally,
-} from "./device-retirement.js";
+import { removeRevokedPeers } from "./device-retirement.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
+import { removePairingState } from "./pairing-removal.js";
 import { canonicalKeyId, listRetiredDeviceAliases } from "./retired-device-aliases.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
@@ -27,19 +23,6 @@ function sshKey(byte: number): string {
 const LOCAL_KEY = sshKey(1);
 const OLD_KEY = sshKey(2);
 const NEW_KEY = sshKey(3);
-
-function enrollment(deviceId: string, publicKey: string): CoordinatorEnrollment {
-	return {
-		group_id: "group-a",
-		device_id: deviceId,
-		public_key: publicKey,
-		fingerprint: fingerprintPublicKey(publicKey),
-		identity_id: null,
-		display_name: "Old laptop",
-		enabled: 1,
-		created_at: NOW,
-	};
-}
 
 function pair(deviceId: string, publicKey: string, pinned = fingerprintPublicKey(publicKey)) {
 	db.prepare(
@@ -84,43 +67,6 @@ beforeEach(() => {
 
 afterEach(() => db.close());
 
-describe("resolveRetireTarget", () => {
-	it("finds the enrollment alias and every local ID for the same key", () => {
-		const target = resolveRetireTarget(db, {
-			localDeviceId: "local",
-			enrollments: [enrollment("coord-alias", OLD_KEY)],
-			deviceId: "peer-a",
-		});
-
-		expect(target).toMatchObject({
-			aliasDeviceIds: ["coord-alias", "peer-a"],
-			fingerprint: fingerprintPublicKey(OLD_KEY),
-			groupId: "group-a",
-			enrollmentDeviceId: "coord-alias",
-		});
-	});
-
-	it("refuses an enrollment carrying this device's canonical key under different text", () => {
-		const target = resolveRetireTarget(db, {
-			localDeviceId: "local",
-			enrollments: [enrollment("spare", `${LOCAL_KEY} comment`)],
-			deviceId: "spare",
-		});
-
-		expect(target).toBe("cannot_retire_this_device");
-	});
-
-	it("refuses while the viewer runs under an ID that has no identity row", () => {
-		const target = resolveRetireTarget(db, {
-			localDeviceId: "not-yet-stable",
-			enrollments: [enrollment("local", LOCAL_KEY), enrollment("peer-a", OLD_KEY)],
-			deviceId: "local",
-		});
-
-		expect(target).toBe("local_identity_unverified");
-	});
-});
-
 describe("retired device aliases", () => {
 	it("keeps a revoked peer's binding retired after its pairing is deleted", () => {
 		removeRevokedPeers(db, "local", ["peer-a"]);
@@ -143,20 +89,6 @@ describe("retired device aliases", () => {
 		expect(db.prepare("SELECT COUNT(*) FROM replication_cursors").pluck().get()).toBe(0);
 		expect(db.prepare("SELECT COUNT(*) FROM replication_cursors_v2").pluck().get()).toBe(0);
 		expect(listRetiredDeviceAliases(db).get("peer-a")?.kind).toBe("key");
-	});
-
-	it("ends the binding of an alias that a local retirement unpairs", () => {
-		retireDeviceLocally(db, "local", {
-			aliasDeviceIds: ["peer-a"],
-			displayName: "Old laptop",
-			fingerprint: fingerprintPublicKey(OLD_KEY),
-			keyId: canonicalKeyId(OLD_KEY) as string,
-			groupId: "group-a",
-			enrollmentDeviceId: "peer-a",
-		});
-
-		expect(bindingStatus("peer-a")).toBe("removed");
-		expect(offlineStates()).toEqual([{ deviceId: "peer-a", state: "retired" }]);
 	});
 
 	it("computes the same canonical key ID the coordinator revokes", async () => {
@@ -187,34 +119,23 @@ describe("retired device aliases", () => {
 	});
 
 	it("keeps an ID revocation in force even when the ID is paired again", () => {
-		retireDeviceLocally(db, "local", {
-			aliasDeviceIds: ["peer-a"],
-			displayName: "Old laptop",
-			fingerprint: fingerprintPublicKey(OLD_KEY),
-			keyId: canonicalKeyId(OLD_KEY) as string,
-			groupId: "group-a",
-			enrollmentDeviceId: "peer-a",
+		removePairingState(db, {
+			localDeviceId: "local",
+			reason: "revoked",
+			deviceIds: ["peer-a"],
+			retiredAliases: [
+				{
+					deviceId: "peer-a",
+					kind: "device_id",
+					fingerprint: fingerprintPublicKey(OLD_KEY),
+					keyId: canonicalKeyId(OLD_KEY) as string,
+				},
+			],
 		});
 		pair("peer-a", NEW_KEY);
 
 		expect(listRetiredDeviceAliases(db).get("peer-a")?.kind).toBe("device_id");
 		expect(offlineStates().map((item) => item.state)).toContain("retired");
-	});
-
-	it("leaves an alias that was re-paired with a new key before the local cleanup", () => {
-		pair("peer-b", NEW_KEY);
-
-		retireDeviceLocally(db, "local", {
-			aliasDeviceIds: ["coord-alias", "peer-a", "peer-b"],
-			displayName: "Old laptop",
-			fingerprint: fingerprintPublicKey(OLD_KEY),
-			keyId: canonicalKeyId(OLD_KEY) as string,
-			groupId: "group-a",
-			enrollmentDeviceId: "coord-alias",
-		});
-
-		expect(db.prepare("SELECT peer_device_id FROM sync_peers").pluck().all()).toEqual(["peer-b"]);
-		expect([...listRetiredDeviceAliases(db).keys()].sort()).toEqual(["coord-alias", "peer-a"]);
 	});
 
 	it("records nothing for a peer whose pinned fingerprint doesn't match its key", () => {

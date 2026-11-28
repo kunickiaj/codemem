@@ -47,7 +47,6 @@ import {
 	removalCompatibilityNotice,
 } from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
-import { type DeviceRetirementApi, runDeviceRetirement } from "./device-retire";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -108,7 +107,6 @@ export interface DevicesRendererOptions {
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
 	renameDevice?: typeof renameKnownDevice;
-	retirementApi?: DeviceRetirementApi;
 	enrolledDeviceBlock?: boolean;
 	/** Present when the Viewer host has mounted Remove. */
 	removalConfirmation?: Partial<DeviceRemovalConfirmationDependencies>;
@@ -472,7 +470,7 @@ export function deviceIdentitySetupError(error: unknown): string {
 		device_pairing_required: "Pair this device before assigning an Identity.",
 		device_service_role:
 			"Service devices run coordinator checks and can't be assigned an Identity.",
-		device_retired: "This device was retired and can't be assigned an Identity.",
+		device_retired: "This device is blocked and can't be assigned an Identity.",
 		device_rebind_confirmation_required:
 			"Reassignment requires a separate confirmation of the previous and target Identities.",
 		device_inventory_incomplete:
@@ -620,8 +618,8 @@ function SetupRecoveryAction({
 	);
 }
 
-/** Lets a person retire an unused enrolled device without pairing or setting it up first. */
-function SetupCardRetire({
+/** Lets a person remove an unused device without pairing or setting it up first. */
+function SetupCardRemoval({
 	item,
 	options,
 }: {
@@ -966,7 +964,7 @@ function SetupWorkflow({
 									/>
 								)}
 								<DeviceRejoinNotice item={item} localDeviceId={directLocalDeviceId(options)} />
-								<SetupCardRetire item={item} options={options} />
+								<SetupCardRemoval item={item} options={options} />
 							</article>
 						</li>
 					);
@@ -1420,15 +1418,14 @@ function deviceRenameMenuAction(options: DevicesRendererOptions, onRename: () =>
 	};
 }
 
-/** Retirement needs coordinator evidence for a person's device other than this one. */
-type RetireTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
+/** Removal and block act on a person's device other than this one. */
+type DeviceTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
 
 function deviceRemovalMenuActions(
-	device: RetireTarget,
+	device: DeviceTarget,
 	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
 	options: DevicesRendererOptions,
 ): MenuAction[] {
-	const retire = deviceRetireMenuAction(device, inventoryItem, options);
 	const confirmation = options.removalConfirmation;
 	if (
 		!confirmation ||
@@ -1437,10 +1434,11 @@ function deviceRemovalMenuActions(
 		inventoryItem.isLocal ||
 		directLocalDeviceId(options) === device.deviceId
 	)
-		return retire;
-	if (retire.length === 0 && !inventoryItem.sources.includes("sync_peer")) return retire;
+		return [];
+	const enrolled = inventoryItem.sources.includes("coordinator_enrollment");
+	if (!enrolled && !inventoryItem.sources.includes("sync_peer")) return [];
 	const block: MenuAction[] =
-		options.enrolledDeviceBlock && retire.length > 0
+		options.enrolledDeviceBlock && enrolled
 			? [
 					{
 						ariaLabel: `Block ${device.displayName} permanently`,
@@ -1451,7 +1449,6 @@ function deviceRemovalMenuActions(
 				]
 			: [];
 	return [
-		...(options.enrolledDeviceBlock ? [] : retire),
 		{
 			ariaLabel: `Remove ${device.displayName}`,
 			disabled: identityMutationsBlocked(options),
@@ -1463,7 +1460,7 @@ function deviceRemovalMenuActions(
 }
 
 async function blockFromMenu(
-	device: RetireTarget,
+	device: DeviceTarget,
 	options: DevicesRendererOptions,
 	confirm: DeviceRemovalConfirmationDependencies["confirm"] | undefined,
 ) {
@@ -1492,7 +1489,7 @@ async function blockFromMenu(
 }
 
 async function removeFromMenu(
-	device: RetireTarget,
+	device: DeviceTarget,
 	options: DevicesRendererOptions,
 	confirmation: Partial<DeviceRemovalConfirmationDependencies>,
 ) {
@@ -1570,45 +1567,6 @@ function coordinatorRemovalStatus(
 		message: messages.join(" "),
 		tone: messages.length > 1 ? "warning" : "success",
 	} as const;
-}
-
-function deviceRetireMenuAction(
-	device: RetireTarget,
-	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
-	options: DevicesRendererOptions,
-): MenuAction[] {
-	if (
-		!inventoryItem?.sources.includes("coordinator_enrollment") ||
-		inventoryItem.state === "service" ||
-		inventoryItem.isLocal ||
-		directLocalDeviceId(options) === device.deviceId
-	)
-		return [];
-	return [
-		{
-			ariaLabel: `Retire ${device.displayName}`,
-			disabled: identityMutationsBlocked(options),
-			label: "Retire device…",
-			onSelect: () => void retireFromMenu(device, options),
-		},
-	];
-}
-
-async function retireFromMenu(device: RetireTarget, options: DevicesRendererOptions) {
-	const outcome = await runDeviceRetirement(device, options.retirementApi);
-	if (!outcome) return;
-	setDeviceCommitStatus(outcome.message, outcome.tone);
-	if (!outcome.refresh) return;
-	// Refreshing remounts Devices and clears the status, so restore it afterward.
-	const refreshed = await options.onCommitted?.();
-	if (refreshed === false)
-		setDeviceCommitStatus(
-			`${outcome.message} Refreshing Devices failed. Refresh to see current state.`,
-			"warning",
-		);
-	else setDeviceCommitStatus(outcome.message, outcome.tone);
-	// The retired device's row is gone, so its menu can't keep focus.
-	document.getElementById("devices-heading")?.focus();
 }
 
 function DeviceRowMenu({

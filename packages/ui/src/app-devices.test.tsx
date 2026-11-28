@@ -1343,7 +1343,7 @@ describe("Devices app pairing and refresh", () => {
 				expect(menu.textContent).toContain("Block device permanently…");
 				expect(menu.textContent).not.toContain("Retire device…");
 			} else {
-				expect(menu.textContent).toContain("Retire device…");
+				expect(menu.textContent).not.toContain("Retire device…");
 				expect(menu.textContent).not.toContain("Block device permanently…");
 				expect(menu.textContent).not.toContain("Remove device…");
 			}

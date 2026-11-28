@@ -408,55 +408,6 @@ export async function deletePeer(peerDeviceId: string): Promise<unknown> {
 	return payload;
 }
 
-export interface DeviceRetirementPreview {
-	device_id: string;
-	/** The name the server resolved for the device, which the confirmation shows. */
-	display_name: string;
-	/** The coordinator enrollment that's revoked; can differ from device_id for the same key. */
-	enrollment_device_id: string;
-	/** Every ID of this device that loses its key, including enrollment_device_id. */
-	alias_device_ids: string[];
-	group_id: string;
-	coordinator_id: string;
-	key_id: string;
-	expected_digest: string;
-}
-
-/** Thrown with the server's error code so Devices can explain what to do next. */
-export class DeviceRetirementError extends Error {
-	constructor(readonly code: string) {
-		super(code);
-	}
-}
-
-async function retirementRequest<T>(path: string, body?: unknown): Promise<T> {
-	const resp = await fetch(path, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: body === undefined ? undefined : JSON.stringify(body),
-	});
-	const { payload } = await readJsonPayload<T & { error?: string }>(resp);
-	// An unreadable error must not look like the server's own retire_unavailable refusal.
-	if (!resp.ok) throw new DeviceRetirementError(payloadError(payload) || "retire_response_invalid");
-	return payload as T;
-}
-
-export function previewDeviceRetirement(deviceId: string): Promise<DeviceRetirementPreview> {
-	return retirementRequest(`/api/sync/devices/${encodeURIComponent(deviceId)}/retire/preview`);
-}
-
-export async function retireDevice(
-	preview: DeviceRetirementPreview,
-): Promise<{ state: "retired"; unpaired_here: boolean }> {
-	const receipt = await retirementRequest<{ state?: unknown; unpaired_here?: unknown }>(
-		`/api/sync/devices/${encodeURIComponent(preview.device_id)}/retire`,
-		preview,
-	);
-	// Without a receipt the commit may or may not have happened, so it isn't reported as done.
-	if (receipt?.state !== "retired") throw new DeviceRetirementError("retire_response_invalid");
-	return { state: "retired", unpaired_here: receipt.unpaired_here === true };
-}
-
 export async function renameKnownDevice(deviceId: string, name: string): Promise<void> {
 	const resp = await fetch(
 		`/api/sync/recipient-policy/v1/devices/${encodeURIComponent(deviceId)}/rename`,

@@ -3385,20 +3385,7 @@ describe("Device setup errors", () => {
 	});
 });
 
-function retirementPreview(deviceId: string) {
-	return {
-		device_id: deviceId,
-		display_name: "",
-		enrollment_device_id: deviceId,
-		alias_device_ids: [deviceId],
-		group_id: "group-a",
-		coordinator_id: "https://coordinator.example.test",
-		key_id: "b".repeat(64),
-		expected_digest: "a".repeat(64),
-	};
-}
-
-describe("Device retirement menu", () => {
+describe("Device removal menu", () => {
 	function configuredWorkLaptop(sources: DeviceIdentityInventoryV1["items"][number]["sources"]) {
 		return inventory([
 			inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
@@ -3408,91 +3395,66 @@ describe("Device retirement menu", () => {
 		]);
 	}
 
-	function retireAction() {
+	function menuLabels() {
 		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
 		return [
 			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
-		].find((button) => button.textContent === "Retire device…");
+		].map((button) => button.textContent);
 	}
 
-	it("retires a coordinator-enrolled device after confirmation and refreshes Devices", async () => {
-		const preview = retirementPreview("device-address-fingerprint-secret");
-		const retirementApi = {
-			preview: vi.fn(async () => preview),
-			commit: vi.fn(async () => ({ unpaired_here: true })),
-			confirm: vi.fn(async () => true),
-		};
-		const onCommitted = vi.fn(async () => true);
+	it("offers no removal and no Retire when the Viewer host has not mounted device removal", () => {
 		mount(intent(), reconciliation(), {
 			inventory: configuredWorkLaptop(["identity_binding", "coordinator_enrollment"]),
-			retirementApi,
-			onCommitted,
 		});
 
-		const action = retireAction();
-		expect(action?.disabled).toBe(false);
-		expect(document.querySelector('[aria-label="Remove Work Laptop"]')).toBeNull();
-		await act(async () => action?.click());
-
-		await vi.waitFor(() => expect(onCommitted).toHaveBeenCalledOnce());
-		expect(retirementApi.confirm).toHaveBeenCalledWith(
-			expect.objectContaining({ title: "Retire Work Laptop?", confirmLabel: "Retire device" }),
-		);
-		expect(retirementApi.commit).toHaveBeenCalledExactlyOnceWith(preview);
-		expect(document.getElementById("devices-commit-status")?.textContent).toContain(
-			"Work Laptop is retired.",
-		);
-		expect(document.getElementById("devices-commit-status")?.dataset.tone).toBe("success");
-		expect(document.activeElement).toBe(document.getElementById("devices-heading"));
+		const labels = menuLabels();
+		expect(labels).toContain("Rename device…");
+		expect(labels).not.toContain("Retire device…");
+		expect(labels).not.toContain("Remove device…");
+		expect(document.body.textContent).not.toContain("Retire");
 	});
 
-	it("keeps the retirement message and warns when refreshing Devices fails", async () => {
-		const status = () => document.getElementById("devices-commit-status");
-		const retirementApi = {
-			preview: vi.fn(async () => retirementPreview("device-address-fingerprint-secret")),
-			commit: vi.fn(async () => ({ unpaired_here: true })),
-			confirm: vi.fn(async () => true),
-		};
-		// The production refresh remounts Devices, which clears the status first.
-		const onCommitted = vi.fn(async () => {
-			const node = status();
-			if (node) node.textContent = "";
-			return false;
-		});
+	it("offers Remove, Block and no Retire for an enrolled device on a mounted host", () => {
 		mount(intent(), reconciliation(), {
 			inventory: configuredWorkLaptop(["identity_binding", "coordinator_enrollment"]),
-			retirementApi,
-			onCommitted,
+			removalConfirmation: {},
+			enrolledDeviceBlock: true,
 		});
 
-		const action = retireAction();
-		await act(async () => action?.click());
-
-		await vi.waitFor(() => expect(status()?.textContent).toContain("Refreshing Devices failed."));
-		expect(status()?.textContent).toContain("Work Laptop is retired.");
-		expect(status()?.dataset.tone).toBe("warning");
+		const labels = menuLabels();
+		expect(labels).toContain("Remove device…");
+		expect(labels).toContain("Block device permanently…");
+		expect(labels).not.toContain("Retire device…");
 	});
 
-	it("offers retirement on a pairing-required card without pairing first", async () => {
-		const retirementApi = {
-			preview: vi.fn(async () => retirementPreview("old-tablet")),
-			commit: vi.fn(async () => ({ unpaired_here: false })),
-			confirm: vi.fn(async () => true),
-		};
+	it("offers Remove but no Block for a paired device the coordinator does not list", () => {
 		mount(intent(), reconciliation(), {
-			inventory: inventory([inventoryItem("old-tablet", "Old tablet", "pairing_required")]),
-			retirementApi,
-			onCommitted: vi.fn(async () => true),
+			inventory: configuredWorkLaptop(["identity_binding", "sync_peer"]),
+			removalConfirmation: {},
+			enrolledDeviceBlock: true,
 		});
 
-		const button = document.querySelector<HTMLButtonElement>('[aria-label="Retire Old tablet"]');
-		await act(async () => button?.click());
-
-		await vi.waitFor(() => expect(retirementApi.commit).toHaveBeenCalledOnce());
-		expect(retirementApi.preview).toHaveBeenCalledWith("old-tablet");
+		const labels = menuLabels();
+		expect(labels).toContain("Remove device…");
+		expect(labels).not.toContain("Block device permanently…");
 	});
 
-	it("doesn't offer retirement for an alias of this device", () => {
+	it("offers Remove on a pairing-required card without pairing first", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("old-tablet", "Old tablet", "pairing_required", {
+					sources: ["coordinator_enrollment"],
+				}),
+			]),
+			removalConfirmation: {},
+			enrolledDeviceBlock: true,
+		});
+
+		expect(document.querySelector('[aria-label="Remove Old tablet"]')).not.toBeNull();
+		expect(document.querySelector('[aria-label="Retire Old tablet"]')).toBeNull();
+	});
+
+	it("offers no removal for an alias of this device", () => {
 		mount(intent(), reconciliation(), {
 			inventory: inventory([
 				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
@@ -3500,17 +3462,12 @@ describe("Device retirement menu", () => {
 					isLocal: true,
 				}),
 			]),
+			removalConfirmation: {},
+			enrolledDeviceBlock: true,
 		});
 
+		expect(document.querySelector('[aria-label="Remove Work Laptop"]')).toBeNull();
 		expect(document.querySelector('[aria-label="Retire Work Laptop"]')).toBeNull();
-	});
-
-	it("doesn't offer retirement without coordinator enrollment evidence", () => {
-		mount(intent(), reconciliation(), {
-			inventory: configuredWorkLaptop(["identity_binding", "sync_peer"]),
-		});
-
-		expect(retireAction()).toBeUndefined();
 	});
 });
 

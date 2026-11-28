@@ -6,7 +6,6 @@ import {
 	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
 	createRecipientInvite,
-	DeviceRetirementError,
 	finishLegacyTeamSetup,
 	importCoordinatorInvite,
 	inspectCoordinatorInvite,
@@ -30,7 +29,6 @@ import {
 	renameRecipientPolicyTeam,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
-	retireDevice,
 	saveLegacyTeamSetupAssignment,
 	saveLegacyTeamSetupDecision,
 	saveLegacyTeamSetupProjectMapping,
@@ -1007,40 +1005,6 @@ describe("legacy Team setup API", () => {
 			errorCode: "team_setup_failed",
 			message: "team_setup_failed",
 		});
-	});
-});
-
-describe("retireDevice", () => {
-	const preview = {
-		device_id: "old-laptop",
-		display_name: "Old laptop",
-		enrollment_device_id: "old-laptop",
-		alias_device_ids: ["old-laptop"],
-		group_id: "group-a",
-		coordinator_id: "https://coordinator.example.test",
-		key_id: "b".repeat(64),
-		expected_digest: "a".repeat(64),
-	};
-
-	it.each([
-		{ name: "an empty body", body: "" },
-		{ name: "malformed JSON", body: "{" },
-		{ name: "a body without the retired state", body: JSON.stringify({ unpaired_here: true }) },
-	])("rejects a successful response with $name as an unreadable receipt", async (row) => {
-		globalThis.fetch = vi.fn(async () => new Response(row.body, { status: 200 })) as typeof fetch;
-
-		const error = await retireDevice(preview).catch((caught: unknown) => caught);
-
-		expect(error).toBeInstanceOf(DeviceRetirementError);
-		expect((error as DeviceRetirementError).code).toBe("retire_response_invalid");
-	});
-
-	it("returns the receipt when the server confirms the retirement", async () => {
-		globalThis.fetch = vi.fn(
-			async () => new Response(JSON.stringify({ state: "retired", unpaired_here: true })),
-		) as typeof fetch;
-
-		expect(await retireDevice(preview)).toEqual({ state: "retired", unpaired_here: true });
 	});
 });
 

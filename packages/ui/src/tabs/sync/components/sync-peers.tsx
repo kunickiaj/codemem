@@ -171,9 +171,9 @@ const NO_SETUP_VIEWS: Record<"service" | "retired", AdvancedDeviceIdentityView> 
 	},
 	retired: {
 		status: "retired",
-		summary: "Retired device. The coordinator revoked it.",
+		summary: "Blocked device. The coordinator revoked it.",
 		detail:
-			"Other devices drop their pairing with it at their next coordinator refresh. A retired device ID and key can't be set up again.",
+			"Other devices drop their pairing with it at their next coordinator refresh. A blocked device ID and key can't be set up again.",
 		actionLabel: "See the revoked-device count in Devices",
 	},
 };
