@@ -119,6 +119,7 @@ export {
 	type ViewerRelayReachability,
 	type ViewerRelayReachabilityOptions,
 } from "./relay-reachability.js";
+export { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 export {
 	MEMORY_TOOL_CALL_CAPABILITY,
 	type MemoryToolCaller,

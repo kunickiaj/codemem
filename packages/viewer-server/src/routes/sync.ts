@@ -3397,6 +3397,26 @@ function authorizeSyncRequest(
 	return authenticatedSyncPeer(deviceId, publicKey);
 }
 
+/** No channel exists before the upgrade, so the only binding demanded is the v3 signature. */
+const REQUIRE_DIRECT_SIGNATURE: ChannelBinding = () => true;
+
+/**
+ * Authorizes a direct Noise upgrade before any Noise byte is sent: a pinned
+ * device, its current key, a fresh nonce, and a recipient-bound v3 signature
+ * over the exact target. Bootstrap grants are never accepted here.
+ */
+export function authorizeDirectNoiseUpgrade(
+	store: MemoryStore,
+	request: { method: string; url: string; header(name: string): string | undefined },
+): { ok: true; deviceId: string; publicKey: string } | { ok: false; busy: boolean } {
+	const auth = authorizeSyncRequest(store, request, Buffer.alloc(0), REQUIRE_DIRECT_SIGNATURE);
+	if (!auth.ok) {
+		logDirectPeerAuthDiagnostic(auth.reason);
+		return { ok: false, busy: isSyncAuthStoreBusy(auth) };
+	}
+	return { ok: true, deviceId: auth.deviceId, publicKey: auth.authenticatedPeerSigningKey };
+}
+
 function bootstrapPayloadRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }

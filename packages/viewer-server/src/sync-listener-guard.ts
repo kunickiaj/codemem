@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
+import { DIRECT_NOISE_ACTIVE } from "@codemem/core/internal/relay-runtime";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
+import { attachDirectNoiseGate, type DirectNoiseGateOptions } from "./sync-noise-gate.js";
 
 /**
  * Limits for the network-facing sync listener. The header and request
@@ -39,6 +41,8 @@ export interface SyncListenerGuardOptions {
 	readonly limits?: Partial<SyncListenerLimits>;
 	/** Shared with the upgrade gate, so every request from one address draws on one budget. */
 	readonly limiter?: InMemoryRequestRateLimiter;
+	/** Direct Noise upgrades. Attached only while direct Noise is active. */
+	readonly directNoise?: DirectNoiseGateOptions & { readonly active?: boolean };
 }
 
 type RequestListener = (request: IncomingMessage, response: ServerResponse) => void;
@@ -161,7 +165,12 @@ export function createGuardedSyncServer(
 		);
 		if (limits.maxSockets !== undefined) server.maxConnections = limits.maxSockets;
 		if (limits.maxSocketsPerIp !== undefined) capSocketsPerAddress(server, limits.maxSocketsPerIp);
-		closeSilentSockets(server, limits);
+		const settle = closeSilentSockets(server, limits);
+		const directNoise = options.directNoise;
+		if (directNoise && (directNoise.active ?? DIRECT_NOISE_ACTIVE)) {
+			const admit = { limiter, perMinute: limits.requestsPerIpPerMinute, settle };
+			attachDirectNoiseGate(server, directNoise, admit, remoteAddressKey);
+		}
 		return server;
 	};
 	return guarded as unknown as typeof createServer;
