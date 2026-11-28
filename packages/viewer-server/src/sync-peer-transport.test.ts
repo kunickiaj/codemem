@@ -165,9 +165,9 @@ it("refuses a snapshot before a status exchange at the same address", async () =
 		active: true,
 	});
 
-	await expect(execute("GET", `http://${p.address}/v1/snapshot?limit=1`)).rejects.toThrow(
-		PeerTransportRefused,
-	);
+	await expect(
+		execute("GET", `http://${p.address}/v1/snapshot?limit=1`, { operation: "snapshot" }),
+	).rejects.toThrow(PeerTransportRefused);
 	expect(p.plainPaths).toEqual([]);
 });
 
@@ -320,12 +320,12 @@ it("does not let a plaintext status unlock a snapshot over Noise", async () => {
 		bodyBytes: Buffer.alloc(0),
 		keysDir: p.peerKeysDir,
 	});
-	expect((await execute("GET", statusUrl, { headers }))[0]).toBe(200);
+	expect((await execute("GET", statusUrl, { operation: "status", headers }))[0]).toBe(200);
 	promotePeerToNoiseRequired(p.client.db, p.localDeviceId, "transport_statement");
 
-	await expect(execute("GET", `http://${p.address}/v1/snapshot?limit=1`)).rejects.toThrow(
-		/status_first/,
-	);
+	await expect(
+		execute("GET", `http://${p.address}/v1/snapshot?limit=1`, { operation: "snapshot" }),
+	).rejects.toThrow(/status_first/);
 	expect(syncPaths(p.plainPaths)).toEqual(["/v1/status"]);
 });
 

@@ -1682,7 +1682,7 @@ export {
 	classifyRecordedSyncFailure,
 	type RecordedSyncFailureCategory,
 } from "./sync-failure-classification.js";
-export type { RequestJsonExecutor, RequestJsonOptions } from "./sync-http-client.js";
+export type { PeerOperation, RequestJsonExecutor, RequestJsonOptions } from "./sync-http-client.js";
 export { buildBaseUrl, normalizedCoordinatorId, requestJson } from "./sync-http-client.js";
 export type { DeviceIdentityErrorCode, EnsureDeviceIdentityOptions } from "./sync-identity.js";
 export {
@@ -1715,8 +1715,10 @@ export {
 	syncPassPreflight,
 } from "./sync-pass.js";
 export {
+	PEER_KEY_MISSING_MESSAGE,
 	type PeerTransportOptions,
 	PeerTransportRefused,
+	peerTransportBlocker,
 	peerTransportExecutor,
 } from "./sync-peer-transport.js";
 export type {

@@ -72,7 +72,37 @@ export function normalizedCoordinatorId(value: string): string | null {
 // JSON request
 // ---------------------------------------------------------------------------
 
+/**
+ * The peer protocol request a caller is making. The direct transport policy
+ * decides on this, never on the URL, because stored peer addresses may carry
+ * a path prefix.
+ */
+export type PeerOperation = "status" | "snapshot" | "ops" | "push";
+
+const PEER_OPERATION_ROUTES: Record<PeerOperation, { method: string; route: string }> = {
+	status: { method: "GET", route: "/v1/status" },
+	snapshot: { method: "GET", route: "/v1/snapshot" },
+	ops: { method: "GET", route: "/v1/ops" },
+	push: { method: "POST", route: "/v1/ops" },
+};
+
+/**
+ * Whether a request's method and final path segments are the route its named
+ * operation uses. Any base-path prefix before the route is allowed.
+ */
+export function peerOperationMatches(
+	operation: PeerOperation | undefined,
+	method: string,
+	url: string,
+): boolean {
+	if (!operation || !Object.hasOwn(PEER_OPERATION_ROUTES, operation)) return false;
+	const { method: expectedMethod, route } = PEER_OPERATION_ROUTES[operation];
+	return method === expectedMethod && new URL(url).pathname.endsWith(route);
+}
+
 export interface RequestJsonOptions {
+	/** Required by the direct transport policy executor. Plain requestJson ignores it. */
+	operation?: PeerOperation;
 	headers?: Record<string, string>;
 	body?: Record<string, unknown>;
 	bodyBytes?: Uint8Array;

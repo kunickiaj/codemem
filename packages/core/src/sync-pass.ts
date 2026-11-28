@@ -578,6 +578,7 @@ async function pushOps(push: PushRequest, batch: ReplicationOp[], depth = 0): Pr
 		...capabilityHeader(),
 	};
 	const [status, payload] = await requestExecutor("POST", postUrl, {
+		operation: "push",
 		headers,
 		body,
 		bodyBytes,
@@ -1250,7 +1251,7 @@ async function syncOneScope(
 			}),
 			...capabilityHeader(),
 		};
-		const [status, payload] = await options.requestExecutor("GET", url, { headers });
+		const [status, payload] = await pullOps(options.requestExecutor, url, headers);
 		options.validateCurrentAuthorization?.();
 
 		if (status === 409 && payload?.reset_required === true) {
@@ -1551,6 +1552,7 @@ async function negotiatePeerExchange(
 		...(context.refreshAuthorization ? { [SYNC_AUTHORIZATION_REFRESH_HEADER]: "1" } : {}),
 	};
 	const [statusCode, statusPayload] = await context.requestExecutor("GET", statusUrl, {
+		operation: "status",
 		headers: statusHeaders,
 	});
 	if (statusCode !== 200 || !statusPayload) {
@@ -1942,7 +1944,7 @@ async function pullDefaultScope(
 		}),
 		...capabilityHeader(),
 	};
-	const [status, payload] = await context.requestExecutor("GET", getUrl, { headers: getHeaders });
+	const [status, payload] = await pullOps(context.requestExecutor, getUrl, getHeaders);
 	if (status === 409 && payload?.reset_required === true) {
 		return {
 			kind: "result",
@@ -2388,6 +2390,11 @@ function peerPin(
 		pinnedFingerprint: row?.pinned_fingerprint ?? "",
 		pendingBootstrapGrantId: row?.pending_bootstrap_grant_id?.trim() || undefined,
 	};
+}
+
+/** A GET /v1/ops request, named as such for the transport policy. */
+function pullOps(execute: RequestJsonExecutor, url: string, headers: Record<string, string>) {
+	return execute("GET", url, { operation: "ops", headers });
 }
 
 function unavailableIdentityResult(

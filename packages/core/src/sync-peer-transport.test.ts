@@ -3,7 +3,9 @@ import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import type { RequestJsonExecutor } from "./sync-http-client.js";
 import {
+	PEER_KEY_MISSING_MESSAGE,
 	type PeerTransportOptions,
 	PeerTransportRefused,
 	peerTransportExecutor,
@@ -80,7 +82,7 @@ function pinned(pin: string, extra: Partial<PeerTransportOptions> = {}) {
 const statusNaming =
 	(pin: string) =>
 	(url: string): [number, Record<string, unknown>] =>
-		new URL(url).pathname === "/v1/status"
+		new URL(url).pathname.endsWith("/v1/status")
 			? [200, { fingerprint: fingerprintPublicKey(pin) }]
 			: [200, { items: [] }];
 
@@ -89,14 +91,14 @@ it("neither promotes nor unlocks snapshots when the stream proved a different pi
 	stream.pin = "key-other";
 	stream.answer = statusNaming("key-current");
 
-	await expect(p.execute("GET", "http://127.0.0.1:7/v1/status")).rejects.toThrow(
-		PeerTransportRefused,
-	);
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" }),
+	).rejects.toThrow(PeerTransportRefused);
 
 	expect(readPeerTransportPolicy(p.db, "peer")).toBe("legacy_plaintext");
-	await expect(p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1")).rejects.toThrow(
-		PeerTransportRefused,
-	);
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1", { operation: "snapshot" }),
+	).rejects.toThrow(PeerTransportRefused);
 	expect(stream.opened).toBe(1);
 });
 
@@ -104,15 +106,15 @@ it("refuses a snapshot after a re-pin, though the earlier status was valid for t
 	const p = pinned("key-a");
 	stream.pin = "key-a";
 	stream.answer = statusNaming("key-a");
-	await p.execute("GET", "http://127.0.0.1:7/v1/status");
+	await p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" });
 	expect(readPeerTransportPolicy(p.db, "peer")).toBe("noise_required");
 
 	p.repin("key-b");
 	stream.pin = "key-b";
 
-	await expect(p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1")).rejects.toThrow(
-		/status_first/,
-	);
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1", { operation: "snapshot" }),
+	).rejects.toThrow(/status_first/);
 	expect(stream.opened).toBe(1);
 });
 
@@ -120,9 +122,9 @@ it("asks the snapshot's handshake to prove the pin its status named", async () =
 	const p = pinned("key-a");
 	stream.pin = "key-a";
 	stream.answer = statusNaming("key-a");
-	await p.execute("GET", "http://127.0.0.1:7/v1/status");
+	await p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" });
 
-	await p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1");
+	await p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1", { operation: "snapshot" });
 
 	expect(stream.expectedPins).toEqual(["key-a", "key-a"]);
 });
@@ -135,9 +137,9 @@ it("drops a Noise answer when the pin rotates while the response is pending", as
 		return statusNaming("key-a")(url);
 	};
 
-	await expect(p.execute("GET", "http://127.0.0.1:7/v1/status")).rejects.toThrow(
-		/peer key changed while the response was pending/,
-	);
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" }),
+	).rejects.toThrow(/peer key changed while the response was pending/);
 
 	expect(readPeerTransportPolicy(p.db, "peer")).toBe("legacy_plaintext");
 });
@@ -146,10 +148,12 @@ it("holds a snapshot to the status pin when the pin rotates before dialing", asy
 	const p = pinned("key-a");
 	stream.pin = "key-a";
 	stream.answer = statusNaming("key-a");
-	await p.execute("GET", "http://127.0.0.1:7/v1/status");
+	await p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" });
 
 	// The status check passes, then a re-pin lands before the connection is set up.
-	const snapshot = p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1");
+	const snapshot = p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1", {
+		operation: "snapshot",
+	});
 	p.repin("key-b");
 	stream.pin = "key-b";
 
@@ -218,4 +222,106 @@ it("holds the grant's pin-only status to the caller's shorter timeout", async ()
 	} finally {
 		await listener.close();
 	}
+});
+
+/** A plaintext executor that records every request it would send. */
+function recordingPlaintext() {
+	return vi.fn<RequestJsonExecutor>(async (_method, url) =>
+		new URL(url).pathname.endsWith("/v1/status")
+			? [200, { fingerprint: fingerprintPublicKey("key-a") }]
+			: [200, { items: [] }],
+	);
+}
+
+it("refuses a request whose operation is missing or does not match its method", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+	const url = "https://peer.invalid/base/v1/status";
+
+	await expect(p.execute("GET", url)).rejects.toThrow(/operation_required/);
+	await expect(p.execute("POST", url, { operation: "status" })).rejects.toThrow(
+		/operation_required/,
+	);
+	expect(plaintext).not.toHaveBeenCalled();
+});
+
+it("refuses a snapshot before status at a prefixed HTTPS address on the legacy fallback", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+
+	await expect(
+		p.execute("GET", "https://peer.invalid/base/v1/snapshot?limit=1", { operation: "snapshot" }),
+	).rejects.toThrow(/status_first/);
+
+	expect(plaintext).not.toHaveBeenCalled();
+});
+
+it("sends nothing for a fingerprint-only peer at a prefixed HTTPS address", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+	p.db.prepare("UPDATE sync_peers SET public_key = NULL WHERE peer_device_id = 'peer'").run();
+
+	await expect(
+		p.execute("GET", "https://peer.invalid/base/v1/status", { operation: "status" }),
+	).rejects.toThrow(PEER_KEY_MISSING_MESSAGE);
+	await expect(
+		p.execute("GET", "https://peer.invalid/base/v1/snapshot?limit=1", { operation: "snapshot" }),
+	).rejects.toThrow(PEER_KEY_MISSING_MESSAGE);
+
+	expect(plaintext).not.toHaveBeenCalled();
+});
+
+it("checks the saved key before sending a bootstrap grant's pin-only status", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext, bootstrapGrantId: "grant-1" });
+	promotePeerToNoiseRequired(p.db, "peer", "transport_statement");
+	p.db.prepare("UPDATE sync_peers SET public_key = NULL WHERE peer_device_id = 'peer'").run();
+
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" }),
+	).rejects.toThrow(PEER_KEY_MISSING_MESSAGE);
+
+	expect(plaintext).not.toHaveBeenCalled();
+});
+
+it("counts a status at a prefixed address, so it promotes and unlocks the snapshot there", async () => {
+	const p = pinned("key-a");
+	stream.pin = "key-a";
+	stream.answer = statusNaming("key-a");
+
+	await p.execute("GET", "http://127.0.0.1:7/base/v1/status", { operation: "status" });
+	await p.execute("GET", "http://127.0.0.1:7/base/v1/snapshot?limit=1", { operation: "snapshot" });
+
+	expect(readPeerTransportPolicy(p.db, "peer")).toBe("noise_required");
+	expect(stream.opened).toBe(2);
+});
+
+it.each([
+	["status", "https://peer.invalid/base/v1/snapshot?limit=1"],
+	["ops", "https://peer.invalid/base/v1/snapshot?limit=1"],
+	["status", "http://127.0.0.1:7/base/v1/snapshot?limit=1"],
+	["ops", "http://127.0.0.1:7/v1/snapshot?limit=1"],
+] as const)("sends nothing for a GET snapshot labeled %s at %s", async (label, url) => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+	stream.answer = statusNaming("key-a");
+
+	await expect(p.execute("GET", url, { operation: label })).rejects.toThrow(/operation_required/);
+
+	expect(plaintext).not.toHaveBeenCalled();
+	expect(stream.opened).toBe(0);
+});
+
+it("accepts each operation on its own route under a base path", async () => {
+	const p = pinned("key-a");
+	stream.pin = "key-a";
+	stream.answer = statusNaming("key-a");
+	const base = "http://127.0.0.1:7/a/b";
+
+	await p.execute("GET", `${base}/v1/status`, { operation: "status" });
+	await p.execute("GET", `${base}/v1/ops?limit=1`, { operation: "ops" });
+	await p.execute("POST", `${base}/v1/ops`, { operation: "push" });
+	await p.execute("GET", `${base}/v1/snapshot?limit=1`, { operation: "snapshot" });
+
+	expect(stream.opened).toBe(4);
 });

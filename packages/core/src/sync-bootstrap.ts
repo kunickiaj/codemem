@@ -170,6 +170,13 @@ function snapshotRequestExecutor(options?: BootstrapOptions): RequestJsonExecuto
 	return requestJson;
 }
 
+/** A refused snapshot page: the checked size refusal when there is one, else the detail. */
+function snapshotPageFailure(status: number, payload: Record<string, unknown> | null): Error {
+	const tooLarge = parseSyncEntryTooLarge(payload);
+	if (tooLarge) return new SyncEntryTooLargeReply(tooLarge, "snapshot fetch failed");
+	return new Error(`snapshot fetch failed: ${snapshotFailureDetail(status, payload)}`);
+}
+
 function snapshotFailureDetail(status: number, payload: Record<string, unknown> | null): string {
 	const error = payload?.error ? String(payload.error) : "";
 	const reason = payload?.reason ? String(payload.reason) : "";
@@ -229,12 +236,12 @@ export async function fetchAllSnapshotPages(
 			[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 		};
 
-		const [status, payload] = await requestExecutor("GET", url, { headers, timeoutS });
-		if (status !== 200 || !payload) {
-			const tooLarge = parseSyncEntryTooLarge(payload);
-			if (tooLarge) throw new SyncEntryTooLargeReply(tooLarge, "snapshot fetch failed");
-			throw new Error(`snapshot fetch failed: ${snapshotFailureDetail(status, payload)}`);
-		}
+		const [status, payload] = await requestExecutor("GET", url, {
+			operation: "snapshot",
+			headers,
+			timeoutS,
+		});
+		if (status !== 200 || !payload) throw snapshotPageFailure(status, payload);
 
 		const page = payload as unknown as SnapshotPageResponse;
 		if (!Array.isArray(page.items) || page.generation == null) {

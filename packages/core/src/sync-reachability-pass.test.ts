@@ -17,6 +17,7 @@ import {
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
 import { runSyncPass } from "./sync-orchestration.js";
+import * as syncPass from "./sync-pass.js";
 import { consecutiveConnectivityFailures, type SyncPassOptions, syncOnce } from "./sync-pass.js";
 import { PeerTransportRefused } from "./sync-peer-transport.js";
 import {
@@ -1199,3 +1200,106 @@ it("reports a scoped relay failure and captures a fresh current pin on the next 
 	]);
 	expect(factory.mock.results[0]?.value).not.toBe(factory.mock.results[1]?.value);
 });
+
+const PULL_OR_PUSH: Record<string, string> = { GET: "ops", POST: "push" };
+
+it.each([
+	[
+		"the reachability wrapper",
+		(execute: RequestJsonExecutor, address: string) =>
+			runReachableSyncPass(db, "peer", [address], options(execute)),
+	],
+	[
+		"a plain sync pass",
+		(execute: RequestJsonExecutor, address: string) =>
+			syncOnce(db, "peer", [address], { requestExecutor: execute }),
+	],
+])("names the operation of every request at a prefixed address through %s", async (_label, run) => {
+	// Arrange: the address carries a path prefix, as a stored peer address may.
+	const execute = vi.fn<RequestJsonExecutor>(async (method, url) => {
+		if (new URL(url).pathname === "/base/v1/status") return [200, status];
+		if (method === "GET")
+			return [200, { ...boundary, reset_required: false, ops: [], next_cursor: null, skipped: 0 }];
+		return [200, { applied: 0, skipped: 0, errors: [] }];
+	});
+	// Act.
+	const result = await run(execute, "http://127.0.0.1:19001/base");
+	// Assert.
+	expect(result).toMatchObject({ ok: true });
+	expect(execute.mock.calls.length).toBeGreaterThan(1);
+	for (const [method, url, requestOptions] of execute.mock.calls) {
+		const path = new URL(url).pathname;
+		expect(path.startsWith("/base/v1/")).toBe(true);
+		const expected = path.endsWith("/v1/status") ? "status" : PULL_OR_PUSH[method];
+		expect(requestOptions?.operation).toBe(expected);
+	}
+});
+
+it.each([
+	[
+		"the reachability wrapper",
+		(address: string) =>
+			runReachableSyncPass(db, "peer", [address], {
+				directNoise: { active: true },
+				reachability: { scopeId: "space", logicalOrigin: "https://peer.invalid" },
+			}),
+	],
+	[
+		"a plain sync pass",
+		(address: string) => syncOnce(db, "peer", [address], { directNoise: { active: true } }),
+	],
+])(
+	"sends nothing to a peer with no saved key at a prefixed HTTPS address through %s",
+	async (_label, run) => {
+		// Arrange: the stored key does not match the pinned fingerprint, as for a fingerprint-only pin.
+		const fetch = vi.spyOn(globalThis, "fetch");
+		// Act.
+		const result = await run("https://127.0.0.1:19003/base");
+		// Assert.
+		expect(result.ok).toBe(false);
+		expect(fetch).not.toHaveBeenCalled();
+	},
+);
+
+it("commits only to a request the caller names as status, whatever its URL says", async () => {
+	// Arrange: the pass's first request has a status URL but names no operation.
+	const execute = successfulExchange();
+	let refusal: unknown;
+	vi.spyOn(syncPass, "syncOnce").mockImplementationOnce(
+		async (_db, _peer, _addresses, passOptions) => {
+			refusal = await passOptions
+				?.requestExecutor?.("GET", `${addresses[0]}/v1/status`, {})
+				.catch((error: unknown) => error);
+			return { ok: false, error: "stopped", opsIn: 0, opsOut: 0 };
+		},
+	);
+	// Act.
+	await runReachableSyncPass(db, "peer", addresses, options(execute));
+	// Assert.
+	expect(refusal).toEqual(new Error("Sync request operation does not match its route"));
+	expect(execute).not.toHaveBeenCalled();
+});
+
+it.each(["status", "ops"] as const)(
+	"sends nothing for a GET snapshot labeled %s through the reachability wrapper",
+	async (label) => {
+		// Arrange: the first request is a snapshot at a prefixed address, mislabeled.
+		const execute = successfulExchange();
+		let refusal: unknown;
+		vi.spyOn(syncPass, "syncOnce").mockImplementationOnce(
+			async (_db, _peer, _addresses, passOptions) => {
+				refusal = await passOptions
+					?.requestExecutor?.("GET", "http://127.0.0.1:19001/base/v1/snapshot?limit=1", {
+						operation: label,
+					})
+					.catch((error: unknown) => error);
+				return { ok: false, error: "stopped", opsIn: 0, opsOut: 0 };
+			},
+		);
+		// Act.
+		await runReachableSyncPass(db, "peer", ["http://127.0.0.1:19001/base"], options(execute));
+		// Assert.
+		expect(refusal).toEqual(new Error("Sync request operation does not match its route"));
+		expect(execute).not.toHaveBeenCalled();
+	},
+);

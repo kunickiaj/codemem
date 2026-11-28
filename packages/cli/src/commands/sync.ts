@@ -8,15 +8,10 @@ import net from "node:net";
 
 import * as p from "@clack/prompts";
 import {
-	applyBootstrapSnapshot,
-	buildBaseUrl,
-	buildDirectPeerAuthHeaders,
 	DeviceIdentityError,
 	ensureDeviceIdentity,
 	expandUserPath,
-	fetchAllSnapshotPages,
 	getCodememConfigPath,
-	hasUnsyncedSharedMemoryChanges,
 	listPerPeerScopeSyncState,
 	loadRuntimeSigningPublicKey,
 	MemoryStore,
@@ -29,7 +24,6 @@ import {
 	readViewerPidFile,
 	rememberPeerProjectFilterManagement,
 	removePeerFromThisDevice,
-	requestJson,
 	resolveDbPath,
 	runSyncPass,
 	schema,
@@ -50,6 +44,7 @@ import {
 	resolveDbOpt,
 } from "../shared-options.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
+import { buildSyncBootstrapCommand } from "./sync-bootstrap.js";
 import {
 	buildServeLifecycleArgs,
 	formatSyncAttempt,
@@ -873,252 +868,7 @@ syncCommand.addCommand(peersCommand);
 syncCommand.addCommand(relayKeysCommand);
 syncCommand.addCommand(approveRelayKeyCommand);
 
-// ---- sync bootstrap <peer-device-id> ----
-
-const bootstrapCmd = new Command("bootstrap")
-	.configureHelp(helpStyle)
-	.description("Copy existing memories from a peer")
-	.argument("[peer-device-id]", "peer device ID to bootstrap from")
-	.option("--bootstrap-grant <grant-id>", "bootstrap grant id for seed-authorized bootstrap")
-	.option("--page-size <n>", "items per snapshot page (default: 2000)", "2000")
-	.option("--keys-dir <path>", "keys directory")
-	.option("--force", "skip dirty-local-state safety check");
-addDbOption(bootstrapCmd);
-addJsonOption(bootstrapCmd);
-// Hidden alias for backwards compat
-bootstrapCmd.addOption(new Option("--peer <device-id>", "peer device ID").hideHelp());
-bootstrapCmd.action(
-	async (
-		peerArg: string | undefined,
-		opts: {
-			peer?: string;
-			bootstrapGrant?: string;
-			pageSize: string;
-			db?: string;
-			dbPath?: string;
-			keysDir?: string;
-			force?: boolean;
-			json?: boolean;
-		},
-	) => {
-		// Resolve peer from positional or hidden --peer alias
-		const peerDeviceId = (peerArg || opts.peer || "").trim();
-		if (!peerDeviceId) {
-			if (opts.json) {
-				emitJsonError("usage_error", "missing required argument: <peer-device-id>", 2);
-				return;
-			}
-			p.log.error("missing required argument: <peer-device-id>");
-			process.exitCode = 2;
-			return;
-		}
-
-		const dbPath = resolveDbPath(resolveDbOpt(opts));
-		const store = new MemoryStore(dbPath);
-		try {
-			const pageSize = Math.max(1, Number.parseInt(opts.pageSize, 10) || 2000);
-			const keysDir = opts.keysDir ?? undefined;
-			const d = drizzle(store.db, { schema });
-
-			// Look up peer
-			const peer = d
-				.select()
-				.from(schema.syncPeers)
-				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-				.get();
-			if (!peer) {
-				if (opts.json) {
-					emitJsonError("peer_not_found", `Peer ${peerDeviceId} not found in sync_peers.`);
-				} else {
-					p.log.error(`Peer ${peerDeviceId} not found in sync_peers.`);
-				}
-				process.exitCode = 1;
-				return;
-			}
-			if (!peer.pinned_fingerprint) {
-				if (opts.json) {
-					emitJsonError(
-						"peer_not_pinned",
-						`Peer ${peerDeviceId} has no pinned fingerprint. Accept it first.`,
-					);
-				} else {
-					p.log.error(`Peer ${peerDeviceId} has no pinned fingerprint. Accept it first.`);
-				}
-				process.exitCode = 1;
-				return;
-			}
-
-			// Safety check
-			if (!opts.force) {
-				const dirty = hasUnsyncedSharedMemoryChanges(store.db);
-				if (dirty.dirty) {
-					if (opts.json) {
-						emitJsonError(
-							"local_unsynced_changes",
-							`${dirty.count} unsynced shared memory change(s) would be lost. Use --force to override.`,
-						);
-					} else {
-						p.log.error(
-							`${dirty.count} unsynced shared memory change(s) would be lost. Use --force to override.`,
-						);
-					}
-					process.exitCode = 1;
-					return;
-				}
-			}
-
-			// Resolve device identity
-			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
-
-			// Get peer status to obtain reset boundary
-			const addresses = JSON.parse(String(peer.addresses_json ?? "[]")) as string[];
-			if (!addresses.length) {
-				if (opts.json) {
-					emitJsonError(
-						"no_peer_addresses",
-						"Peer has no known addresses. Run a sync first or add addresses.",
-					);
-				} else {
-					p.log.error("Peer has no known addresses. Run a sync first or add addresses.");
-				}
-				process.exitCode = 1;
-				return;
-			}
-
-			let boundary: {
-				generation: number;
-				snapshot_id: string;
-				baseline_cursor: string | null;
-			} | null = null;
-			let baseUrl = "";
-			const addressResults: Array<{ address: string; result: string }> = [];
-
-			for (const address of addresses) {
-				const candidate = buildBaseUrl(address);
-				if (!candidate) continue;
-				const statusUrl = `${candidate}/v1/status`;
-				const headers = buildDirectPeerAuthHeaders({
-					deviceId,
-					recipientId: peerDeviceId,
-					dbPath: store.dbPath,
-					method: "GET",
-					url: statusUrl,
-					bodyBytes: Buffer.alloc(0),
-					bootstrapGrantId: opts.bootstrapGrant,
-					keysDir,
-				});
-				try {
-					const [code, payload] = await requestJson("GET", statusUrl, { headers });
-					if (code !== 200 || !payload) {
-						addressResults.push({ address: candidate, result: `status ${code}` });
-						continue;
-					}
-					if (payload.fingerprint !== peer.pinned_fingerprint) {
-						addressResults.push({ address: candidate, result: "fingerprint mismatch" });
-						continue;
-					}
-					const reset = payload.sync_reset as Record<string, unknown> | undefined;
-					if (
-						reset &&
-						typeof reset.generation === "number" &&
-						typeof reset.snapshot_id === "string"
-					) {
-						boundary = {
-							generation: reset.generation,
-							snapshot_id: reset.snapshot_id,
-							baseline_cursor:
-								typeof reset.baseline_cursor === "string" ? reset.baseline_cursor : null,
-						};
-						baseUrl = candidate;
-						addressResults.push({ address: candidate, result: "ok" });
-						break;
-					}
-					addressResults.push({ address: candidate, result: "missing sync_reset boundary" });
-				} catch (err) {
-					addressResults.push({
-						address: candidate,
-						result: err instanceof Error ? err.message : String(err),
-					});
-				}
-			}
-
-			if (!boundary || !baseUrl) {
-				const summary = addressResults.map((r) => `${r.address}: ${r.result}`).join("; ");
-				const detail = summary
-					? `no reachable peer with valid reset boundary. Tried: ${summary}`
-					: "peer unreachable or missing reset boundary";
-				if (opts.json) {
-					console.log(JSON.stringify({ ok: false, error: detail, addresses: addressResults }));
-				} else {
-					p.log.error(detail);
-				}
-				process.exitCode = 1;
-				return;
-			}
-
-			if (!opts.json) {
-				p.intro("codemem sync bootstrap");
-				p.log.step(`Bootstrapping from ${peer.name || peerDeviceId}...`);
-			}
-
-			const resetInfo = {
-				generation: boundary.generation,
-				snapshot_id: boundary.snapshot_id,
-				baseline_cursor: boundary.baseline_cursor,
-				retained_floor_cursor: null,
-				reset_required: true as const,
-				reason: "initial_bootstrap" as const,
-			};
-
-			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
-				keysDir,
-				dbPath: store.dbPath,
-				bootstrapGrantId: opts.bootstrapGrant,
-				recipientId: peerDeviceId,
-				pageSize,
-			});
-
-			const result = applyBootstrapSnapshot(
-				store.db,
-				peerDeviceId,
-				items,
-				resetInfo,
-				store.scanner,
-			);
-
-			if (opts.json) {
-				console.log(
-					JSON.stringify({
-						ok: result.ok,
-						applied: result.applied,
-						deleted: result.deleted,
-						error: result.error ?? null,
-					}),
-				);
-			} else {
-				if (result.ok) {
-					p.log.success(`Applied ${result.applied} memories (removed ${result.deleted} stale).`);
-				} else {
-					p.log.error(result.error || "Bootstrap apply failed.");
-				}
-				p.outro(result.ok ? "Bootstrap complete" : "Bootstrap failed");
-			}
-			if (!result.ok) process.exitCode = 1;
-		} catch (error) {
-			const code = error instanceof DeviceIdentityError ? error.code : "bootstrap_failed";
-			const message = error instanceof Error ? error.message : "Bootstrap failed";
-			if (opts.json) {
-				emitJsonError(code, message);
-				return;
-			}
-			p.log.error(message);
-			process.exitCode = 1;
-		} finally {
-			store.close();
-		}
-	},
-);
-syncCommand.addCommand(bootstrapCmd);
+syncCommand.addCommand(buildSyncBootstrapCommand());
 
 // ---- sync connect <coordinator-url> ----
 
