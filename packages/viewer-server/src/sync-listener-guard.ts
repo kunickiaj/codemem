@@ -8,10 +8,13 @@ import {
 import { attachDirectNoiseGate, type DirectNoiseGateOptions } from "./sync-noise-gate.js";
 
 /**
- * Limits for the network-facing sync listener. The header and request
- * deadlines are always on. The socket caps and the per-address request limit
- * are off until load measurement of shared-NAT and global saturation sets
- * values that cannot hurt existing users.
+ * Limits for the network-facing sync listener. The socket caps and the
+ * per-address request limit come from `pnpm run load:sync-listener`
+ * (packages/viewer-server/scripts/sync-listener-load.ts). With them, an
+ * authenticated flood or idle streams from one address left another
+ * address's sync p95 within 10% of idle, at under 16 MiB added memory, and
+ * 128 devices behind one address that start syncing within 10 s all succeed.
+ * Set a cap to undefined to turn it off.
  */
 export interface SyncListenerLimits {
 	/** Time a socket has to deliver complete request headers. */
@@ -32,9 +35,17 @@ export const SYNC_LISTENER_LIMITS: SyncListenerLimits = Object.freeze({
 	headerMs: 10_000,
 	requestMs: 30_000,
 	checkIntervalMs: 1_000,
+	maxSockets: 256,
+	// Bounds how many handshakes and streams one address can drive at once.
+	maxSocketsPerIp: 16,
+	// About 300 devices behind one address at the default 120 s sync interval.
+	requestsPerIpPerMinute: 600,
 });
 
-/** Distinct address buckets the listener's limiter keeps. Churn evicts the stalest. */
+/**
+ * Distinct address buckets the listener's limiter keeps. When it is full, new
+ * addresses share one overflow budget until a bucket goes unused for a minute.
+ */
 export const SYNC_LISTENER_MAX_BUCKETS = 4_096;
 
 /**

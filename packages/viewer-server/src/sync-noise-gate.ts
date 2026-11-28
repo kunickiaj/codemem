@@ -20,7 +20,12 @@ import { ResponseByteBudget } from "./response-byte-budget.js";
 import { authorizeDirectNoiseUpgrade } from "./routes/sync.js";
 import { createSyncChannelDispatcher, type SyncChannelRequest } from "./sync-channel-dispatch.js";
 
-/** Provisional until the load measurement before activation, which may lower them. */
+/**
+ * From the sync listener load measurement. Pending handshakes stay at 4 per
+ * address: at 16 or more, an authenticated flood from one address pushed
+ * another address's sync p95 from 35 ms to 2-3 s. Streams cost about 0.1 MiB
+ * each, so the total allows 256, which takes 32 peers or 16 addresses to fill.
+ */
 export interface DirectNoiseGateLimits {
 	readonly pendingTotal: number;
 	readonly pendingPerIp: number;
@@ -33,7 +38,7 @@ export interface DirectNoiseGateLimits {
 export const DIRECT_NOISE_GATE_LIMITS: DirectNoiseGateLimits = Object.freeze({
 	pendingTotal: 32,
 	pendingPerIp: 4,
-	streamsTotal: 64,
+	streamsTotal: 256,
 	streamsPerPeer: 8,
 	responseBudgetBytes: 128 * 1024 * 1024,
 	handshakeMs: RELAY_NOISE_LIMITS.handshakeMs,

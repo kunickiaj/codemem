@@ -10,6 +10,7 @@
     "owner:pilot": "pnpm exec tsx --conditions source e2e/bin/owner-pilot.ts",
     "owner:pilot:check": "pnpm exec tsc -p e2e/tsconfig.owner-pilot.json && pnpm exec vitest run e2e/bin/owner-pilot.test.ts",
     "e2e": "pnpm exec tsx e2e/bin/run-local.ts",
+    "load:sync-listener": "pnpm exec tsx --conditions source packages/viewer-server/scripts/sync-listener-load.ts",
     "e2e:bootstrap": "pnpm exec tsx e2e/bin/run-local.ts bootstrap",
     "e2e:coordinator": "pnpm exec tsx e2e/bin/run-local.ts coordinator",
     "e2e:direct-sync": "pnpm exec tsx e2e/bin/run-local.ts directSync",

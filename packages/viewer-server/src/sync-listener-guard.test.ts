@@ -77,7 +77,7 @@ async function dualStackAvailable(): Promise<boolean> {
 	}
 }
 
-it("applies the header, request and expiry-check limits and leaves the caps off by default", async () => {
+it("applies the header, request and expiry-check limits and the measured caps by default", async () => {
 	const { server, port } = await listen({
 		headerMs: 4_000,
 		requestMs: 9_000,
@@ -85,17 +85,32 @@ it("applies the header, request and expiry-check limits and leaves the caps off 
 	});
 
 	expect(server).toMatchObject({ headersTimeout: 4_000, requestTimeout: 9_000 });
-	expect(server.maxConnections).toBeUndefined();
+	expect(server.maxConnections).toBe(256);
 	expect(SYNC_LISTENER_LIMITS).toEqual({
 		headerMs: 10_000,
 		requestMs: 30_000,
 		checkIntervalMs: 1_000,
+		maxSockets: 256,
+		maxSocketsPerIp: 16,
+		requestsPerIpPerMinute: 600,
 	});
-	// Thirty open sockets from one address all stay connected, and requests are not throttled.
+	// Sixteen sockets from one address stay connected. The seventeenth is closed.
+	const held = await Promise.all(Array.from({ length: 16 }, () => connect(port, "127.0.0.1")));
+	const overCap = await connect(port, "127.0.0.1");
+	expect(await closed(overCap)).toBeLessThan(500);
+	expect(held.every((socket) => !socket.destroyed)).toBe(true);
+});
+
+it("leaves a cap off when it is set to undefined", async () => {
+	const { server, port } = await listen({
+		maxSockets: undefined,
+		maxSocketsPerIp: undefined,
+		requestsPerIpPerMinute: undefined,
+	});
+
+	expect(server.maxConnections).toBeUndefined();
 	const held = await Promise.all(Array.from({ length: 30 }, () => connect(port, "127.0.0.1")));
-	const statuses = [];
-	for (let i = 0; i < 5; i++) statuses.push((await status(port)).status);
-	expect(statuses.every((code) => code === 200)).toBe(true);
+	expect((await status(port)).status).toBe(200);
 	expect(held.every((socket) => !socket.destroyed)).toBe(true);
 });
 
@@ -116,7 +131,7 @@ it("keeps the limiter's bucket map bounded under address churn", () => {
 	const limiter = createInMemoryRequestRateLimiter(60_000, { maxBuckets: 8 });
 	for (let i = 0; i < 1_000; i++) limiter.check(`sync-listener:198.51.100.${i % 250}:${i}`, 1);
 	expect(limiter.bucketCount?.()).toBe(8);
-	// The most recent key keeps its bucket, so it is still limited.
+	// Keys past the ceiling share one overflow budget, which the churn already spent.
 	expect(limiter.check("sync-listener:198.51.100.249:999", 1).allowed).toBe(false);
 });
 
