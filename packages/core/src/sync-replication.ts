@@ -2806,10 +2806,9 @@ export function opsStillSendableToPeer(
 	options: Pick<FilterReplicationOpsForSyncOptions, "coordinatorFree"> = {},
 ): ReplicationOp[] {
 	const page = outboundPage(db, ops, { localDeviceId, coordinatorFree: options.coordinatorFree });
-	// A lane batch goes only while the peer is still eligible, and carries only lane ops.
-	if (page.coordinatorFree && !page.coordinatorFree.open) return [];
 	return ops.flatMap((op) => {
 		const payload = op.entity_type === "memory_item" ? parsePayload(op.payload_json) : null;
+		// A lane batch carries only lane ops, and none once the peer is no longer eligible.
 		if (coordinatorFreeRefusesOp(page, op)) return [];
 		if (!opCarriesMemoryContent(op, payload)) return [op];
 		const decision = outboundDecision(db, op, payload, peerDeviceId, page);
