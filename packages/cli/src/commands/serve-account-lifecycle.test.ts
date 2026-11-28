@@ -92,6 +92,7 @@ vi.mock("@codemem/server", () => ({
 	closeStoreAsync: mocks.closeStore,
 	createApp: mocks.createApp,
 	createSyncApp: mocks.createSyncApp,
+	createGuardedSyncServer: vi.fn(),
 	createAccountContextReader: mocks.createContext,
 	createAccountLinkRegistry: mocks.createRegistry,
 	createAccountRebindRunner: () => async () => ({ kind: "failed" }),
