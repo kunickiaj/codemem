@@ -61,6 +61,7 @@ vi.mock("./components/diagnostics", () => ({
 vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn(), pushToast: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	loadDeviceIdentityInventory: vi.fn(async () => ({ version: 1, items: [] })),
+	loadCoordinatorAdminStatus: vi.fn(async () => ({})),
 	loadProjectScopeInventory: vi.fn(async () => ({
 		projects: [],
 		has_more: false,
