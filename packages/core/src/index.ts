@@ -238,6 +238,19 @@ export {
 	readCoordinatorFreeStatus,
 	type WitnessBackend,
 } from "./coordinator-free-attestation.js";
+export {
+	applyCoordinatorFreeOps,
+	COORDINATOR_FREE_CURSOR_SCOPE,
+	COORDINATOR_FREE_LANE,
+	COORDINATOR_FREE_RECOVERY_UNAVAILABLE,
+	type CoordinatorFreeEligibility,
+	coordinatorFreeEligibility,
+	coordinatorFreeInboundRejections,
+	coordinatorFreeOutboundOps,
+	coordinatorFreeOutboundRules,
+	coordinatorFreeSendableNow,
+	LaneApplyError,
+} from "./coordinator-free-lane.js";
 export type {
 	CoordinatorGroupPreference,
 	UpsertCoordinatorGroupPreferenceInput,
