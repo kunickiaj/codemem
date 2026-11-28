@@ -305,6 +305,22 @@ describe("the managed mark follows the key's bound witness", () => {
 		},
 	);
 
+	it("refuses coordinator trust for an attested store whose device key can't be read", () => {
+		const store = openStore();
+		expect(attestCoordinatorFree(store.db, { keysDir })).toBe("standalone");
+		const fingerprint = fingerprintOf(store.db);
+		// The device record loses its fingerprint, so the key's binding can't be looked up.
+		store.db.prepare("UPDATE sync_device SET fingerprint = ''").run();
+
+		expect(() => markCoordinatorManaged(store.db, { keysDir })).toThrow(
+			"coordinator_free_binding_unverified",
+		);
+
+		store.db.prepare("UPDATE sync_device SET fingerprint = ?").run(fingerprint);
+		expect(readCoordinatorFreeStatus(store.db, { keysDir })).toBe("standalone");
+		store.db.close();
+	});
+
 	it("refuses the trust step when the bound keychain can't take the mark", () => {
 		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
 		const keychain = memoryKeychain();

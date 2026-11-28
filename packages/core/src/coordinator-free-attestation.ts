@@ -259,11 +259,12 @@ function markWitnesses(
 	attested = false,
 ): WitnessBackend[] {
 	const found = witnesses(options);
-	if (!fingerprint) return found.all;
-	const bound = verifiedBinding(found.file, fingerprint);
-	// An attested store's binding names the witness its rollback check reads. Without a
-	// verified binding, a mark could miss that witness, so the trust step is refused.
+	const bound = fingerprint ? verifiedBinding(found.file, fingerprint) : null;
+	// An attested store's binding names the witness its rollback check reads. Without a key
+	// to look it up by, or a verified binding, a mark could miss that witness, so the trust
+	// step is refused.
 	if (attested && bound === null) throw new Error(COORDINATOR_FREE_BINDING_UNVERIFIED);
+	if (!fingerprint) return found.all;
 	if (bound !== "keychain" || found.all.some((backend) => backend.kind === "keychain"))
 		return found.all;
 	return [options.keychain ?? platformKeychain(keysDirectory(options.keysDir)), ...found.all];
