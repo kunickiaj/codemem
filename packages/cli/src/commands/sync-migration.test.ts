@@ -53,6 +53,7 @@ it("distinguishes a fresh peer install from a configured coordinator that cannot
 		mode: "report",
 		state: "local_report",
 		local_filters: "none",
+		maintenance_window: expect.stringContaining("stop every client"),
 		projects: null,
 	});
 	expect(fetch).not.toHaveBeenCalled();

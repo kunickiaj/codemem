@@ -89,7 +89,14 @@ export function readLocalProjectMigrationReport(db: Database, config: Record<str
 			} catch {
 				// An unidentified Project or an older schema is not an empty inventory.
 			}
-			return { mode, state: "local_report", local_filters: filters, projects } as const;
+			return {
+				mode,
+				state: "local_report",
+				local_filters: filters,
+				projects,
+				maintenance_window:
+					"Before transitioning this store, drain transfers and proof refreshes and stop every client that uses it, including current versions. Neither the exclusive lock nor the format change can recall bytes a process has already read.",
+			} as const;
 		})
 		.deferred();
 }

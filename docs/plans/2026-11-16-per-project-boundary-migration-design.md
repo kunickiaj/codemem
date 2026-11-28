@@ -22,6 +22,15 @@ Teams, verified identities, device-to-person binding and person recipients requi
 
 Areas 2–5 require security review. Automatic filter conversion, detailed per-sender filter collection, attachment/detachment, multi-source rollback and physical removal of legacy filter storage and settings are outside 0.50.
 
+### Device maintenance window
+
+Before transitioning a device store, drain transfers and proof refreshes, then
+stop every client that uses the store, including current versions. Keep clients
+stopped until the transition commits. Neither the exclusive SQLite lock nor the
+new storage format can recall bytes a process has already read. Install the
+format change and prepare the proofs in the same exclusive transaction. If the
+store is busy, leave it unchanged and reschedule the transition.
+
 ## November 16 proposal
 
 ### What a person sees
