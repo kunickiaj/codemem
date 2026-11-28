@@ -227,6 +227,7 @@ export { getCoordinatorEnrollmentReconciliationIssueSummary } from "./coordinato
 export {
 	type AttestationOptions,
 	attestCoordinatorFree,
+	COORDINATOR_FREE_BINDING_UNVERIFIED,
 	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	type CoordinatorFreeStatus,
 	keychainWitness,

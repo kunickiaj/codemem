@@ -87,9 +87,13 @@ function memoryKeychain(onCreate?: () => void): WitnessBackend & { read: Witness
 	};
 }
 
+function fingerprintOf(db: Database.Database) {
+	return String(db.prepare("SELECT fingerprint FROM sync_device").pluck().get());
+}
+
 /** The name of a key's witness binding record, as the attestation module derives it. */
 function bindingName(db: Database.Database) {
-	const fingerprint = String(db.prepare("SELECT fingerprint FROM sync_device").pluck().get());
+	const fingerprint = fingerprintOf(db);
 	return `attestation-backend-${createHash("sha256").update(fingerprint).digest("hex").slice(0, 32)}`;
 }
 
@@ -240,7 +244,7 @@ describe("attestation is serialized and bound to one witness kind", () => {
 			if (name.startsWith("attestation-store-") && !name.endsWith("-managed"))
 				fileWitness(keysDir).create(
 					bindingName(store.db),
-					JSON.stringify({ v: 1, backend: "file" }),
+					JSON.stringify({ v: 1, key_fingerprint: fingerprintOf(store.db), backend: "file" }),
 				);
 			return read(name);
 		};
@@ -269,26 +273,37 @@ describe("attestation is serialized and bound to one witness kind", () => {
 });
 
 describe("the managed mark follows the key's bound witness", () => {
-	it("keeps a keychain-bound store closed after trust in file mode and a rollback", () => {
-		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
-		const keychain = memoryKeychain();
-		const store = openStore();
-		expect(attestCoordinatorFree(store.db, { keysDir, keychain })).toBe("standalone");
-		const backup = backupOf(store);
-		const keysBackup = join(directory, "keys-backup");
-		cpSync(keysDir, keysBackup, { recursive: true });
-		// Coordinator trust is taken by a process configured for file key storage.
-		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
-		markCoordinatorManaged(store.db, { keysDir, keychain });
+	it.each(["present", "missing", "malformed"] as const)(
+		"keeps a keychain-bound store closed after trust in file mode and a rollback, binding %s",
+		(binding) => {
+			vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+			const keychain = memoryKeychain();
+			const store = openStore();
+			expect(attestCoordinatorFree(store.db, { keysDir, keychain })).toBe("standalone");
+			const backup = backupOf(store);
+			const keysBackup = join(directory, "keys-backup");
+			cpSync(keysDir, keysBackup, { recursive: true });
+			// The key folder loses or damages its binding record before the mode switch.
+			const bindingPath = join(keysDir, `${bindingName(store.db)}.json`);
+			if (binding === "missing") rmSync(bindingPath);
+			if (binding === "malformed") writeFileSync(bindingPath, "{not json");
+			// Coordinator trust is attempted by a process configured for file key storage.
+			vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+			const mark = () => markCoordinatorManaged(store.db, { keysDir, keychain });
+			if (binding === "present") mark();
+			else expect(mark).toThrow("coordinator_free_binding_unverified");
 
-		restore(store, backup);
-		rmSync(keysDir, { recursive: true, force: true });
-		cpSync(keysBackup, keysDir, { recursive: true });
-		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+			restore(store, backup);
+			rmSync(keysDir, { recursive: true, force: true });
+			cpSync(keysBackup, keysDir, { recursive: true });
+			vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
 
-		expect(readCoordinatorFreeStatus(store.db, { keysDir, keychain })).toBe("managed");
-		store.db.close();
-	});
+			// Either the mark reached the keychain, or no trust was taken.
+			const expected = binding === "present" ? "managed" : "standalone";
+			expect(readCoordinatorFreeStatus(store.db, { keysDir, keychain })).toBe(expected);
+			store.db.close();
+		},
+	);
 
 	it("refuses the trust step when the bound keychain can't take the mark", () => {
 		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");

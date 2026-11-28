@@ -44,6 +44,8 @@ export type CoordinatorFreeStatus =
 	| "no_device_identity";
 
 export const COORDINATOR_FREE_WITNESS_UNAVAILABLE = "coordinator_free_witness_unavailable";
+/** An attested store's key binding is missing or damaged, so no witness can be trusted. */
+export const COORDINATOR_FREE_BINDING_UNVERIFIED = "coordinator_free_binding_unverified";
 
 interface StoreWitness {
 	v: 1;
@@ -251,10 +253,19 @@ function witnesses(options: AttestationOptions): Witnesses {
  * at attestation. A process in another mode still marks the bound witness, so switching modes
  * can't hide the mark from a store read back in the bound mode.
  */
-function markWitnesses(options: AttestationOptions, fingerprint: string): WitnessBackend[] {
+function markWitnesses(
+	options: AttestationOptions,
+	fingerprint: string,
+	attested = false,
+): WitnessBackend[] {
 	const found = witnesses(options);
-	if (!fingerprint || found.all.some((backend) => backend.kind === "keychain")) return found.all;
-	if (keyBinding(found.file, fingerprint) !== "keychain") return found.all;
+	if (!fingerprint) return found.all;
+	const bound = verifiedBinding(found.file, fingerprint);
+	// An attested store's binding names the witness its rollback check reads. Without a
+	// verified binding, a mark could miss that witness, so the trust step is refused.
+	if (attested && bound === null) throw new Error(COORDINATOR_FREE_BINDING_UNVERIFIED);
+	if (bound !== "keychain" || found.all.some((backend) => backend.kind === "keychain"))
+		return found.all;
 	return [options.keychain ?? platformKeychain(keysDirectory(options.keysDir)), ...found.all];
 }
 
@@ -278,6 +289,21 @@ function parseStoreWitness(text: string | null): StoreWitness | null {
 }
 
 /** The witness kind a key was bound to by its first attestation, from the keys directory. */
+/** The witness kind a key's binding names, when the record is present, well formed and for this key. */
+function verifiedBinding(file: WitnessBackend, fingerprint: string): WitnessKind | null {
+	try {
+		const value = JSON.parse(file.read(keyBindingName(fingerprint)) ?? "null") as {
+			v?: unknown;
+			key_fingerprint?: unknown;
+			backend?: unknown;
+		} | null;
+		if (value?.v !== 1 || value.key_fingerprint !== fingerprint) return null;
+		return value.backend === "file" || value.backend === "keychain" ? value.backend : null;
+	} catch {
+		return null;
+	}
+}
+
 function keyBinding(file: WitnessBackend, fingerprint: string): string | null {
 	const text = file.read(keyBindingName(fingerprint));
 	if (text === null) return null;
@@ -328,7 +354,7 @@ const markedThisProcess = new Set<string>();
 export function markCoordinatorManaged(db: Database, options: AttestationOptions = {}): void {
 	const storeId = readStoreId(db);
 	const fingerprint = deviceFingerprint(db) ?? "";
-	const all = markWitnesses(options, fingerprint);
+	const all = markWitnesses(options, fingerprint, attestationRow(db)?.state === "standalone");
 	const memo = [storeId, fingerprint, keysDirectory(options.keysDir), ...all.map((w) => w.kind)];
 	if (markedThisProcess.has(memo.join("|")) && attestationRow(db)?.state === "managed") return;
 	db.transaction(() => {
