@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { duplexPair } from "node:stream";
 import { finished } from "node:stream/promises";
 import type { Database } from "./db.js";
+import { DirectNoiseRejected, SwitchReader, type SwitchReading } from "./direct-noise-switch.js";
 import {
 	DIRECT_NOISE_LOGICAL_ORIGIN,
 	DIRECT_NOISE_TRANSPORT_LABEL,
@@ -16,15 +17,11 @@ import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { loadPrivateKey } from "./sync-identity.js";
 
-/** The peer did not switch to Noise: a non-101 answer, or no answer before the switch. */
-export class DirectNoiseNotOffered extends Error {
-	constructor(readonly detail: string) {
-		super(`peer did not accept an encrypted connection (${detail})`);
-		this.name = "DirectNoiseNotOffered";
-	}
-}
-
-const MAX_RESPONSE_HEAD_BYTES = 16 * 1024;
+export {
+	DirectNoiseBusy,
+	DirectNoiseNotOffered,
+	DirectNoiseRejected,
+} from "./direct-noise-switch.js";
 
 export interface DirectNoiseEndpoint {
 	readonly db: Database;
@@ -65,7 +62,8 @@ function connect(endpoint: DirectNoiseEndpoint, signal: AbortSignal): Promise<ne
 		const socket = net.connect({ host: endpoint.host, port: endpoint.port });
 		const fail = (error: Error) => {
 			socket.destroy();
-			reject(new DirectNoiseNotOffered(`connect: ${error.message}`));
+			// No reply at all is not a 404, so it never leads to plaintext.
+			reject(new DirectNoiseRejected(`connect: ${error.message}`));
 		};
 		socket.once("connect", () => {
 			socket.off("error", fail);
@@ -76,11 +74,14 @@ function connect(endpoint: DirectNoiseEndpoint, signal: AbortSignal): Promise<ne
 	});
 }
 
-/** Reads the response head. Anything sent after it would be Noise before Message A. */
+/**
+ * Reads the listener's answer until it switches or refuses. A 404 counts as
+ * "no Noise" only once it is complete, so the reply is read to its end.
+ */
 function readSwitch(socket: net.Socket, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
-		let buffered = Buffer.alloc(0);
-		const done = (error?: Error) => {
+		const reader = new SwitchReader();
+		const finish = (error?: Error) => {
 			socket.off("data", onData);
 			socket.off("close", onClose);
 			signal.removeEventListener("abort", onAbort);
@@ -88,21 +89,14 @@ function readSwitch(socket: net.Socket, signal: AbortSignal): Promise<void> {
 			if (error) reject(error);
 			else resolve();
 		};
-		const onData = (chunk: Buffer) => {
-			buffered = Buffer.concat([buffered, chunk]);
-			const end = buffered.indexOf("\r\n\r\n");
-			if (end < 0) {
-				if (buffered.byteLength > MAX_RESPONSE_HEAD_BYTES) done(new DirectNoiseNotOffered("head"));
-				return;
-			}
-			const status = /^HTTP\/1\.1 (\d{3}) /.exec(buffered.toString("latin1"))?.[1];
-			if (status !== "101") return done(new DirectNoiseNotOffered(`status ${status ?? "none"}`));
-			if (buffered.byteLength !== end + 4) return done(new Error("data after the protocol switch"));
-			done();
+		const settle = (reading: SwitchReading) => {
+			if (reading.kind === "pending") return;
+			finish(reading.kind === "switched" ? undefined : reading.error);
 		};
-		const onClose = () => done(new DirectNoiseNotOffered("closed"));
+		const onData = (chunk: Buffer) => settle(reader.push(chunk));
+		const onClose = () => settle(reader.close());
 		// A listener that never answers must not hold the socket past the exchange's deadline.
-		const onAbort = () => done(new Error("Direct Noise upgrade got no answer in time"));
+		const onAbort = () => finish(new Error("Direct Noise upgrade got no answer in time"));
 		if (signal.aborted) return onAbort();
 		socket.on("data", onData);
 		socket.once("close", onClose);

@@ -1,7 +1,9 @@
 import type { Database } from "./db.js";
 import {
 	currentPeerPin,
+	DirectNoiseBusy,
 	DirectNoiseNotOffered,
+	DirectNoiseRejected,
 	directNoiseConnectionFactory,
 } from "./direct-noise-client.js";
 import { DIRECT_NOISE_LOGICAL_ORIGIN } from "./direct-noise-upgrade.js";
@@ -46,7 +48,7 @@ export interface PeerTransportOptions {
 	readonly plaintext?: RequestJsonExecutor;
 	/** Defaults to DIRECT_NOISE_ACTIVE. */
 	readonly active?: boolean;
-	/** Whether a legacy_plaintext peer may fall back to plaintext. Defaults to true. */
+	/** Whether a legacy_plaintext peer may fall back to plaintext. Defaults to ALLOW_LEGACY_FALLBACK. */
 	readonly allowLegacy?: boolean;
 	/**
 	 * A bootstrap grant this device still holds for the peer. The peer cannot
@@ -55,6 +57,92 @@ export interface PeerTransportOptions {
 	 * read: the full status comes over Noise, where the peer proves its key.
 	 */
 	readonly bootstrapGrantId?: string;
+	/** How a busy listener is retried. Defaults to BUSY_RETRY. */
+	readonly busyRetry?: Partial<BusyRetry>;
+}
+
+/**
+ * Retries for a listener that is busy: 429, 503, or a close with no answer.
+ * Each wait is a random time up to baseMs doubled per attempt, capped at
+ * maxMs, or the listener's whole Retry-After when that is longer. A
+ * Retry-After that doesn't fit in the remaining budget ends the retries.
+ *
+ * totalMs is the busy budget for the whole executor, which callers create
+ * once per sync pass: from the pass's first busy answer, every retry wait and
+ * every attempt, across all requests and addresses, ends within 10 s, until
+ * an exchange over Noise succeeds.
+ * A request with its own timeoutS, such as the reachability probe's, also
+ * ends its retries within that timeout. In the listener load measurement,
+ * 128 devices behind one address that started a pass at the same moment all
+ * finished within this budget.
+ */
+export interface BusyRetry {
+	readonly attempts: number;
+	readonly baseMs: number;
+	readonly maxMs: number;
+	readonly totalMs: number;
+}
+
+export const BUSY_RETRY: BusyRetry = Object.freeze({
+	attempts: 8,
+	baseMs: 100,
+	maxMs: 2_000,
+	totalMs: 10_000,
+});
+
+/**
+ * Whether a legacy_plaintext peer whose listener answers the upgrade with a
+ * complete 404 may continue in plaintext. PeerTransportOptions.allowLegacy
+ * overrides it. Turning plain fallback off by default changes only this line.
+ */
+export const ALLOW_LEGACY_FALLBACK = true;
+
+/** A random wait up to baseMs doubled per attempt, never more than maxMs. */
+function busyJitterMs(retry: BusyRetry, attempt: number): number {
+	return Math.min(retry.maxMs, Math.random() * retry.baseMs * 2 ** (attempt - 1));
+}
+
+/**
+ * What a non-busy failure becomes. A rejected upgrade never leads to
+ * plaintext, and neither does anything after a busy answer in the same
+ * request. Only a 404 with no busy answer before it stays a fallback signal.
+ */
+function noBusyRetry(error: unknown, busy: DirectNoiseBusy | null): unknown {
+	if (error instanceof DirectNoiseRejected)
+		return new PeerTransportRefused(`noise_rejected: ${error.message}; plaintext refused`);
+	if (!busy) return error;
+	return new PeerTransportRefused(
+		`noise_busy: peer was busy (${busyDetail(busy)}), then ${errorText(error)}; plaintext refused`,
+	);
+}
+
+function spentBudget(): PeerTransportRefused {
+	return new PeerTransportRefused(
+		"noise_busy: the pass spent its busy budget on a busy peer; try again later",
+	);
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function busyDetail(error: DirectNoiseBusy): string {
+	return error.status === "closed" ? "closed with no answer" : `status ${error.status}`;
+}
+
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(signal.reason);
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 type Transport = "noise" | "plaintext";
@@ -94,9 +182,24 @@ export class PeerTransportRefused extends Error {
 }
 
 function endpointOf(url: URL) {
-	if (url.protocol !== "http:") return null;
 	const port = Number(url.port || 80);
 	return { host: url.hostname.replace(/^\[|\]$/g, ""), port };
+}
+
+/**
+ * Direct Noise runs only over http:// addresses, because it upgrades the raw
+ * HTTP/1.1 connection. An https:// address is the one named exception: TLS
+ * already encrypts it, so a legacy peer keeps using it as before, while a
+ * noise_required peer is refused there and needs an http:// address or the
+ * relay. Any other scheme is refused.
+ */
+type AddressScheme = "http" | "https-legacy-exception" | "unsupported";
+
+function addressScheme(url: string): AddressScheme {
+	const protocol = new URL(url).protocol;
+	if (protocol === "http:") return "http";
+	if (protocol === "https:") return "https-legacy-exception";
+	return "unsupported";
 }
 
 type ExecutorArgs = Parameters<RequestJsonExecutor>;
@@ -105,6 +208,11 @@ type Sent = { result: ExecutorResult; transport: Transport; pin: string | null }
 
 class PeerTransport {
 	private readonly states = new Map<string, AddressState>();
+	/** The pass's busy budget: when it ends, and whether attempts are held to it now. */
+	private readonly busyBudget: { end: number | undefined; open: boolean } = {
+		end: undefined,
+		open: false,
+	};
 	private readonly plaintextExecutor: RequestJsonExecutor;
 
 	constructor(private readonly options: PeerTransportOptions) {
@@ -182,23 +290,105 @@ class PeerTransport {
 		request: ExecutorArgs,
 		snapshot: boolean,
 	): Promise<Sent> {
+		const scheme = addressScheme(request[1]);
+		if (scheme === "unsupported")
+			throw new PeerTransportRefused(`unsupported_address: ${new URL(request[1]).protocol}`);
+		if (scheme === "https-legacy-exception") return this.overHttps(state, request, snapshot);
 		if (state.mode === "plaintext" && this.policy() !== "noise_required")
 			return this.sendPlaintext(state, request, snapshot);
 		const statusPin = snapshot ? this.requireStatusFor(state, "noise") : null;
 		if (this.policy() === "noise_required") await this.pinWithGrant(state, request);
 		try {
-			const sent = await this.overNoise(request, statusPin);
+			const sent = await this.overNoiseWhenFree(request, statusPin);
 			state.mode = "noise";
 			return sent;
 		} catch (error) {
 			if (!(error instanceof DirectNoiseNotOffered)) throw error;
 			if (state.mode === "noise")
 				throw new PeerTransportRefused(`noise_required: ${error.message}; plaintext refused`);
-			if (this.options.allowLegacy === false)
+			if (!(this.options.allowLegacy ?? ALLOW_LEGACY_FALLBACK))
 				throw new PeerTransportRefused(`legacy_not_allowed: ${error.message}`);
 			state.mode = "plaintext";
 			return this.sendPlaintext(state, request, snapshot);
 		}
+	}
+
+	/**
+	 * A busy listener speaks Noise and is only at a cap, so it never leads to
+	 * plaintext or changes this address's mode. Retry it within the executor's
+	 * busy budget, then fail the request with the reason. Once any attempt in
+	 * this request was busy, no later answer may lead to plaintext either.
+	 */
+	private async overNoiseWhenFree(request: ExecutorArgs, statusPin: string | null): Promise<Sent> {
+		const retry = { ...BUSY_RETRY, ...this.options.busyRetry };
+		const timeoutS = request[2]?.timeoutS;
+		const requestEnd = timeoutS === undefined ? Infinity : performance.now() + timeoutS * 1000;
+		let busy: DirectNoiseBusy | null = null;
+		for (let attempt = 1; ; attempt++) {
+			const end = this.attemptEnd(requestEnd, busy);
+			try {
+				const sent = await this.overNoise(request, statusPin, end);
+				this.busyBudget.open = false;
+				return sent;
+			} catch (error) {
+				// An attempt the budget cut off reports the budget, whatever the connection said.
+				if (end !== undefined && performance.now() >= end) throw spentBudget();
+				if (!(error instanceof DirectNoiseBusy)) throw noBusyRetry(error, busy);
+				busy = error;
+				await this.waitForBusy(retry, attempt, busy, { requestEnd, signal: request[2]?.signal });
+			}
+		}
+	}
+
+	/**
+	 * When an attempt must end, or undefined for the request's own limits.
+	 * Once the pass has met a busy listener, every later attempt, at this
+	 * address or any other, gets only what remains of the busy budget, until
+	 * an exchange over Noise succeeds. A request that was itself busy stays
+	 * held to it. A spent budget refuses the attempt before it is sent.
+	 */
+	private attemptEnd(requestEnd: number, busy: DirectNoiseBusy | null): number | undefined {
+		const { end, open } = this.busyBudget;
+		if (end === undefined || !(open || busy)) return undefined;
+		if (performance.now() >= end) throw spentBudget();
+		return Math.min(requestEnd, end);
+	}
+
+	private startBusyBudget(retry: BusyRetry): number {
+		this.busyBudget.end ??= performance.now() + retry.totalMs;
+		this.busyBudget.open = true;
+		return this.busyBudget.end;
+	}
+
+	private async waitForBusy(
+		retry: BusyRetry,
+		attempt: number,
+		busy: DirectNoiseBusy,
+		limits: { requestEnd: number; signal: AbortSignal | undefined },
+	): Promise<void> {
+		const end = Math.min(limits.requestEnd, this.startBusyBudget(retry));
+		const now = performance.now();
+		// A listener that asks for a longer wait than is left gets no early retry.
+		const hintMs = busy.retryAfterS === undefined ? 0 : busy.retryAfterS * 1000;
+		const delay = Math.max(hintMs, busyJitterMs(retry, attempt));
+		if (attempt >= retry.attempts || now + delay >= end)
+			throw new PeerTransportRefused(
+				`noise_busy: peer still busy (${busyDetail(busy)}) after ${attempt} attempts; try again later`,
+			);
+		await sleep(delay, limits.signal);
+	}
+
+	/**
+	 * The https:// exception. It isn't a fallback from Noise, so the plain
+	 * fallback switch doesn't apply, and sendPlaintext still refuses a
+	 * noise_required peer just before sending.
+	 */
+	private overHttps(state: AddressState, request: ExecutorArgs, snapshot: boolean): Promise<Sent> {
+		if (this.policy() === "noise_required")
+			throw new PeerTransportRefused(
+				"noise_required_https: this peer requires direct Noise, which an https:// address can't carry; use an http:// address or the relay",
+			);
+		return this.sendPlaintext(state, request, snapshot);
 	}
 
 	/** Reads the policy immediately before sending, so a promotion during an await still counts. */
@@ -244,17 +434,22 @@ class PeerTransport {
 	 * validated status pin for a snapshot, otherwise the pin current now. The
 	 * answer is dropped if that pin stopped being current while it was pending.
 	 */
+	/** One attempt over Noise. A retry's attempt must also end by retryEnd. */
 	private async overNoise(
 		[method, url, requestOptions = {}]: ExecutorArgs,
 		statusPin: string | null,
+		retryEnd?: number,
 	): Promise<Sent> {
 		const parsed = new URL(url);
 		const endpoint = endpointOf(parsed);
-		if (!endpoint) throw new DirectNoiseNotOffered(`${parsed.protocol} address`);
 		const expectedPin = statusPin ?? currentPeerPin(this.options.db, this.options.peerDeviceId);
 		if (!expectedPin) throw new Error("peer not pinned");
 		const factory = directNoiseConnectionFactory({ ...this.options, ...endpoint, expectedPin });
-		const execute = createPeerHttpExecutor({ factory, signal: requestOptions.signal });
+		const execute = createPeerHttpExecutor({
+			factory,
+			signal: requestOptions.signal,
+			deadlineMs: retryEnd,
+		});
 		// The caller signed the path and query, which the logical origin keeps unchanged.
 		const logical = `${DIRECT_NOISE_LOGICAL_ORIGIN}${parsed.pathname}${parsed.search}`;
 		const result = await execute(method, logical, requestOptions).catch((error: unknown) => {

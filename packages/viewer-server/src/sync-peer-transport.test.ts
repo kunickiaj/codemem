@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect as connectSocket } from "node:net";
 import { dirname, join } from "node:path";
 import {
 	applyReplicationOps,
@@ -17,6 +17,7 @@ import {
 } from "@codemem/core";
 import { serve } from "@hono/node-server";
 import { afterEach, expect, it, vi } from "vitest";
+import { directNoiseConnectionFactory } from "../../core/src/direct-noise-client.js";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { runReachableSyncPass } from "../../core/src/sync-reachability-pass.js";
 import { promotePeerToNoiseRequired } from "../../core/src/sync-transport-policy.js";
@@ -27,7 +28,8 @@ import {
 	nonceCount,
 	SCOPE,
 } from "./sync-channel-dispatch-test-fixtures.js";
-import { createGuardedSyncServer } from "./sync-listener-guard.js";
+import { createGuardedSyncServer, type SyncListenerLimits } from "./sync-listener-guard.js";
+import type { DirectNoiseGateLimits } from "./sync-noise-gate.js";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -43,6 +45,8 @@ async function pair(options: {
 	onPlain?: (path: string) => void;
 	/** Runs each time the upgrade gate opens the server store, during admission. */
 	onGate?: () => void;
+	gateLimits?: Partial<DirectNoiseGateLimits>;
+	listenerLimits?: Partial<SyncListenerLimits>;
 }) {
 	const f = await channelStore();
 	cleanups.push(f.cleanup);
@@ -56,6 +60,7 @@ async function pair(options: {
 	};
 	const keysDir = join(dirname(f.peerKeysDir), "local-keys");
 	const createServer = createGuardedSyncServer({
+		limits: options.listenerLimits,
 		directNoise: {
 			storeFactory: () => {
 				options.onGate?.();
@@ -63,6 +68,7 @@ async function pair(options: {
 			},
 			keysDir,
 			active: options.gate,
+			limits: options.gateLimits,
 		},
 	});
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
@@ -412,4 +418,105 @@ it("does not follow a redirect on the plaintext grant status", async () => {
 
 	expect(result.ok).toBe(false);
 	expect(redirected).toEqual([]);
+});
+
+/** A status request from the client peer through the shared policy, signed as a sync pass signs it. */
+function statusThroughPolicy(
+	p: Awaited<ReturnType<typeof pair>>,
+	execute: ReturnType<typeof peerTransportExecutor>,
+) {
+	const url = `http://${p.address}/v1/status`;
+	const headers = buildDirectPeerAuthHeaders({
+		deviceId: p.peerDeviceId,
+		recipientId: p.localDeviceId,
+		method: "GET",
+		url,
+		bodyBytes: Buffer.alloc(0),
+		keysDir: p.peerKeysDir,
+	});
+	return execute("GET", url, { operation: "status", headers });
+}
+
+it.each(["legacy_plaintext", "noise_required"] as const)(
+	"sends no plaintext for a %s peer while the seed answers a flood with busy",
+	async (policy) => {
+		// One stream per peer, and the client already holds it, so every upgrade gets 503 busy.
+		const p = await pair({ gate: true, gateLimits: { streamsPerPeer: 1 } });
+		if (policy === "noise_required")
+			promotePeerToNoiseRequired(p.client.db, p.localDeviceId, "transport_statement");
+		const [host, port] = p.address.split(":");
+		const held = await directNoiseConnectionFactory({
+			db: p.client.db,
+			host: host ?? "",
+			port: Number(port),
+			localDeviceId: p.peerDeviceId,
+			peerDeviceId: p.localDeviceId,
+			keysDir: p.peerKeysDir,
+			expectedPin: p.localPublicKey,
+		}).open({ signal: new AbortController().signal, deadlineMs: performance.now() + 5_000 });
+		cleanups.push(() => held.dispose(new Error("test finished")));
+		const execute = peerTransportExecutor({
+			db: p.client.db,
+			peerDeviceId: p.localDeviceId,
+			localDeviceId: p.peerDeviceId,
+			keysDir: p.peerKeysDir,
+			active: true,
+			busyRetry: { attempts: 3, baseMs: 5, maxMs: 20 },
+		});
+
+		const flood = await Promise.allSettled(
+			Array.from({ length: 8 }, () => statusThroughPolicy(p, execute)),
+		);
+
+		for (const outcome of flood) {
+			expect(outcome.status).toBe("rejected");
+			expect(String((outcome as PromiseRejectedResult).reason)).toContain("noise_busy");
+		}
+		expect(p.plainPaths).toEqual([]);
+		expect(p.policy()).toBe(policy);
+	},
+);
+
+it("recovers a burst behind one address within the retry bound", async () => {
+	// One pending handshake per address, so a burst of upgrades mostly starts with 503 busy.
+	const p = await pair({ gate: true, gateLimits: { pendingPerIp: 1, streamsPerPeer: 64 } });
+	promotePeerToNoiseRequired(p.client.db, p.localDeviceId, "transport_statement");
+	const execute = peerTransportExecutor({
+		db: p.client.db,
+		peerDeviceId: p.localDeviceId,
+		localDeviceId: p.peerDeviceId,
+		keysDir: p.peerKeysDir,
+		active: true,
+	});
+
+	const burst = await Promise.all(
+		Array.from({ length: 12 }, () => statusThroughPolicy(p, execute)),
+	);
+
+	expect(burst.map(([status]) => status)).toEqual(Array(12).fill(200));
+	expect(p.plainPaths).toEqual([]);
+});
+
+it("sends no plaintext for a legacy peer when the listener's socket cap closes its connections", async () => {
+	const p = await pair({ gate: true, listenerLimits: { maxSocketsPerIp: 1 } });
+	const [host, port] = p.address.split(":");
+	// One idle socket from this address fills the cap, so the listener closes every new one at once.
+	const idle = await new Promise<import("node:net").Socket>((resolve) => {
+		const socket = connectSocket({ host, port: Number(port) }, () => resolve(socket));
+	});
+	cleanups.push(() => idle.destroy());
+	const execute = peerTransportExecutor({
+		db: p.client.db,
+		peerDeviceId: p.localDeviceId,
+		localDeviceId: p.peerDeviceId,
+		keysDir: p.peerKeysDir,
+		active: true,
+		busyRetry: { attempts: 3, baseMs: 5, maxMs: 20 },
+	});
+
+	await expect(statusThroughPolicy(p, execute)).rejects.toThrow(
+		"noise_busy: peer still busy (closed with no answer) after 3 attempts; try again later",
+	);
+	expect(p.plainPaths).toEqual([]);
+	expect(p.policy()).toBe("legacy_plaintext");
 });
