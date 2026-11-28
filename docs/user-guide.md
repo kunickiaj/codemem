@@ -1058,7 +1058,7 @@ Sync starts as **Not verified** after an upgrade until Codemem observes the dire
 | Configured | One active Identity binding is authoritative. | Nothing, unless you deliberately need to change the Identity. |
 | Setup required | The local or paired device has no authoritative Identity. | Choose an existing active Identity, explicitly confirm the device, and review the change. |
 | Pairing required | The device is visible through the coordinator but is not paired locally. | Pair it first, then return to Devices. Pairing does not choose an Identity. |
-| Review required | Device or ownership evidence conflicts. | Open the device's menu in **Devices** and choose **Disconnect on this device…** or **Remove device…**, then pair it again. Identity setup waits until the conflict is gone. |
+| Review required | Device or ownership evidence conflicts. | Open the device's menu in **Devices** and choose **Unpair device…** or **Remove device…**, then pair it again. Identity setup waits until the conflict is gone. |
 
 For several setup-ready devices, select each device, choose an Identity for each one, and confirm each choice. Codemem does not assign an Identity from a suggestion in this flow. The review step lists every device and target Identity before the atomic commit. A prefilled local or suggested Identity is still unconfirmed until you select the confirmation checkbox.
 

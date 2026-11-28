@@ -629,14 +629,14 @@ function SetupRecoveryAction({
 	if (item.state !== "conflicted") return null;
 	return (
 		<p>
-			Device evidence conflicts, so {item.displayName} cannot be assigned an Identity yet.
-			Disconnect or remove it below, then pair it again.
+			Device evidence conflicts, so {item.displayName} cannot be assigned an Identity yet. Unpair or
+			remove it below, then pair it again.
 		</p>
 	);
 }
 
 /** Lets a person remove an unused device without pairing or setting it up first. */
-/** A card that has no Identity projection still needs the paired ID to disconnect by. */
+/** A card that has no Identity projection still needs the paired ID to unpair by. */
 function inventoryItemTarget(
 	item: DeviceIdentityInventoryItemV1,
 	options: DevicesRendererOptions,
@@ -1476,9 +1476,9 @@ function deviceRemovalMenuActions(
 	}
 	if (paired) {
 		actions.push({
-			ariaLabel: `Disconnect from ${device.displayName}`,
+			ariaLabel: `Unpair ${device.displayName}`,
 			disabled: blocked,
-			label: "Disconnect on this device…",
+			label: "Unpair device…",
 			onSelect: () => void disconnectFromMenu(device, options),
 		});
 	}
@@ -1581,7 +1581,7 @@ function removalFailureMessage(name: string, error: unknown): string {
 			case "coordinator_update_required":
 				return `Could not review removal of ${name}. Update the coordinator and apply its pending migrations, then try again. No removal was sent.`;
 			case "coordinator_admin_required":
-				return `Could not review removal of ${name}. This Viewer needs the coordinator admin secret. Contact your coordinator administrator. No removal was sent. To stop syncing with it from this device only, choose Disconnect on this device.`;
+				return `Could not review removal of ${name}. This Viewer needs the coordinator admin secret. Contact your coordinator administrator. No removal was sent. To stop syncing with it from this device only, choose Unpair device.`;
 			case "device_removal_unavailable":
 				if (error.statusCode === 0)
 					return `Could not load the removal preview for ${name}. Check your connection to the Viewer and refresh Devices before trying again. No removal was sent.`;

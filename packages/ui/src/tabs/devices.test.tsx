@@ -2187,7 +2187,7 @@ describe("Device safe rendering", () => {
 			"Copy pairing command",
 		);
 		expect(onNavigate).not.toHaveBeenCalled();
-		expect(deviceCard("Server").textContent).toContain("Disconnect or remove it below");
+		expect(deviceCard("Server").textContent).toContain("Unpair or remove it below");
 		expect(text).not.toContain("Advanced");
 		expect(text).not.toContain("Confirm Tablet belongs");
 	});
@@ -3409,7 +3409,7 @@ describe("Device removal menu", () => {
 	});
 });
 
-describe("Device disconnect menu", () => {
+describe("Device unpair menu", () => {
 	const deviceId = "device-address-fingerprint-secret";
 
 	function pairedLaptop(sources: DeviceIdentityInventoryV1["items"][number]["sources"]) {
@@ -3428,16 +3428,16 @@ describe("Device disconnect menu", () => {
 		].find((button) => button.textContent === label);
 	}
 
-	it("offers Disconnect on a paired device even when the host has not mounted Remove", () => {
+	it("offers Unpair device on a paired device even when the host has not mounted Remove", () => {
 		mount(intent(), reconciliation(), {
 			inventory: pairedLaptop(["identity_binding", "sync_peer"]),
 		});
 
-		expect(menuItem("Disconnect on this device…")?.disabled).toBe(false);
+		expect(menuItem("Unpair device…")?.disabled).toBe(false);
 		expect(menuItem("Remove device…")).toBeUndefined();
 	});
 
-	it("disconnects a device by the ID its pairing is saved under, not the one shown", async () => {
+	it("unpairs a device by the ID its pairing is saved under, not the one shown", async () => {
 		const disconnect = vi.fn(async () => ({ binding: "kept" }));
 		mount(intent(), reconciliation(), {
 			inventory: inventory([
@@ -3461,24 +3461,24 @@ describe("Device disconnect menu", () => {
 			disconnect: { confirm: vi.fn(async () => true), disconnect },
 		});
 
-		const action = menuItem("Disconnect on this device…");
+		const action = menuItem("Unpair device…");
 		await act(async () => action?.click());
 		await act(async () => {});
 
 		expect(disconnect).toHaveBeenCalledExactlyOnceWith("peer-alias");
 	});
 
-	it("offers no Disconnect for a device this device is not paired with", () => {
+	it("offers no Unpair device for a device this device is not paired with", () => {
 		mount(intent(), reconciliation(), {
 			inventory: pairedLaptop(["identity_binding", "coordinator_enrollment"]),
 			removalConfirmation: {},
 		});
 
-		expect(menuItem("Disconnect on this device…")).toBeUndefined();
+		expect(menuItem("Unpair device…")).toBeUndefined();
 		expect(menuItem("Remove device…")).toBeDefined();
 	});
 
-	it("disconnects after confirmation, refreshes Devices and reports the result", async () => {
+	it("unpairs after confirmation, refreshes Devices and reports the result", async () => {
 		const disconnect = vi.fn(async () => ({ binding: "kept" }));
 		const confirm = vi.fn(async () => true);
 		const onCommitted = vi.fn(async () => true);
@@ -3488,13 +3488,13 @@ describe("Device disconnect menu", () => {
 			onCommitted,
 		});
 
-		const action = menuItem("Disconnect on this device…");
+		const action = menuItem("Unpair device…");
 		await act(async () => action?.click());
 		await act(async () => {});
 
 		await vi.waitFor(() =>
 			expect(document.getElementById("devices-commit-status")?.textContent).toBe(
-				"Disconnected this device from Work Laptop. The device stays in Projects. An administrator's device can remove it.",
+				"Unpaired this device from Work Laptop. Work Laptop stays in your Teams.",
 			),
 		);
 		expect(disconnect).toHaveBeenCalledExactlyOnceWith(deviceId);
@@ -3511,14 +3511,14 @@ describe("Device disconnect menu", () => {
 			onCommitted,
 		});
 
-		const action = menuItem("Disconnect on this device…");
+		const action = menuItem("Unpair device…");
 		await act(async () => action?.click());
 
 		expect(disconnect).not.toHaveBeenCalled();
 		expect(onCommitted).not.toHaveBeenCalled();
 	});
 
-	it("offers Disconnect on a conflicted card, with guidance that does not mention Advanced", () => {
+	it("offers Unpair device on a conflicted card, with guidance that does not mention Advanced", () => {
 		mount(intent(), reconciliation(), {
 			inventory: inventory([
 				inventoryItem("conflict-device", "Server", "conflicted", { sources: ["sync_peer"] }),
@@ -3527,43 +3527,48 @@ describe("Device disconnect menu", () => {
 		});
 
 		const card = document.getElementById("device-identity-card-conflict-device");
-		expect(card?.textContent).toContain("Disconnect or remove it below, then pair it again.");
-		expect(card?.querySelector('[aria-label="Disconnect from Server"]')).not.toBeNull();
+		expect(card?.textContent).toContain("Unpair or remove it below, then pair it again.");
+		expect(card?.querySelector('[aria-label="Unpair Server"]')).not.toBeNull();
 		expect(card?.textContent).not.toContain("Advanced");
 	});
 });
 
-describe("Disconnect on every paired device card", () => {
+describe("Unpair device on every paired device card", () => {
 	it.each([
 		["configured, in the policy graph", "device-address-fingerprint-secret", "configured"],
 		["configured, missing from the policy graph", "fallback-device", "configured"],
 		["setup required", "setup-device", "setup_required"],
 		["conflicted", "conflict-device", "conflicted"],
-	] as const)("offers Disconnect on a paired device card that is %s", async (_label, id, state) => {
-		const disconnect = vi.fn(async () => ({ binding: "kept" }));
-		mount(intent(), reconciliation(), {
-			inventory: inventory([
-				inventoryItem(id, "Paired Device", state, {
-					sources: ["identity_binding", "sync_peer"],
-					validatedFingerprint: "fingerprint",
-				}),
-			]),
-			disconnect: { confirm: vi.fn(async () => true), disconnect },
-		});
+	] as const)(
+		"offers Unpair device on a paired device card that is %s",
+		async (_label, id, state) => {
+			const disconnect = vi.fn(async () => ({ binding: "kept" }));
+			mount(intent(), reconciliation(), {
+				inventory: inventory([
+					inventoryItem(id, "Paired Device", state, {
+						sources: ["identity_binding", "sync_peer"],
+						validatedFingerprint: "fingerprint",
+					}),
+				]),
+				disconnect: { confirm: vi.fn(async () => true), disconnect },
+			});
 
-		const card = document.getElementById(`device-identity-card-${id}`);
-		const inCard = [...(card?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
-		const action =
-			inCard.find((button) => button.textContent === "Disconnect on this device…") ??
-			[
-				...openActionMenu(card ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
-			].find((button) => button.textContent === "Disconnect on this device…");
-		expect(action?.textContent).toBe("Disconnect on this device…");
-		await act(async () => action?.click());
-		await act(async () => {});
+			const card = document.getElementById(`device-identity-card-${id}`);
+			const inCard = [...(card?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+			const action =
+				inCard.find((button) => button.textContent === "Unpair device…") ??
+				[
+					...openActionMenu(card ?? document).querySelectorAll<HTMLButtonElement>(
+						".feed-menu-item",
+					),
+				].find((button) => button.textContent === "Unpair device…");
+			expect(action?.textContent).toBe("Unpair device…");
+			await act(async () => action?.click());
+			await act(async () => {});
 
-		expect(disconnect).toHaveBeenCalledExactlyOnceWith(id);
-	});
+			expect(disconnect).toHaveBeenCalledExactlyOnceWith(id);
+		},
+	);
 });
 
 function watchDeviceCommitStatus() {
