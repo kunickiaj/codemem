@@ -261,7 +261,7 @@ describe("a peer may only add and change its own shared local-default memories h
 		["a visibility spelled another way", {}, { visibility: "Shared" }],
 		["a deletion time on an upsert", {}, { deleted_at: "2026-11-27T00:00:00.000Z" }],
 		["an inactive flag on an upsert", {}, { active: 0 }],
-		["a delete", { op_type: "delete" }, {}],
+		["a delete that carries content", { op_type: "delete" }, {}],
 	])("refuses %s", (_case, overrides, payload) => {
 		expect(
 			coordinatorFreeInboundRejections(store.db, [peerOp("m", overrides, payload)], PEER),
@@ -470,5 +470,142 @@ describe("a memory this device forgot stays forgotten", () => {
 				.pluck()
 				.get(),
 		).toBe(0);
+	});
+});
+
+describe("deletes travel as tombstones that carry no content", () => {
+	function deleteOpOf(id: number | bigint) {
+		return store.db
+			.prepare(
+				`SELECT * FROM replication_ops WHERE op_type = 'delete'
+				 AND entity_id = (SELECT import_key FROM memory_items WHERE id = ?)`,
+			)
+			.get(id) as ReplicationOp;
+	}
+
+	function outbound(ops: ReplicationOp[]) {
+		return coordinatorFreeOutboundOps(store.db, ops, { localDeviceId: local, peerDeviceId: PEER })
+			.allowed;
+	}
+
+	it("sends a forgotten shared memory as a tombstone built from the row", () => {
+		const shared = remember("secret title");
+		store.forget(Number(shared.id));
+		const stored = deleteOpOf(shared.id);
+
+		const [tombstone, ...rest] = outbound([stored]);
+
+		expect(rest).toEqual([]);
+		expect(tombstone).toMatchObject({
+			op_id: stored.op_id,
+			op_type: "delete",
+			clock_rev: stored.clock_rev,
+		});
+		expect(tombstone?.payload_json).not.toContain("secret title");
+		const payload = JSON.parse(String(tombstone?.payload_json));
+		expect(Object.keys(payload).sort()).toEqual([
+			"active",
+			"deleted_at",
+			"has_deleted_at",
+			"origin_device_id",
+			"scope_id",
+		]);
+		expect(payload).toMatchObject({
+			active: 0,
+			origin_device_id: local,
+			scope_id: "local-default",
+		});
+	});
+
+	it("sends no tombstone for a private memory or one restored since", () => {
+		const hidden = remember("hidden", "private");
+		store.forget(Number(hidden.id));
+		const restored = remember("restored");
+		store.forget(Number(restored.id));
+		store.db
+			.prepare("UPDATE memory_items SET active = 1, deleted_at = NULL WHERE id = ?")
+			.run(restored.id);
+
+		expect(outbound([deleteOpOf(hidden.id), deleteOpOf(restored.id)])).toEqual([]);
+	});
+
+	it("sends no tombstone for a memory in a Project the pairing excludes", () => {
+		const excluded = remember("excluded");
+		store.forget(Number(excluded.id));
+		setPeerProjectFilter(store.db, PEER, { include: null, exclude: ["lane"] });
+
+		expect(outbound([deleteOpOf(excluded.id)])).toEqual([]);
+	});
+
+	function tombstoneFrom(entityId: string, payload: Record<string, unknown> = {}) {
+		return peerOp(
+			entityId,
+			{
+				op_id: `${entityId}-delete`,
+				op_type: "delete",
+				clock_rev: 2,
+				clock_updated_at: "2026-11-28T00:00:00.000Z",
+				payload_json: JSON.stringify({
+					scope_id: "local-default",
+					origin_device_id: PEER,
+					active: 0,
+					deleted_at: "2026-11-28T00:00:00.000Z",
+					has_deleted_at: true,
+					...payload,
+				}),
+			},
+			{},
+		);
+	}
+
+	it("applies the peer's tombstone for a memory it created", () => {
+		apply([peerOp("gone")]);
+
+		const result = apply([tombstoneFrom("gone")]);
+
+		expect(result).toMatchObject({ applied: 1, rejections: [] });
+		expect(
+			store.db
+				.prepare(
+					"SELECT active, deleted_at IS NOT NULL AS deleted FROM memory_items WHERE import_key = 'gone'",
+				)
+				.get(),
+		).toEqual({ active: 0, deleted: 1 });
+	});
+
+	it.each([
+		["another sender", { device_id: "other" }, {}],
+		["another clock device", { clock_device_id: "other" }, {}],
+		["another scope", { scope_id: "team-scope" }, {}],
+		["an active flag", {}, { active: 1 }],
+	])("refuses a tombstone with %s", (_case, overrides, payload) => {
+		apply([peerOp("theirs")]);
+		const op = { ...tombstoneFrom("theirs", payload), ...overrides };
+
+		expect(apply([op]).rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
+		expect(
+			store.db.prepare("SELECT active FROM memory_items WHERE import_key = 'theirs'").pluck().get(),
+		).toBe(1);
+	});
+
+	it("refuses a tombstone that carries content, names another origin or targets another device's row", () => {
+		apply([peerOp("theirs")]);
+		const mine = remember("mine");
+		const myKey = String(
+			store.db.prepare("SELECT import_key FROM memory_items WHERE id = ?").pluck().get(mine.id),
+		);
+
+		const withContent = apply([tombstoneFrom("theirs", { title: "theirs" })]);
+		const otherOrigin = apply([tombstoneFrom("theirs", { origin_device_id: local })]);
+		const notTheirs = apply([tombstoneFrom(myKey)]);
+
+		expect(withContent.rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
+		expect(otherOrigin.rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
+		expect(notTheirs.rejections).toEqual([
+			{ op_id: `${myKey}-delete`, reason: "target_not_owned_by_sender" },
+		]);
+		expect(
+			store.db.prepare("SELECT COUNT(*) FROM memory_items WHERE active = 1").pluck().get(),
+		).toBe(2);
 	});
 });

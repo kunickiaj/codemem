@@ -394,3 +394,26 @@ it("pushes the stored copy's current content, not the payload the op recorded", 
 
 	expect(titles(server)).toEqual(["current title"]);
 });
+
+it("carries a forgotten memory to the other device as a tombstone, both ways", async () => {
+	const server = device("server");
+	const client = device("client");
+	pair(server, client);
+	const fromServer = remember(server, "server shared", "shared");
+	const fromClient = remember(client, "client shared", "shared");
+	await exchange(server, client);
+	const active = (d: Device) =>
+		d.store.db
+			.prepare("SELECT title FROM memory_items WHERE active = 1 ORDER BY title")
+			.pluck()
+			.all();
+	expect(active(client)).toEqual(["client shared", "server shared"]);
+
+	server.store.forget(Number(fromServer));
+	client.store.forget(Number(fromClient));
+	const result = await exchange(server, client);
+
+	expect(result).toMatchObject({ ok: true, opsIn: 1, opsOut: 1 });
+	expect(active(client)).toEqual([]);
+	expect(active(server)).toEqual([]);
+});
