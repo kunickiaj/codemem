@@ -1005,7 +1005,7 @@ Each removal action reaches a different set of devices. Coordinator changes reac
 | Action | Where it applies | What stops | What keeps syncing |
 | --- | --- | --- | --- |
 | Remove a Team member or exclude a device from a Team | Every device that refreshes that Team's permissions | That Team's Projects, for the removed Identity or device | Access granted directly or through another Team |
-| Disable or remove a coordinator group enrollment | The coordinator and every peer that refreshes that group | Projects shared through that group. Peers discovered only through the coordinator also drop the device after the refresh. | Other groups' Projects. Direct pairings on any device keep syncing unscoped memories. |
+| Disable or remove a coordinator group enrollment | The coordinator and every peer that refreshes that group | Projects shared through that group. Peers discovered only through the coordinator also drop the device after the refresh. | Other groups' Projects. Direct pairings stay connected, but they carry only memories of Sharing domains both devices still belong to. |
 | Revoke a device globally (operator) | The whole coordinator database and every peer that refreshes from it | Coordinator discovery, enrollment, Project delivery, and every pairing with that device ID or key, including direct ones | Peers that don't use this coordinator, or haven't refreshed yet |
 | Unpair from this device | Only the device you use | Every exchange between this device and that peer | Other devices' pairings with that peer. If both devices still share a coordinator-managed Project, the next refresh pairs them again. |
 
@@ -1111,8 +1111,10 @@ status before you start again.
 
 Use manual pairing for same-person devices, existing integrations, or compatibility—not normal teammate sharing.
 
+A pairing authenticates the two devices to each other. It moves only memories of a Sharing domain both devices belong to, and those memberships come from a coordinator. Without a coordinator, a pairing completes and the devices can reach each other, but no memories move between them: every memory stays in the local default scope, which never leaves its device.
+
 1. In **Devices**, choose **Pair a device** and copy the displayed `codemem sync pair --payload-only` command.
-2. On the device you want to connect, run `codemem sync enable` and `codemem service restart` before running the copied command. Both devices need sync enabled to exchange memories.
+2. On the device you want to connect, run `codemem sync enable` and `codemem service restart` before running the copied command. Both devices need sync enabled to exchange memories of the Sharing domains they share.
 3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Choose **Review invite** to check the device ID, fingerprint, and addresses against the other device, then choose **Accept invite**. Accept only a payload from a device you trust; acceptance trusts that device.
 4. Repeat in the other direction: enable sync and restart this device, generate its payload, then accept that payload on the other device. Each device must accept the other's payload; one-way acceptance does not complete pairing.
 
