@@ -314,7 +314,7 @@ it("keeps construction inert and excludes bootstrap, local routes and unsupporte
 		throw new Error("Store must remain unopened");
 	});
 	const dispatch = createSyncChannelDispatcher({ storeFactory });
-	const app = createSyncApp({ storeFactory, syncChannelPeerPin: () => "not-used" });
+	const app = createSyncApp({ storeFactory, mode: { kind: "relay", peerPin: () => "not-used" } });
 	const base = {
 		method: "GET" as const,
 		bodyBytes: new Uint8Array(0),
@@ -357,7 +357,10 @@ it.each(["missing", "throws"] as const)(
 			if (mode === "throws") throw new Error("private reader failure");
 			return bindings.get(request) ?? null;
 		});
-		const channelApp = createSyncApp({ storeFactory: f.storeFactory, syncChannelPeerPin: reader });
+		const channelApp = createSyncApp({
+			storeFactory: f.storeFactory,
+			mode: { kind: "relay", peerPin: reader },
+		});
 		const ordinaryApp = createSyncApp({ storeFactory: f.storeFactory });
 		const clone = original.clone();
 		// Act
@@ -380,7 +383,10 @@ it("rejects an aborted direct channel app request before store access or nonce u
 	const dto = signedRequest(f);
 	const controller = new AbortController();
 	controller.abort();
-	const app = createSyncApp({ storeFactory: f.storeFactory, syncChannelPeerPin: () => f.peerPin });
+	const app = createSyncApp({
+		storeFactory: f.storeFactory,
+		mode: { kind: "relay", peerPin: () => f.peerPin },
+	});
 	const request = new Request(dto.url, {
 		method: "GET",
 		headers: dto.headers,

@@ -6,10 +6,12 @@ import {
 } from "./request-rate-limit.js";
 import { syncProtocolRoutes } from "./routes/sync.js";
 import { getStore } from "./shared-store.js";
+import type { SyncServerMode } from "./sync-server-mode.js";
 
 export interface SyncAppOptions {
 	storeFactory?: () => MemoryStore;
-	syncChannelPeerPin?: (request: Request) => string | null;
+	/** How requests reach this app. Defaults to the plain HTTP sync listener. */
+	mode?: SyncServerMode;
 	syncRequestRateLimit?: {
 		limiter?: InMemoryRequestRateLimiter;
 		readLimit?: number;
@@ -30,7 +32,7 @@ export function createSyncApp(opts?: SyncAppOptions) {
 	app.route(
 		"/",
 		syncProtocolRoutes(storeFactory, {
-			syncChannelPeerPin: opts?.syncChannelPeerPin,
+			mode: opts?.mode,
 			routeRateLimit: {
 				limiter: rateLimiter,
 				readLimit,

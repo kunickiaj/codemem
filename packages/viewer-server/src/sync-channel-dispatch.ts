@@ -1,5 +1,7 @@
 import type { MemoryStore } from "@codemem/core";
+import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 import { createSyncApp } from "./sync-app.js";
+import type { NoiseChannelPeer, SyncServerMode } from "./sync-server-mode.js";
 
 export interface SyncChannelRequest {
 	readonly method: "GET" | "POST";
@@ -8,6 +10,8 @@ export interface SyncChannelRequest {
 	readonly headers: Readonly<Record<string, string>>;
 	readonly bodyBytes: Uint8Array;
 	readonly peerPin: string;
+	/** The device a direct Noise channel admitted. Relay channels bind the key only. */
+	readonly peerDeviceId?: string;
 	readonly signal: AbortSignal;
 }
 
@@ -126,28 +130,41 @@ function prepareChannelRequest(
 	return { request, peerPin };
 }
 
+function channelMode(
+	kind: "relay" | "noise-direct",
+	peers: WeakMap<Request, NoiseChannelPeer>,
+): SyncServerMode {
+	if (kind === "relay") return { kind, peerPin: (request) => peers.get(request)?.pin ?? null };
+	return { kind, peer: (request) => peers.get(request) ?? null };
+}
+
 export function createSyncChannelDispatcher(options: {
 	readonly storeFactory: () => MemoryStore;
+	/** Defaults to relay. noise-direct also binds each request to the admitted device. */
+	readonly mode?: "relay" | "noise-direct";
+	/** Share a listener's limiter so a channel adds no separate request budget. */
+	readonly limiter?: InMemoryRequestRateLimiter;
 }): (request: SyncChannelRequest) => Promise<SyncChannelResponse> {
 	const storeFactory = options.storeFactory.bind(options);
-	const pins = new WeakMap<Request, string>();
+	const peers = new WeakMap<Request, NoiseChannelPeer>();
 	const app = createSyncApp({
 		storeFactory,
-		syncChannelPeerPin: (request) => pins.get(request) ?? null,
+		mode: channelMode(options.mode ?? "relay", peers),
+		syncRequestRateLimit: options.limiter ? { limiter: options.limiter } : undefined,
 	});
 	return async (input) => {
 		const prepared = prepareChannelRequest(input);
 		if (!("request" in prepared)) return prepared;
 		const { request, peerPin } = prepared;
 		const signal = request.signal;
-		pins.set(request, peerPin);
+		peers.set(request, { pin: peerPin, deviceId: input.peerDeviceId ?? "" });
 		try {
 			checkCancellation(signal);
 			const response = await app.fetch(request);
 			const bodyBytes = await collectResponse(response, signal);
 			return { status: response.status, headers: Object.fromEntries(response.headers), bodyBytes };
 		} finally {
-			pins.delete(request);
+			peers.delete(request);
 		}
 	};
 }

@@ -14,7 +14,7 @@ vi.mock("./shared-store.js", () => ({
 async function createPeerClient(kind: "factory" | "dispatcher", storeFactory: () => MemoryStore) {
 	if (kind === "factory") {
 		const { createSyncApp } = await import("./sync-app.js");
-		const app = createSyncApp({ storeFactory, syncChannelPeerPin: () => "test-pin" });
+		const app = createSyncApp({ storeFactory, mode: { kind: "relay", peerPin: () => "test-pin" } });
 		return (target: string) => app.request(`https://peer.invalid${target}`);
 	}
 	const { createSyncChannelDispatcher } = await import("./sync-channel-dispatch.js");
