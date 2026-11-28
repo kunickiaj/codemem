@@ -8,13 +8,10 @@ import {
 import { attachDirectNoiseGate, type DirectNoiseGateOptions } from "./sync-noise-gate.js";
 
 /**
- * Limits for the network-facing sync listener. The socket caps and the
- * per-address request limit come from `pnpm run load:sync-listener`
- * (packages/viewer-server/scripts/sync-listener-load.ts). With them, an
- * authenticated flood or idle streams from one address left another
- * address's sync p95 within 10% of idle, at under 16 MiB added memory, and
- * 128 devices behind one address that start syncing within 10 s all succeed.
- * Set a cap to undefined to turn it off.
+ * Limits for the network-facing sync listener. The header and request
+ * deadlines are always on. The socket caps and the per-address request limit
+ * apply only while direct Noise is on; see SYNC_LISTENER_CAPS. A cap set to
+ * undefined is off.
  */
 export interface SyncListenerLimits {
 	/** Time a socket has to deliver complete request headers. */
@@ -35,6 +32,21 @@ export const SYNC_LISTENER_LIMITS: SyncListenerLimits = Object.freeze({
 	headerMs: 10_000,
 	requestMs: 30_000,
 	checkIntervalMs: 1_000,
+});
+
+/**
+ * Caps from `pnpm run load:sync-listener`
+ * (packages/viewer-server/scripts/sync-listener-load.ts). With them, an
+ * authenticated flood or idle streams from one address left another
+ * address's sync p95 within 10% of idle, at under 16 MiB added memory, and
+ * 128 devices behind one address that start syncing within 10 s all succeed.
+ * They apply only while the listener runs direct Noise, so the plain listener
+ * behaves as before until activation.
+ */
+export const SYNC_LISTENER_CAPS: Pick<
+	SyncListenerLimits,
+	"maxSockets" | "maxSocketsPerIp" | "requestsPerIpPerMinute"
+> = Object.freeze({
 	maxSockets: 256,
 	// Bounds how many handshakes and streams one address can drive at once.
 	maxSocketsPerIp: 16,
@@ -166,7 +178,9 @@ function admitRequest(
 export function createGuardedSyncServer(
 	options: SyncListenerGuardOptions = {},
 ): typeof createServer {
-	const limits = { ...SYNC_LISTENER_LIMITS, ...options.limits };
+	const noiseActive = options.directNoise?.active ?? DIRECT_NOISE_ACTIVE;
+	const caps = noiseActive ? SYNC_LISTENER_CAPS : {};
+	const limits = { ...SYNC_LISTENER_LIMITS, ...caps, ...options.limits };
 	const limiter = options.limiter ?? createSyncListenerLimiter();
 	const guarded = (_serverOptions: unknown, listener?: RequestListener): Server => {
 		const server = createServer(
@@ -184,7 +198,7 @@ export function createGuardedSyncServer(
 		if (limits.maxSocketsPerIp !== undefined) capSocketsPerAddress(server, limits.maxSocketsPerIp);
 		const settle = closeSilentSockets(server, limits);
 		const directNoise = options.directNoise;
-		if (directNoise && (directNoise.active ?? DIRECT_NOISE_ACTIVE)) {
+		if (directNoise && noiseActive) {
 			const admit = { limiter, perMinute: limits.requestsPerIpPerMinute, settle };
 			attachDirectNoiseGate(server, directNoise, admit, remoteAddressKey);
 		}

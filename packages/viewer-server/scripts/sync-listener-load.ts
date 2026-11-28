@@ -47,7 +47,8 @@ import {
 } from "../src/sync-listener-guard.js";
 import type { DirectNoiseGateLimits } from "../src/sync-noise-gate.js";
 
-type Limits = { listener?: Partial<SyncListenerLimits>; gate?: Partial<DirectNoiseGateLimits> };
+/** Listener caps default to SYNC_LISTENER_CAPS here, because direct Noise is on. */
+type Limits = { listener?: Record<string, number | null>; gate?: Partial<DirectNoiseGateLimits> };
 type Message = Record<string, unknown> & { type: string };
 
 const SELF = fileURLToPath(import.meta.url);
@@ -93,6 +94,13 @@ function prepare(root: string, count: number) {
 
 // ---- seed process ----
 
+/** JSON has no undefined, so a plan turns a cap off with null. */
+function listenerLimits(limits: Record<string, number | null> | undefined) {
+	return Object.fromEntries(
+		Object.entries(limits ?? {}).map(([name, value]) => [name, value ?? undefined]),
+	) as Partial<SyncListenerLimits>;
+}
+
 async function runSeed(root: string, limits: Limits): Promise<void> {
 	const seed = seedPaths(root);
 	const store = new MemoryStore(seed.dbPath);
@@ -104,7 +112,7 @@ async function runSeed(root: string, limits: Limits): Promise<void> {
 		syncRequestRateLimit: { limiter },
 	});
 	const createServer = createGuardedSyncServer({
-		limits: limits.listener,
+		limits: listenerLimits(limits.listener),
 		limiter,
 		directNoise: { storeFactory, keysDir: seed.keysDir, limits: limits.gate, active: true },
 	});
@@ -478,7 +486,18 @@ async function runPlan(root: string, seedId: string, plan: Plan) {
 
 const DEFAULT_PLANS: Plan[] = [
 	{
-		name: "caps off (shipped by PR4a)",
+		name: "caps off",
+		limits: { listener: { maxSockets: null, maxSocketsPerIp: null, requestsPerIpPerMinute: null } },
+		attackers: 8,
+		workers: 8,
+		holdStreams: 8,
+		natPeers: 32,
+		passes: 40,
+		floodMs: 2_000,
+		natSpreadMs: 10_000,
+	},
+	{
+		name: "default caps",
 		limits: {},
 		attackers: 8,
 		workers: 8,
