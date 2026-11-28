@@ -247,6 +247,8 @@ export {
 	coordinatorFreeEligibility,
 	coordinatorFreeInboundRejections,
 	coordinatorFreeOutboundOps,
+	coordinatorFreeOutboundRules,
+	coordinatorFreeSendableNow,
 	LaneApplyError,
 } from "./coordinator-free-lane.js";
 export type {

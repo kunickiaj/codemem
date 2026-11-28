@@ -198,6 +198,29 @@ describe("only this device's shared local-default memories leave it", () => {
 		expect(outbound([madePrivate.op, forgotten.op, duplicated.op])).toEqual([]);
 	});
 
+	it("holds back a memory whose session moved to a Project the pairing excludes, on replay", () => {
+		const moved = remember("moved");
+		setPeerProjectFilter(store.db, PEER, { include: null, exclude: ["held-back"] });
+		expect(outbound([moved.op])).toHaveLength(1);
+		// The memory's session moves to the excluded Project. The recorded op still names "lane".
+		store.db
+			.prepare(
+				"UPDATE sessions SET project = 'held-back' WHERE id = (SELECT session_id FROM memory_items WHERE id = ?)",
+			)
+			.run(moved.id);
+
+		expect(outbound([moved.op])).toEqual([]);
+	});
+
+	it("sends the stored copy's current content, not the payload the op recorded", () => {
+		const edited = remember("recorded title");
+		store.db.prepare("UPDATE memory_items SET title = 'current title' WHERE id = ?").run(edited.id);
+
+		const [sent] = outbound([edited.op]);
+
+		expect(JSON.parse(String(sent?.payload_json))).toMatchObject({ title: "current title" });
+	});
+
 	it("holds back deletes and Projects the pairing excludes", () => {
 		const kept = remember("kept");
 		const deleted = { ...kept.op, op_id: "delete-op", op_type: "delete" };

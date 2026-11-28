@@ -2407,6 +2407,72 @@ export interface FilterReplicationOpsForSyncOptions {
 	localDeviceId?: string | null;
 	applyScopeFilter?: boolean;
 	supportsReassignScope?: boolean;
+	/** Serve local-default to sync without a coordinator, under its rules, and nothing else. */
+	coordinatorFree?: CoordinatorFreeOutboundRules;
+}
+
+/**
+ * What sync without a coordinator adds to the outbound decision. Local-default goes to no
+ * peer otherwise. With these rules it goes to this peer only as this device's own memory
+ * upserts, each for a copy that this device created, that says `shared` in its visibility,
+ * and that is the only stored row for its key, on top of every rule a scope's ops follow.
+ */
+export interface CoordinatorFreeOutboundRules {
+	/** Whether the peer is still eligible, checked for each window and each request. */
+	peerEligible: () => boolean;
+}
+
+/** The lane's state for one window: null when the window is not for the lane. */
+type CoordinatorFreeWindow = { open: boolean } | null;
+
+/** Whether the lane may carry this op at all: this device's own upsert in local-default. */
+function coordinatorFreeOpAllowed(op: ReplicationOp, page: OutboundPage | null): boolean {
+	const self = cleanText(page?.localDeviceId);
+	return (
+		page?.coordinatorFree?.open === true &&
+		self != null &&
+		op.entity_type === "memory_item" &&
+		op.op_type === "upsert" &&
+		op.device_id === self &&
+		op.clock_device_id === self &&
+		cleanText(op.scope_id) === DEFAULT_SYNC_SCOPE_ID
+	);
+}
+
+/** A window skips a retired memory's op, and a lane window skips every op the lane can't carry. */
+function outboundWindowRefuses(db: Database, page: OutboundPage | null, op: ReplicationOp) {
+	return retirementBlocksMemoryOp(db, op) || coordinatorFreeRefusesOp(page, op);
+}
+
+/** Local-default goes only to sync without a coordinator. */
+function defaultStreamWithheld(scopeId: string, page: OutboundPage | null): boolean {
+	return scopeId === DEFAULT_SYNC_SCOPE_ID && !page?.coordinatorFree;
+}
+
+/** An op a lane window may not carry. Windows for other peers refuse nothing here. */
+function coordinatorFreeRefusesOp(page: OutboundPage | null, op: ReplicationOp): boolean {
+	return page?.coordinatorFree != null && !coordinatorFreeOpAllowed(op, page);
+}
+
+/**
+ * Why the lane may not carry a stored copy: it must be this device's own, say `shared` in
+ * its visibility, and be the only row stored for its key, in any scope.
+ */
+function coordinatorFreeCopyRefusal(
+	db: Database,
+	page: OutboundPage,
+	row: MemoryItemRow,
+): OutboundRefusal | null {
+	if (!page.coordinatorFree) return null;
+	const scopeRefusal: OutboundRefusal = { reason: "scope_filter", scope_id: row.scope_id };
+	if (row.origin_device_id !== page.localDeviceId) return scopeRefusal;
+	if (row.visibility !== "shared")
+		return { reason: "visibility_filter", visibility: row.visibility };
+	const copies = db
+		.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ?")
+		.pluck()
+		.get(row.import_key);
+	return copies === 1 ? null : scopeRefusal;
 }
 
 interface ExistingMemoryFilterContext {
@@ -2614,17 +2680,25 @@ interface OutboundPage {
 	copies: Map<string, CurrentCopy>;
 	duplicated: Set<string>;
 	localDeviceId: string | null;
+	coordinatorFree: CoordinatorFreeWindow;
 }
 
 function outboundPage(
 	db: Database,
 	listed: ReplicationOp[],
-	localDeviceId: string | null,
+	options: Pick<FilterReplicationOpsForSyncOptions, "localDeviceId" | "coordinatorFree">,
 ): OutboundPage {
 	const ops = listed.map(asOutboundTombstone);
 	const copies = storedCopiesForOps(db, ops);
 	const memories = [...copies.values()].map((copy) => copy.row);
-	return { ops, copies, duplicated: duplicatedCopyKeys(db, memories), localDeviceId };
+	const lane = options.coordinatorFree;
+	return {
+		ops,
+		copies,
+		duplicated: duplicatedCopyKeys(db, memories),
+		localDeviceId: options.localDeviceId ?? null,
+		coordinatorFree: lane ? { open: lane.peerEligible() } : null,
+	};
 }
 
 /** The stored copy each memory op names, by op ID, in one query per 500 ops. */
@@ -2700,7 +2774,8 @@ function outboundDecision(
 		reason: "scope_filter",
 		scope_id: cleanText(op.scope_id),
 	};
-	if (!outboundScopeAllowed(db, op, payload, peerDeviceId, page.localDeviceId))
+	const lane = coordinatorFreeOpAllowed(op, page);
+	if (!outboundScopeAllowed(db, op, payload, peerDeviceId, page.localDeviceId, lane))
 		return { refusal: scopeRefusal };
 	if (!payload || !opCarriesMemoryContent(op, payload)) return { op };
 	const copy = currentCopyForOp(page, op);
@@ -2710,7 +2785,9 @@ function outboundDecision(
 		project: copy.sessionProject,
 		scopeId: cleanText(copy.row.scope_id),
 	};
-	const refusal = storedCopyRefusal(db, readable, peerDeviceId, page.duplicated);
+	const refusal =
+		storedCopyRefusal(db, readable, peerDeviceId, page.duplicated) ??
+		coordinatorFreeCopyRefusal(db, page, copy.row);
 	if (refusal) return { refusal };
 	return { op: { ...op, payload_json: toJson(currentOpPayload(op, payload, copy)) } };
 }
@@ -2726,10 +2803,14 @@ export function opsStillSendableToPeer(
 	ops: ReplicationOp[],
 	peerDeviceId: string,
 	localDeviceId: string | null,
+	options: Pick<FilterReplicationOpsForSyncOptions, "coordinatorFree"> = {},
 ): ReplicationOp[] {
-	const page = outboundPage(db, ops, localDeviceId);
+	const page = outboundPage(db, ops, { localDeviceId, coordinatorFree: options.coordinatorFree });
+	// A lane batch goes only while the peer is still eligible, and carries only lane ops.
+	if (page.coordinatorFree && !page.coordinatorFree.open) return [];
 	return ops.flatMap((op) => {
 		const payload = op.entity_type === "memory_item" ? parsePayload(op.payload_json) : null;
+		if (coordinatorFreeRefusesOp(page, op)) return [];
 		if (!opCarriesMemoryContent(op, payload)) return [op];
 		const decision = outboundDecision(db, op, payload, peerDeviceId, page);
 		return decision.refusal ? [] : [decision.op];
@@ -2788,11 +2869,13 @@ function outboundScopeAllowed(
 	payload: Record<string, unknown> | null,
 	peerDeviceId: string | null,
 	localDeviceId: string | null,
+	coordinatorFree = false,
 ): boolean {
 	if (payloadContradictsOutboundScope(op, payload)) return false;
 	const scopeId = cleanText(op.scope_id);
 	if (!scopeId) return true;
-	if (scopeId === DEFAULT_SYNC_SCOPE_ID) return false;
+	// Only sync without a coordinator carries local-default, under its own rules.
+	if (scopeId === DEFAULT_SYNC_SCOPE_ID) return coordinatorFree;
 	if (isProjectScopeWithdrawn(db, scopeId)) return false;
 	const peerId = cleanText(peerDeviceId);
 	if (!peerId) return false;
@@ -2954,10 +3037,10 @@ export function filterReplicationOpsForSyncWithStatus(
 	const skipped = { count: 0, first: null as FilterReplicationSkipped | null };
 	const applyScopeFilter = options.applyScopeFilter !== false;
 	// Outbound ops are decided with their window's copies; inbound validation skips the scope filter.
-	const page = applyScopeFilter ? outboundPage(db, ops, options.localDeviceId ?? null) : null;
+	const page = applyScopeFilter ? outboundPage(db, ops, options) : null;
 	for (const op of page?.ops ?? ops) {
 		let outbound = op;
-		if (retirementBlocksMemoryOp(db, op)) {
+		if (outboundWindowRefuses(db, page, op)) {
 			addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
 			nextCursor = computeCursor(op.created_at, op.op_id);
 			continue;
@@ -3001,7 +3084,7 @@ export function filterReplicationOpsForSyncWithStatus(
 				}
 			}
 			const regularScopeId = cleanText(op.scope_id);
-			if (!regularScopeId || regularScopeId === DEFAULT_SYNC_SCOPE_ID) {
+			if (!regularScopeId || defaultStreamWithheld(regularScopeId, page)) {
 				addSkipped(skipped, op, { reason: "scope_filter", scope_id: regularScopeId });
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;

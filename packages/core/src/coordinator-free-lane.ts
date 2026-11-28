@@ -13,7 +13,10 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import {
 	type ApplyResult,
 	applyReplicationOps,
+	type CoordinatorFreeOutboundRules,
 	DEFAULT_SYNC_SCOPE_ID,
+	filterReplicationOpsForSyncWithStatus,
+	opsStillSendableToPeer,
 	replicationOpRequiresPersonalScopeAuthorization,
 	syncProjectAllowed,
 	syncVisibilityAllowed,
@@ -178,30 +181,58 @@ function projectOf(op: ReplicationOp): string | null {
 	return typeof project === "string" && project.trim() ? project.trim() : null;
 }
 
+export interface CoordinatorFreeOutboundContext {
+	localDeviceId: string;
+	peerDeviceId: string;
+	keysDir?: string;
+}
+
+/** The lane's rules as inputs to the shared outbound decision, for one peer. */
+export function coordinatorFreeOutboundRules(
+	db: Database,
+	context: CoordinatorFreeOutboundContext,
+): CoordinatorFreeOutboundRules {
+	return {
+		peerEligible: () =>
+			coordinatorFreeEligibility(db, {
+				peerDeviceId: context.peerDeviceId,
+				channelAuthenticated: true,
+				keysDir: context.keysDir,
+			}).eligible,
+	};
+}
+
 /**
- * The ops this device may send the peer, and the cursor after the window. An op goes only when
- * it is one of this device's shared local-default upserts and its memory is still exactly one
- * active row in that state now, so a memory made private or moved since is never resent.
+ * The ops this device may send the peer, as the shared outbound decision builds them, and the
+ * cursor after the window. Content comes from the stored copy each op names, as it is now.
  * Deletes wait for content-free tombstones.
  */
 export function coordinatorFreeOutboundOps(
 	db: Database,
 	ops: ReplicationOp[],
-	context: { localDeviceId: string; peerDeviceId: string },
+	context: CoordinatorFreeOutboundContext,
 ): { allowed: ReplicationOp[]; nextCursor: string | null } {
-	const allowed: ReplicationOp[] = [];
-	let nextCursor: string | null = null;
-	for (const op of ops) {
-		nextCursor = `${op.created_at}|${op.op_id}`;
-		if (!laneOp(op, context.localDeviceId)) continue;
-		if (!syncProjectAllowed(db, projectOf(op), context.peerDeviceId)) continue;
-		const rows = storedRows(db, op.entity_id);
-		const [row] = rows;
-		if (rows.length !== 1 || !row || row.active !== 1 || !laneRow(row, context.localDeviceId))
-			continue;
-		allowed.push(op);
-	}
+	const [allowed, nextCursor] = filterReplicationOpsForSyncWithStatus(
+		db,
+		ops,
+		context.peerDeviceId,
+		{
+			localDeviceId: context.localDeviceId,
+			coordinatorFree: coordinatorFreeOutboundRules(db, context),
+		},
+	);
 	return { allowed, nextCursor };
+}
+
+/** The ops of a lane batch that may still go, decided and built right before a request. */
+export function coordinatorFreeSendableNow(
+	db: Database,
+	ops: ReplicationOp[],
+	context: CoordinatorFreeOutboundContext,
+): ReplicationOp[] {
+	return opsStillSendableToPeer(db, ops, context.peerDeviceId, context.localDeviceId, {
+		coordinatorFree: coordinatorFreeOutboundRules(db, context),
+	});
 }
 
 export type CoordinatorFreeRejectionReason =
