@@ -310,7 +310,13 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"peer-b",
 		"/api/sync/invites/import",
 		"18-accept-share",
-		{ invite: created.body.invite.encoded, recipient_name: "Brian", device_name: "Brian's Test Mac" },
+		{
+			invite: created.body.invite.encoded,
+			recipient_name: "Brian",
+			device_name: "Brian's Test Mac",
+			// Joining turns off sync without a coordinator for this key; the scenario accepts that.
+			confirm_coordinator_join: true,
+		},
 	);
 	assert(accepted.status === 200, `project invite acceptance failed: ${JSON.stringify(accepted.body)}`);
 	assert(
@@ -748,6 +754,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 			invite: addDeviceCreated.body.invite.encoded,
 			device_name: "Brian's Second Mac",
 			reviewed_onboarding_digest: addDeviceInspected.body.onboarding.reviewedOnboardingDigest,
+			confirm_coordinator_join: true,
 		},
 	);
 	assert(addDeviceAccepted.status === 200, "add-device invitation acceptance failed");
