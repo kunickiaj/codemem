@@ -3290,6 +3290,31 @@ function legacyLocalRetentionScope(db: Database, scopeId: string | null): boolea
 	);
 }
 
+/** Whether this exact row arrived from its origin device over sync without a coordinator. */
+export function isCoordinatorFreeReplica(
+	db: Database,
+	memoryId: number,
+	originDeviceId: string | null,
+): boolean {
+	if (!originDeviceId) return false;
+	// The table appears with the first row accepted this way.
+	const table = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_free_replicas'",
+		)
+		.get();
+	if (!table) return false;
+	const query = `SELECT 1 FROM coordinator_free_replicas r
+		JOIN memory_items m ON m.id = r.memory_id AND m.import_key = r.import_key
+		WHERE r.memory_id = ? AND r.peer_device_id = ?`;
+	return db.prepare(query).get(memoryId, originDeviceId) !== undefined;
+}
+
+function isLocalDefault(scopeId: string | null): boolean {
+	const scope = cleanText(scopeId);
+	return !scope || scope === DEFAULT_SYNC_SCOPE_ID;
+}
+
 function retainOrDiagnoseLocalRow(
 	db: Database,
 	row: StalePeerReceivedRow,
@@ -3297,6 +3322,11 @@ function retainOrDiagnoseLocalRow(
 	creationSources: readonly string[],
 	result: ReconcileStalePeerReceivedRowsResult,
 ): boolean {
+	// A row its origin device sent over sync without a coordinator was delivered on purpose.
+	if (isLocalDefault(row.scope_id) && isCoordinatorFreeReplica(db, row.id, row.origin_device_id)) {
+		result.retained += 1;
+		return true;
+	}
 	const importKey = cleanText(row.import_key);
 	const origin = cleanText(row.origin_device_id);
 	const recorded = importKey !== null && hasRecordedLocalCreation(db, importKey);
