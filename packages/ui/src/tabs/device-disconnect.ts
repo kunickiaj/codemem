@@ -28,7 +28,7 @@ export async function confirmAndDisconnectDevice(
 	const name = device.displayName;
 	const confirmed = await confirm({
 		title: `Unpair ${name}?`,
-		description: `This device stops syncing with ${name}. ${name} stays in your Teams and keeps syncing with your other devices. Memories already synced stay on both devices.`,
+		description: `This device stops syncing with ${name} until they pair again. If both devices are in a Team, codemem pairs them again automatically. To stop syncing with ${name} on every device, use Remove device.`,
 		confirmLabel: "Unpair",
 		cancelLabel: "Keep paired",
 		autoFocusAction: "cancel",

@@ -5,6 +5,11 @@ import { canonicalKeyId, recordRetiredDeviceAliases } from "./retired-device-ali
 import { endRetainedScopeAuthorization } from "./scope-membership-evidence.js";
 import { deletePeerSyncChannelProgress } from "./sync-channel-progress.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import {
+	clearUnpairedPeerPins,
+	readUnpairedPeerPin,
+	recordUnpairedPeerPin,
+} from "./unpaired-peer-pin.js";
 
 /*
  * The only code that deletes a pairing. A pairing's sync progress lives in three
@@ -61,12 +66,24 @@ export interface PairingRemovalCounts {
 
 export type PairingRemovalInput = PairingRemoval & { localDeviceId: string };
 
-/** The peer's pinned key as a key-only alias, only when its fingerprint matches the stored key. */
-function pinnedKeyAlias(db: Database, deviceId: string): RetiredDeviceAliasRecord[] {
-	const row = db
+/**
+ * The peer's pinned key as a key-only alias, only when its fingerprint matches the stored key.
+ * A device this device unpaired has no pairing, so its recorded pin stands in.
+ */
+function pinnedKeyAlias(
+	db: Database,
+	localDeviceId: string,
+	deviceId: string,
+): RetiredDeviceAliasRecord[] {
+	const live = db
 		.prepare("SELECT public_key, pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
 		.get(deviceId) as { public_key: string | null; pinned_fingerprint: string | null } | undefined;
-	if (!row?.public_key || !row.pinned_fingerprint) return [];
+	const recorded = live ? null : readUnpairedPeerPin(db, { localDeviceId, peerDeviceId: deviceId });
+	const row = live ?? {
+		public_key: recorded?.publicKey ?? null,
+		pinned_fingerprint: recorded?.pinnedFingerprint ?? null,
+	};
+	if (!row.public_key || !row.pinned_fingerprint) return [];
 	if (fingerprintPublicKey(row.public_key) !== row.pinned_fingerprint) return [];
 	return [
 		{
@@ -155,7 +172,8 @@ function removeDevices(
 		// A retired alias stops the ID from pairing again with the blocked key.
 		recordRetiredDeviceAliases(
 			db,
-			input.retiredAliases ?? deviceIds.flatMap((deviceId) => pinnedKeyAlias(db, deviceId)),
+			input.retiredAliases ??
+				deviceIds.flatMap((deviceId) => pinnedKeyAlias(db, input.localDeviceId, deviceId)),
 		);
 	}
 	const now = new Date().toISOString();
@@ -168,6 +186,13 @@ function removeDevices(
 	for (const deviceId of deviceIds) {
 		// Content sync stops, but retirement controls still need this peer's pinned key.
 		retainRetirementPeerTrust(db, { localDeviceId: input.localDeviceId, peerDeviceId: deviceId });
+		// Unpairing deletes the pin that Remove needs, so keep the last verified one for it.
+		if (input.reason === "disconnect" && deviceId !== input.localDeviceId)
+			recordUnpairedPeerPin(db, {
+				localDeviceId: input.localDeviceId,
+				peerDeviceId: deviceId,
+				recordedAt: now,
+			});
 		addCounts(counts, {
 			syncPeers: deletePairing(db, deviceId),
 			...deleteSyncProgress(db, deviceId),
@@ -180,6 +205,8 @@ function removeDevices(
 		counts.identityDevices += 1;
 		endedIdentityIds.add(identityId);
 	}
+	// Remove, a removal answer and a revocation have dealt with the device, pin included.
+	if (input.reason !== "disconnect") clearUnpairedPeerPins(db, deviceIds);
 	if (endedIdentityIds.size === 0) return counts;
 	// Projects shared with those Identities no longer include the device.
 	wakeRecipientPoliciesForIdentities(db, endedIdentityIds, now);

@@ -8,7 +8,9 @@ import {
 	initTestSchema,
 	loadPublicKey,
 	MemoryStore,
+	readPairingInstanceId,
 	removePairingState,
+	removePeerFromThisDevice,
 	SYNC_CAPABILITY_HEADER,
 	setSyncResetState,
 } from "@codemem/core";
@@ -335,6 +337,40 @@ describe("manual and invite scopes never authorize another device", () => {
 		await refresh();
 
 		// Assert: the coordinator scope comes back, and manual and invite scopes stay refused.
+		expect(await authorizedScopeIds()).toEqual([SHARED_SCOPE]);
+		await expectUnmanagedScopesRefused();
+	});
+});
+
+describe("a device unpaired here", () => {
+	it("is paired again by a valid bootstrap grant, as the Unpair confirmation says, and keeps its coordinator Project at once", async () => {
+		// Arrange: Unpair deletes the pairing but, unlike Remove, keeps the cached membership.
+		const firstPairing = readPairingInstanceId(store.db, peer.deviceId);
+		removePeerFromThisDevice(store.db, { localDeviceId: localId, peerDeviceId: peer.deviceId });
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = ?")
+				.pluck()
+				.get(peer.deviceId),
+		).toBe(0);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify(bootstrapReceipt()), { status: 200 })),
+		);
+
+		// Act: the grant for group g1 creates the pairing again.
+		const bootstrap = await request("/v1/status", { bootstrapGrantId: "grant-1" });
+
+		// Assert
+		expect(bootstrap.status).toBe(200);
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = ?")
+				.pluck()
+				.get(peer.deviceId),
+		).toBe(1);
+		// A new pairing, so a pass that started before Unpair cannot save progress into it.
+		expect(readPairingInstanceId(store.db, peer.deviceId)).not.toBe(firstPairing);
 		expect(await authorizedScopeIds()).toEqual([SHARED_SCOPE]);
 		await expectUnmanagedScopesRefused();
 	});

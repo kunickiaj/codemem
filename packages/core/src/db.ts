@@ -36,6 +36,7 @@ import {
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { ensureMemoryReferenceSchema } from "./memory-reference-schema.js";
 import { expandUserPath } from "./observer-config.js";
+import { ensurePairingInstanceSchema } from "./pairing-instance.js";
 import { ensurePeerProjectFilterManagementSchema } from "./peer-project-filter-management.js";
 import { ensurePeerProjectFilterRetentionSchema } from "./peer-project-filter-retention.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
@@ -1139,6 +1140,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensurePeerProjectFilterRetentionSchema(db);
 	ensurePeerProjectFilterManagementSchema(db);
 	ensureSyncPeerTransportPolicySchema(db);
+	ensurePairingInstanceSchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);

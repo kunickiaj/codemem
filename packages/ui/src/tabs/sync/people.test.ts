@@ -24,7 +24,7 @@ it("says the device stays in its Teams after unpairing", async () => {
 	renderSyncPeers();
 	const options = vi.mocked(renderSyncPeersList).mock.calls[0]?.[1];
 	const feedback = await options?.onRemove("fixture-peer", "Desk");
-	expect(feedback?.message).toBe("Unpaired this device from Desk. Desk stays in your Teams.");
+	expect(feedback?.message).toBe("Unpaired this device from Desk.");
 	expect(state.syncPeersSectionFeedback?.message).toBe(feedback?.message);
 	expect(api.deletePeer).toHaveBeenCalledWith("fixture-peer");
 });

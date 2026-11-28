@@ -11,6 +11,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } from "./db.js";
+import { readPairingInstanceId } from "./pairing-instance.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
@@ -735,6 +736,8 @@ function servingPeerSnapshotFailure(
 		pin.pinned_fingerprint !== options.pinnedFingerprint
 	)
 		return "missing_scope";
+	if (pairingInstanceChanged(db, options.peerDeviceId, options.pairingInstanceId))
+		return "missing_scope";
 	const binding = pinnedKeyBinding(pin);
 	if (!binding) return "missing_scope";
 	const authorization = getEffectiveCachedScopeAuthorization(db, {
@@ -814,6 +817,7 @@ async function runScopedSync(
 		scanner?: SecretScanner;
 		limit: number;
 		pinnedFingerprint: string;
+		pairingInstanceId: string | null;
 	},
 ): Promise<{ results: SyncScopeResult[]; totalOpsIn: number }> {
 	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes);
@@ -834,6 +838,7 @@ async function runScopedSync(
 			scanner: options.scanner,
 			limit: options.limit,
 			pinnedFingerprint: options.pinnedFingerprint,
+			pairingInstanceId: options.pairingInstanceId,
 		});
 		results.push(scopeResult);
 		if (!scopeResult.ok)
@@ -883,6 +888,17 @@ interface ScopedSnapshotAccess {
 	localDeviceId: string;
 	/** The pairing the exchange was admitted with. */
 	pinnedFingerprint?: string;
+	/** The pairing instance the exchange started under. */
+	pairingInstanceId?: string | null;
+}
+
+/** True when the peer's pairing was deleted and created again since the exchange began. */
+function pairingInstanceChanged(
+	db: Database,
+	peerDeviceId: string,
+	expected: string | null | undefined,
+): boolean {
+	return Boolean(expected) && readPairingInstanceId(db, peerDeviceId) !== expected;
 }
 
 function scopedSnapshotAccess(options: ScopedPeerPullOptions): ScopedSnapshotAccess {
@@ -891,6 +907,7 @@ function scopedSnapshotAccess(options: ScopedPeerPullOptions): ScopedSnapshotAcc
 		peerDeviceId: options.peerDeviceId,
 		localDeviceId: options.deviceId,
 		pinnedFingerprint: options.pinnedFingerprint,
+		pairingInstanceId: options.pairingInstanceId,
 	};
 }
 
@@ -938,6 +955,8 @@ interface ScopedPeerPullOptions {
 	completedNullBaseline?: boolean;
 	/** The pairing the exchange was admitted with. */
 	pinnedFingerprint: string;
+	/** The pairing instance the exchange started under. Progress is saved only into it. */
+	pairingInstanceId?: string | null;
 	sourceDeviceId?: string;
 	validateCurrentAuthorization?: () => void;
 	/** Must finish synchronously before the inbound cursor can be cleared. */
@@ -989,6 +1008,20 @@ function scopedBootstrapOptions(options: ScopedPeerPullOptions) {
  * waste; the receiver's per-scope pull on the next pass picks up anything it
  * missed.
  */
+/** Saves the inbound position into the pairing this scope's pull started under, and no other. */
+function saveInboundScopeCursor(
+	db: Database,
+	options: ScopedPeerPullOptions,
+	cursor: string | null,
+): void {
+	setReplicationCursor(
+		db,
+		options.peerDeviceId,
+		{ lastApplied: cursor, pairingInstanceId: options.pairingInstanceId },
+		options.scope.scope_id,
+	);
+}
+
 async function syncOneScope(
 	db: Database,
 	options: ScopedPeerPullOptions,
@@ -1342,7 +1375,7 @@ async function syncOneScope(
 			);
 		}
 		if (applied.errors.length === 0 && cursorAdvances(lastApplied, inboundCursorCandidate)) {
-			setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate }, scopeId);
+			saveInboundScopeCursor(db, options, inboundCursorCandidate);
 		}
 
 		if (applied.errors.length > 0) {
@@ -1426,6 +1459,8 @@ interface SyncExchangeContext {
 	peerDeviceId: string;
 	deviceId: string;
 	pinnedFingerprint: string;
+	/** The pairing instance this exchange started under. Progress is saved only into it. */
+	pairingInstanceId: string | null;
 	pendingBootstrapGrantId: string | undefined;
 	limit: number;
 	keysDir: string | undefined;
@@ -1546,6 +1581,7 @@ function directSnapshotAccess(context: SyncExchangeContext, scopeId: string): Sc
 		peerDeviceId: context.peerDeviceId,
 		localDeviceId: context.deviceId,
 		pinnedFingerprint: context.pinnedFingerprint,
+		pairingInstanceId: context.pairingInstanceId,
 	};
 }
 
@@ -1569,6 +1605,8 @@ function pairingChangedSince(context: SyncExchangeContext): "missing_scope" | nu
 		.prepare("SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
 		.pluck()
 		.get(context.peerDeviceId);
+	if (pairingInstanceChanged(context.db, context.peerDeviceId, context.pairingInstanceId))
+		return "missing_scope";
 	return pinned === context.pinnedFingerprint ? null : "missing_scope";
 }
 
@@ -1622,6 +1660,7 @@ async function finishInitialBootstrap(
 					scanner: context.scanner,
 					limit: context.limit,
 					pinnedFingerprint: context.pinnedFingerprint,
+					pairingInstanceId: context.pairingInstanceId,
 				})
 			: { results: [], totalOpsIn: 0 };
 	const ok = scoped.results.every((result) => result.ok);
@@ -1951,7 +1990,10 @@ async function applyPulledDefaultOps(
 	if (applied.errors.length !== 0 || !cursorAdvances(lastApplied, inboundCursor)) {
 		return { applied, lastApplied };
 	}
-	setReplicationCursor(context.db, context.peerDeviceId, { lastApplied: inboundCursor });
+	setReplicationCursor(context.db, context.peerDeviceId, {
+		lastApplied: inboundCursor,
+		pairingInstanceId: context.pairingInstanceId,
+	});
 	return { applied, lastApplied: inboundCursor };
 }
 
@@ -2035,6 +2077,8 @@ function requirePeerStillAuthorized(context: SyncExchangeContext, ops: Replicati
 		| undefined;
 	const binding = pinnedKeyBinding(pin);
 	if (!pin || !binding || pin.pinned_fingerprint !== context.pinnedFingerprint)
+		throw new Error("peer access ended during push");
+	if (pairingInstanceChanged(context.db, context.peerDeviceId, context.pairingInstanceId))
 		throw new Error("peer access ended during push");
 	const scopeIds = new Set(ops.map(carriedScope).filter((scopeId) => scopeId !== null));
 	const localScopeIds = new Set([
@@ -2127,7 +2171,10 @@ async function pushDefaultScope(
 	const ackCursor = filteredOutboundCursor ?? outboundCursor;
 	let nextLastAcked = lastAcked;
 	if (ackCursor && cursorAdvances(lastAcked, ackCursor)) {
-		setReplicationCursor(context.db, context.peerDeviceId, { lastAcked: ackCursor });
+		setReplicationCursor(context.db, context.peerDeviceId, {
+			lastAcked: ackCursor,
+			pairingInstanceId: context.pairingInstanceId,
+		});
 		nextLastAcked = ackCursor;
 	}
 	return {
@@ -2177,6 +2224,7 @@ async function finishIncrementalExchange(
 					scanner: context.scanner,
 					limit: context.limit,
 					pinnedFingerprint: context.pinnedFingerprint,
+					pairingInstanceId: context.pairingInstanceId,
 				})
 			: { results: [], totalOpsIn: 0 };
 	const allScopesOk = scoped.results.every((result) => result.ok);
@@ -2383,6 +2431,7 @@ function prepareSyncExchange(
 			peerDeviceId,
 			deviceId,
 			pinnedFingerprint,
+			pairingInstanceId: readPairingInstanceId(db, peerDeviceId),
 			pendingBootstrapGrantId,
 			limit: options?.limit ?? DEFAULT_LIMIT,
 			keysDir: options?.keysDir,

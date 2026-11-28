@@ -11,6 +11,7 @@ import {
 } from "./coordinator-runtime.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
+import { removePairingState } from "./pairing-removal.js";
 import { readAppliedRemovalSeq } from "./peer-removal-check-state.js";
 import { listRetiredDeviceAliases } from "./retired-device-aliases.js";
 import { saveSyncChannelCompletedBoundary } from "./sync-channel-progress.js";
@@ -121,6 +122,39 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	db.close();
 	rmSync(root, { recursive: true, force: true });
+});
+
+describe("coordinator removal lookup after Unpair", () => {
+	it("still sends the key of an unpaired device, so a key-only revocation filed under another ID is found", async () => {
+		removePairingState(db, {
+			localDeviceId,
+			reason: "disconnect",
+			deviceIds: ["peer-a"],
+		});
+		stubCoordinator(() => valid({ revoked: ["peer-a"] }));
+
+		const result = await refresh();
+
+		expect(lookups[0]?.entries).toEqual([
+			{ device_id: "peer-b", public_key: "key-peer-b" },
+			{ device_id: "peer-a", public_key: "key-peer-a" },
+		]);
+		expect(result.status).toBe("checked");
+		expect(bindingStatus("peer-a")).toBe("removed");
+		expect(listRetiredDeviceAliases(db).get("peer-a")).toMatchObject({ kind: "key" });
+	});
+
+	it("stops asking about the unpaired device once the coordinator reports it removed", async () => {
+		removePairingState(db, { localDeviceId, reason: "disconnect", deviceIds: ["peer-a"] });
+		stubCoordinator(() => valid({ removed: ["peer-a"] }));
+		await refresh();
+		lookups.length = 0;
+		stubCoordinator(() => valid());
+
+		await refresh();
+
+		expect(lookups[0]?.entries.map((entry) => entry.device_id)).toEqual(["peer-b"]);
+	});
 });
 
 describe("coordinator removal lookup", () => {

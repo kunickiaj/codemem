@@ -207,7 +207,8 @@ const KEPT_REPLY = {
 	ok: true,
 	binding: "kept",
 	remove_from_projects: "needs_admin_device",
-	notice: "Only this device's pairing was removed. Remove device changes its Project access.",
+	notice:
+		"Only this device's pairing was removed. If both devices are in a Team, codemem pairs them again automatically. To stop syncing on every device, use Remove device.",
 };
 
 describe("DELETE /api/sync/peers/:peer_device_id", () => {

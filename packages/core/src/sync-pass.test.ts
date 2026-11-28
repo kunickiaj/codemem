@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { removePairingState } from "./pairing-removal.js";
+import { removePeerFromThisDevice } from "./peer-removal.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
 import {
@@ -3864,6 +3865,34 @@ describe("syncOnce when the peer or this device loses access during a push", () 
 			.map(([, , options]) => (options?.body as { ops: unknown[] } | undefined)?.ops.length);
 		expect(pushedOpCounts).toEqual([3, 1]);
 		expect(result.ok).toBe(false);
+	});
+
+	it("saves no acknowledgement into a pairing created again while the push was paused", async () => {
+		// Arrange: one batch, and Unpair followed by a new pairing under the same device ID and key
+		// while the peer's reply is still pending.
+		syncReplication.setReplicationCursor(db, PEER, {
+			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
+		});
+		insertLocalScopedOps(db, SCOPE, LOCAL, [1]);
+		await grantProvenScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, { ...statusResponse, sync_capability: "enforcing" }])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockImplementationOnce(async () => {
+				removePeerFromThisDevice(db, { localDeviceId: LOCAL, peerDeviceId: PEER });
+				db.prepare(
+					"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+				).run(PEER, "fp-scoped", new Date().toISOString());
+				return [200, {}];
+			})
+			.mockResolvedValue([200, {}]);
+
+		// Act: the late reply arrives after the new pairing exists.
+		await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+		// Assert: the new pairing starts with no progress, so no history is skipped.
+		expect(syncReplication.getReplicationCursor(db, PEER)).toEqual([null, null]);
+		expect(db.prepare("SELECT COUNT(*) FROM sync_peers").pluck().get()).toBe(1);
 	});
 
 	it("sends no later move retraction after this device loses access to the Project it moves from", async () => {

@@ -148,7 +148,7 @@ describe("Devices waiting for review", () => {
 	it("offers to unpair a pairing that conflicts with the team's device", async () => {
 		const api = fakeApi({
 			disconnect: vi.fn(async () => ({
-				message: "Unpaired this device from Desk Mini. Desk Mini stays in your Teams.",
+				message: "Unpaired this device from Desk Mini.",
 				tone: "success" as const,
 			})),
 		});

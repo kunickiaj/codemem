@@ -30,6 +30,8 @@ import {
 } from "./coordinator-runtime.js";
 import { recordHighestObservedDirectSignatureVersion } from "./db.js";
 import { getRetirementPeer, retainRetirementPeerTrust } from "./memory-retirement-trust.js";
+import { readPairingInstanceId } from "./pairing-instance.js";
+import { removePeerFromThisDevice } from "./peer-removal.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import type { MemoryStore } from "./store.js";
@@ -1828,6 +1830,40 @@ function assertRotation(fixture: RotationFixture, evidence: RotationEvidence) {
 		});
 	}
 }
+
+describe("a device unpaired while both devices share a managed Project", () => {
+	it("is paired again by coordinator discovery, as the Unpair confirmation says", async () => {
+		const fixture = await createRotationFixture();
+		try {
+			const { db, localDeviceId, peerDeviceId, oldKey } = fixture;
+			const peer = {
+				device_id: peerDeviceId,
+				public_key: oldKey,
+				fingerprint: fingerprintPublicKey(oldKey),
+				coordinator_id: "https://coord.example.test",
+				groups: ["group-1"],
+				addresses: ["http://old-peer.example:7337"],
+			};
+			const firstPairing = readPairingInstanceId(db, peerDeviceId);
+			removePeerFromThisDevice(db, { localDeviceId, peerDeviceId });
+			expect(db.prepare("SELECT COUNT(*) FROM sync_peers").pluck().get()).toBe(0);
+
+			const trusted = trustCoordinatorPeersWithSharedManagedScopes(db, localDeviceId, [peer]);
+
+			expect(trusted).toBe(1);
+			expect(
+				db
+					.prepare("SELECT trust_provenance FROM sync_peers WHERE peer_device_id = ?")
+					.pluck()
+					.get(peerDeviceId),
+			).toBe("coordinator_policy");
+			// A new pairing, so a pass that started before Unpair cannot save progress into it.
+			expect(readPairingInstanceId(db, peerDeviceId)).not.toBe(firstPairing);
+		} finally {
+			fixture.close();
+		}
+	});
+});
 
 describe("managed peer key rotation in the same refresh", () => {
 	const callers: RotationCaller[] = ["refresh", "status", "cached status"];

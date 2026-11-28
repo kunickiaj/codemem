@@ -752,14 +752,11 @@ peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => 
 	}
 });
 
-/** What the user is told after a removal: the peer keeps its Project access. */
+/** What the user is told after unpairing: sync can resume, and Remove device is the way to stop it everywhere. */
 function peerRemovalNotices(label: string): string[] {
 	return [
-		`${label} was not removed from Projects. Use Remove device on an administrator's device.`,
-		[
-			`Other devices still sync with ${label} until they remove it too.`,
-			`If the coordinator still lists ${label}, this device pairs with it again at the next refresh.`,
-		].join(" "),
+		`This device stops syncing with ${label} until they pair again. If both devices are in a Team, codemem pairs them again automatically.`,
+		`To stop syncing with ${label} on every device, use Remove device.`,
 	];
 }
 
@@ -791,7 +788,7 @@ function reportPeerRemoved(
 		return;
 	}
 	p.intro("codemem sync peers remove");
-	p.log.success(`Unpaired this device from ${label}`);
+	p.log.success(`Unpaired this device from ${label}.`);
 	const progressRows =
 		removed.replicationCursors + removed.replicationCursorsV2 + removed.syncChannelProgress;
 	p.log.message(
@@ -852,7 +849,7 @@ export async function removeSyncPeer(
 
 const peersRemoveCmd = new Command("remove")
 	.configureHelp(helpStyle)
-	.description("Remove a sync peer by device id or exact name")
+	.description("Unpair this device from a sync peer by device id or exact name")
 	.argument("<peer>", "peer device id or exact name");
 addDbOption(peersRemoveCmd);
 addJsonOption(peersRemoveCmd);

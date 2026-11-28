@@ -9,6 +9,7 @@ import {
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
+import { ensurePairingInstanceSchema } from "./pairing-instance.js";
 import { ensurePeerProjectFilterManagementSchema } from "./peer-project-filter-management.js";
 import { ensurePeerProjectFilterRetentionSchema } from "./peer-project-filter-retention.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
@@ -926,6 +927,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureSyncPeerTransportPolicySchema(db);
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerExplicitPairingColumns(db);
+		ensurePairingInstanceSchema(db);
 		ensurePolicyTeamMemberRemovalsTable(db);
 		ensurePolicyTeamRecoveryExclusionsTable(db);
 		ensurePolicyTeamRecoveryHoldsTable(db);

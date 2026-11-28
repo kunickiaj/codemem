@@ -13,6 +13,8 @@ import {
 	MemoryStore,
 	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
+	readUnpairedPeerPin,
+	removePairingState,
 	verifiedLocalKeyId,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -385,6 +387,58 @@ it("Remove ends the binding and wakes the Project policies of its Identity, whic
 	expect(f.localSnapshot()).toMatchObject({ paired: false, binding: "removed" });
 	// The reconciler clears this when a Project's policy is woken.
 	expect(attemptedAt()).toBeNull();
+});
+
+function unpair(f: { db: ReturnType<typeof localStore>["db"] }) {
+	removePairingState(f.db, { localDeviceId: localId, reason: "disconnect", deviceIds: [deviceId] });
+}
+
+it("lets Remove finish offline after Unpair, from the last verified pin", async () => {
+	const f = await fixture({ localOnly: true });
+	unpair(f);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "active" });
+
+	expect(await confirmAndCommitDeviceRemoval(target, { confirm: async () => true })).toEqual({
+		state: "removed",
+		mode: "local",
+	});
+
+	expect(f.remote).toEqual([]);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	// Remove dealt with the device, so its pin is not kept any longer.
+	expect(readUnpairedPeerPin(f.db, { localDeviceId: localId, peerDeviceId: deviceId })).toBeNull();
+});
+
+it("finds a key-only revocation filed under another device ID after Unpair deleted the pairing", async () => {
+	const f = await fixture({ mounted: true });
+	f.config.syncCoordinatorAdminSecret = "";
+	// The coordinator revokes this key by another device ID's enrollment, not by the peer's ID.
+	const alias = "alias-of-peer";
+	await f.store.enrollDevice(groupId, {
+		deviceId: alias,
+		publicKey: key,
+		fingerprint: fingerprintPublicKey(key),
+	});
+	await expect(
+		f.store.createDeviceRevocation({
+			groupId,
+			deviceId: alias,
+			publicKey: key,
+			fingerprint: fingerprintPublicKey(key),
+		}),
+	).resolves.toMatchObject({ kind: "revoked" });
+	unpair(f);
+
+	await expect(
+		confirmAndCommitDeviceRemoval(target, { confirm: async () => true }),
+	).resolves.toEqual({ state: "removed", mode: "already_removed" });
+
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	expect(listRetiredDeviceAliases(f.db).get(deviceId)).toEqual({
+		kind: "key",
+		keyId: canonicalKeyId(key),
+		fingerprint: fingerprintPublicKey(key),
+	});
 });
 
 it("never falls back to Remove when a mounted Viewer cannot obtain signed evidence", async () => {

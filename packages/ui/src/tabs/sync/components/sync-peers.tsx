@@ -397,7 +397,7 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 		if (!peerId) return;
 		const confirmed = await openSyncConfirmDialog({
 			title: `Unpair ${destructiveLabel}?`,
-			description: `This device stops syncing with ${destructiveLabel}. ${destructiveLabel} stays in your Teams and keeps syncing with your other devices. Memories already synced stay on both devices.`,
+			description: `This device stops syncing with ${destructiveLabel} until they pair again. If both devices are in a Team, codemem pairs them again automatically. To stop syncing with ${destructiveLabel} on every device, use Remove device.`,
 			confirmLabel: "Unpair",
 			cancelLabel: "Keep paired",
 			tone: "danger",

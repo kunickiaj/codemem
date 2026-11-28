@@ -7530,7 +7530,8 @@ function removeLocalPeerRoute(c: Context, getStore: StoreFactory): Response {
 		ok: true,
 		binding,
 		remove_from_projects: "needs_admin_device",
-		notice: "Only this device's pairing was removed. Remove device changes its Project access.",
+		notice:
+			"Only this device's pairing was removed. If both devices are in a Team, codemem pairs them again automatically. To stop syncing on every device, use Remove device.",
 	});
 }
 

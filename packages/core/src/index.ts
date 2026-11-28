@@ -1015,6 +1015,7 @@ export {
 	buildMemoryPackWithTraceAsync,
 	estimateTokens,
 } from "./pack.js";
+export { readPairingInstanceId } from "./pairing-instance.js";
 export {
 	type PairingRemoval,
 	type PairingRemovalCounts,
@@ -1904,6 +1905,12 @@ export type {
 	UsageEvent,
 	UserPrompt,
 } from "./types.js";
+export {
+	clearUnpairedPeerPins,
+	listUnpairedPeerPins,
+	readUnpairedPeerPin,
+	type UnpairedPeerPin,
+} from "./unpaired-peer-pin.js";
 export {
 	runVectorMigrationPass,
 	VECTOR_MODEL_MIGRATION_JOB,

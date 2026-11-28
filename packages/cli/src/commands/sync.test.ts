@@ -834,11 +834,10 @@ async function runPeersRemove(args: string[]) {
 	await remove?.parseAsync(args, { from: "user" });
 }
 
-const PAIRING_NOTICE =
-	"Other devices still sync with work until they remove it too. If the coordinator still lists work, this device pairs with it again at the next refresh.";
-const KEPT_NOTICE =
-	"work was not removed from Projects. Use Remove device on an administrator's device.";
-const NOTICE = `${KEPT_NOTICE} ${PAIRING_NOTICE}`;
+const RESUME_NOTICE =
+	"This device stops syncing with work until they pair again. If both devices are in a Team, codemem pairs them again automatically.";
+const REMOVE_NOTICE = "To stop syncing with work on every device, use Remove device.";
+const NOTICE = `${RESUME_NOTICE} ${REMOVE_NOTICE}`;
 const WITHOUT_ADMIN_SECRET = {
 	sync_coordinator_url: "https://coord.example.test",
 	sync_coordinator_groups: ["group-a"],
@@ -950,7 +949,7 @@ describe("sync peers remove: leaves the other device's binding", () => {
 		expect(result.payload).toMatchObject({ binding: "kept" });
 	});
 
-	it("on an admin device, prints that the device was unpaired and that Remove device changes its Project access", async () => {
+	it("on an admin device, prints that the device was unpaired, that it can pair again, and that Remove device stops syncing everywhere", async () => {
 		useCoordinatorSettings(ADMIN_DEVICE);
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-kept-text-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
@@ -960,10 +959,10 @@ describe("sync peers remove: leaves the other device's binding", () => {
 			await runPeersRemove(["peer-1", "--db-path", dbPath]);
 
 			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
-			expect(rendered).toContain("Unpaired this device from work");
+			expect(rendered).toContain("Unpaired this device from work.");
 			expect(rendered).not.toContain("Removed peer");
-			expect(rendered).toContain(KEPT_NOTICE);
-			expect(rendered).toContain(PAIRING_NOTICE);
+			expect(rendered).toContain(RESUME_NOTICE);
+			expect(rendered).toContain(REMOVE_NOTICE);
 			expect(rendered).not.toContain("Identity bindings ended");
 			expect(removedPeerState(store)).toEqual(DISCONNECTED);
 		} finally {
@@ -1033,7 +1032,7 @@ describe("sync peers remove", () => {
 			await runPeersRemove(["peer-1", "--db-path", dbPath]);
 
 			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
-			expect(rendered).toContain(PAIRING_NOTICE);
+			expect(rendered).toContain(RESUME_NOTICE);
 			expect(rendered).toContain("pairing: 1");
 			expect(rendered).toContain("sync progress rows: 3");
 			expect(removedPeerState(store).pairings).toBe(0);

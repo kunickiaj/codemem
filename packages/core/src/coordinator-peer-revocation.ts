@@ -9,6 +9,7 @@ import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
+import { listUnpairedPeerPins } from "./unpaired-peer-pin.js";
 
 /** Matches the coordinator's per-request limit on `/v1/peers/revocations`. */
 const CHECK_BATCH_SIZE = 25;
@@ -16,7 +17,7 @@ const CHECK_BATCH_SIZE = 25;
 /** `unsupported` means the coordinator predates the check; `failed` means the answer was unusable. */
 export type PeerRevocationCheckStatus = "checked" | "unsupported" | "failed";
 
-/** A device this device asks the coordinator about. A binding without a pairing has no key to send. */
+/** A device this device asks the coordinator about. A binding without a pairing or a kept pin has no key to send. */
 export interface PeerRemovalLookupEntry {
 	device_id: string;
 	public_key?: string;
@@ -93,8 +94,10 @@ function lookupEntry(deviceId: string, publicKey?: string | null): PeerRemovalLo
 }
 
 /**
- * One entry for every pairing and every device with an active binding, by device
- * ID. A pairing sends its key when it has a usable one. `omitted` is true when a
+ * One entry for every pairing, every unpaired device whose pin this device kept, and
+ * every device with an active binding, by device ID. A pairing, or a kept pin, sends
+ * its key when it has a usable one, so a key-only revocation filed under another
+ * device ID is still found after the pairing was deleted. `omitted` is true when a
  * device ID fails the coordinator's identifier rule: sending it would fail the
  * whole batch, so it is left out, and the lookup then covers less than this
  * device holds.
@@ -110,6 +113,9 @@ function lookupEntries(
 		)
 		.all(localDeviceId) as Array<{ peer_device_id: unknown; public_key: string | null }>;
 	const keys = new Map(pairings.map((row) => [row.peer_device_id, row.public_key]));
+	for (const pin of listUnpairedPeerPins(db, localDeviceId)) {
+		if (!keys.has(pin.deviceId)) keys.set(pin.deviceId, pin.publicKey);
+	}
 	const bound = db
 		.prepare(
 			`SELECT device_id FROM identity_devices
