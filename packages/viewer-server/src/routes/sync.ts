@@ -5853,6 +5853,7 @@ async function serveChannelLane(c: Context, options: SyncChannelReadOptions): Pr
 		localFingerprint,
 		keysDir: syncKeysDir(),
 		bodyBytes: body,
+		maxEntryBytes: entryByteLimit(options.mode),
 	});
 }
 

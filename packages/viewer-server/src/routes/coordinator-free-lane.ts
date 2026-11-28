@@ -4,6 +4,7 @@ import {
 	coordinatorFreeEligibility,
 	coordinatorFreeOutboundOps,
 	DEFAULT_SYNC_SCOPE_ID,
+	entriesWithinLimit,
 	extractReplicationOps,
 	fingerprintPublicKey,
 	getSyncResetState,
@@ -12,6 +13,7 @@ import {
 	LOCAL_SYNC_FEATURES,
 	loadReplicationOpsForPeer,
 	type MemoryStore,
+	SyncEntryTooLargeError,
 } from "@codemem/core";
 import type { Context } from "hono";
 
@@ -29,6 +31,8 @@ export interface CoordinatorFreeRequest {
 	localFingerprint: string;
 	keysDir: string | undefined;
 	bodyBytes: Buffer;
+	/** Largest single op the channel response can carry. */
+	maxEntryBytes: number | undefined;
 }
 
 function laneBoundary(store: MemoryStore) {
@@ -67,16 +71,25 @@ function pull(c: Context, input: CoordinatorFreeRequest): Response {
 			409,
 		);
 	}
+	// The shared outbound decision builds each op from the copy it names, as stored now.
 	const { allowed, nextCursor } = coordinatorFreeOutboundOps(input.store.db, result.ops, {
 		localDeviceId: input.localDeviceId,
 		peerDeviceId: input.peerDeviceId,
+		keysDir: input.keysDir,
 	});
+	let ops: typeof allowed;
+	try {
+		ops = entriesWithinLimit("op", allowed, (op) => op.op_id, input.maxEntryBytes);
+	} catch (error) {
+		if (error instanceof SyncEntryTooLargeError) return c.json(error.toResponseBody(), 409);
+		throw error;
+	}
 	return c.json({
 		scope_id: DEFAULT_SYNC_SCOPE_ID,
 		generation: result.boundary.generation,
 		snapshot_id: result.boundary.snapshot_id,
 		baseline_cursor: result.boundary.baseline_cursor,
-		ops: allowed,
+		ops,
 		next_cursor: result.nextCursor ?? nextCursor,
 	});
 }

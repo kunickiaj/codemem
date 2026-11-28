@@ -22,7 +22,11 @@ import { servePeerHttpConnection } from "../../core/src/peer-http-server.js";
 import { syncCoordinatorFreeChannelOnce } from "../../core/src/sync-channel-pass.js";
 import { updatePeerAddresses } from "../../core/src/sync-peer-addresses.js";
 import { createSyncApp } from "./index.js";
-import { createSyncChannelDispatcher } from "./sync-channel-dispatch.js";
+import {
+	createSyncChannelDispatcher,
+	type SyncChannelRequest,
+	type SyncChannelResponse,
+} from "./sync-channel-dispatch.js";
 import { openNoisePair } from "./sync-channel-pass-test-fixtures.js";
 
 const ORIGIN = "https://peer.invalid";
@@ -84,9 +88,14 @@ function titles(d: Device) {
 	return d.store.db.prepare("SELECT title FROM memory_items ORDER BY title").pluck().all();
 }
 
-/** The client side of an authenticated channel to `server`, as the relay would open it. */
-function channelTo(server: Device, client: Device) {
-	const dispatch = createSyncChannelDispatcher({ storeFactory: () => server.store });
+type Intercept = (request: SyncChannelRequest) => SyncChannelResponse | null;
+
+/** The client side of a direct Noise channel to `server`, as the sync listener admits it. */
+function channelTo(server: Device, client: Device, intercept?: Intercept) {
+	const dispatch = createSyncChannelDispatcher({
+		storeFactory: () => server.store,
+		mode: "noise-direct",
+	});
 	return {
 		async open() {
 			const pair = await openNoisePair({
@@ -98,9 +107,11 @@ function channelTo(server: Device, client: Device) {
 			cleanups.push(() => pair.close());
 			void servePeerHttpConnection(pair.targetOwner, {
 				origin: ORIGIN,
-				dispatch(request) {
+				async dispatch(request) {
+					const intercepted = intercept?.(request);
+					if (intercepted) return intercepted;
 					vi.stubEnv("CODEMEM_KEYS_DIR", server.keysDir);
-					return dispatch(request);
+					return dispatch({ ...request, peerDeviceId: client.deviceId });
 				},
 			}).catch(() => {});
 			return pair.sourceOwner as OwnedPeerHttpConnection;
@@ -108,12 +119,12 @@ function channelTo(server: Device, client: Device) {
 	};
 }
 
-function exchange(server: Device, client: Device) {
+function exchange(server: Device, client: Device, intercept?: Intercept) {
 	return syncCoordinatorFreeChannelOnce({
 		db: client.store.db,
 		peerDeviceId: server.deviceId,
 		logicalOrigin: ORIGIN,
-		factory: channelTo(server, client),
+		factory: channelTo(server, client, intercept),
 		keysDir: client.keysDir,
 		dbPath: client.dbPath,
 		scanner: client.store.scanner,
@@ -224,7 +235,11 @@ async function laneRequest(
 	const bodyBytes = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
 	const url = ORIGIN + target;
 	vi.stubEnv("CODEMEM_KEYS_DIR", server.keysDir);
-	const response = await createSyncChannelDispatcher({ storeFactory: () => server.store })({
+	const response = await createSyncChannelDispatcher({
+		storeFactory: () => server.store,
+		mode: "noise-direct",
+	})({
+		peerDeviceId: client.deviceId,
 		method,
 		target,
 		url,
@@ -321,4 +336,47 @@ it("serves no ops to a peer the server doesn't consider eligible", async () => {
 
 	expect(status).toMatchObject({ status: 200, body: { coordinator_free: { consent: false } } });
 	expect(pulled).toMatchObject({ status: 403, body: { error: "coordinator_free_not_allowed" } });
+});
+
+it("decides each push request again, so a memory made private while a batch is in flight stays here", async () => {
+	const server = device("server");
+	const client = device("client");
+	pair(server, client);
+	remember(client, "first", "shared");
+	const second = remember(client, "second", "shared");
+	let refused = false;
+	// The first push is answered as too large, so the client splits it and sends each half.
+	// While that answer is in flight, the second memory is made private.
+	const intercept: Intercept = (request) => {
+		if (refused || request.method !== "POST") return null;
+		refused = true;
+		client.store.db
+			.prepare("UPDATE memory_items SET visibility = 'private' WHERE id = ?")
+			.run(second);
+		return {
+			status: 413,
+			headers: { "content-type": "application/json" },
+			bodyBytes: new TextEncoder().encode(JSON.stringify({ error: "payload_too_large" })),
+		};
+	};
+
+	const result = await exchange(server, client, intercept);
+
+	expect(refused).toBe(true);
+	expect(result).toMatchObject({ ok: true });
+	expect(titles(server)).toEqual(["first"]);
+});
+
+it("pushes the stored copy's current content, not the payload the op recorded", async () => {
+	const server = device("server");
+	const client = device("client");
+	pair(server, client);
+	const edited = remember(client, "recorded title", "shared");
+	client.store.db
+		.prepare("UPDATE memory_items SET title = 'current title' WHERE id = ?")
+		.run(edited);
+
+	await exchange(server, client);
+
+	expect(titles(server)).toEqual(["current title"]);
 });

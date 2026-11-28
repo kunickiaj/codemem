@@ -7,6 +7,7 @@ import {
 	COORDINATOR_FREE_RECOVERY_UNAVAILABLE,
 	coordinatorFreeEligibility,
 	coordinatorFreeOutboundOps,
+	coordinatorFreeSendableNow,
 } from "./coordinator-free-lane.js";
 import type { Database } from "./db.js";
 import { readPairingInstanceId } from "./pairing-instance.js";
@@ -408,7 +409,17 @@ function checkPushReply(payload: Record<string, unknown> | null, scopeId: string
 
 /** The ops of a batch the peer may receive now, as they go out. */
 function sendableNow(context: Context, batch: ReplicationOp[]): ReplicationOp[] {
+	if (context.coordinatorFreeLane)
+		return coordinatorFreeSendableNow(context.db, batch, laneOf(context));
 	return opsStillSendableToPeer(context.db, batch, context.peerDeviceId, context.local.device_id);
+}
+
+function laneOf(context: Context) {
+	return {
+		localDeviceId: context.local.device_id,
+		peerDeviceId: context.peerDeviceId,
+		keysDir: context.keysDir,
+	};
 }
 
 async function pushBatch(
@@ -704,10 +715,7 @@ async function pushLane(context: Context, execute: RequestJsonExecutor): Promise
 			opId,
 			context.limit,
 		) as ReplicationOp[];
-	const { allowed, nextCursor } = coordinatorFreeOutboundOps(context.db, window, {
-		localDeviceId: context.local.device_id,
-		peerDeviceId: context.peerDeviceId,
-	});
+	const { allowed, nextCursor } = coordinatorFreeOutboundOps(context.db, window, laneOf(context));
 	const save = (acked: string) =>
 		setReplicationCursor(
 			context.db,
