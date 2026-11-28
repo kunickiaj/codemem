@@ -8,6 +8,7 @@ import {
 	fetchAllSnapshotPages,
 	hasUnsyncedSharedMemoryChanges,
 	MemoryStore,
+	peerTransportBlocker,
 	peerTransportExecutor,
 	type RequestJsonExecutor,
 	resolveDbPath,
@@ -77,6 +78,23 @@ function bootstrapPeer(store: MemoryStore, peerDeviceId: string, opts: SyncBoots
 	return peer;
 }
 
+/**
+ * Once direct Noise is on, a peer pinned by fingerprint alone can't be
+ * reached. Say how to fix it before any request, including a grant's, leaves.
+ */
+function peerKeyReady(
+	store: MemoryStore,
+	peer: Peer,
+	opts: SyncBootstrapOptions,
+	transport: SyncBootstrapTransport,
+): boolean {
+	if (!peerTransportBlocker(store.db, peer.peer_device_id, transport.directNoise)) return true;
+	const label = peer.name || peer.peer_device_id;
+	const message = `Peer ${label} has no saved public key, so codemem can't open an encrypted connection to it. On that device, run \`codemem sync pair --payload-only\` and save the output. Then run \`codemem sync pair --accept-file <file>\` here. The payload's public key must match the pinned fingerprint.`;
+	reportError(opts, "peer_key_missing", message);
+	return false;
+}
+
 function localStateIsClean(store: MemoryStore, opts: SyncBootstrapOptions): boolean {
 	if (opts.force) return true;
 	const dirty = hasUnsyncedSharedMemoryChanges(store.db);
@@ -115,7 +133,10 @@ async function statusAt(
 		keysDir: context.keysDir,
 	});
 	try {
-		const [code, payload] = await context.execute("GET", statusUrl, { headers });
+		const [code, payload] = await context.execute("GET", statusUrl, {
+			operation: "status",
+			headers,
+		});
 		if (code !== 200 || !payload) return `status ${code}`;
 		if (payload.fingerprint !== peer.pinned_fingerprint) return "fingerprint mismatch";
 		return resetBoundary(payload) ?? "missing sync_reset boundary";
@@ -231,7 +252,8 @@ async function bootstrapStore(
 	transport: SyncBootstrapTransport,
 ) {
 	const peer = bootstrapPeer(store, peerDeviceId, opts);
-	if (!peer || !localStateIsClean(store, opts)) return;
+	if (!peer || !peerKeyReady(store, peer, opts, transport)) return;
+	if (!localStateIsClean(store, opts)) return;
 	const keysDir = opts.keysDir ?? undefined;
 	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const addresses = JSON.parse(String(peer.addresses_json ?? "[]")) as string[];

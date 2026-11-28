@@ -72,7 +72,16 @@ export function normalizedCoordinatorId(value: string): string | null {
 // JSON request
 // ---------------------------------------------------------------------------
 
+/**
+ * The peer protocol request a caller is making. The direct transport policy
+ * decides on this, never on the URL, because stored peer addresses may carry
+ * a path prefix.
+ */
+export type PeerOperation = "status" | "snapshot" | "ops" | "push";
+
 export interface RequestJsonOptions {
+	/** Required by the direct transport policy executor. Plain requestJson ignores it. */
+	operation?: PeerOperation;
 	headers?: Record<string, string>;
 	body?: Record<string, unknown>;
 	bodyBytes?: Uint8Array;

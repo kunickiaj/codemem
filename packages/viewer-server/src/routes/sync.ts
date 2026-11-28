@@ -1331,13 +1331,15 @@ export function recipientPolicyCapabilityFromStatus(payload: {
 
 /** The probe reaches the peer through the shared transport policy, like a sync pass. */
 function peerStatusExecutor(store: MemoryStore, peerDeviceId: string, localDeviceId: string) {
-	return peerTransportExecutor({
+	const execute = peerTransportExecutor({
 		db: store.db,
 		peerDeviceId,
 		localDeviceId,
 		dbPath: store.dbPath,
 		keysDir: syncKeysDir(),
 	});
+	return (url: string, headers: Record<string, string>) =>
+		execute("GET", url, { operation: "status", headers, timeoutS: 5 });
 }
 
 export async function peerSupportsSyncRequirements(
@@ -1378,7 +1380,7 @@ export async function peerSupportsSyncRequirements(
 				[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 				[SYNC_FEATURES_HEADER]: LOCAL_SYNC_FEATURES.join(","),
 			};
-			const [status, payload] = await execute("GET", url, { headers, timeoutS: 5 });
+			const [status, payload] = await execute(url, headers);
 			if (status < 200 || status >= 300) continue;
 			if (String(payload?.device_id ?? "").trim() !== deviceId) continue;
 			if (

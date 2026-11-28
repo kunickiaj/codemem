@@ -32,10 +32,24 @@ async function seedAndWorker(options: { gate: boolean }) {
 	const f = await channelStore();
 	cleanups.push(f.cleanup);
 	const plainPaths: string[] = [];
-	const app = createSyncApp({ storeFactory: f.storeFactory });
-	const fetch = (request: Request) => {
-		plainPaths.push(new URL(request.url).pathname);
-		return app.fetch(request);
+	const plainExchanges: PlainExchange[] = [];
+	// Both switches follow the gate: the plain app's grant handling and the upgrade gate.
+	const app = createSyncApp({
+		storeFactory: f.storeFactory,
+		mode: { kind: "plain-direct", noiseActive: options.gate },
+	});
+	const fetch = async (request: Request) => {
+		const url = new URL(request.url);
+		plainPaths.push(url.pathname);
+		const response = await app.fetch(request);
+		plainExchanges.push({
+			target: `${url.pathname}${url.search}`,
+			grant: request.headers.get("X-Codemem-Bootstrap-Grant"),
+			signature: request.headers.get("X-Codemem-Signature"),
+			status: response.status,
+			body: await response.clone().text(),
+		});
+		return response;
 	};
 	const keysDir = join(dirname(f.peerKeysDir), "local-keys");
 	const createServer = createGuardedSyncServer({
@@ -81,8 +95,16 @@ async function seedAndWorker(options: { gate: boolean }) {
 		);
 	const result = () => JSON.parse(output.at(-1) ?? "{}") as Record<string, unknown>;
 	const policy = () => readPeerTransportPolicy(worker.db, f.localDeviceId);
-	return { ...f, worker, plainPaths, bootstrap, result, policy };
+	return { ...f, worker, plainPaths, plainExchanges, bootstrap, result, policy };
 }
+
+type PlainExchange = {
+	target: string;
+	grant: string | null;
+	signature: string | null;
+	status: number;
+	body: string;
+};
 
 const syncPaths = (paths: string[]) => paths.filter((path) => path !== "/v1/noise");
 
@@ -168,7 +190,21 @@ it("pins with the grant in plaintext, then bootstraps over Noise", async () => {
 	await s.bootstrap({ bootstrapGrant: "grant-1" });
 
 	expect(s.result()).toMatchObject({ ok: true, applied: 0 });
-	expect(s.plainPaths).toEqual(["/v1/status"]);
+	// One plaintext request: the signed, marked status, answered with the pin only.
+	expect(s.plainExchanges).toEqual([
+		{
+			target: "/v1/status?transport=noise1",
+			grant: "grant-1",
+			signature: expect.stringMatching(/^v3:/),
+			status: 200,
+			body: JSON.stringify({
+				device_id: s.localDeviceId,
+				fingerprint: fingerprintPublicKey(s.localPublicKey),
+				transport: "noise1",
+			}),
+		},
+	]);
+	expect(s.policy()).toBe("noise_required");
 });
 
 it("keeps today's plaintext requests while direct Noise is off, even for a noise_required seed", async () => {
@@ -185,4 +221,24 @@ it("keeps today's plaintext requests while direct Noise is off, even for a noise
 
 	expect(s.result()).toMatchObject({ ok: true, applied: 0 });
 	expect(s.plainPaths).toEqual(["/v1/status", "/v1/snapshot"]);
+});
+
+it("stops before any request when the seed has no saved public key, and says how to fix it", async () => {
+	const s = await seedAndWorker({ gate: true });
+	promotePeerToNoiseRequired(s.worker.db, s.localDeviceId, "transport_statement");
+	s.worker.db
+		.prepare("UPDATE sync_peers SET public_key = NULL WHERE peer_device_id = ?")
+		.run(s.localDeviceId);
+	const fetch = vi.spyOn(globalThis, "fetch");
+
+	await s.bootstrap({ bootstrapGrant: "grant-1" });
+
+	expect(s.result()).toEqual({
+		error: "peer_key_missing",
+		message:
+			"Peer Seed has no saved public key, so codemem can't open an encrypted connection to it. On that device, run `codemem sync pair --payload-only` and save the output. Then run `codemem sync pair --accept-file <file>` here. The payload's public key must match the pinned fingerprint.",
+	});
+	expect(process.exitCode).toBe(1);
+	expect(s.plainPaths).toEqual([]);
+	expect(fetch).not.toHaveBeenCalled();
 });

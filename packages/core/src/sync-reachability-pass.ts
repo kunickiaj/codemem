@@ -5,7 +5,7 @@ import { isRelayPeerClient, type RelayPeerClient } from "./relay-peer-client.js"
 import { isStableReleaseVersion } from "./release-discovery.js";
 import { supportsSyncFeature } from "./sync-capability.js";
 import { syncScopedChannelOnce } from "./sync-channel-pass.js";
-import type { RequestJsonExecutor } from "./sync-http-client.js";
+import type { PeerOperation, RequestJsonExecutor } from "./sync-http-client.js";
 import {
 	type SyncPassOptions,
 	type SyncResult,
@@ -137,15 +137,13 @@ class DirectPass {
 		this.probeDeadline = Math.min(deadline, performance.now() + 10_000);
 	}
 
-	private requestOrigin(method: string, url: string): string {
+	/** The first request must be a status. The caller names it; the URL may carry a path prefix. */
+	private requestOrigin(method: string, url: string, operation?: PeerOperation): string {
 		requireActive(this.signal, this.committedOrigin === null ? this.deadline : this.directDeadline);
 		const origin = new URL(url).origin;
 		if (this.terminal || (this.committedOrigin !== null && this.committedOrigin !== origin))
 			throw new Error("Sync transport is already committed");
-		if (
-			this.committedOrigin === null &&
-			(method !== "GET" || !new URL(url).pathname.endsWith("/v1/status"))
-		) {
+		if (this.committedOrigin === null && (method !== "GET" || operation !== "status")) {
 			this.terminal = true;
 			throw new Error("Sync status is required before application requests");
 		}
@@ -153,7 +151,7 @@ class DirectPass {
 	}
 
 	readonly request: RequestJsonExecutor = async (method, url, options = {}) => {
-		const origin = this.requestOrigin(method, url);
+		const origin = this.requestOrigin(method, url, options.operation);
 		try {
 			const remaining =
 				(this.committedOrigin === null ? this.probeDeadline : this.directDeadline) -

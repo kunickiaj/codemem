@@ -229,7 +229,11 @@ export async function fetchAllSnapshotPages(
 			[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 		};
 
-		const [status, payload] = await requestExecutor("GET", url, { headers, timeoutS });
+		const [status, payload] = await requestExecutor("GET", url, {
+			operation: "snapshot",
+			headers,
+			timeoutS,
+		});
 		if (status !== 200 || !payload) {
 			const tooLarge = parseSyncEntryTooLarge(payload);
 			if (tooLarge) throw new SyncEntryTooLargeReply(tooLarge, "snapshot fetch failed");

@@ -333,6 +333,7 @@ it.each(["initial", "reset", "scoped bootstrap", "scoped merge"] as const)(
 				baseline_cursor: cursor,
 			});
 			expect(options).toEqual({
+				operation: "snapshot",
 				headers: expect.objectContaining({
 					"X-Codemem-Recipient": peerId,
 					"X-Codemem-Signature": expect.stringMatching(/^v3:/),
@@ -406,7 +407,7 @@ it.each([undefined, peerId])(
 		});
 		expect(executor).toHaveBeenCalledOnce();
 		const options = executor.mock.calls[0]?.[2];
-		expect(options).toEqual({ headers: expect.any(Object), timeoutS: 10 });
+		expect(options).toEqual({ operation: "snapshot", headers: expect.any(Object), timeoutS: 10 });
 		if (recipientId) {
 			expect(options?.headers).toMatchObject({
 				"X-Codemem-Recipient": recipientId,
@@ -500,6 +501,7 @@ it("uses default HTTP for snapshots when the executor option is omitted", async 
 	expect(result.items).toEqual([]);
 	expect(http.requestJson).toHaveBeenCalledOnce();
 	expect(http.requestJson).toHaveBeenCalledWith("GET", expect.stringContaining("/v1/snapshot?"), {
+		operation: "snapshot",
 		headers: expect.any(Object),
 		timeoutS: 10,
 	});

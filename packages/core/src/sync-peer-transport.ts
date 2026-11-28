@@ -8,7 +8,12 @@ import { DIRECT_NOISE_LOGICAL_ORIGIN } from "./direct-noise-upgrade.js";
 import { createPeerHttpExecutor } from "./peer-http-client.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
-import { type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
+import {
+	type PeerOperation,
+	type RequestJsonExecutor,
+	type RequestJsonOptions,
+	requestJson,
+} from "./sync-http-client.js";
 import {
 	DIRECT_NOISE_ACTIVE,
 	promotePeerToNoiseRequired,
@@ -61,6 +66,33 @@ type AddressState = {
 	grantPinned: boolean;
 };
 
+/**
+ * Shown when Noise is on and a peer has no saved public key that matches its
+ * pinned fingerprint. Older versions could pin a peer by fingerprint alone.
+ */
+export const PEER_KEY_MISSING_MESSAGE =
+	"peer_key_missing: No public key is saved for this peer, so it can't be reached over an encrypted connection. Import a trusted pairing payload from the peer again with `codemem sync pair --accept-file`. The payload's public key must match the pinned fingerprint.";
+
+/**
+ * Why the policy cannot reach this peer at all, or null. Checked before any
+ * request leaves the device, including a bootstrap grant's pin-only status.
+ */
+export function peerTransportBlocker(
+	db: Database,
+	peerDeviceId: string,
+	options: { active?: boolean } = {},
+): string | null {
+	if (!(options.active ?? DIRECT_NOISE_ACTIVE)) return null;
+	return currentPeerPin(db, peerDeviceId) ? null : PEER_KEY_MISSING_MESSAGE;
+}
+
+const OPERATION_METHOD: Record<PeerOperation, string> = {
+	status: "GET",
+	snapshot: "GET",
+	ops: "GET",
+	push: "POST",
+};
+
 export class PeerTransportRefused extends Error {
 	constructor(message: string) {
 		super(message);
@@ -86,11 +118,22 @@ class PeerTransport {
 		this.plaintextExecutor = options.plaintext ?? requestJson;
 	}
 
-	async execute(...request: ExecutorArgs): Promise<ExecutorResult> {
-		const parsed = new URL(request[1]);
-		const state = this.stateFor(parsed.origin);
-		const sent = await this.attempt(state, request, parsed.pathname === "/v1/snapshot");
-		if (parsed.pathname === "/v1/status") this.recordStatus(state, sent);
+	async execute(
+		method: string,
+		url: string,
+		requestOptions: RequestJsonOptions = {},
+	): Promise<ExecutorResult> {
+		const { operation, ...forwarded } = requestOptions;
+		if (!operation || OPERATION_METHOD[operation] !== method)
+			throw new PeerTransportRefused(`operation_required: ${method} needs a matching operation`);
+		const blocker = peerTransportBlocker(this.options.db, this.options.peerDeviceId, {
+			active: true,
+		});
+		if (blocker) throw new PeerTransportRefused(blocker);
+		const state = this.stateFor(new URL(url).origin);
+		const request: ExecutorArgs = [method, url, forwarded];
+		const sent = await this.attempt(state, request, operation === "snapshot");
+		if (operation === "status") this.recordStatus(state, sent);
 		return sent.result;
 	}
 
