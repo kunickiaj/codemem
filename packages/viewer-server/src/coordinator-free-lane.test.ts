@@ -12,6 +12,7 @@ import {
 	loadPublicKey,
 	MemoryStore,
 	SYNC_CAPABILITY_HEADER,
+	setPeerProjectFilter,
 	setSyncResetState,
 	syncOnce,
 } from "@codemem/core";
@@ -464,5 +465,34 @@ it.each([
 				.pluck()
 				.all(),
 		).toEqual([0]);
+	},
+);
+
+it.each([
+	["pulled from", "server"],
+	["pushed to", "client"],
+] as const)(
+	"forgets a replica under a Project allowlist when the tombstone is %s the other device",
+	async (_direction, author) => {
+		const server = device("server");
+		const client = device("client");
+		pair(server, client);
+		const [origin, holder] = author === "server" ? [server, client] : [client, server];
+		// The receiving device takes only the "lane" Project from the author.
+		setPeerProjectFilter(holder.store.db, origin.deviceId, { include: ["lane"], exclude: null });
+		const shared = remember(origin, "allowed", "shared");
+		await exchange(server, client);
+		const active = () =>
+			holder.store.db
+				.prepare("SELECT active FROM memory_items WHERE title = 'allowed'")
+				.pluck()
+				.all();
+		expect(active()).toEqual([1]);
+
+		origin.store.forget(Number(shared));
+		const result = await exchange(server, client);
+
+		expect(result).toMatchObject({ ok: true });
+		expect(active()).toEqual([0]);
 	},
 );

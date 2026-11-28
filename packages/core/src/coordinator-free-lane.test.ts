@@ -473,6 +473,22 @@ describe("a memory this device forgot stays forgotten", () => {
 	});
 });
 
+/** A tombstone the peer would send for a memory it created. */
+function tombstoneFrom(entityId: string, payload?: Record<string, unknown>) {
+	return peerOp(
+		entityId,
+		{
+			op_id: `${entityId}-delete`,
+			op_type: "delete",
+			clock_rev: 2,
+			clock_updated_at: "2026-11-28T00:00:00.000Z",
+			// The shared outbound decision sends every deletion without a payload.
+			payload_json: payload ? JSON.stringify(payload) : null,
+		},
+		{},
+	);
+}
+
 describe("deletes travel as tombstones that carry no content", () => {
 	function deleteOpOf(id: number | bigint) {
 		return store.db
@@ -536,21 +552,6 @@ describe("deletes travel as tombstones that carry no content", () => {
 		expect(outbound([deleteOpOf(excluded.id)])).toEqual([]);
 	});
 
-	function tombstoneFrom(entityId: string, payload?: Record<string, unknown>) {
-		return peerOp(
-			entityId,
-			{
-				op_id: `${entityId}-delete`,
-				op_type: "delete",
-				clock_rev: 2,
-				clock_updated_at: "2026-11-28T00:00:00.000Z",
-				// The shared outbound decision sends every deletion without a payload.
-				payload_json: payload ? JSON.stringify(payload) : null,
-			},
-			{},
-		);
-	}
-
 	it("applies the peer's tombstone for a memory it created", () => {
 		apply([peerOp("gone")]);
 
@@ -598,5 +599,38 @@ describe("deletes travel as tombstones that carry no content", () => {
 		expect(
 			store.db.prepare("SELECT COUNT(*) FROM memory_items WHERE active = 1").pluck().get(),
 		).toBe(2);
+	});
+});
+
+describe("each inbound op is decided right before it applies", () => {
+	it("keeps a memory forgotten when a newer upsert follows its tombstone in one batch", () => {
+		apply([peerOp("revived")]);
+		const newer = peerOp("revived", {
+			op_id: "revived-edit",
+			clock_rev: 3,
+			clock_updated_at: "2026-11-29T00:00:00.000Z",
+		});
+
+		const result = apply([tombstoneFrom("revived"), newer]);
+
+		expect(result).toMatchObject({ applied: 1, skipped: 1, rejections: [] });
+		expect(
+			store.db
+				.prepare("SELECT active FROM memory_items WHERE import_key = 'revived'")
+				.pluck()
+				.get(),
+		).toBe(0);
+	});
+
+	it("applies a tombstone by the stored copy's Project under a Project allowlist", () => {
+		setPeerProjectFilter(store.db, PEER, { include: ["lane"], exclude: null });
+		apply([peerOp("listed")]);
+
+		const result = apply([tombstoneFrom("listed")]);
+
+		expect(result).toMatchObject({ applied: 1, rejections: [] });
+		expect(
+			store.db.prepare("SELECT active FROM memory_items WHERE import_key = 'listed'").pluck().get(),
+		).toBe(0);
 	});
 });
