@@ -215,6 +215,15 @@ describe("a peer may only add and change its own shared local-default memories h
 		["another scope", { scope_id: "legacy-shared-review" }, {}],
 		["a payload in another scope", {}, { scope_id: "team-scope" }],
 		["a private memory", {}, { visibility: "private" }],
+		["a payload without visibility", {}, { visibility: undefined }],
+		[
+			"visibility only in metadata",
+			{},
+			{ visibility: undefined, metadata_json: { visibility: "shared" } },
+		],
+		["a visibility spelled another way", {}, { visibility: "Shared" }],
+		["a deletion time on an upsert", {}, { deleted_at: "2026-11-27T00:00:00.000Z" }],
+		["an inactive flag on an upsert", {}, { active: 0 }],
 		["a delete", { op_type: "delete" }, {}],
 	])("refuses %s", (_case, overrides, payload) => {
 		expect(
@@ -336,5 +345,64 @@ describe("accepted replicas record their source", () => {
 		});
 
 		expect(result.deleted_memory_ids).toEqual([Number(leaked)]);
+	});
+
+	it("doesn't let a losing revision protect an old leaked row", () => {
+		const session = store.startSession({ cwd: directory, project: "lane" });
+		const leaked = store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+				 import_key, origin_device_id, visibility, scope_id, active, rev)
+				 VALUES (?, 'discovery', 'leaked', 'body', 'now', '2026-11-28T00:00:00.000Z', 'old-key',
+				 ?, 'shared', 'local-default', 1, 5)`,
+			)
+			.run(session, PEER).lastInsertRowid;
+
+		const result = apply([
+			peerOp("old-key", { clock_rev: 1 }),
+			peerOp("old-key", { clock_rev: 1 }),
+		]);
+		const cleanup = reconcileStalePeerReceivedRows(store.db, {
+			localDeviceId: local,
+			peerDeviceId: PEER,
+			keysDir,
+		});
+
+		expect(result).toMatchObject({ applied: 0, rejections: [] });
+		expect(cleanup.deleted_memory_ids).toEqual([Number(leaked)]);
+	});
+
+	it("records a row once when a batch repeats its op", () => {
+		apply([peerOp("twice-sent"), peerOp("twice-sent")]);
+		expect(
+			store.db.prepare("SELECT import_key FROM coordinator_free_replicas").pluck().all(),
+		).toEqual(["twice-sent"]);
+	});
+});
+
+describe("a memory this device forgot stays forgotten", () => {
+	it("skips the peer's later edit instead of bringing it back", () => {
+		apply([peerOp("forgotten", { clock_rev: 1 })]);
+		store.db
+			.prepare(
+				"UPDATE memory_items SET active = 0, deleted_at = 'now' WHERE import_key = 'forgotten'",
+			)
+			.run();
+
+		const result = apply([
+			peerOp("forgotten", {
+				op_id: "edit-op",
+				clock_rev: 2,
+				clock_updated_at: "2026-11-28T00:00:00.000Z",
+			}),
+		]);
+
+		expect(result).toMatchObject({ applied: 0, skipped: 1, rejections: [] });
+		expect(
+			store.db
+				.prepare("SELECT active FROM memory_items WHERE import_key = 'forgotten'")
+				.pluck()
+				.get(),
+		).toBe(0);
 	});
 });

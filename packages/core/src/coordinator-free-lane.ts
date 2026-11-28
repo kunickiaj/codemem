@@ -120,6 +120,7 @@ function parsePayload(op: ReplicationOp): Record<string, unknown> | null {
 interface StoredRow {
 	id: number;
 	active: number | null;
+	deleted_at: string | null;
 	scope_id: string | null;
 	visibility: string | null;
 	origin_device_id: string | null;
@@ -127,7 +128,7 @@ interface StoredRow {
 
 function storedRows(db: Database, importKey: string): StoredRow[] {
 	return db
-		.prepare(`SELECT id, active, scope_id, visibility, origin_device_id FROM memory_items
+		.prepare(`SELECT id, active, deleted_at, scope_id, visibility, origin_device_id FROM memory_items
 			WHERE import_key = ?`)
 		.all(importKey) as StoredRow[];
 }
@@ -149,9 +150,27 @@ function laneOp(op: ReplicationOp, origin: string): boolean {
 	const payload = parsePayload(op);
 	if (!payload || payload.origin_device_id !== origin) return false;
 	if (payload.scope_id != null && payload.scope_id !== DEFAULT_SYNC_SCOPE_ID) return false;
+	if (!canonicalSharedUpsert(payload)) return false;
 	return (
 		syncVisibilityAllowed(payload) && !replicationOpRequiresPersonalScopeAuthorization(op, payload)
 	);
+}
+
+/**
+ * A payload that says it is shared in the canonical field, with no fallback to metadata or
+ * workspace, and that carries no tombstone. Deletes aren't carried yet, so an upsert may not
+ * hide or delete a memory either.
+ */
+function canonicalSharedUpsert(payload: Record<string, unknown>): boolean {
+	if (payload.visibility !== "shared") return false;
+	const metadata = payload.metadata_json;
+	const metadataVisibility =
+		metadata && typeof metadata === "object"
+			? (metadata as { visibility?: unknown }).visibility
+			: null;
+	if (metadataVisibility != null && metadataVisibility !== "shared") return false;
+	if (payload.deleted_at != null) return false;
+	return payload.active == null || payload.active === 1;
 }
 
 function projectOf(op: ReplicationOp): string | null {
@@ -247,14 +266,13 @@ export function applyCoordinatorFreeOps(
 		.transaction((): CoordinatorFreeApplyResult => {
 			const rejections = coordinatorFreeInboundRejections(db, ops, context.peerDeviceId);
 			if (rejections.length > 0) return { applied: 0, skipped: 0, rejections, result: null };
-			const wanted = ops.filter((op) =>
-				syncProjectAllowed(db, projectOf(op), context.peerDeviceId),
+			const wanted = ops.filter(
+				(op) =>
+					syncProjectAllowed(db, projectOf(op), context.peerDeviceId) &&
+					!forgottenHere(db, op.entity_id),
 			);
-			const result = applyReplicationOps(db, wanted, context.localDeviceId, context.scanner, {
-				activityPeerDeviceId: context.peerDeviceId,
-			});
-			if (result.rejected > 0 || result.errors.length > 0) throw new LaneApplyError(result);
-			recordProvenance(db, wanted, context);
+			const { result, written } = applyEach(db, wanted, context);
+			recordProvenance(db, written, context);
 			return {
 				applied: result.applied,
 				skipped: result.skipped + ops.length - wanted.length,
@@ -263,6 +281,50 @@ export function applyCoordinatorFreeOps(
 			};
 		})
 		.immediate();
+}
+
+/** A memory this device forgot stays forgotten until deletes are carried both ways. */
+function forgottenHere(db: Database, importKey: string): boolean {
+	return storedRows(db, importKey).some((row) => row.active === 0 || row.deleted_at != null);
+}
+
+/**
+ * Applies the ops one at a time, so each op's own result shows whether it wrote its row. An op
+ * that loses on clock, repeats an applied op or can't be parsed writes nothing and names no row.
+ */
+function applyEach(
+	db: Database,
+	ops: ReplicationOp[],
+	context: { localDeviceId: string; peerDeviceId: string; scanner?: SecretScanner },
+): { result: ApplyResult; written: number[] } {
+	const total: ApplyResult = {
+		applied: 0,
+		skipped: 0,
+		rejected: 0,
+		conflicts: 0,
+		errors: [],
+		rejections: [],
+		vectorWork: { upsertMemoryIds: [], deleteMemoryIds: [] },
+	};
+	const written: number[] = [];
+	const rowOf = db.prepare(
+		"SELECT id FROM memory_items WHERE import_key = ? AND origin_device_id = ? AND scope_id = ?",
+	);
+	for (const op of ops) {
+		const result = applyReplicationOps(db, [op], context.localDeviceId, context.scanner, {
+			activityPeerDeviceId: context.peerDeviceId,
+		});
+		if (result.rejected > 0 || result.errors.length > 0) throw new LaneApplyError(result);
+		total.applied += result.applied;
+		total.skipped += result.skipped;
+		total.conflicts += result.conflicts;
+		total.vectorWork.upsertMemoryIds.push(...result.vectorWork.upsertMemoryIds);
+		total.vectorWork.deleteMemoryIds.push(...result.vectorWork.deleteMemoryIds);
+		if (result.applied === 0) continue;
+		const id = rowOf.pluck().get(op.entity_id, context.peerDeviceId, DEFAULT_SYNC_SCOPE_ID);
+		if (typeof id === "number") written.push(id);
+	}
+	return { result: total, written };
 }
 
 /** Rolls the batch back; the caller holds its cursor. */
@@ -289,27 +351,18 @@ AFTER DELETE ON memory_items
 BEGIN DELETE FROM coordinator_free_replicas WHERE memory_id = OLD.id; END;
 `;
 
+/** Records the rows this batch wrote, by row ID, and no others. */
 function recordProvenance(
 	db: Database,
-	ops: ReplicationOp[],
+	memoryIds: number[],
 	context: { peerDeviceId: string; peerFingerprint: string },
 ): void {
 	db.exec(REPLICAS_SQL);
 	const insert = db.prepare(`INSERT INTO coordinator_free_replicas(memory_id, import_key,
 		peer_device_id, peer_fingerprint, accepted_at)
-		SELECT id, import_key, ?, ?, ? FROM memory_items
-		WHERE import_key = ? AND origin_device_id = ? AND scope_id = ?
+		SELECT id, import_key, ?, ?, ? FROM memory_items WHERE id = ?
 		ON CONFLICT(memory_id) DO UPDATE SET peer_fingerprint = excluded.peer_fingerprint,
 			accepted_at = excluded.accepted_at`);
 	const now = new Date().toISOString();
-	for (const op of ops) {
-		insert.run(
-			context.peerDeviceId,
-			context.peerFingerprint,
-			now,
-			op.entity_id,
-			context.peerDeviceId,
-			DEFAULT_SYNC_SCOPE_ID,
-		);
-	}
+	for (const id of memoryIds) insert.run(context.peerDeviceId, context.peerFingerprint, now, id);
 }
