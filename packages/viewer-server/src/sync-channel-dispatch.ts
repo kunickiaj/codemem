@@ -133,9 +133,11 @@ function prepareChannelRequest(
 function channelMode(
 	kind: "relay" | "noise-direct",
 	peers: WeakMap<Request, NoiseChannelPeer>,
+	maxEntryBytes: number | undefined,
 ): SyncServerMode {
-	if (kind === "relay") return { kind, peerPin: (request) => peers.get(request)?.pin ?? null };
-	return { kind, peer: (request) => peers.get(request) ?? null };
+	if (kind === "relay")
+		return { kind, maxEntryBytes, peerPin: (request) => peers.get(request)?.pin ?? null };
+	return { kind, maxEntryBytes, peer: (request) => peers.get(request) ?? null };
 }
 
 export function createSyncChannelDispatcher(options: {
@@ -144,12 +146,14 @@ export function createSyncChannelDispatcher(options: {
 	readonly mode?: "relay" | "noise-direct";
 	/** Share a listener's limiter so a channel adds no separate request budget. */
 	readonly limiter?: InMemoryRequestRateLimiter;
+	/** Largest single pull entry to send. Defaults to what a channel response can carry. */
+	readonly maxEntryBytes?: number;
 }): (request: SyncChannelRequest) => Promise<SyncChannelResponse> {
 	const storeFactory = options.storeFactory.bind(options);
 	const peers = new WeakMap<Request, NoiseChannelPeer>();
 	const app = createSyncApp({
 		storeFactory,
-		mode: channelMode(options.mode ?? "relay", peers),
+		mode: channelMode(options.mode ?? "relay", peers, options.maxEntryBytes),
 		syncRequestRateLimit: options.limiter ? { limiter: options.limiter } : undefined,
 	});
 	return async (input) => {

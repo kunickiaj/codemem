@@ -22,6 +22,7 @@ import {
 	saveSyncChannelCompletedBoundary,
 	saveSyncChannelOutboundAck,
 } from "./sync-channel-progress.js";
+import { syncEntryTooLargeGuidance } from "./sync-entry-size.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import { ensureDeviceIdentity, fingerprintPublicKey } from "./sync-identity.js";
 import { type SyncFailureCategory, type SyncScopeResult, syncScopedPeerPull } from "./sync-pass.js";
@@ -462,7 +463,10 @@ function failedPullResult(
 		result.receiveFailureCode ??
 		(result.failureCategory === "scope" ? "scope_rejected" : "exchange_failed");
 	recordSyncTransferObservation(options.db, options.peerDeviceId, "receive", { errorCode });
-	return failedResult(result, options.factory, "channel pull failed");
+	// Keep only the locally composed size guidance. Other peer replies stay out of local errors.
+	const guidance = syncEntryTooLargeGuidance(result.error);
+	const error = guidance ? `channel pull failed: ${guidance}` : "channel pull failed";
+	return failedResult(result, options.factory, error);
 }
 
 function completeChannelPull(context: Context, boundary: SyncChannelBoundary): void {

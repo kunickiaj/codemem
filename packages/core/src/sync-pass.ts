@@ -47,6 +47,7 @@ import {
 	hasCompletedSyncChannelBoundary,
 } from "./sync-channel-progress.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
+import { syncEntryTooLargeMessage } from "./sync-entry-size.js";
 import {
 	categorizeSyncFailure,
 	storedAddressFailureCategory,
@@ -230,6 +231,8 @@ export function cursorAdvances(current: string | null, candidate: string | null)
  */
 function errorDetail(payload: Record<string, unknown> | null): string | null {
 	if (!payload) return null;
+	const tooLarge = syncEntryTooLargeMessage(payload);
+	if (tooLarge) return tooLarge;
 	const error = payload.error;
 	const reason = payload.reason;
 	if (typeof error === "string" && typeof reason === "string") {

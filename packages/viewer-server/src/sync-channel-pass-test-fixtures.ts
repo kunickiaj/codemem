@@ -135,8 +135,13 @@ async function openNoise(remote: Remote, wrongPin = false) {
 	};
 }
 
-function channelFactory(remote: Remote) {
-	const dispatch = createSyncChannelDispatcher({ storeFactory: remote.storeFactory });
+type DispatcherOptions = Omit<Parameters<typeof createSyncChannelDispatcher>[0], "storeFactory">;
+
+function channelFactory(remote: Remote, dispatcherOptions: DispatcherOptions = {}) {
+	const dispatch = createSyncChannelDispatcher({
+		...dispatcherOptions,
+		storeFactory: remote.storeFactory,
+	});
 	const requests: SyncChannelRequest[] = [];
 	const connections: OwnedPeerHttpConnection[] = [];
 	const servings: Promise<unknown>[] = [];
@@ -212,10 +217,10 @@ function seed(
 	return op;
 }
 
-export async function passFixture() {
+export async function passFixture(dispatcherOptions: DispatcherOptions = {}) {
 	const remote = await channelStore();
 	const client = await clientStore(remote);
-	const harness = channelFactory(remote);
+	const harness = channelFactory(remote, dispatcherOptions);
 	const options: ScopedChannelSyncOptions = {
 		db: client.db,
 		peerDeviceId: remote.localDeviceId,

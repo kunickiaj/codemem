@@ -1677,6 +1677,11 @@ export {
 	updatePeerAddresses,
 } from "./sync-discovery.js";
 export {
+	CHANNEL_MAX_ENTRY_BYTES,
+	entriesWithinLimit,
+	SyncEntryTooLargeError,
+} from "./sync-entry-size.js";
+export {
 	classifyRecordedSyncFailure,
 	type RecordedSyncFailureCategory,
 } from "./sync-failure-classification.js";

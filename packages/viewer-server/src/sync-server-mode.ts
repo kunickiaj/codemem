@@ -1,3 +1,5 @@
+import { CHANNEL_MAX_ENTRY_BYTES } from "@codemem/core";
+
 /**
  * How a sync request reached this device. Each mode states its own rules, and
  * the route code asks the mode instead of inferring them from other options.
@@ -10,10 +12,15 @@
  */
 export type SyncServerMode =
 	| { readonly kind: "plain-direct" }
-	| { readonly kind: "relay"; readonly peerPin: (request: Request) => string | null }
+	| {
+			readonly kind: "relay";
+			readonly peerPin: (request: Request) => string | null;
+			readonly maxEntryBytes?: number;
+	  }
 	| {
 			readonly kind: "noise-direct";
 			readonly peer: (request: Request) => NoiseChannelPeer | null;
+			readonly maxEntryBytes?: number;
 	  };
 
 /** The device a direct Noise channel admitted, and the key its handshake proved. */
@@ -61,6 +68,15 @@ export function channelBinding(mode: SyncServerMode): ChannelBinding | undefined
 /** Relay requests must name a scope. The default stream is never served there. */
 export function requiresScope(mode: SyncServerMode): boolean {
 	return mode.kind === "relay";
+}
+
+/**
+ * Largest single pull entry a channel response can carry. Undefined for the
+ * plain listener, which has no response ceiling and keeps sending any size.
+ */
+export function entryByteLimit(mode: SyncServerMode): number | undefined {
+	if (mode.kind === "plain-direct") return undefined;
+	return mode.maxEntryBytes ?? CHANNEL_MAX_ENTRY_BYTES;
 }
 
 const CHANNEL_ROUTES = new Set([
