@@ -55,14 +55,17 @@ function openStore(name = "mem", keys = keysDir) {
 	return { db, path };
 }
 
+/** A keychain that keeps records in memory and, like the real one, never replaces a record. */
 function memoryKeychain(): WitnessBackend & { entries: Map<string, string> } {
 	const entries = new Map<string, string>();
 	return {
+		kind: "keychain",
 		entries,
 		read: (name) => entries.get(name) ?? null,
-		write: (name, value) => {
+		create: (name, value) => {
+			if (entries.has(name)) return "exists";
 			entries.set(name, value);
-			return true;
+			return "created";
 		},
 	};
 }
@@ -78,6 +81,16 @@ function witnessFiles(dir = keysDir) {
 	return readdirSync(dir).filter((name) => name.startsWith("attestation-"));
 }
 
+/** Which managed records the file witness holds. */
+function managedRecords() {
+	return witnessFiles()
+		.flatMap((name) => {
+			if (name.startsWith("attestation-key-")) return ["key"];
+			return name.endsWith("-managed.json") ? ["store"] : [];
+		})
+		.sort();
+}
+
 describe("attesting a store that never used a coordinator", () => {
 	it("attests once, keeps the witness private, and reads back as standalone", () => {
 		const { db } = openStore();
@@ -86,8 +99,9 @@ describe("attesting a store that never used a coordinator", () => {
 		expect(attestCoordinatorFree(db, { keysDir })).toBe("standalone");
 		expect(attestCoordinatorFree(db, { keysDir })).toBe("standalone");
 
-		const [witness] = witnessFiles();
-		expect(statSync(join(keysDir, String(witness))).mode & 0o777).toBe(0o600);
+		expect(witnessFiles()).toHaveLength(2);
+		for (const witness of witnessFiles())
+			expect(statSync(join(keysDir, witness)).mode & 0o777).toBe(0o600);
 		db.close();
 	});
 
@@ -196,7 +210,7 @@ describe("lost markers and rollbacks keep the store closed", () => {
 	it("closes a store whose witness is missing or altered", () => {
 		const { db } = openStore();
 		attestCoordinatorFree(db, { keysDir });
-		const [witness] = witnessFiles();
+		const witness = witnessFiles().find((name) => name.startsWith("attestation-store-"));
 		const path = join(keysDir, String(witness));
 		const record = JSON.parse(readFileSync(path, "utf8"));
 
@@ -222,21 +236,17 @@ describe("lost markers and rollbacks keep the store closed", () => {
 	});
 
 	it("keeps a restored database closed by the store record when the key record is gone", () => {
-		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
-		const keychain = memoryKeychain();
 		const store = openStore();
-		attestCoordinatorFree(store.db, { keysDir, keychain });
+		attestCoordinatorFree(store.db, { keysDir });
 		const backup = join(directory, "attested.sqlite");
 		copyFileSync(store.path, backup);
-		// The keychain refuses the managed mark, so only the file witness takes it.
-		const refusing = { read: keychain.read, write: () => false };
-		markCoordinatorManaged(store.db, { keysDir, keychain: refusing });
+		markCoordinatorManaged(store.db, { keysDir });
 		for (const name of witnessFiles().filter((file) => file.startsWith("attestation-key-")))
 			rmSync(join(keysDir, name));
 
 		restore(store, backup);
 
-		expect(readCoordinatorFreeStatus(store.db, { keysDir, keychain })).toBe("managed");
+		expect(readCoordinatorFreeStatus(store.db, { keysDir })).toBe("managed");
 		store.db.close();
 	});
 
@@ -296,7 +306,7 @@ describe("coordinator entry points mark the store managed first", () => {
 			{ keysDir },
 		);
 
-		expect(witnessFiles()).toHaveLength(2);
+		expect(managedRecords()).toEqual(["key", "store"]);
 		expect(readCoordinatorFreeStatus(db, { keysDir })).toBe("managed");
 		db.close();
 	});
@@ -308,7 +318,7 @@ describe("coordinator entry points mark the store managed first", () => {
 
 		await refreshCoordinatorForDaemon(db, path, keysDir);
 
-		expect(witnessFiles()).toHaveLength(2);
+		expect(managedRecords()).toEqual(["key", "store"]);
 		expect(readCoordinatorFreeStatus(db, { keysDir })).toBe("managed");
 		db.close();
 	});
@@ -338,7 +348,12 @@ describe("coordinator entry points mark the store managed first", () => {
 		});
 
 		await expect(
-			coordinatorImportInviteAction({ inviteValue: invite, dbPath: path, keysDir }),
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: path,
+				keysDir,
+				confirmCoordinatorJoin: true,
+			}),
 		).rejects.toThrow("invite_expired");
 
 		expect(statuses).toEqual(["managed"]);

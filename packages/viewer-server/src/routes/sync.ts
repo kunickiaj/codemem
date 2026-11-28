@@ -51,6 +51,7 @@ import {
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
+	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	type CoordinatorDeviceAnswerLookup,
 	CoordinatorReciprocalApprovalRequestChangedError,
 	canonicalRepositoryProjectIdentity,
@@ -3581,6 +3582,24 @@ async function authorizeBootstrapGrantRequest(
  * The pin names no group, so the coordinator history alone records that a coordinator
  * vouched for this device. Both are written together, or neither is.
  */
+const COORDINATOR_JOIN_CONFIRMATION = {
+	error: COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
+	detail:
+		"Joining a coordinator permanently turns off syncing without a coordinator for this device's key, including other codemem profiles that use the same key.",
+};
+
+function inviteImportFailure(
+	c: Context,
+	error: unknown,
+	invite: { projectInvite: boolean; recipientInvite: boolean },
+): Response {
+	if (error instanceof Error && error.message === COORDINATOR_JOIN_CONFIRMATION_REQUIRED)
+		return c.json(COORDINATOR_JOIN_CONFIRMATION, 409);
+	if (invite.projectInvite) return c.json(projectInviteAcceptanceFailure(error), 400);
+	if (invite.recipientInvite) return c.json({ error: safeRecipientInviteError(error) }, 400);
+	return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+}
+
 function pinBootstrapGrantPeer(
 	db: MemoryStore["db"],
 	deviceId: string,
@@ -9034,6 +9053,7 @@ export function syncRoutes(
 							: store.actorDisplayName,
 				deviceDisplayName: typeof body.device_name === "string" ? body.device_name : null,
 				reviewedOnboardingDigest: reviewedOnboardingDigest || null,
+				confirmCoordinatorJoin: body.confirm_coordinator_join === true,
 			});
 			const type = recipientInvite
 				? "recipient_onboarding"
@@ -9075,9 +9095,7 @@ export function syncRoutes(
 				type,
 			});
 		} catch (error) {
-			if (projectInvite) return c.json(projectInviteAcceptanceFailure(error), 400);
-			if (recipientInvite) return c.json({ error: safeRecipientInviteError(error) }, 400);
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			return inviteImportFailure(c, error, { projectInvite, recipientInvite });
 		}
 	});
 

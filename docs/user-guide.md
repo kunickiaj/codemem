@@ -1715,6 +1715,13 @@ existing digest binds the reviewed access to the target Identity, invitation,
 device ID, key fingerprint, and device name. A Team recipient display name is
 cosmetic and may be changed with `--recipient-name` before acceptance; it is not
 part of this digest and does not change the assigned Identity or access.
+
+Joining a coordinator permanently turns off syncing without a coordinator for
+this device's key, including other codemem profiles that use the same key. This
+happens as soon as the join is sent, even if the coordinator refuses it. The
+Viewer asks you to confirm first. In a terminal, `invitation accept` asks as well;
+with `--json` or without a terminal, add `--confirm-coordinator-join` to join. A
+device that already uses a coordinator is not asked again.
 Changed access or device bindings require a fresh review and explicit
 acceptance. There is no automatic acceptance or `--yes` bypass; omitting the digest
 on a recipient import changes nothing. Do not combine `--review` and

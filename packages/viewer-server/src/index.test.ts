@@ -1773,6 +1773,11 @@ async function saveMappingWithConfirmation(
 	return saved;
 }
 
+/** Invitation imports here come from a user who confirmed joining the coordinator. */
+function confirmedJoin(body: Record<string, unknown>): string {
+	return JSON.stringify({ ...body, confirm_coordinator_join: true });
+}
+
 describe("GET /api/sync/projects origin devices", () => {
 	it(
 		"resolves safe names and rejects raw IDs from identity and peer records",
@@ -17572,7 +17577,7 @@ describe("viewer-server", () => {
 					const accepted = await app.request("/api/sync/invites/import", {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({
+						body: confirmedJoin({
 							invite: encoded,
 							recipient_name: "Local Identity",
 							device_name: "Recipient Laptop",
@@ -18037,7 +18042,7 @@ describe("viewer-server", () => {
 						const invalidName = await recipient.app.request("/api/sync/invites/import", {
 							method: "POST",
 							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({
+							body: confirmedJoin({
 								...importBody,
 								recipient_name: "local:0ea043cc-c61c-427d-8b77-572331b9855c",
 							}),
@@ -18048,7 +18053,7 @@ describe("viewer-server", () => {
 					const stale = await recipient.app.request("/api/sync/invites/import", {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ ...importBody, device_name: "Renamed Recipient Laptop" }),
+						body: confirmedJoin({ ...importBody, device_name: "Renamed Recipient Laptop" }),
 					});
 					expect(stale.status).toBe(400);
 					expect(await stale.json()).toEqual({ error: "reviewed_onboarding_stale" });
@@ -18059,7 +18064,7 @@ describe("viewer-server", () => {
 					const accepted = await recipient.app.request("/api/sync/invites/import", {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(importBody),
+						body: confirmedJoin(importBody),
 					});
 					expect(accepted.status, JSON.stringify(await accepted.clone().json())).toBe(200);
 					expect(await accepted.json()).toMatchObject({
@@ -18148,7 +18153,7 @@ describe("viewer-server", () => {
 					const replay = await recipient.app.request("/api/sync/invites/import", {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(importBody),
+						body: confirmedJoin(importBody),
 					});
 					expect(replay.status).toBe(200);
 					expect(await replay.json()).toMatchObject({ status: "existing" });
@@ -18346,7 +18351,7 @@ describe("viewer-server", () => {
 				const acceptTeam = await recipient.app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
+					body: confirmedJoin({
 						invite: teamCreated.invite.encoded,
 						recipient_name: teammateName,
 						device_name: "Teammate Laptop",
@@ -18421,7 +18426,7 @@ describe("viewer-server", () => {
 				const acceptProject = await recipient.app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
+					body: confirmedJoin({
 						invite: projectCreated.invite.encoded,
 						device_name: "Teammate Laptop",
 					}),
@@ -19611,7 +19616,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
@@ -19699,7 +19704,7 @@ describe("viewer-server", () => {
 				const imported = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				const importedBody = (await imported.json()) as Record<string, unknown>;
 				expect(imported.status).toBe(200);
@@ -19838,7 +19843,7 @@ describe("viewer-server", () => {
 				const accepted = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
+					body: confirmedJoin({
 						invite,
 						device_name: "Brian's Test Mac",
 					}),
@@ -19891,7 +19896,7 @@ describe("viewer-server", () => {
 				const rejected = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
+					body: confirmedJoin({
 						invite,
 						recipient_name: "Brian",
 						device_name: "Brian's Test Mac",
@@ -19907,7 +19912,7 @@ describe("viewer-server", () => {
 				const redactedFailure = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite, device_name: "Brian's Test Mac" }),
+					body: confirmedJoin({ invite, device_name: "Brian's Test Mac" }),
 				});
 				expect(redactedFailure.status).toBe(400);
 				const redactedBody = (await redactedFailure.json()) as Record<string, unknown>;
@@ -19979,7 +19984,7 @@ describe("viewer-server", () => {
 					const response = await app.request("/api/sync/invites/import", {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ invite, device_name: "Brian's Mac" }),
+						body: confirmedJoin({ invite, device_name: "Brian's Mac" }),
 					});
 					expect(response.status).toBe(200);
 					expect(await response.json()).toMatchObject({
@@ -20066,7 +20071,7 @@ describe("viewer-server", () => {
 				const response = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite, recipient_name: "Brian" }),
+					body: confirmedJoin({ invite, recipient_name: "Brian" }),
 				});
 				expect(response.status).toBe(400);
 				const body = (await response.json()) as Record<string, unknown>;
@@ -20121,7 +20126,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
@@ -20170,7 +20175,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
@@ -20212,7 +20217,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
@@ -20268,7 +20273,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				expect(res.status).toBe(409);
 				expect(await res.json()).toMatchObject({ error: "peer_conflict" });
@@ -20309,7 +20314,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite: pairingJson }),
+					body: confirmedJoin({ invite: pairingJson }),
 				});
 				expect(res.status).toBe(200);
 				expect(await res.json()).toMatchObject({ type: "pair", peer_device_id: peerDeviceId });
@@ -20344,7 +20349,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite: shellWrapper }),
+					body: confirmedJoin({ invite: shellWrapper }),
 				});
 				expect(res.status).toBe(200);
 				expect(await res.json()).toMatchObject({ type: "pair", peer_device_id: peerDeviceId });
@@ -20375,7 +20380,7 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ invite }),
+					body: confirmedJoin({ invite }),
 				});
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({ error: "Pairing payload fingerprint mismatch" });
