@@ -6,6 +6,73 @@ per-Project boundary migration uses
 sends a record yet, and nothing reads the records to make a decision. A record
 grants no access.
 
+## Generation-bound device evidence (version 2)
+
+The device client can construct and sign a version 2 request for one configured
+coordinator group. No runtime calls this client yet. The coordinator currently
+accepts only version 1. The local `sync migration status` command does not call
+either sender.
+
+The future caller supplies the generation issued by the coordinator (a fresh
+UUIDv4 for each preparation), the revision of the successful group refresh it
+observed for that generation, and an increasing inventory sequence. If another
+refresh finishes before collection, the device must collect again. A revision
+identifies a local cache update. It does not prove that the coordinator still
+authorizes a device.
+
+The refresh records `group_generation` only if the signed GET to the configured
+HTTPS coordinator returns that generation on the catalogue and every member
+snapshot. Redirects are refused. An older coordinator that omits the generation
+still supports ordinary sync, but its responses cannot supply readiness.
+The cache updates the observed generation in the same transaction as the
+membership data and revision. A legacy writer that refreshes the cache clears
+the observation. After hashing the key, the sender reads the generation and
+revision again immediately before signing. If either no longer matches, it
+returns `recollect_required` without posting. The caller must start a new
+collection for the current refresh.
+
+The request uses the existing signed POST and includes these fields alongside
+`sequence`, `omitted_projects` and `projects`:
+
+| Field | Signed value |
+| --- | --- |
+| `version` | `2` |
+| `coordinator_id`, `group_id` | Configured authority and group for this refresh |
+| `device_id`, `key_id` | Local device ID and canonical SHA-256 ID of its Ed25519 public key |
+| `group_generation`, `scope_refresh_revision` | Coordinator generation and local refresh revision |
+| `filter_evidence` | `none`, `present` or `unknown` |
+
+The device reads its identity, group inventory and stored filters in one SQLite
+transaction. It reports `present` for a restriction on any pairing, retained
+override, active pairing template or effective config/environment fallback.
+Pairings can cross groups, so the scan covers the whole device. Missing storage
+or malformed evidence gives `unknown` unless another source already shows a
+restriction. No filter list travels in the request. A device with zero locally
+authored rows still reports its restrictions.
+
+The future sender must read configuration and environment fallbacks **in the
+process that serves sync requests**, using the same config path and overrides
+as that process. A CLI or background process with a different environment
+cannot attest to the serving process's filters. Any nonempty stored list counts
+as a restriction, including a whitespace-only include list that blocks sharing
+during provisioning.
+
+An empty `projects` list does not say that the device cannot receive a Project.
+The coordinator must derive the affected receivers from admission and request
+their evidence too. Inventory counts alone do not prove equivalent access.
+
+The sender requires migration mode `on`, enabled sync and the configured HTTPS
+coordinator. It verifies its signature against the public key from the snapshot
+before sending. A stored or stale acknowledgement must echo the protocol
+version, group, device, key and generation. A version 1 reply cannot acknowledge
+version 2. There is no retry with a weaker protocol.
+
+The coordinator must verify the signature against the **current enrolled key**
+and check the generation when it writes and when it uses a record. That
+server-side check and the direct-serving fence are separate changes. A valid
+signature or a successful HTTP response alone does not make a Project eligible
+for migration.
+
 A readiness record is what a device that runs the migration code keeps at the
 coordinator, one per group. It says two things: the device handles a Project that
 has its own boundary, and these are the Projects it holds under an older scope

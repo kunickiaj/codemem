@@ -16,11 +16,13 @@ import type {
 
 export interface ScopeMembershipCatalog {
 	version: 1;
+	group_generation?: string;
 	items: CoordinatorScope[];
 }
 
 export interface ScopeMembershipSnapshot {
 	authorization_version: 1;
+	group_generation?: string;
 	scope: CoordinatorScope;
 	items: Array<{
 		membership: CoordinatorScopeMembership;

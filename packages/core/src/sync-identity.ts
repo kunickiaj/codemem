@@ -214,10 +214,24 @@ function loadPrivateKeyForIdentity(
 	return null;
 }
 
-interface StoredDeviceIdentity {
+export interface StoredDeviceIdentity {
 	deviceId: string;
 	publicKey: string;
 	fingerprint: string;
+}
+
+/** Sign for an identity the caller read in its snapshot, without opening or repairing a store. */
+export function loadEnrolledSigningKey(
+	keysDir: string | undefined,
+	identity: StoredDeviceIdentity,
+): Buffer | null {
+	if (keyStoreMode() === "keychain") {
+		const enrolled = loadPrivateKeyKeychain(identity.deviceId);
+		if (enrolled && privateKeyMatchesStoredIdentity(enrolled, identity)) return enrolled;
+	}
+	const [path] = resolveKeyPaths(keysDir);
+	const file = readPrivateKeyFile(path).value;
+	return file && privateKeyMatchesStoredIdentity(file, identity) ? file : null;
 }
 
 /** Read-only counterpart of signing-key selection, using the caller's connection.

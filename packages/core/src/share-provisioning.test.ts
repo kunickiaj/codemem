@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readBoundaryFilterEvidence } from "./boundary-filter-evidence.js";
 import { claimLocalOrigin } from "./local-origin-claim.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
@@ -166,16 +167,27 @@ async function expectPublicationGate(
 	}
 }
 
-function expectInviterProjectFilterRejected(
-	db: InstanceType<typeof Database>,
-	operationId: string,
+function testInviterFilterEvidence(
+	fixture: () => { db: InstanceType<typeof Database>; operationId: string },
 ): void {
-	db.prepare(
-		"UPDATE sync_peers SET projects_include_json = '[\"other\"]' WHERE peer_device_id = 'owner-proven'",
-	).run();
-	expect(() => planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" })).toThrow(
-		"inviter_project_access_ambiguous",
-	);
+	it.each(["other", "   ", null])("reports a provisioning restriction: %j", (restriction) => {
+		const { db, operationId } = fixture();
+		vi.stubEnv("CODEMEM_SYNC_PROJECTS_INCLUDE", "");
+		vi.stubEnv("CODEMEM_SYNC_PROJECTS_EXCLUDE", "");
+		try {
+			db.exec("UPDATE sync_peers SET projects_include_json='[]', projects_exclude_json='[]'");
+			const plan = () => planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" });
+			expect(plan).not.toThrow();
+			expect(readBoundaryFilterEvidence(db, {})).toBe("none");
+			db.prepare(
+				"UPDATE sync_peers SET projects_include_json=? WHERE peer_device_id='owner-proven'",
+			).run(JSON.stringify([restriction]));
+			expect(plan).toThrow("inviter_project_access_ambiguous");
+			expect(readBoundaryFilterEvidence(db, {})).toBe("present");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
 }
 
 function insertSession(
@@ -484,8 +496,7 @@ describe("exact project share provisioning", () => {
 			"unreviewed-source-member",
 		]);
 	});
-	it("fails closed when a reviewed inviter device no longer passes current project filters", () =>
-		expectInviterProjectFilterRejected(db, operationId));
+	testInviterFilterEvidence(() => ({ db, operationId }));
 	it("waits for mapping edits", () => expectPublicationGate(db, operationId, dependencies().deps));
 	it("fails capability preflight before any boundary, migration, or mapping mutation", async () => {
 		const supportsReassignScope = vi.fn(async (deviceId: string) =>

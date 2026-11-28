@@ -743,6 +743,7 @@ it("upgrades legacy cache-state history only on the writer path, without inferri
 			last_error: "old-offline",
 			updated_at: cacheTime,
 			refresh_revision: 0,
+			observed_group_generation: null,
 		},
 	});
 	expect(result).toMatchObject({ status: "refreshed" });
@@ -752,6 +753,7 @@ it("upgrades legacy cache-state history only on the writer path, without inferri
 		last_error: null,
 		updated_at: later.toISOString(),
 		refresh_revision: 1,
+		observed_group_generation: null,
 	});
 	expect(effective).toEqual({ ...raw, keyId: EXPECTED_KEY_ID });
 	expect(transaction).not.toHaveBeenCalled();

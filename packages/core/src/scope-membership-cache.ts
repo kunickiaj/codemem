@@ -1,3 +1,4 @@
+import { isBoundaryReadinessGeneration } from "./boundary-readiness-generation.js";
 import { markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { ensureCoordinatorHistorySchema } from "./coordinator-history.js";
 import { BetterSqliteCoordinatorStore, DEFAULT_COORDINATOR_DB_PATH } from "./coordinator-store.js";
@@ -8,6 +9,7 @@ import {
 	readCoordinatorSyncConfig,
 } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
+import { columnExists } from "./schema-lookups.js";
 import {
 	listCachedScopesForDevice,
 	loadCachedScope,
@@ -109,10 +111,10 @@ function errorMessage(error: unknown): string {
 }
 
 export function ensureScopeMembershipCacheStateTable(db: Database): void {
-	if (hasRefreshRevision(db)) return;
+	if (hasGenerationInvalidation(db)) return;
 	// Recheck under the write lock: another process may have upgraded the cache.
 	db.transaction(() => {
-		if (hasRefreshRevision(db)) return;
+		if (hasGenerationInvalidation(db)) return;
 		db.exec(`
 		CREATE TABLE IF NOT EXISTS scope_membership_cache_state (
 			coordinator_id TEXT NOT NULL,
@@ -125,19 +127,32 @@ export function ensureScopeMembershipCacheStateTable(db: Database): void {
 			PRIMARY KEY (coordinator_id, group_id)
 		)
 	`);
-		if (!hasRefreshRevision(db))
+		if (!columnExists(db, "scope_membership_cache_state", "refresh_revision"))
 			db.exec(
 				"ALTER TABLE scope_membership_cache_state ADD COLUMN refresh_revision INTEGER NOT NULL DEFAULT 0",
 			);
 		// A table created here also needs its coordinator history trigger.
 		ensureCoordinatorHistorySchema(db);
+		if (!columnExists(db, "scope_membership_cache_state", "observed_group_generation")) {
+			db.exec("ALTER TABLE scope_membership_cache_state ADD COLUMN observed_group_generation TEXT");
+		}
+		// Older refresh writers do not know about generations. Even one writing
+		// the same timestamps/revision must clear the previous observation.
+		db.exec(`CREATE TRIGGER IF NOT EXISTS invalidate_scope_refresh_generation
+			AFTER UPDATE OF coordinator_id, group_id, last_refresh_at, last_success_at, last_error,
+				updated_at, refresh_revision ON scope_membership_cache_state
+			WHEN NEW.observed_group_generation IS NOT NULL
+			BEGIN UPDATE scope_membership_cache_state SET observed_group_generation = NULL
+				WHERE coordinator_id = NEW.coordinator_id AND group_id = NEW.group_id; END`);
 	}).immediate();
 }
 
-function hasRefreshRevision(db: Database): boolean {
+function hasGenerationInvalidation(db: Database): boolean {
 	return !!db
-		.prepare("SELECT 1 FROM pragma_table_info('scope_membership_cache_state') WHERE name = ?")
-		.get("refresh_revision");
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='invalidate_scope_refresh_generation'",
+		)
+		.get();
 }
 
 /** Local write ordering only; neither a membership epoch nor a permission lease. */
@@ -176,6 +191,7 @@ function signedCoordinatorGet(
 	});
 	return requestJson("GET", url, {
 		headers,
+		redirect: "error",
 	}).then(([status, payload]) => {
 		if (status < 200 || status >= 300) {
 			throw new Error(`Coordinator membership snapshot failed (${status})`);
@@ -414,6 +430,7 @@ export function upsertCachedScopeMemberships(
 function recordRefreshState(
 	db: Database,
 	input: ScopeMembershipCacheAuthority & { ok: boolean; error?: string | null; now: string },
+	generation: string | null = null,
 ): void {
 	ensureScopeMembershipCacheStateTable(db);
 	readRefreshRevision(db, input);
@@ -439,6 +456,14 @@ function recordRefreshState(
 			input.now,
 		);
 	if (result.changes !== 1) throw new Error("Scope membership cache revision unavailable.");
+	if (input.ok && generation) {
+		db.prepare(`UPDATE scope_membership_cache_state SET observed_group_generation = ?
+			WHERE coordinator_id = ? AND group_id = ?`).run(
+			generation,
+			input.coordinatorId,
+			input.groupId,
+		);
+	}
 }
 
 function recordRefreshFailure(
@@ -473,6 +498,7 @@ export async function refreshScopeMembershipCache(
 	// Scopes and memberships are coordinator trust, so the managed mark must be durable first.
 	markCoordinatorManaged(db, { keysDir: opts.keysDir ?? undefined });
 	const fetchers = opts.fetchers ?? defaultFetchers(db, opts);
+	const observesGeneration = isGenerationAuthority(opts, coordinatorId);
 	const timestamp = nowIso(opts.now);
 	const results: RefreshScopeMembershipCacheGroupResult[] = [];
 
@@ -486,17 +512,16 @@ export async function refreshScopeMembershipCache(
 				revision: expectedRevision,
 				removalGeneration: readScopeAuthorizationRemovalGeneration(db),
 			};
-			const membershipBatches = await gatherCurrentSnapshots(fetchers, authority);
-			const scopes = membershipBatches.map((batch) => batch.scope);
-			const error = persistCurrentSnapshots(db, membershipBatches, authority, timestamp, expected);
-			const membershipCount = membershipBatches.reduce(
+			const snapshot = await gatherCurrentSnapshots(fetchers, authority, { observesGeneration });
+			const error = persistCurrentSnapshots(db, snapshot, authority, timestamp, expected);
+			const membershipCount = snapshot.batches.reduce(
 				(count, batch) => count + batch.memberships.length,
 				0,
 			);
 			results.push({
 				groupId,
 				status: error ? "stale" : "refreshed",
-				scopeCount: error ? 0 : scopes.length,
+				scopeCount: error ? 0 : snapshot.batches.length,
 				membershipCount: error ? 0 : membershipCount,
 				error,
 			});
@@ -519,22 +544,40 @@ export async function refreshScopeMembershipCache(
 
 type CurrentScopeBatch = ReturnType<typeof normalizeScopeSnapshot>;
 
+function isGenerationAuthority(
+	opts: RefreshScopeMembershipCacheOptions,
+	coordinatorId: string,
+): boolean {
+	// Local stores, injected fetchers, and an override naming another authority
+	// cannot attest to an HTTPS coordinator's generation.
+	return (
+		!opts.fetchers &&
+		!!opts.remoteUrl &&
+		coordinatorId.startsWith("https://") &&
+		coordinatorUrl(opts) === coordinatorId
+	);
+}
+
 async function gatherCurrentSnapshots(
 	fetchers: ScopeMembershipCacheFetchers,
 	authority: ScopeMembershipCacheAuthority,
-): Promise<CurrentScopeBatch[]> {
-	const catalog = normalizeScopeCatalog(
-		await fetchers.listScopes(authority.groupId),
-		authority.groupId,
-	);
+	{ observesGeneration }: { observesGeneration: boolean },
+) {
+	const response = await fetchers.listScopes(authority.groupId);
+	const catalog = normalizeScopeCatalog(response, authority.groupId);
+	let generation =
+		observesGeneration && isBoundaryReadinessGeneration(response.group_generation)
+			? response.group_generation
+			: null;
 	const batches: CurrentScopeBatch[] = [];
 	for (const scope of catalog) {
 		const snapshot = await fetchers.getScopeSnapshot(authority.groupId, scope.scope_id);
+		if (snapshot?.group_generation !== generation) generation = null;
 		batches.push(
 			normalizeScopeSnapshot(snapshot, scope, authority.groupId, authority.coordinatorId),
 		);
 	}
-	return batches;
+	return { batches, generation };
 }
 
 function matchesSnapshotSource(
@@ -597,7 +640,7 @@ function migrateSnapshotMembershipAuthority(db: Database, batch: CurrentScopeBat
 
 function persistCurrentSnapshots(
 	db: Database,
-	batches: CurrentScopeBatch[],
+	{ batches, generation }: { batches: CurrentScopeBatch[]; generation: string | null },
 	authority: ScopeMembershipCacheAuthority,
 	timestamp: string,
 	expected: { revision: number; removalGeneration: number },
@@ -635,7 +678,11 @@ function persistCurrentSnapshots(
 			} catch {
 				throw new Error("Scope authorization evidence unavailable.");
 			}
-			recordRefreshState(db, { ...authority, ok: error === null, error, now: timestamp });
+			recordRefreshState(
+				db,
+				{ ...authority, ok: error === null, error, now: timestamp },
+				generation,
+			);
 			return error;
 		})
 		.immediate();
