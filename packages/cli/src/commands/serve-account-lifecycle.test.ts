@@ -93,7 +93,7 @@ vi.mock("@codemem/server", () => ({
 	createApp: mocks.createApp,
 	createSyncApp: mocks.createSyncApp,
 	createGuardedSyncServer: vi.fn(),
-	createInMemoryRequestRateLimiter: vi.fn(() => ({
+	createSyncListenerLimiter: vi.fn(() => ({
 		check: () => ({ allowed: true, retryAfterS: 0 }),
 	})),
 	createAccountContextReader: mocks.createContext,

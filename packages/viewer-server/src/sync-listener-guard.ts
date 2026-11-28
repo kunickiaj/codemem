@@ -37,6 +37,14 @@ export const SYNC_LISTENER_LIMITS: SyncListenerLimits = Object.freeze({
 /** Distinct address buckets the listener's limiter keeps. Churn evicts the stalest. */
 export const SYNC_LISTENER_MAX_BUCKETS = 4_096;
 
+/**
+ * The limiter the sync listener, its routes and its Noise streams share. It
+ * holds at most SYNC_LISTENER_MAX_BUCKETS buckets.
+ */
+export function createSyncListenerLimiter(): InMemoryRequestRateLimiter {
+	return createInMemoryRequestRateLimiter(60_000, { maxBuckets: SYNC_LISTENER_MAX_BUCKETS });
+}
+
 export interface SyncListenerGuardOptions {
 	readonly limits?: Partial<SyncListenerLimits>;
 	/** Shared with the upgrade gate, so every request from one address draws on one budget. */
@@ -148,9 +156,7 @@ export function createGuardedSyncServer(
 	options: SyncListenerGuardOptions = {},
 ): typeof createServer {
 	const limits = { ...SYNC_LISTENER_LIMITS, ...options.limits };
-	const limiter =
-		options.limiter ??
-		createInMemoryRequestRateLimiter(60_000, { maxBuckets: SYNC_LISTENER_MAX_BUCKETS });
+	const limiter = options.limiter ?? createSyncListenerLimiter();
 	const guarded = (_serverOptions: unknown, listener?: RequestListener): Server => {
 		const server = createServer(
 			{

@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 import {
 	createGuardedSyncServer,
+	createSyncListenerLimiter,
 	remoteAddressKey,
 	SYNC_LISTENER_LIMITS,
 	type SyncListenerLimits,
@@ -174,4 +175,10 @@ it("answers an Upgrade request as an ordinary request when nothing handles upgra
 	);
 
 	expect(await reply).toMatch(/^HTTP\/1\.1 404 /);
+});
+
+it("builds the shared listener limiter with the listener's bucket ceiling", () => {
+	const limiter = createSyncListenerLimiter();
+	for (let i = 0; i < 5_000; i++) limiter.check(`sync-listener:203.0.113.${i}`, 10);
+	expect(limiter.bucketCount?.()).toBe(4_096);
 });

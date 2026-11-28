@@ -119,7 +119,6 @@ export {
 	type ViewerRelayReachability,
 	type ViewerRelayReachabilityOptions,
 } from "./relay-reachability.js";
-export { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 export {
 	MEMORY_TOOL_CALL_CAPABILITY,
 	type MemoryToolCaller,
@@ -162,7 +161,7 @@ export type {
 	LegacyTeamSetupViewV1,
 } from "./routes/team-setup.js";
 export { closeStore, closeStoreAsync, getStore } from "./shared-store.js";
-export { createGuardedSyncServer } from "./sync-listener-guard.js";
+export { createGuardedSyncServer, createSyncListenerLimiter } from "./sync-listener-guard.js";
 export type { ViewerAuthorityOptions } from "./viewer-authority.js";
 export { VERSION };
 

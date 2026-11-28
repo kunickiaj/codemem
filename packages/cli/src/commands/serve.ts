@@ -1346,12 +1346,15 @@ async function openViewerStore(
  * The sync listener is network-facing, so it runs on the guarded server. Its
  * routes and any direct Noise streams share one request limiter.
  */
-function syncListenerOptions(
-	serverModule: typeof import("@codemem/server"),
-	appOpts: ReturnType<typeof foregroundAppOptions>,
+export function syncListenerOptions(
+	serverModule: Pick<
+		typeof import("@codemem/server"),
+		"createSyncListenerLimiter" | "createSyncApp" | "createGuardedSyncServer"
+	>,
+	appOpts: import("@codemem/server").AppOptions & { storeFactory: () => MemoryStore },
 	syncConfig: { syncHost: string; syncPort: number },
 ) {
-	const limiter = serverModule.createInMemoryRequestRateLimiter();
+	const limiter = serverModule.createSyncListenerLimiter();
 	const syncApp = serverModule.createSyncApp({ ...appOpts, syncRequestRateLimit: { limiter } });
 	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 	return {

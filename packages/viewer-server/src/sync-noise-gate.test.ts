@@ -37,16 +37,23 @@ async function gate(
 		limits?: Partial<DirectNoiseGateLimits>;
 		active?: boolean;
 		listener?: Partial<SyncListenerLimits>;
+		/** Blocks the event loop on each gate store lookup, as slow synchronous work would. */
+		blockMs?: number;
 	} = {},
 ) {
 	const f = await channelStore();
 	cleanups.push(f.cleanup);
 	const keysDir = join(dirname(f.peerKeysDir), "local-keys");
+	const block = new Int32Array(new SharedArrayBuffer(4));
+	const gateStore = () => {
+		if (options.blockMs) Atomics.wait(block, 0, 0, options.blockMs);
+		return f.storeFactory();
+	};
 	const app = createSyncApp({ storeFactory: f.storeFactory });
 	const createServer = createGuardedSyncServer({
 		limits: options.listener,
 		directNoise: {
-			storeFactory: f.storeFactory,
+			storeFactory: gateStore,
 			keysDir,
 			limits: options.limits,
 			active: options.active ?? true,
@@ -393,4 +400,14 @@ it("destroys a refused socket whose client keeps writing open, returning its slo
 	const { status, socket } = await send(f.port, next.raw);
 	expect(status).toBe(101);
 	expect((await exchange(f, next, socket))[0]).toBe(200);
+});
+
+it("sends no 101 when synchronous admission work outlasts the deadline", async () => {
+	const f = await gate({ limits: { handshakeMs: 200 }, blockMs: 150 });
+	const request = await upgradeRequest(f);
+
+	const { status, rest } = await send(f.port, request.raw);
+
+	expect(status).not.toBe(101);
+	expect(rest.byteLength).toBe(0);
 });

@@ -192,25 +192,42 @@ function ownStream(socket: Socket, duplex: Duplex) {
 	};
 }
 
+/**
+ * Milliseconds left before the gate's one deadline, which starts when the
+ * upgrade arrives. Synchronous work such as signature checks or key loading
+ * cannot run the timer, so each step checks the clock itself.
+ */
+function remainingMs(deadlineAt: number): number {
+	const remaining = Math.floor(deadlineAt - performance.now());
+	if (remaining <= 0) throw new Error("Direct Noise admission deadline passed");
+	return remaining;
+}
+
 async function handshake(
 	context: GateContext,
 	socket: Socket,
-	target: ReturnType<typeof parseUpgrade>,
+	admission: { target: ReturnType<typeof parseUpgrade>; deadlineAt: number },
 	peer: { deviceId: string; publicKey: string },
 ) {
 	const store = context.options.storeFactory();
 	const identity = localIdentity(store, context.options.keysDir);
+	remainingMs(admission.deadlineAt);
 	await switchProtocols(socket);
 	const acceptedAtMs = performance.now();
+	// Noise gets only what is left of the gate's deadline, not a fresh clock.
+	const handshakeMs = remainingMs(admission.deadlineAt);
 	const secured = await acceptRelayNoiseResponder({
 		transport: socket,
 		localIdentity: identity,
 		expectedRemotePin: peer.publicKey,
-		context: { transportLabel: DIRECT_NOISE_TRANSPORT_LABEL, sessionId: target.sessionId },
-		verifiedMessageADigest: target.openingDigest,
+		context: {
+			transportLabel: DIRECT_NOISE_TRANSPORT_LABEL,
+			sessionId: admission.target.sessionId,
+		},
+		verifiedMessageADigest: admission.target.openingDigest,
 		acceptedAtMs,
-		deadlineMs: acceptedAtMs + context.limits.handshakeMs + PEER_HTTP_LIMITS.exchangeMs,
-		limits: { handshakeMs: context.limits.handshakeMs },
+		deadlineMs: acceptedAtMs + handshakeMs + PEER_HTTP_LIMITS.exchangeMs,
+		limits: { handshakeMs },
 	});
 	if (currentPin(store, peer.deviceId) !== peer.publicKey) {
 		secured.duplex.destroy();
@@ -240,13 +257,16 @@ async function handleUpgrade(
 	request: IncomingMessage,
 	socket: Socket,
 	head: Buffer,
-	address: string,
+	upgrade: { address: string; deadlineAt: number },
 ): Promise<void> {
-	const releasePending = context.pending.reserve(address);
+	const releasePending = context.pending.reserve(upgrade.address);
 	if (!releasePending) throw new GateRefusal(503, "busy");
 	// Node applies no timeout to an upgraded socket. This one covers everything
 	// up to an authenticated stream, including writing the 101.
-	const deadline = setTimeout(() => socket.destroy(), context.limits.handshakeMs);
+	const deadline = setTimeout(
+		() => socket.destroy(),
+		Math.max(1, upgrade.deadlineAt - performance.now()),
+	);
 	deadline.unref();
 	let releaseStream: (() => void) | null = null;
 	try {
@@ -254,8 +274,18 @@ async function handleUpgrade(
 		const peer = authorize(context.options.storeFactory(), request);
 		releaseStream = context.streams.reserve(peer.deviceId);
 		if (!releaseStream) throw new GateRefusal(503, "busy");
-		const duplex = await handshake(context, socket, target, peer);
+		const duplex = await handshake(
+			context,
+			socket,
+			{ target, deadlineAt: upgrade.deadlineAt },
+			peer,
+		);
 		clearTimeout(deadline);
+		// The handshake may have finished in the same turn the deadline passed.
+		if (performance.now() >= upgrade.deadlineAt) {
+			duplex.destroy();
+			throw new Error("Direct Noise admission deadline passed");
+		}
 		releasePending();
 		await serveStream(context, socket, duplex, peer.deviceId);
 	} finally {
@@ -296,6 +326,7 @@ export function attachDirectNoiseGate(
 		}),
 	};
 	server.on("upgrade", (request: IncomingMessage, socket: Socket, head: Buffer) => {
+		const deadlineAt = performance.now() + limits.handshakeMs;
 		admit.settle(socket);
 		socket.on("error", () => {});
 		const address = addressOf(socket);
@@ -307,9 +338,11 @@ export function attachDirectNoiseGate(
 			refuse(socket, new GateRefusal(429, "rate_limited"));
 			return;
 		}
-		void handleUpgrade(context, request, socket, head, address).catch((error: unknown) => {
-			if (error instanceof GateRefusal && !socket.destroyed) refuse(socket, error);
-			else socket.destroy();
-		});
+		void handleUpgrade(context, request, socket, head, { address, deadlineAt }).catch(
+			(error: unknown) => {
+				if (error instanceof GateRefusal && !socket.destroyed) refuse(socket, error);
+				else socket.destroy();
+			},
+		);
 	});
 }
