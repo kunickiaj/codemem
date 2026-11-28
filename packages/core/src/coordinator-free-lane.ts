@@ -145,11 +145,32 @@ function laneRow(row: StoredRow, origin: string): boolean {
 	);
 }
 
-/** An op that carries a shared local-default memory created by `origin`, as it claims to. */
+/** An op that names its origin device as its sender and sits in local-default. */
+function fromOriginInLocalDefault(op: ReplicationOp, origin: string): boolean {
+	return (
+		op.entity_type === "memory_item" &&
+		op.device_id === origin &&
+		op.clock_device_id === origin &&
+		op.scope_id === DEFAULT_SYNC_SCOPE_ID
+	);
+}
+
+/**
+ * A delete from `origin` in local-default, without a payload, as the shared outbound decision
+ * sends every deletion. The row it targets must be one `origin` created, which the caller checks.
+ */
+function laneTombstone(op: ReplicationOp, origin: string): boolean {
+	return op.op_type === "delete" && fromOriginInLocalDefault(op, origin) && op.payload_json == null;
+}
+
+/** An op the lane may carry from `origin`: a shared upsert or a content-free tombstone. */
 function laneOp(op: ReplicationOp, origin: string): boolean {
-	if (op.entity_type !== "memory_item" || op.op_type !== "upsert") return false;
-	if (op.device_id !== origin || op.clock_device_id !== origin) return false;
-	if (op.scope_id !== DEFAULT_SYNC_SCOPE_ID) return false;
+	return laneUpsert(op, origin) || laneTombstone(op, origin);
+}
+
+/** An op that carries a shared local-default memory created by `origin`, as it claims to. */
+function laneUpsert(op: ReplicationOp, origin: string): boolean {
+	if (op.op_type !== "upsert" || !fromOriginInLocalDefault(op, origin)) return false;
 	const payload = parsePayload(op);
 	if (!payload || payload.origin_device_id !== origin) return false;
 	if (payload.scope_id != null && payload.scope_id !== DEFAULT_SYNC_SCOPE_ID) return false;
@@ -161,8 +182,8 @@ function laneOp(op: ReplicationOp, origin: string): boolean {
 
 /**
  * A payload that says it is shared in the canonical field, with no fallback to metadata or
- * workspace, and that carries no tombstone. Deletes aren't carried yet, so an upsert may not
- * hide or delete a memory either.
+ * workspace, and that carries no tombstone. Deletes travel only as content-free tombstones,
+ * so an upsert may not hide or delete a memory.
  */
 function canonicalSharedUpsert(payload: Record<string, unknown>): boolean {
 	if (payload.visibility !== "shared") return false;
@@ -280,7 +301,8 @@ export interface CoordinatorFreeRejection {
 
 /**
  * Why each op from the peer may not be applied. Only the peer's own shared local-default
- * memories may arrive, and an op may change only a stored row the peer created in that state.
+ * memories and content-free tombstones for them may arrive, and an op may change only a stored
+ * row the peer created in that state.
  * An import key that matches more than one row here is refused rather than applied to all.
  */
 export function coordinatorFreeInboundRejections(
@@ -342,13 +364,26 @@ function forgottenHere(db: Database, importKey: string): boolean {
 	return storedRows(db, importKey).some((row) => row.active === 0 || row.deleted_at != null);
 }
 
+/** The Project of the copy stored here under this key, which a tombstone doesn't name. */
+function storedProject(db: Database, importKey: string): string | null {
+	const project = db
+		.prepare(`SELECT COALESCE(NULLIF(TRIM(memory.project), ''), session.project)
+			FROM memory_items AS memory LEFT JOIN sessions AS session ON session.id = memory.session_id
+			WHERE memory.import_key = ? LIMIT 1`)
+		.pluck()
+		.get(importKey);
+	return typeof project === "string" && project.trim() ? project.trim() : null;
+}
+
 /**
  * Whether to apply this op, read right before it is applied, after the batch's earlier ops: ops
  * for Projects this device holds back from the peer are skipped, and so is an upsert for a memory
- * forgotten here, including by an earlier op in the same batch.
+ * forgotten here, including by an earlier op in the same batch. An upsert names its Project. A
+ * tombstone carries nothing, so it is judged by the Project of the copy it would delete.
  */
 function wantedNow(db: Database, op: ReplicationOp, peerDeviceId: string): boolean {
-	if (!syncProjectAllowed(db, projectOf(op), peerDeviceId)) return false;
+	const project = op.op_type === "delete" ? storedProject(db, op.entity_id) : projectOf(op);
+	if (!syncProjectAllowed(db, project, peerDeviceId)) return false;
 	return op.op_type !== "upsert" || !forgottenHere(db, op.entity_id);
 }
 

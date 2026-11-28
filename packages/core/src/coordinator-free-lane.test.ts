@@ -261,7 +261,7 @@ describe("a peer may only add and change its own shared local-default memories h
 		["a visibility spelled another way", {}, { visibility: "Shared" }],
 		["a deletion time on an upsert", {}, { deleted_at: "2026-11-27T00:00:00.000Z" }],
 		["an inactive flag on an upsert", {}, { active: 0 }],
-		["a delete", { op_type: "delete" }, {}],
+		["a delete that carries content", { op_type: "delete" }, {}],
 	])("refuses %s", (_case, overrides, payload) => {
 		expect(
 			coordinatorFreeInboundRejections(store.db, [peerOp("m", overrides, payload)], PEER),
@@ -469,6 +469,168 @@ describe("a memory this device forgot stays forgotten", () => {
 				.prepare("SELECT active FROM memory_items WHERE import_key = 'forgotten'")
 				.pluck()
 				.get(),
+		).toBe(0);
+	});
+});
+
+/** A tombstone the peer would send for a memory it created. */
+function tombstoneFrom(entityId: string, payload?: Record<string, unknown>) {
+	return peerOp(
+		entityId,
+		{
+			op_id: `${entityId}-delete`,
+			op_type: "delete",
+			clock_rev: 2,
+			clock_updated_at: "2026-11-28T00:00:00.000Z",
+			// The shared outbound decision sends every deletion without a payload.
+			payload_json: payload ? JSON.stringify(payload) : null,
+		},
+		{},
+	);
+}
+
+describe("deletes travel as tombstones that carry no content", () => {
+	function deleteOpOf(id: number | bigint) {
+		return store.db
+			.prepare(
+				`SELECT * FROM replication_ops WHERE op_type = 'delete'
+				 AND entity_id = (SELECT import_key FROM memory_items WHERE id = ?)`,
+			)
+			.get(id) as ReplicationOp;
+	}
+
+	function outbound(ops: ReplicationOp[]) {
+		return coordinatorFreeOutboundOps(store.db, ops, { localDeviceId: local, peerDeviceId: PEER })
+			.allowed;
+	}
+
+	it("sends a forgotten shared memory as a deletion without content", () => {
+		const shared = remember("secret title");
+		store.forget(Number(shared.id));
+		const stored = {
+			...deleteOpOf(shared.id),
+			payload_json: JSON.stringify({ title: "secret title" }),
+		};
+
+		const [tombstone, ...rest] = outbound([stored]);
+
+		expect(rest).toEqual([]);
+		expect(tombstone).toMatchObject({
+			op_id: stored.op_id,
+			op_type: "delete",
+			clock_rev: stored.clock_rev,
+			payload_json: null,
+		});
+	});
+
+	it("doesn't send a forgotten memory's earlier upsert with it", () => {
+		const shared = remember("secret title");
+		store.forget(Number(shared.id));
+
+		const sent = outbound([shared.op, deleteOpOf(shared.id)]);
+
+		expect(sent.map((op) => op.op_type)).toEqual(["delete"]);
+	});
+
+	it("sends no tombstone for a private memory or one restored since", () => {
+		const hidden = remember("hidden", "private");
+		store.forget(Number(hidden.id));
+		const restored = remember("restored");
+		store.forget(Number(restored.id));
+		store.db
+			.prepare("UPDATE memory_items SET active = 1, deleted_at = NULL WHERE id = ?")
+			.run(restored.id);
+
+		expect(outbound([deleteOpOf(hidden.id), deleteOpOf(restored.id)])).toEqual([]);
+	});
+
+	it("sends no tombstone for a memory in a Project the pairing excludes", () => {
+		const excluded = remember("excluded");
+		store.forget(Number(excluded.id));
+		setPeerProjectFilter(store.db, PEER, { include: null, exclude: ["lane"] });
+
+		expect(outbound([deleteOpOf(excluded.id)])).toEqual([]);
+	});
+
+	it("applies the peer's tombstone for a memory it created", () => {
+		apply([peerOp("gone")]);
+
+		const result = apply([tombstoneFrom("gone")]);
+
+		expect(result).toMatchObject({ applied: 1, rejections: [] });
+		expect(
+			store.db
+				.prepare(
+					"SELECT active, deleted_at IS NOT NULL AS deleted FROM memory_items WHERE import_key = 'gone'",
+				)
+				.get(),
+		).toEqual({ active: 0, deleted: 1 });
+	});
+
+	it.each([
+		["another sender", { device_id: "other" }, undefined],
+		["another clock device", { clock_device_id: "other" }, undefined],
+		["another scope", { scope_id: "team-scope" }, undefined],
+		["a payload, even an empty one", {}, {}],
+	])("refuses a tombstone with %s", (_case, overrides, payload) => {
+		apply([peerOp("theirs")]);
+		const op = { ...tombstoneFrom("theirs", payload), ...overrides };
+
+		expect(apply([op]).rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
+		expect(
+			store.db.prepare("SELECT active FROM memory_items WHERE import_key = 'theirs'").pluck().get(),
+		).toBe(1);
+	});
+
+	it("refuses a tombstone that carries content or targets another device's row", () => {
+		apply([peerOp("theirs")]);
+		const mine = remember("mine");
+		const myKey = String(
+			store.db.prepare("SELECT import_key FROM memory_items WHERE id = ?").pluck().get(mine.id),
+		);
+
+		const withContent = apply([tombstoneFrom("theirs", { title: "theirs" })]);
+		const notTheirs = apply([tombstoneFrom(myKey)]);
+
+		expect(withContent.rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
+		expect(notTheirs.rejections).toEqual([
+			{ op_id: `${myKey}-delete`, reason: "target_not_owned_by_sender" },
+		]);
+		expect(
+			store.db.prepare("SELECT COUNT(*) FROM memory_items WHERE active = 1").pluck().get(),
+		).toBe(2);
+	});
+});
+
+describe("each inbound op is decided right before it applies", () => {
+	it("keeps a memory forgotten when a newer upsert follows its tombstone in one batch", () => {
+		apply([peerOp("revived")]);
+		const newer = peerOp("revived", {
+			op_id: "revived-edit",
+			clock_rev: 3,
+			clock_updated_at: "2026-11-29T00:00:00.000Z",
+		});
+
+		const result = apply([tombstoneFrom("revived"), newer]);
+
+		expect(result).toMatchObject({ applied: 1, skipped: 1, rejections: [] });
+		expect(
+			store.db
+				.prepare("SELECT active FROM memory_items WHERE import_key = 'revived'")
+				.pluck()
+				.get(),
+		).toBe(0);
+	});
+
+	it("applies a tombstone by the stored copy's Project under a Project allowlist", () => {
+		setPeerProjectFilter(store.db, PEER, { include: ["lane"], exclude: null });
+		apply([peerOp("listed")]);
+
+		const result = apply([tombstoneFrom("listed")]);
+
+		expect(result).toMatchObject({ applied: 1, rejections: [] });
+		expect(
+			store.db.prepare("SELECT active FROM memory_items WHERE import_key = 'listed'").pluck().get(),
 		).toBe(0);
 	});
 });

@@ -2418,8 +2418,9 @@ export interface FilterReplicationOpsForSyncOptions {
 /**
  * What sync without a coordinator adds to the outbound decision. Local-default goes to no
  * peer otherwise. With these rules it goes to this peer only as this device's own memory
- * upserts, each for a copy that this device created, that says `shared` in its visibility,
- * and that is the only stored row for its key, on top of every rule a scope's ops follow.
+ * upserts and deletions, each for a copy that this device created, that says `shared` in its
+ * visibility, and that is the only stored row for its key, on top of every rule a scope's ops
+ * follow. A deletion goes without content, and only while its copy is deleted.
  */
 export interface CoordinatorFreeOutboundRules {
 	/** Whether the peer is still eligible, checked for each window and each request. */
@@ -2429,14 +2430,14 @@ export interface CoordinatorFreeOutboundRules {
 /** The lane's state for one window: null when the window is not for the lane. */
 type CoordinatorFreeWindow = { open: boolean } | null;
 
-/** Whether the lane may carry this op at all: this device's own upsert in local-default. */
+/** Whether the lane may carry this op at all: this device's own upsert or deletion in local-default. */
 function coordinatorFreeOpAllowed(op: ReplicationOp, page: OutboundPage | null): boolean {
 	const self = cleanText(page?.localDeviceId);
 	return (
 		page?.coordinatorFree?.open === true &&
 		self != null &&
 		op.entity_type === "memory_item" &&
-		op.op_type === "upsert" &&
+		(op.op_type === "upsert" || op.op_type === "delete") &&
 		op.device_id === self &&
 		op.clock_device_id === self &&
 		cleanText(op.scope_id) === DEFAULT_SYNC_SCOPE_ID
@@ -2477,6 +2478,30 @@ function coordinatorFreeCopyRefusal(
 		.pluck()
 		.get(row.import_key);
 	return copies === 1 ? null : scopeRefusal;
+}
+
+/**
+ * Why the lane may not carry a deletion: the copy it names by key must pass the lane's copy
+ * rules, be deleted now, and be readable by the peer by its visibility and Project.
+ */
+function coordinatorFreeDeleteRefusal(
+	db: Database,
+	page: OutboundPage,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+): OutboundRefusal | null {
+	const row = db
+		.prepare("SELECT * FROM memory_items WHERE import_key = ? LIMIT 1")
+		.get(op.entity_id) as MemoryItemRow | undefined;
+	const scopeRefusal: OutboundRefusal = {
+		reason: "scope_filter",
+		scope_id: cleanText(op.scope_id),
+	};
+	if (!row || (row.active !== 0 && !row.deleted_at)) return scopeRefusal;
+	return (
+		coordinatorFreeCopyRefusal(db, page, row) ??
+		existingDeleteRejection(db, op, peerDeviceId, { applyScopeFilter: true })
+	);
 }
 
 interface ExistingMemoryFilterContext {
@@ -2781,6 +2806,10 @@ function outboundDecision(
 	const lane = coordinatorFreeOpAllowed(op, page);
 	if (!outboundScopeAllowed(db, op, payload, peerDeviceId, page.localDeviceId, lane))
 		return { refusal: scopeRefusal };
+	if (page.coordinatorFree && op.op_type === "delete") {
+		const refusal = coordinatorFreeDeleteRefusal(db, page, op, peerDeviceId);
+		return refusal ? { refusal } : { op };
+	}
 	if (!payload || !opCarriesMemoryContent(op, payload)) return { op };
 	const copy = currentCopyForOp(page, op);
 	if (!copy || copy.row.active === 0 || copy.row.deleted_at) return { refusal: scopeRefusal };
@@ -2814,7 +2843,8 @@ export function opsStillSendableToPeer(
 		const payload = op.entity_type === "memory_item" ? parsePayload(op.payload_json) : null;
 		// A lane batch carries only lane ops, and none once the peer is no longer eligible.
 		if (coordinatorFreeRefusesOp(page, op)) return [];
-		if (!opCarriesMemoryContent(op, payload)) return [op];
+		// A lane deletion is decided again too: its copy must still be deleted and readable.
+		if (!opCarriesMemoryContent(op, payload) && !page.coordinatorFree) return [op];
 		const decision = outboundDecision(db, op, payload, peerDeviceId, page);
 		return decision.refusal ? [] : [decision.op];
 	});

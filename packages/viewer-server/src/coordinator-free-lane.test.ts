@@ -12,6 +12,7 @@ import {
 	loadPublicKey,
 	MemoryStore,
 	SYNC_CAPABILITY_HEADER,
+	setPeerProjectFilter,
 	setSyncResetState,
 	syncOnce,
 } from "@codemem/core";
@@ -394,3 +395,104 @@ it("pushes the stored copy's current content, not the payload the op recorded", 
 
 	expect(titles(server)).toEqual(["current title"]);
 });
+
+it("carries a forgotten memory to the other device as a tombstone, both ways", async () => {
+	const server = device("server");
+	const client = device("client");
+	pair(server, client);
+	const fromServer = remember(server, "server shared", "shared");
+	const fromClient = remember(client, "client shared", "shared");
+	await exchange(server, client);
+	const active = (d: Device) =>
+		d.store.db
+			.prepare("SELECT title FROM memory_items WHERE active = 1 ORDER BY title")
+			.pluck()
+			.all();
+	expect(active(client)).toEqual(["client shared", "server shared"]);
+
+	server.store.forget(Number(fromServer));
+	client.store.forget(Number(fromClient));
+	const result = await exchange(server, client);
+
+	expect(result).toMatchObject({ ok: true, opsIn: 1, opsOut: 1 });
+	expect(active(client)).toEqual([]);
+	expect(active(server)).toEqual([]);
+});
+
+/**
+ * A copy `holder` kept from sync between these devices before this version, which records no
+ * coordinator-free provenance. Only the row is copied: its content and clock as `origin` has it.
+ */
+function legacyCopy(origin: Device, holder: Device, memoryId: number) {
+	const row = origin.store.db
+		.prepare(
+			`SELECT kind, title, body_text, created_at, updated_at, import_key, origin_device_id,
+			 visibility, scope_id, rev, metadata_json FROM memory_items WHERE id = ?`,
+		)
+		.get(memoryId) as Record<string, unknown>;
+	const session = holder.store.startSession({ cwd: directory, project: "lane" });
+	holder.store.db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+			 import_key, origin_device_id, visibility, scope_id, rev, metadata_json, active)
+			 VALUES (@session, @kind, @title, @body_text, @created_at, @updated_at, @import_key,
+			 @origin_device_id, @visibility, @scope_id, @rev, @metadata_json, 1)`,
+		)
+		.run({ ...row, session });
+}
+
+it.each([
+	["pulled from", "server"],
+	["pushed to", "client"],
+] as const)(
+	"forgets a memory shared and then forgotten before the upgrade when it is %s the other device",
+	async (_direction, author) => {
+		const server = device("server");
+		const client = device("client");
+		pair(server, client);
+		const [origin, holder] = author === "server" ? [server, client] : [client, server];
+		const shared = remember(origin, "shared before", "shared");
+		legacyCopy(origin, holder, Number(shared));
+		// The author forgets the memory while the other device runs an earlier version.
+		origin.store.forget(Number(shared));
+
+		const result = await exchange(server, client);
+
+		expect(result).toMatchObject({ ok: true });
+		expect(
+			holder.store.db
+				.prepare("SELECT active FROM memory_items WHERE title = 'shared before'")
+				.pluck()
+				.all(),
+		).toEqual([0]);
+	},
+);
+
+it.each([
+	["pulled from", "server"],
+	["pushed to", "client"],
+] as const)(
+	"forgets a replica under a Project allowlist when the tombstone is %s the other device",
+	async (_direction, author) => {
+		const server = device("server");
+		const client = device("client");
+		pair(server, client);
+		const [origin, holder] = author === "server" ? [server, client] : [client, server];
+		// The receiving device takes only the "lane" Project from the author.
+		setPeerProjectFilter(holder.store.db, origin.deviceId, { include: ["lane"], exclude: null });
+		const shared = remember(origin, "allowed", "shared");
+		await exchange(server, client);
+		const active = () =>
+			holder.store.db
+				.prepare("SELECT active FROM memory_items WHERE title = 'allowed'")
+				.pluck()
+				.all();
+		expect(active()).toEqual([1]);
+
+		origin.store.forget(Number(shared));
+		const result = await exchange(server, client);
+
+		expect(result).toMatchObject({ ok: true });
+		expect(active()).toEqual([0]);
+	},
+);
