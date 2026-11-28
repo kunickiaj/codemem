@@ -92,8 +92,8 @@ anything, and on a filesystem without hard links it asks for a configured key in
 - Join requests are reviewed in **Devices → Join requests**, with **Approve** and **Deny**, on a device that
   holds the coordinator admin secret. **Advanced → Coordinator administration** no longer has that tab.
 - **Rename device** in **Devices** is the only way to rename a device.
-- Assigning a device to a person, and adding or renaming a person, need the coordinator admin secret. Other
-  devices list people without these controls and say why.
+- Assigning a device to a person, and adding, renaming, merging or removing a person, need the coordinator admin
+  secret. Other devices list people without these controls and say why.
 - Teams, sharing Projects with people, and assigning devices to people all need a coordinator. Memories move
   between devices only through Sharing domains that a coordinator manages, so two devices paired without one can
   reach each other but exchange no memories.
