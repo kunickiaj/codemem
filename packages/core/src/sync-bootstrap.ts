@@ -44,6 +44,7 @@ import {
 	recordSyncTransferObservation,
 	recordSyncTransferReceipts,
 } from "./sync-transfer-activity.js";
+import { DIRECT_NOISE_ACTIVE } from "./sync-transport-policy.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForSyncBootstrap } from "./vector-migration.js";
 
@@ -155,8 +156,18 @@ function checkedSnapshotSource(options?: BootstrapOptions): string | undefined {
 	return source;
 }
 
+/**
+ * Snapshot pages travel on the executor the shared transport policy chose for
+ * the status before them. Once direct Noise is on, building a plaintext one
+ * here would bypass that choice, so a caller must pass the policy's executor.
+ */
 function snapshotRequestExecutor(options?: BootstrapOptions): RequestJsonExecutor {
-	return options?.requestExecutor ?? requestJson;
+	if (options?.requestExecutor) return options.requestExecutor;
+	if (DIRECT_NOISE_ACTIVE)
+		throw new Error(
+			"snapshot fetch needs the transport policy's executor while direct Noise is on",
+		);
+	return requestJson;
 }
 
 function snapshotFailureDetail(status: number, payload: Record<string, unknown> | null): string {

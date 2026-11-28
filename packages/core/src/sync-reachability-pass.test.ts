@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { PeerHttpExchangeError } from "./peer-http-policy.js";
 import { createRelayPeerClient, type RelayPeerClient } from "./relay-peer-client.js";
 import { relayAudienceId, relayBodyDigest } from "./relay-service-proof.js";
 import * as syncAuth from "./sync-auth.js";
@@ -17,6 +18,7 @@ import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
 import { runSyncPass } from "./sync-orchestration.js";
 import { consecutiveConnectivityFailures, type SyncPassOptions, syncOnce } from "./sync-pass.js";
+import { PeerTransportRefused } from "./sync-peer-transport.js";
 import {
 	maintainSyncReachability,
 	runReachableSyncPass,
@@ -387,6 +389,34 @@ it.each([
 	expect(result).toMatchObject({ ok: false, transport: "wait" });
 	expect(execute).toHaveBeenCalledTimes(2);
 	expect(scoped).not.toHaveBeenCalled();
+});
+
+it("falls back to the encrypted relay when a direct Noise exchange gets no answer", async () => {
+	// Arrange: each address accepts TCP but never answers the upgrade, so the exchange expires.
+	const relay = approvedClient();
+	const execute = vi
+		.fn<RequestJsonExecutor>()
+		.mockRejectedValue(new PeerHttpExchangeError("deadline"));
+	// Act.
+	const result = await runReachableSyncPass(db, "peer", addresses, options(execute, relay));
+	// Assert.
+	expect(result).toMatchObject({ ok: true, transport: "relay" });
+	expect(execute).toHaveBeenCalledTimes(2);
+	expect(scoped).toHaveBeenCalledOnce();
+});
+
+it("falls back to the encrypted relay when the policy refuses a plaintext downgrade", async () => {
+	// Arrange: every direct address refuses the upgrade of a noise_required peer.
+	const relay = approvedClient();
+	const execute = vi
+		.fn<RequestJsonExecutor>()
+		.mockRejectedValue(new PeerTransportRefused("noise_required: plaintext refused"));
+	// Act.
+	const result = await runReachableSyncPass(db, "peer", addresses, options(execute, relay));
+	// Assert.
+	expect(result).toMatchObject({ ok: true, transport: "relay" });
+	expect(execute).toHaveBeenCalledTimes(2);
+	expect(scoped).toHaveBeenCalledOnce();
 });
 
 it("falls back using the approved relay, selected scope, current pin and caller lifetime", async () => {

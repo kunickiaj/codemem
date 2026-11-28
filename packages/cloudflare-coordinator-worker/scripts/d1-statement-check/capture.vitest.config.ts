@@ -12,6 +12,8 @@ export default defineConfig({
 				core,
 				"src/internal/cloudflare-coordinator.ts",
 			),
+			// Viewer-server modules that some captured tests import read this subpath too.
+			"@codemem/core/internal/relay-runtime": resolve(core, "src/internal/relay-runtime.ts"),
 		},
 	},
 	test: {

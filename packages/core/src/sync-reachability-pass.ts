@@ -1,16 +1,18 @@
 import { performance } from "node:perf_hooks";
 import type { Database } from "./db.js";
+import { PeerHttpExchangeError } from "./peer-http-policy.js";
 import { isRelayPeerClient, type RelayPeerClient } from "./relay-peer-client.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import { supportsSyncFeature } from "./sync-capability.js";
 import { syncScopedChannelOnce } from "./sync-channel-pass.js";
-import { type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
+import type { RequestJsonExecutor } from "./sync-http-client.js";
 import {
 	type SyncPassOptions,
 	type SyncResult,
 	type SyncScopeResult,
 	syncOnce,
 } from "./sync-pass.js";
+import { PeerTransportRefused, peerTransportExecutorFor } from "./sync-peer-transport.js";
 import { recordSyncTransferObservation } from "./sync-transfer-activity.js";
 
 export interface SyncReachabilityOptions {
@@ -77,6 +79,30 @@ function networkFailure(error: unknown): boolean {
 	if (!value.cause || typeof value.cause !== "object") return false;
 	const cause = value.cause as { code?: string };
 	return cause.code !== undefined && NETWORK_CODES.has(cause.code);
+}
+
+/**
+ * A direct Noise exchange that timed out or lost its connection, such as a
+ * listener that accepts TCP but never answers the upgrade. The plaintext
+ * executor reports the same cases as network failures.
+ */
+function noiseExchangeUnreachable(error: unknown): boolean {
+	return (
+		error instanceof PeerHttpExchangeError &&
+		(error.code === "deadline" || error.code === "transport")
+	);
+}
+
+/**
+ * Before commitment, an unreachable address or a refused plaintext downgrade
+ * leaves the relay, which is always encrypted, to try instead.
+ */
+function fallbackAllowed(error: unknown): boolean {
+	return (
+		networkFailure(error) ||
+		noiseExchangeUnreachable(error) ||
+		error instanceof PeerTransportRefused
+	);
 }
 
 function failure(transport: "direct" | "wait", error: string): SyncResult {
@@ -152,7 +178,7 @@ class DirectPass {
 			}
 			return response;
 		} catch (error) {
-			if (this.committedOrigin !== null || this.signal.aborted || !networkFailure(error))
+			if (this.committedOrigin !== null || this.signal.aborted || !fallbackAllowed(error))
 				this.terminal = true;
 			throw error;
 		}
@@ -180,8 +206,9 @@ async function selectedPass(
 		.get(peerDeviceId) as { pinned_fingerprint: string; public_key: string } | undefined;
 	if (!peer?.pinned_fingerprint)
 		return { ...failure("direct", "Peer is not pinned"), failureCategory: "trust" };
+	// The direct attempt gets its executor from the shared transport policy, like any sync pass.
 	const direct = new DirectPass(
-		options.requestExecutor ?? requestJson,
+		options.requestExecutor ?? peerTransportExecutorFor(db, peerDeviceId, options),
 		peer.pinned_fingerprint,
 		signal,
 		deadline,

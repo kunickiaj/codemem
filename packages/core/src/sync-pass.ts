@@ -58,8 +58,9 @@ import {
 	categorizeSyncFailure,
 	storedAddressFailureCategory,
 } from "./sync-failure-classification.js";
-import { buildBaseUrl, type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
+import { buildBaseUrl, type RequestJsonExecutor } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
+import { peerTransportExecutorFor } from "./sync-peer-transport.js";
 import {
 	ACCESS_CLEANUP_OP_TYPE,
 	applyReplicationOps,
@@ -217,6 +218,8 @@ export interface SyncPassOptions {
 	 * falls back to default rules only and prints a one-time warning.
 	 */
 	scanner?: SecretScanner;
+	/** @internal Direct Noise switches for tests. Production reads DIRECT_NOISE_ACTIVE. */
+	directNoise?: { active?: boolean; allowLegacy?: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -2445,7 +2448,8 @@ function prepareSyncExchange(
 	return {
 		kind: "ready",
 		context: {
-			requestExecutor: options?.requestExecutor ?? requestJson,
+			requestExecutor:
+				options?.requestExecutor ?? peerTransportExecutorFor(db, peerDeviceId, options),
 			recordAttempt: (attemptDb, peerId, attempt) => {
 				const record = options?.attemptRecorder ?? recordSyncAttempt;
 				// This exchange dials a peer directly. Relay selection happens outside syncOnce.
