@@ -81,14 +81,28 @@ function peerOp(entityId: string, overrides: Record<string, unknown> = {}, paylo
 		entity_type: "memory_item",
 		entity_id: entityId,
 		op_type: "upsert",
+		// A full body, as the shared outbound decision builds it from the stored copy.
 		payload_json: JSON.stringify({
 			kind: "discovery",
 			title: entityId,
+			subtitle: null,
 			body_text: "Peer body",
+			narrative: null,
+			facts: null,
+			concepts: null,
+			files_read: null,
+			files_modified: null,
+			tags_text: "",
+			active: 1,
+			deleted_at: null,
+			visibility: "shared",
+			workspace_id: null,
+			workspace_kind: null,
+			actor_id: null,
+			metadata_json: {},
 			created_at: now,
 			updated_at: now,
 			project: "lane",
-			visibility: "shared",
 			scope_id: "local-default",
 			origin_device_id: PEER,
 			...payload,
@@ -392,6 +406,35 @@ describe("accepted replicas record their source", () => {
 		});
 
 		expect(result).toMatchObject({ applied: 0, rejections: [] });
+		expect(cleanup.deleted_memory_ids).toEqual([Number(leaked)]);
+	});
+
+	it.each([
+		["leaves out the body", (payload: Record<string, unknown>) => delete payload.body_text],
+		["sends the title as null", (payload: Record<string, unknown>) => (payload.title = null)],
+		["leaves out the narrative", (payload: Record<string, unknown>) => delete payload.narrative],
+	])("refuses a newer update that %s, so it can't vouch for a leaked body", (_case, change) => {
+		const session = store.startSession({ cwd: directory, project: "lane" });
+		const leaked = store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+				 import_key, origin_device_id, visibility, scope_id, active, rev)
+				 VALUES (?, 'discovery', 'leaked', 'leaked body', 'now', '2026-11-27T00:00:00.000Z',
+				 'leaked-key', ?, 'shared', 'local-default', 1, 1)`,
+			)
+			.run(session, PEER).lastInsertRowid;
+		const op = peerOp("leaked-key", { clock_rev: 2, clock_updated_at: "2026-11-28T00:00:00.000Z" });
+		const payload = JSON.parse(String(op.payload_json)) as Record<string, unknown>;
+		change(payload);
+
+		const result = apply([{ ...op, payload_json: JSON.stringify(payload) }]);
+		const cleanup = reconcileStalePeerReceivedRows(store.db, {
+			localDeviceId: local,
+			peerDeviceId: PEER,
+			keysDir,
+		});
+
+		expect(result.rejections).toEqual([{ op_id: "leaked-key-op", reason: "op_not_allowed" }]);
 		expect(cleanup.deleted_memory_ids).toEqual([Number(leaked)]);
 	});
 

@@ -153,7 +153,7 @@ function laneOp(op: ReplicationOp, origin: string): boolean {
 	const payload = parsePayload(op);
 	if (!payload || payload.origin_device_id !== origin) return false;
 	if (payload.scope_id != null && payload.scope_id !== DEFAULT_SYNC_SCOPE_ID) return false;
-	if (!canonicalSharedUpsert(payload)) return false;
+	if (!canonicalSharedUpsert(payload) || !fullReplacement(payload)) return false;
 	return (
 		syncVisibilityAllowed(payload) && !replicationOpRequiresPersonalScopeAuthorization(op, payload)
 	);
@@ -174,6 +174,39 @@ function canonicalSharedUpsert(payload: Record<string, unknown>): boolean {
 	if (metadataVisibility != null && metadataVisibility !== "shared") return false;
 	if (payload.deleted_at != null) return false;
 	return payload.active == null || payload.active === 1;
+}
+
+/**
+ * Every field a memory's body is built from, as the shared outbound decision sends it. Apply
+ * keeps a stored field the payload leaves out or sends as null, so an update without them would
+ * keep content this device already held and still count as written.
+ */
+const FULL_UPSERT_FIELDS = [
+	"kind",
+	"title",
+	"subtitle",
+	"body_text",
+	"narrative",
+	"facts",
+	"concepts",
+	"files_read",
+	"files_modified",
+	"tags_text",
+	"active",
+	"deleted_at",
+	"visibility",
+	"workspace_id",
+	"workspace_kind",
+	"actor_id",
+	"metadata_json",
+	"created_at",
+	"updated_at",
+] as const;
+
+/** An upsert that replaces the whole memory: every body field named, and the text present. */
+function fullReplacement(payload: Record<string, unknown>): boolean {
+	if (!FULL_UPSERT_FIELDS.every((field) => Object.hasOwn(payload, field))) return false;
+	return ["kind", "title", "body_text"].every((field) => typeof payload[field] === "string");
 }
 
 function projectOf(op: ReplicationOp): string | null {
@@ -297,19 +330,9 @@ export function applyCoordinatorFreeOps(
 		.transaction((): CoordinatorFreeApplyResult => {
 			const rejections = coordinatorFreeInboundRejections(db, ops, context.peerDeviceId);
 			if (rejections.length > 0) return { applied: 0, skipped: 0, rejections, result: null };
-			const wanted = ops.filter(
-				(op) =>
-					syncProjectAllowed(db, projectOf(op), context.peerDeviceId) &&
-					!forgottenHere(db, op.entity_id),
-			);
-			const { result, written } = applyEach(db, wanted, context);
+			const { result, written } = applyEach(db, ops, context);
 			recordProvenance(db, written, context);
-			return {
-				applied: result.applied,
-				skipped: result.skipped + ops.length - wanted.length,
-				rejections: [],
-				result,
-			};
+			return { applied: result.applied, skipped: result.skipped, rejections: [], result };
 		})
 		.immediate();
 }
@@ -317,6 +340,16 @@ export function applyCoordinatorFreeOps(
 /** A memory this device forgot stays forgotten until deletes are carried both ways. */
 function forgottenHere(db: Database, importKey: string): boolean {
 	return storedRows(db, importKey).some((row) => row.active === 0 || row.deleted_at != null);
+}
+
+/**
+ * Whether to apply this op, read right before it is applied, after the batch's earlier ops: ops
+ * for Projects this device holds back from the peer are skipped, and so is an upsert for a memory
+ * forgotten here, including by an earlier op in the same batch.
+ */
+function wantedNow(db: Database, op: ReplicationOp, peerDeviceId: string): boolean {
+	if (!syncProjectAllowed(db, projectOf(op), peerDeviceId)) return false;
+	return op.op_type !== "upsert" || !forgottenHere(db, op.entity_id);
 }
 
 /**
@@ -342,6 +375,10 @@ function applyEach(
 		"SELECT id FROM memory_items WHERE import_key = ? AND origin_device_id = ? AND scope_id = ?",
 	);
 	for (const op of ops) {
+		if (!wantedNow(db, op, context.peerDeviceId)) {
+			total.skipped += 1;
+			continue;
+		}
 		const result = applyReplicationOps(db, [op], context.localDeviceId, context.scanner, {
 			activityPeerDeviceId: context.peerDeviceId,
 		});
