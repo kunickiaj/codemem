@@ -2,7 +2,11 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
-import { DirectNoiseBusy } from "./direct-noise-client.js";
+import {
+	DirectNoiseBusy,
+	DirectNoiseNotOffered,
+	DirectNoiseRejected,
+} from "./direct-noise-client.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import {
@@ -19,7 +23,10 @@ const stream = vi.hoisted(() => ({
 	pin: "",
 	opened: 0,
 	expectedPins: [] as string[],
-	answer: (_url: string): [number, Record<string, unknown>] => [404, {}],
+	answer: (
+		_url: string,
+		_deadlineMs?: number,
+	): [number, Record<string, unknown>] | Promise<[number, Record<string, unknown>]> => [404, {}],
 }));
 
 vi.mock("./direct-noise-client.js", async (original) => ({
@@ -44,10 +51,11 @@ vi.mock("./sync-auth.js", async (original) => ({
 
 vi.mock("./peer-http-client.js", async (original) => ({
 	...(await original<typeof import("./peer-http-client.js")>()),
-	createPeerHttpExecutor: () => async (_method: string, url: string) => {
-		stream.opened += 1;
-		return stream.answer(url);
-	},
+	createPeerHttpExecutor:
+		(options: { deadlineMs?: number }) => async (_method: string, url: string) => {
+			stream.opened += 1;
+			return stream.answer(url, options.deadlineMs);
+		},
 }));
 
 const databases: Database.Database[] = [];
@@ -410,4 +418,120 @@ it("stops waiting on a busy listener when the request is cancelled", async () =>
 	await expect(request).rejects.toThrow("cancelled");
 	expect(performance.now() - started).toBeLessThan(1_000);
 	expect(stream.opened).toBe(1);
+});
+
+it("refuses plaintext for a legacy peer when a busy answer is followed by a 404", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext, busyRetry: FAST_RETRY });
+	let calls = 0;
+	stream.answer = () => {
+		calls += 1;
+		throw calls === 1
+			? new DirectNoiseBusy(503, undefined)
+			: new DirectNoiseNotOffered("status 404");
+	};
+
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" }),
+	).rejects.toThrow(
+		"noise_busy: peer was busy (status 503), then peer did not accept an encrypted connection (status 404); plaintext refused",
+	);
+	expect(plaintext).not.toHaveBeenCalled();
+});
+
+it("refuses plaintext for a legacy peer when the upgrade reply is malformed or partial", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+	stream.answer = () => {
+		throw new DirectNoiseRejected("partial 404");
+	};
+
+	await expect(
+		p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" }),
+	).rejects.toThrow(/^noise_rejected: .*partial 404.*; plaintext refused$/);
+	expect(plaintext).not.toHaveBeenCalled();
+	expect(stream.opened).toBe(1);
+});
+
+/** Busy after `slowMs`, or when the attempt's deadline passes first. */
+const slowBusy =
+	(slowMs: number, retryAfterS?: number) => async (_url: string, deadlineMs?: number) => {
+		const waitMs = Math.min(slowMs, (deadlineMs ?? Infinity) - performance.now());
+		await new Promise((resolve) => setTimeout(resolve, Math.max(0, waitMs)));
+		if (deadlineMs !== undefined && performance.now() >= deadlineMs) throw new Error("deadline");
+		throw new DirectNoiseBusy(503, retryAfterS);
+	};
+
+const statusAt = (p: ReturnType<typeof pinned>, address: string) =>
+	p.execute("GET", `http://${address}/v1/status`, { operation: "status" }).catch((e) => e);
+
+it("holds slow busy replies at several addresses to one budget for the pass", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 100, baseMs: 1, maxMs: 5, totalMs: 600 } });
+	stream.answer = slowBusy(150);
+	const started = performance.now();
+
+	const failures = [];
+	for (const address of ["127.0.0.1:7", "127.0.0.1:8", "127.0.0.1:9"])
+		failures.push(await statusAt(p, address));
+
+	// Each address's first attempt is ordinary traffic. Every retry shares the 600 ms budget.
+	expect(performance.now() - started).toBeLessThan(600 + 3 * 150 + 250);
+	for (const failure of failures) expect(String(failure)).toMatch(/noise_busy/);
+});
+
+it("ends every retry within the budget when addresses ask for the longest Retry-After", async () => {
+	const p = pinned("key-a", {
+		busyRetry: { attempts: 8, baseMs: 100, maxMs: 300, totalMs: 1_000 },
+	});
+	stream.answer = slowBusy(0, 9_999);
+	const started = performance.now();
+
+	const failures = [];
+	for (const port of [7, 8, 9, 10]) failures.push(await statusAt(p, `127.0.0.1:${port}`));
+
+	expect(performance.now() - started).toBeLessThan(1_000 + 300);
+	for (const failure of failures) expect(String(failure)).toMatch(/noise_busy: peer still busy/);
+});
+
+it("ends a request's retries within its own timeout", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 100, baseMs: 1, maxMs: 5 } });
+	stream.answer = slowBusy(50);
+	const started = performance.now();
+
+	const failure = await p
+		.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status", timeoutS: 0.4 })
+		.catch((e) => e);
+
+	expect(String(failure)).toMatch(/noise_busy/);
+	expect(performance.now() - started).toBeLessThan(400 + 200);
+});
+
+it("stops waiting for retries at a request's own timeout when each busy reply is quick", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 1_000, baseMs: 1, maxMs: 5 } });
+	stream.answer = slowBusy(0);
+	const started = performance.now();
+
+	const failure = await p
+		.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status", timeoutS: 0.3 })
+		.catch((e) => e);
+
+	// The wait check or the attempt's own deadline may end it first. Either way it ends in time.
+	expect(String(failure)).toMatch(/noise_busy/);
+	expect(performance.now() - started).toBeLessThan(300 + 150);
+});
+
+it("cuts off a retry attempt that hangs past the pass's busy budget", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 8, baseMs: 1, maxMs: 5, totalMs: 300 } });
+	let calls = 0;
+	stream.answer = (url, deadlineMs) => {
+		calls += 1;
+		// The first reply is a quick busy. Each retry would hang for 5 s.
+		return calls === 1 ? slowBusy(0)(url, deadlineMs) : slowBusy(5_000)(url, deadlineMs);
+	};
+	const started = performance.now();
+
+	const failure = await statusAt(p, "127.0.0.1:7");
+
+	expect(String(failure)).toMatch(/noise_busy/);
+	expect(performance.now() - started).toBeLessThan(300 + 200);
 });

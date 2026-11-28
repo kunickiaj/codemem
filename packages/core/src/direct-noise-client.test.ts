@@ -7,6 +7,7 @@ import { afterEach, expect, it } from "vitest";
 import {
 	DirectNoiseBusy,
 	DirectNoiseNotOffered,
+	DirectNoiseRejected,
 	directNoiseConnectionFactory,
 } from "./direct-noise-client.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -168,8 +169,16 @@ it("reports a connection closed with no answer, as the socket caps refuse, as bu
 	expect(failure).toMatchObject({ status: "closed" });
 });
 
-it("still reports a partial answer followed by a close as Noise not offered", async () => {
-	const failure = await open(await answering("HTTP/1.1 4")).catch((error: unknown) => error);
+it.each([
+	["a partial status line", "HTTP/1.1 4"],
+	["a 404 cut short", 'HTTP/1.1 404 Not Found\r\nContent-Length: 20\r\n\r\n{"error"'],
+	["a 404 with no length", "HTTP/1.1 404 Not Found\r\n\r\nnot found"],
+	[
+		"a 401 from a listener that speaks Noise",
+		"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+	],
+])("reports %s as a refusal, never as Noise not offered", async (_label, head) => {
+	const failure = await open(await answering(head)).catch((error: unknown) => error);
 
-	expect(failure).toBeInstanceOf(DirectNoiseNotOffered);
+	expect(failure).toBeInstanceOf(DirectNoiseRejected);
 });
