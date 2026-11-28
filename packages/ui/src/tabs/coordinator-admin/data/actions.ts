@@ -26,13 +26,6 @@ const DEVICE_RENAME_ERROR_MESSAGES = new Map([
 	["display_name_too_long", "The device name is too long. Use a shorter name and retry."],
 ]);
 
-function isMissingJoinRequestError(cause: unknown): boolean {
-	if (!(cause instanceof Error)) return false;
-	return (
-		cause.message.includes("request_not_found") || cause.message.includes("join request not found")
-	);
-}
-
 function isStaleGroupMutationError(cause: unknown): boolean {
 	if (!(cause instanceof Error)) return false;
 	const message = cause.message.toLowerCase();
@@ -57,7 +50,6 @@ export interface CoordinatorAdminActions {
 		displayName: string,
 		kind: "rename" | "archive" | "unarchive",
 	) => Promise<void>;
-	reviewJoinRequestFromAdminPanel: (requestId: string, action: "approve" | "deny") => Promise<void>;
 	runDeviceAction: (
 		deviceId: string,
 		groupId: string,
@@ -310,68 +302,6 @@ export function createCoordinatorAdminActions(
 		}
 	}
 
-	async function reviewJoinRequestFromAdminPanel(requestId: string, action: "approve" | "deny") {
-		if (!adminSnapshotTargetMatchesCurrent(coordinatorAdminState.joinRequestsSnapshotTarget))
-			return;
-		if (!requireFresh("status", "joinRequests")) return;
-		if (coordinatorAdminState.joinReviewPendingId) return;
-		const operationTarget = coordinatorAdminState.joinRequestsSnapshotTarget;
-		coordinatorAdminState.joinReviewPendingId = requestId;
-		coordinatorAdminState.joinReviewPendingAction = action;
-		renderShell();
-		try {
-			const result = (await api.reviewCoordinatorAdminJoinRequest(requestId, action)) as {
-				setup_warning?: { step?: string; error?: string } | null;
-			};
-			if (!adminSnapshotTargetMatchesCurrent(operationTarget)) return;
-			try {
-				await reloadData();
-			} catch {
-				showGlobalNotice(
-					`Join request ${action === "approve" ? "approved" : "denied"}, but pending requests could not refresh. Check coordinator recovery status before reviewing another request.`,
-					"warning",
-				);
-				return;
-			}
-			if (action === "approve" && result.setup_warning) {
-				showGlobalNotice(
-					"Join request approved, but default Space access needs repair.",
-					"warning",
-				);
-			} else {
-				showGlobalNotice(
-					action === "approve" ? "Join request approved." : "Join request denied.",
-					"success",
-				);
-			}
-		} catch (cause) {
-			if (!adminSnapshotTargetMatchesCurrent(operationTarget)) return;
-			if (isMissingJoinRequestError(cause)) {
-				try {
-					await reloadData();
-					showGlobalNotice(
-						"This legacy coordinator join request no longer exists. Pending requests were refreshed.",
-						"warning",
-					);
-				} catch {
-					showGlobalNotice(
-						"This legacy coordinator join request no longer exists. Refresh pending requests before reviewing another request.",
-						"warning",
-					);
-				}
-			} else {
-				showGlobalNotice(
-					"Could not review the legacy coordinator join request. Sharing policy is unchanged; check coordinator recovery status and retry.",
-					"warning",
-				);
-			}
-		} finally {
-			coordinatorAdminState.joinReviewPendingId = "";
-			coordinatorAdminState.joinReviewPendingAction = "";
-			renderShell();
-		}
-	}
-
 	async function runDeviceAction(
 		deviceId: string,
 		groupId: string,
@@ -496,7 +426,6 @@ export function createCoordinatorAdminActions(
 	return {
 		createGroupFromAdminPanel,
 		runGroupAction,
-		reviewJoinRequestFromAdminPanel,
 		runDeviceAction,
 	};
 }

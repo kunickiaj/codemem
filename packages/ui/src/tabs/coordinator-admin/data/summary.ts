@@ -35,7 +35,7 @@ export function coordinatorAdminSummary(): CoordinatorAdminSummary {
 			readiness: "ready",
 			title: "Legacy coordinator administration is ready",
 			detail:
-				"This viewer can manage legacy coordinator groups, invites, join requests, and enrolled devices without exposing the admin secret to the browser.",
+				"This viewer can manage legacy coordinator groups, invites, and enrolled devices without exposing the admin secret to the browser.",
 		};
 	}
 	if (status.readiness === "partial") {

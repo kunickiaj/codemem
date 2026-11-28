@@ -36,6 +36,7 @@ import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
+import { DeviceJoinRequests, type DeviceJoinRequestsApi } from "./device-join-requests";
 import { DeviceRejoinHistory } from "./device-rejoin-history";
 import { DeviceRejoinNotice } from "./device-rejoin-notice";
 import {
@@ -103,6 +104,9 @@ export interface DevicesRendererOptions {
 	inventory?: DeviceIdentityInventoryV1;
 	rejoinHistoryRevision?: number;
 	rejoinHistoryProfile?: string;
+	/** Set when a coordinator is configured. Changes each time Devices reloads. */
+	joinRequestsRevision?: number;
+	joinRequestsApi?: DeviceJoinRequestsApi;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
@@ -2708,6 +2712,13 @@ function DevicesRoot({
 			</div>
 			{pairing.panel}
 			<DevicesSyncSummary options={options} />
+			{options.joinRequestsRevision !== undefined && !options.loading && !options.loadError ? (
+				<DeviceJoinRequests
+					api={options.joinRequestsApi}
+					onReviewed={options.onCommitted}
+					openRevision={options.joinRequestsRevision}
+				/>
+			) : null}
 			<DevicesView
 				intent={intent}
 				onOpenPairing={pairing.onOpen}

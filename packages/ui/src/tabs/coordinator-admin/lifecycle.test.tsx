@@ -18,7 +18,6 @@ import { adminSnapshotTargetMatchesCurrent } from "./data/target-group";
 const mocks = vi.hoisted(() => ({
 	loadCoordinatorAdminDevices: vi.fn(),
 	loadCoordinatorAdminGroupsFiltered: vi.fn(),
-	loadCoordinatorAdminJoinRequests: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
 	loadProjects: vi.fn(),
 	loadShareOperations: vi.fn(),
@@ -67,9 +66,6 @@ function successfulPayloads() {
 	});
 	mocks.loadCoordinatorAdminGroupsFiltered.mockResolvedValue({
 		items: [{ group_id: "group-a", display_name: "Group A" }],
-	});
-	mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({
-		items: [{ request_id: "request-a", device_id: "device-a" }],
 	});
 	mocks.loadCoordinatorAdminDevices.mockResolvedValue({
 		items: [{ device_id: "device-a", group_id: "group-a", display_name: "Laptop" }],
@@ -138,7 +134,6 @@ function setupCoordinatorAdminLifecycleTest() {
 	localStorage.clear();
 	state.lastCoordinatorAdminStatus = null;
 	state.lastCoordinatorAdminGroups = [];
-	state.lastCoordinatorAdminJoinRequests = [];
 	state.lastCoordinatorAdminDevices = [];
 	state.lastTeamInvite = null;
 	state.coordinatorAdminTargetGroup = "";
@@ -147,7 +142,6 @@ function setupCoordinatorAdminLifecycleTest() {
 	coordinatorAdminState.recoveryAnnouncement = "";
 	coordinatorAdminState.recoveryFocusPending = false;
 	coordinatorAdminState.recoveryRetryRequested = false;
-	coordinatorAdminState.joinRequestsSnapshotTarget = null;
 	coordinatorAdminState.devicesSnapshotTarget = null;
 	coordinatorAdminState.groupRenameDrafts.clear();
 	coordinatorAdminState.groupPresentationAliases.clear();
@@ -166,56 +160,6 @@ function setupCoordinatorAdminLifecycleTest() {
 describe("coordinator administration recovery lifecycle", () => {
 	beforeEach(setupCoordinatorAdminLifecycleTest);
 
-	it("reserves explicit names across device surfaces before allocating aliases", async () => {
-		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({
-			items: [{ request_id: "request-unnamed", device_id: "join-unnamed", display_name: "" }],
-		});
-		mocks.loadCoordinatorAdminDevices.mockResolvedValue({
-			items: [
-				{
-					device_id: "device-named",
-					group_id: "group-a",
-					display_name: "Unnamed device 1",
-				},
-			],
-		});
-
-		const refreshed = await loadCoordinatorAdminData();
-
-		expect(refreshed).toBe(true);
-		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
-			"Unnamed device 2",
-		);
-		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.has("device-named")).toBe(false);
-	});
-
-	it("reallocates an existing alias after a later refresh reveals a colliding name", async () => {
-		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({
-			items: [{ request_id: "request-unnamed", device_id: "join-unnamed", display_name: "" }],
-		});
-		mocks.loadCoordinatorAdminDevices.mockRejectedValueOnce(new Error("devices failed"));
-
-		await loadCoordinatorAdminData();
-		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
-			"Unnamed device 1",
-		);
-
-		mocks.loadCoordinatorAdminDevices.mockResolvedValue({
-			items: [
-				{
-					device_id: "device-named",
-					group_id: "group-a",
-					display_name: "Unnamed device 1",
-				},
-			],
-		});
-		await loadCoordinatorAdminData();
-
-		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
-			"Unnamed device 2",
-		);
-	});
-
 	it("marks first-load failures unavailable instead of treating them as empty snapshots", async () => {
 		mocks.loadCoordinatorAdminStatus.mockRejectedValue(new Error("secret backend detail"));
 
@@ -230,20 +174,16 @@ describe("coordinator administration recovery lifecycle", () => {
 	it("retains successful snapshots across repeated refresh failures", async () => {
 		await loadCoordinatorAdminData();
 		const groups = state.lastCoordinatorAdminGroups;
-		const joins = state.lastCoordinatorAdminJoinRequests;
 		const devices = state.lastCoordinatorAdminDevices;
 		mocks.loadCoordinatorAdminGroupsFiltered.mockRejectedValue(new Error("groups failed"));
-		mocks.loadCoordinatorAdminJoinRequests.mockRejectedValue(new Error("joins failed"));
 		mocks.loadCoordinatorAdminDevices.mockRejectedValue(new Error("devices failed"));
 
 		await loadCoordinatorAdminData();
 		await loadCoordinatorAdminData();
 
 		expect(state.lastCoordinatorAdminGroups).toEqual(groups);
-		expect(state.lastCoordinatorAdminJoinRequests).toEqual(joins);
 		expect(state.lastCoordinatorAdminDevices).toEqual(devices);
 		expect(coordinatorAdminState.recovery.groups.availability).toBe("stale");
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("stale");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("stale");
 	});
 
@@ -259,28 +199,24 @@ describe("coordinator administration recovery lifecycle", () => {
 		await loadCoordinatorAdminData();
 		expect(document.body.textContent).toContain("Laptop");
 
-		mocks.loadCoordinatorAdminJoinRequests.mockRejectedValue(new Error("joins failed"));
 		mocks.loadCoordinatorAdminDevices.mockRejectedValue(new Error("devices failed"));
 		state.coordinatorAdminTargetGroup = "group-b";
 
 		await loadCoordinatorAdminData();
 
-		expect(state.lastCoordinatorAdminJoinRequests).toHaveLength(1);
 		expect(state.lastCoordinatorAdminDevices).toHaveLength(1);
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("unavailable");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("unavailable");
 		expect(document.body.textContent).not.toContain("device-a");
 		expect(document.body.textContent).not.toContain("Laptop");
-		expect(document.body.textContent).toContain("Unavailable join requests · Unavailable devices");
+		expect(document.body.textContent).toContain("Unavailable devices");
 
 		state.coordinatorAdminTargetGroup = "group-a";
 		await loadCoordinatorAdminData();
 
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("stale");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("stale");
 		expect(document.body.textContent).toContain("device-a");
 		expect(document.body.textContent).toContain("Laptop");
-		expect(document.body.textContent).toContain("1 join requests · 1 devices");
+		expect(document.body.textContent).toContain("1 devices");
 	});
 
 	it("does not mark another group's enrollment snapshots stale after status refresh fails", async () => {
@@ -296,7 +232,6 @@ describe("coordinator administration recovery lifecycle", () => {
 
 		await loadCoordinatorAdminData();
 
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("unavailable");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("unavailable");
 	});
 
@@ -308,7 +243,6 @@ describe("coordinator administration recovery lifecycle", () => {
 
 		await loadCoordinatorAdminData();
 
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("unavailable");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("unavailable");
 		expect(coordinatorAdminRecoveryNotice(coordinatorAdminState.recovery)).not.toBeNull();
 	});
@@ -332,22 +266,18 @@ describe("coordinator administration recovery lifecycle", () => {
 	it("isolates partial panel failures while refreshing healthy surfaces", async () => {
 		await loadCoordinatorAdminData();
 		mocks.loadCoordinatorAdminGroupsFiltered.mockRejectedValue(new Error("groups failed"));
-		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({ items: [] });
 		mocks.loadCoordinatorAdminDevices.mockResolvedValue({ items: [] });
 
 		await loadCoordinatorAdminData();
 
 		expect(coordinatorAdminState.recovery.groups.availability).toBe("stale");
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("fresh");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("fresh");
 		expect(state.lastCoordinatorAdminGroups).toHaveLength(1);
-		expect(state.lastCoordinatorAdminJoinRequests).toEqual([]);
 		expect(state.lastCoordinatorAdminDevices).toEqual([]);
 	});
 
 	it("distinguishes a confirmed zero count from an unknown count", async () => {
 		mocks.loadCoordinatorAdminGroupsFiltered.mockResolvedValue({ items: [] });
-		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({ items: [] });
 		mocks.loadCoordinatorAdminDevices.mockResolvedValue({ items: [] });
 
 		await loadCoordinatorAdminData();
@@ -435,7 +365,6 @@ describe("coordinator administration recovery lifecycle", () => {
 		expect(state.lastCoordinatorAdminStatus?.active_group).toBe("feed-group");
 		expect(coordinatorAdminState.recovery.status.availability).toBe("fresh");
 		expect(coordinatorAdminState.recovery.groups.retrying).toBe(false);
-		expect(coordinatorAdminState.recovery.joinRequests.retrying).toBe(false);
 		expect(coordinatorAdminState.recovery.devices.retrying).toBe(false);
 	});
 
@@ -450,19 +379,13 @@ describe("coordinator administration recovery lifecycle", () => {
 			readiness: "ready",
 		};
 		state.lastCoordinatorAdminGroups = [{ group_id: "group-a", display_name: "Group A" }];
-		state.lastCoordinatorAdminJoinRequests = [{ request_id: "request-a", device_id: "device-a" }];
 		state.lastCoordinatorAdminDevices = [
 			{ device_id: "device-a", group_id: "group-a", display_name: "Laptop" },
 		];
 		state.coordinatorAdminTargetGroup = "group-a";
 		coordinatorAdminState.recovery.status.availability = "fresh";
 		coordinatorAdminState.recovery.groups.availability = "fresh";
-		coordinatorAdminState.recovery.joinRequests.availability = "fresh";
 		coordinatorAdminState.recovery.devices.availability = "fresh";
-		coordinatorAdminState.joinRequestsSnapshotTarget = {
-			coordinatorUrl: "https://coordinator-a.example",
-			groupId: "group-a",
-		};
 		coordinatorAdminState.devicesSnapshotTarget = {
 			coordinatorUrl: "https://coordinator-a.example",
 			groupId: "group-a",
@@ -481,14 +404,11 @@ describe("coordinator administration recovery lifecycle", () => {
 			" https://coordinator-b.example/ ",
 		);
 		expect(state.lastCoordinatorAdminGroups).toEqual([]);
-		expect(state.lastCoordinatorAdminJoinRequests).toEqual([]);
 		expect(state.lastCoordinatorAdminDevices).toEqual([]);
 		expect(state.lastTeamInvite).toBeNull();
 		expect(state.coordinatorAdminTargetGroup).toBe("");
 		expect(coordinatorAdminState.recovery.groups.availability).toBe("unavailable");
-		expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("unavailable");
 		expect(coordinatorAdminState.recovery.devices.availability).toBe("unavailable");
-		expect(coordinatorAdminState.joinRequestsSnapshotTarget).toBeNull();
 		expect(coordinatorAdminState.devicesSnapshotTarget).toBeNull();
 		expect(coordinatorAdminState.groupRenameDrafts.size).toBe(0);
 		expect(coordinatorAdminState.groupPresentationAliases.size).toBe(0);
@@ -529,10 +449,6 @@ describe("coordinator administration recovery lifecycle", () => {
 		state.lastCoordinatorAdminGroups = [{ group_id: "group-a", display_name: "Group A" }];
 		state.coordinatorAdminTargetGroup = "group-a";
 		coordinatorAdminState.recovery.groups.availability = "fresh";
-		coordinatorAdminState.joinRequestsSnapshotTarget = {
-			coordinatorUrl: "https://coordinator.example",
-			groupId: "group-a",
-		};
 		coordinatorAdminState.devicesSnapshotTarget = {
 			coordinatorUrl: "https://coordinator.example",
 			groupId: "group-a",
@@ -554,9 +470,6 @@ describe("coordinator administration recovery lifecycle", () => {
 		expect(state.lastTeamInvite).toBe(retainedInvite);
 		expect(state.coordinatorAdminTargetGroup).toBe("group-a");
 		expect(coordinatorAdminState.recovery.groups.availability).toBe("fresh");
-		expect(
-			adminSnapshotTargetMatchesCurrent(coordinatorAdminState.joinRequestsSnapshotTarget),
-		).toBe(true);
 		expect(adminSnapshotTargetMatchesCurrent(coordinatorAdminState.devicesSnapshotTarget)).toBe(
 			true,
 		);
@@ -579,14 +492,10 @@ describe("coordinator administration recovery lifecycle", () => {
 
 			expect(coordinatorAdminState.recovery.status.availability).toBe("fresh");
 			expect(coordinatorAdminState.recovery.groups.availability).toBe("not_applicable");
-			expect(coordinatorAdminState.recovery.joinRequests.availability).toBe("not_applicable");
 			expect(coordinatorAdminState.recovery.devices.availability).toBe("not_applicable");
 			expect(mocks.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
 			expect(document.body.textContent).toContain(
 				"Complete legacy coordinator setup before loading coordinator groups",
-			);
-			expect(document.body.textContent).toContain(
-				"Complete legacy coordinator setup to load join requests",
 			);
 			expect(document.body.textContent).toContain(
 				"Complete legacy coordinator setup to load enrolled devices",

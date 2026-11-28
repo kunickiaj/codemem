@@ -11,10 +11,9 @@ import type {
 	CoordinatorAdminScopeView,
 } from "./scope-management";
 
-export type AdminSection = "groups" | "invites" | "join-requests" | "devices";
+export type AdminSection = "groups" | "invites" | "devices";
 
 export type GroupActionKind = "create" | "rename" | "archive" | "unarchive" | "";
-export type JoinReviewAction = "approve" | "deny" | "";
 export type DeviceActionKind = "rename" | "disable" | "enable" | "remove" | "";
 export type InvitePolicy = "auto_admit" | "approval_required";
 export type ScopeManagementActionKind = "load" | "create" | "grant" | "revoke" | "";
@@ -89,11 +88,8 @@ export interface CoordinatorAdminState {
 	createGroupDisplayName: string;
 	groupActionPendingId: string;
 	groupActionPendingKind: GroupActionKind;
-	joinReviewPendingId: string;
-	joinReviewPendingAction: JoinReviewAction;
 	deviceActionPendingId: string;
 	deviceActionPendingKind: DeviceActionKind;
-	joinRequestsSnapshotTarget: CoordinatorAdminSnapshotTarget | null;
 	devicesSnapshotTarget: CoordinatorAdminSnapshotTarget | null;
 	groupRenameDrafts: Map<string, string>;
 	groupPresentationAliases: Map<string, string>;
@@ -131,11 +127,8 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	createGroupDisplayName: "",
 	groupActionPendingId: "",
 	groupActionPendingKind: "",
-	joinReviewPendingId: "",
-	joinReviewPendingAction: "",
 	deviceActionPendingId: "",
 	deviceActionPendingKind: "",
-	joinRequestsSnapshotTarget: null,
 	devicesSnapshotTarget: null,
 	groupRenameDrafts: new Map<string, string>(),
 	groupPresentationAliases: new Map<string, string>(),
