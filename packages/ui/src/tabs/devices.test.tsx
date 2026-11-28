@@ -3494,7 +3494,7 @@ describe("Device unpair menu", () => {
 
 		await vi.waitFor(() =>
 			expect(document.getElementById("devices-commit-status")?.textContent).toBe(
-				"Unpaired this device from Work Laptop. Work Laptop stays in your Teams.",
+				"Unpaired this device from Work Laptop.",
 			),
 		);
 		expect(disconnect).toHaveBeenCalledExactlyOnceWith(deviceId);
