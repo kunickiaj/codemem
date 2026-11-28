@@ -53,6 +53,7 @@ import {
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
 	buildPairingPayload,
+	COORDINATOR_FREE_BINDING_UNVERIFIED,
 	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	type CoordinatorDeviceAnswerLookup,
@@ -3659,6 +3660,12 @@ const COORDINATOR_JOIN_CONFIRMATION = {
 		"Joining a coordinator permanently turns off syncing without a coordinator for this device's key, including other codemem profiles that use the same key.",
 };
 
+const COORDINATOR_RECORD_UNVERIFIED = {
+	error: COORDINATOR_FREE_BINDING_UNVERIFIED,
+	detail:
+		"codemem couldn't check this device's coordinator record because a file in the codemem keys folder is missing or damaged. Restore the keys folder that belongs with this database, then try again.",
+};
+
 const COORDINATOR_RECORD_UNAVAILABLE = {
 	error: COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	detail:
@@ -3676,6 +3683,8 @@ export function inviteImportFailureResponse(
 	// The invitation is fine; this device couldn't record the join before sending it.
 	if (code === COORDINATOR_FREE_WITNESS_UNAVAILABLE)
 		return { status: 503, body: COORDINATOR_RECORD_UNAVAILABLE };
+	if (code === COORDINATOR_FREE_BINDING_UNVERIFIED)
+		return { status: 503, body: COORDINATOR_RECORD_UNVERIFIED };
 	if (invite.projectInvite) return { status: 400, body: projectInviteAcceptanceFailure(error) };
 	if (invite.recipientInvite)
 		return { status: 400, body: { error: safeRecipientInviteError(error) } };

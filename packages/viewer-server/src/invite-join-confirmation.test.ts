@@ -99,3 +99,21 @@ it("answers a recipient or Project invitation whose join can't be recorded the s
 		});
 	}
 });
+
+it("answers an invitation whose key binding can't be verified with how to repair it", () => {
+	const error = new Error("coordinator_free_binding_unverified");
+
+	for (const invite of [
+		{ projectInvite: false, recipientInvite: true },
+		{ projectInvite: true, recipientInvite: false },
+	]) {
+		expect(inviteImportFailureResponse(error, invite)).toEqual({
+			status: 503,
+			body: {
+				error: "coordinator_free_binding_unverified",
+				detail:
+					"codemem couldn't check this device's coordinator record because a file in the codemem keys folder is missing or damaged. Restore the keys folder that belongs with this database, then try again.",
+			},
+		});
+	}
+});

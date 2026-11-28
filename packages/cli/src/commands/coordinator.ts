@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 
 import * as p from "@clack/prompts";
 import {
+	COORDINATOR_FREE_BINDING_UNVERIFIED,
 	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	coordinatorCreateGroupAction,
@@ -182,6 +183,11 @@ function explainRecordFailure(error: unknown): never {
 	if (error instanceof Error && error.message === COORDINATOR_FREE_WITNESS_UNAVAILABLE) {
 		throw new Error(
 			"codemem couldn't save this device's coordinator record. Unlock or repair the keychain, or make the codemem keys folder writable, then try again.",
+		);
+	}
+	if (error instanceof Error && error.message === COORDINATOR_FREE_BINDING_UNVERIFIED) {
+		throw new Error(
+			"codemem couldn't check this device's coordinator record because a file in the codemem keys folder is missing or damaged. Restore the keys folder that belongs with this database, then try again.",
 		);
 	}
 	throw error;
