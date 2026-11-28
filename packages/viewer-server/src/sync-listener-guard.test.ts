@@ -3,7 +3,13 @@ import net from "node:net";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { afterEach, expect, it, vi } from "vitest";
-import { createGuardedSyncServer, type SyncListenerLimits } from "./sync-listener-guard.js";
+import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
+import {
+	createGuardedSyncServer,
+	remoteAddressKey,
+	SYNC_LISTENER_LIMITS,
+	type SyncListenerLimits,
+} from "./sync-listener-guard.js";
 
 const servers: { close(callback?: () => void): unknown }[] = [];
 const sockets: net.Socket[] = [];
@@ -70,14 +76,57 @@ async function dualStackAvailable(): Promise<boolean> {
 	}
 }
 
-it("applies the header, request and expiry-check limits to the server", async () => {
-	const { server } = await listen({ headerMs: 4_000, requestMs: 9_000, checkIntervalMs: 500 });
-
-	expect(server).toMatchObject({
-		headersTimeout: 4_000,
-		requestTimeout: 9_000,
-		maxConnections: 256,
+it("applies the header, request and expiry-check limits and leaves the caps off by default", async () => {
+	const { server, port } = await listen({
+		headerMs: 4_000,
+		requestMs: 9_000,
+		checkIntervalMs: 500,
 	});
+
+	expect(server).toMatchObject({ headersTimeout: 4_000, requestTimeout: 9_000 });
+	expect(server.maxConnections).toBeUndefined();
+	expect(SYNC_LISTENER_LIMITS).toEqual({
+		headerMs: 10_000,
+		requestMs: 30_000,
+		checkIntervalMs: 1_000,
+	});
+	// Thirty open sockets from one address all stay connected, and requests are not throttled.
+	const held = await Promise.all(Array.from({ length: 30 }, () => connect(port, "127.0.0.1")));
+	const statuses = [];
+	for (let i = 0; i < 5; i++) statuses.push((await status(port)).status);
+	expect(statuses.every((code) => code === 200)).toBe(true);
+	expect(held.every((socket) => !socket.destroyed)).toBe(true);
+});
+
+it("accepts connections again after the total socket cap was full", async () => {
+	const { port } = await listen({ maxSockets: 2, headerMs: 5_000 });
+	const held = await Promise.all([1, 2].map(() => connect(port, "127.0.0.1")));
+	const dropped = await connect(port, "127.0.0.1");
+	expect(await closed(dropped)).toBeLessThan(500);
+
+	for (const socket of held) socket.destroy();
+	await Promise.all(held.map(closed));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+
+	expect((await status(port)).status).toBe(200);
+});
+
+it("keeps the limiter's bucket map bounded under address churn", () => {
+	const limiter = createInMemoryRequestRateLimiter(60_000, { maxBuckets: 8 });
+	for (let i = 0; i < 1_000; i++) limiter.check(`sync-listener:198.51.100.${i % 250}:${i}`, 1);
+	expect(limiter.bucketCount?.()).toBe(8);
+	// The most recent key keeps its bucket, so it is still limited.
+	expect(limiter.check("sync-listener:198.51.100.249:999", 1).allowed).toBe(false);
+});
+
+it("groups IPv6 clients by /64 and leaves IPv4 addresses whole", () => {
+	const key = (remoteAddress: string) => remoteAddressKey({ remoteAddress });
+	expect(key("2001:db8:1:2:aaaa::1")).toBe("2001:db8:1:2::/64");
+	expect(key("2001:0db8:0001:0002:bbbb:cccc:dddd:eeee")).toBe("2001:db8:1:2::/64");
+	expect(key("2001:db8:1:3::1")).toBe("2001:db8:1:3::/64");
+	expect(key("fe80::1%en0")).toBe("fe80:0:0:0::/64");
+	expect(key("::ffff:192.0.2.7")).toBe("192.0.2.7");
+	expect(key("192.0.2.7")).toBe("192.0.2.7");
 });
 
 it("closes stalled header senders at the per-address cap while another address still syncs", async (context) => {

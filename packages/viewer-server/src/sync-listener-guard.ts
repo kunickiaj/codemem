@@ -6,8 +6,10 @@ import {
 } from "./request-rate-limit.js";
 
 /**
- * Limits for the network-facing sync listener. They are provisional until the
- * load measurement before direct Noise activation, which may lower them.
+ * Limits for the network-facing sync listener. The header and request
+ * deadlines are always on. The socket caps and the per-address request limit
+ * are off until load measurement of shared-NAT and global saturation sets
+ * values that cannot hurt existing users.
  */
 export interface SyncListenerLimits {
 	/** Time a socket has to deliver complete request headers. */
@@ -16,20 +18,22 @@ export interface SyncListenerLimits {
 	readonly requestMs: number;
 	/** How often Node checks header and request expiry. Its default is 30 s. */
 	readonly checkIntervalMs: number;
-	readonly maxSockets: number;
-	readonly maxSocketsPerIp: number;
-	/** Requests one address may start per minute, counted before any signature check. */
-	readonly requestsPerIpPerMinute: number;
+	/** Open sockets in total. Off when undefined. */
+	readonly maxSockets?: number;
+	/** Open sockets per address, IPv6 grouped by /64. Off when undefined. */
+	readonly maxSocketsPerIp?: number;
+	/** Requests one address may start per minute, before any signature check. Off when undefined. */
+	readonly requestsPerIpPerMinute?: number;
 }
 
 export const SYNC_LISTENER_LIMITS: SyncListenerLimits = Object.freeze({
 	headerMs: 10_000,
 	requestMs: 30_000,
 	checkIntervalMs: 1_000,
-	maxSockets: 256,
-	maxSocketsPerIp: 16,
-	requestsPerIpPerMinute: 600,
 });
+
+/** Distinct address buckets the listener's limiter keeps. Churn evicts the stalest. */
+export const SYNC_LISTENER_MAX_BUCKETS = 4_096;
 
 export interface SyncListenerGuardOptions {
 	readonly limits?: Partial<SyncListenerLimits>;
@@ -39,10 +43,34 @@ export interface SyncListenerGuardOptions {
 
 type RequestListener = (request: IncomingMessage, response: ServerResponse) => void;
 
-/** One key per client address. IPv4 clients of a dual-stack socket arrive as ::ffff:a.b.c.d. */
-export function remoteAddressKey(socket: Socket): string {
-	const address = socket.remoteAddress ?? "unknown";
-	return address.startsWith("::ffff:") ? address.slice(7) : address;
+/** The eight 16-bit groups of an IPv6 address, or null when it does not parse. */
+function ipv6Groups(address: string): number[] | null {
+	const [head = "", tail, extra] = address.split("::");
+	if (extra !== undefined) return null;
+	const left = head ? head.split(":") : [];
+	const right = tail ? tail.split(":") : [];
+	const missing = 8 - left.length - right.length;
+	if ((tail === undefined && missing !== 0) || (tail !== undefined && missing < 1)) return null;
+	const groups = [...left, ...Array<string>(tail === undefined ? 0 : missing).fill("0"), ...right];
+	if (!groups.every((group) => /^[0-9a-f]{1,4}$/i.test(group))) return null;
+	return groups.map((group) => Number.parseInt(group, 16));
+}
+
+/**
+ * One key per client address. IPv4 clients of a dual-stack socket arrive as
+ * ::ffff:a.b.c.d. An IPv6 client usually holds a whole /64, so its addresses
+ * share one key and cannot multiply its share of the caps.
+ */
+export function remoteAddressKey(socket: Pick<Socket, "remoteAddress">): string {
+	const address = (socket.remoteAddress ?? "unknown").split("%")[0] ?? "unknown";
+	if (address.startsWith("::ffff:") && address.includes(".")) return address.slice(7);
+	if (!address.includes(":")) return address;
+	const groups = ipv6Groups(address);
+	if (!groups) return address;
+	return `${groups
+		.slice(0, 4)
+		.map((group) => group.toString(16))
+		.join(":")}::/64`;
 }
 
 function refuseRateLimited(response: ServerResponse, retryAfterS: number): void {
@@ -55,7 +83,7 @@ function refuseRateLimited(response: ServerResponse, retryAfterS: number): void 
 }
 
 /** Counts open sockets per address and closes any over the cap as soon as it connects. */
-function capSocketsPerAddress(server: Server, limits: SyncListenerLimits): void {
+function capSocketsPerAddress(server: Server, maxPerAddress: number): void {
 	const open = new Map<string, number>();
 	server.on("connection", (socket: Socket) => {
 		const key = remoteAddressKey(socket);
@@ -66,7 +94,7 @@ function capSocketsPerAddress(server: Server, limits: SyncListenerLimits): void 
 			if (remaining > 0) open.set(key, remaining);
 			else open.delete(key);
 		});
-		if (count > limits.maxSocketsPerIp) socket.destroy();
+		if (count > maxPerAddress) socket.destroy();
 	});
 }
 
@@ -94,16 +122,31 @@ function closeSilentSockets(server: Server, limits: SyncListenerLimits): (socket
 	return settle;
 }
 
+/** Answers 429 when the address is over its budget. Always allows while the limit is off. */
+function admitRequest(
+	limiter: InMemoryRequestRateLimiter,
+	perMinute: number | undefined,
+	request: IncomingMessage,
+	response: ServerResponse,
+): boolean {
+	if (perMinute === undefined) return true;
+	const result = limiter.check(`sync-listener:${remoteAddressKey(request.socket)}`, perMinute);
+	if (!result.allowed) refuseRateLimited(response, result.retryAfterS);
+	return result.allowed;
+}
+
 /**
- * A createServer replacement for the sync listener. It caps sockets when they
- * are accepted, bounds how long headers and requests may take, and throttles
- * each address before the sync routes verify any signature.
+ * A createServer replacement for the sync listener. It bounds how long headers
+ * and requests may take, and can cap sockets and throttle each address before
+ * the sync routes verify any signature.
  */
 export function createGuardedSyncServer(
 	options: SyncListenerGuardOptions = {},
 ): typeof createServer {
 	const limits = { ...SYNC_LISTENER_LIMITS, ...options.limits };
-	const limiter = options.limiter ?? createInMemoryRequestRateLimiter();
+	const limiter =
+		options.limiter ??
+		createInMemoryRequestRateLimiter(60_000, { maxBuckets: SYNC_LISTENER_MAX_BUCKETS });
 	const guarded = (_serverOptions: unknown, listener?: RequestListener): Server => {
 		const server = createServer(
 			{
@@ -112,19 +155,12 @@ export function createGuardedSyncServer(
 				connectionsCheckingInterval: limits.checkIntervalMs,
 			},
 			(request, response) => {
-				const result = limiter.check(
-					`sync-listener:${remoteAddressKey(request.socket)}`,
-					limits.requestsPerIpPerMinute,
-				);
-				if (!result.allowed) {
-					refuseRateLimited(response, result.retryAfterS);
-					return;
-				}
-				listener?.(request, response);
+				if (admitRequest(limiter, limits.requestsPerIpPerMinute, request, response))
+					listener?.(request, response);
 			},
 		);
-		server.maxConnections = limits.maxSockets;
-		capSocketsPerAddress(server, limits);
+		if (limits.maxSockets !== undefined) server.maxConnections = limits.maxSockets;
+		if (limits.maxSocketsPerIp !== undefined) capSocketsPerAddress(server, limits.maxSocketsPerIp);
 		closeSilentSockets(server, limits);
 		return server;
 	};
