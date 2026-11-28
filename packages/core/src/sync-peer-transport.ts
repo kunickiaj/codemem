@@ -1,6 +1,7 @@
 import type { Database } from "./db.js";
 import {
 	currentPeerPin,
+	DirectNoiseBusy,
 	DirectNoiseNotOffered,
 	directNoiseConnectionFactory,
 } from "./direct-noise-client.js";
@@ -55,6 +56,47 @@ export interface PeerTransportOptions {
 	 * read: the full status comes over Noise, where the peer proves its key.
 	 */
 	readonly bootstrapGrantId?: string;
+	/** How a busy listener is retried. Defaults to BUSY_RETRY. */
+	readonly busyRetry?: Partial<BusyRetry>;
+}
+
+/**
+ * Retries for a listener that answers an upgrade with 429 or 503. Each wait
+ * is a random time up to baseMs doubled per attempt, at least the listener's
+ * Retry-After, and never more than maxMs. Eight attempts wait about 7 s at
+ * most. In the listener load measurement, 128 devices behind one address that
+ * started a pass at the same moment all finished within that bound.
+ */
+export interface BusyRetry {
+	readonly attempts: number;
+	readonly baseMs: number;
+	readonly maxMs: number;
+}
+
+export const BUSY_RETRY: BusyRetry = Object.freeze({ attempts: 8, baseMs: 100, maxMs: 2_000 });
+
+function busyDelayMs(retry: BusyRetry, attempt: number, retryAfterS: number | undefined): number {
+	const jittered = Math.random() * retry.baseMs * 2 ** (attempt - 1);
+	return Math.min(retry.maxMs, Math.max((retryAfterS ?? 0) * 1000, jittered));
+}
+
+function busyDetail(error: DirectNoiseBusy): string {
+	return error.status === "closed" ? "closed with no answer" : `status ${error.status}`;
+}
+
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(signal.reason);
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 type Transport = "noise" | "plaintext";
@@ -187,7 +229,7 @@ class PeerTransport {
 		const statusPin = snapshot ? this.requireStatusFor(state, "noise") : null;
 		if (this.policy() === "noise_required") await this.pinWithGrant(state, request);
 		try {
-			const sent = await this.overNoise(request, statusPin);
+			const sent = await this.overNoiseWhenFree(request, statusPin);
 			state.mode = "noise";
 			return sent;
 		} catch (error) {
@@ -198,6 +240,27 @@ class PeerTransport {
 				throw new PeerTransportRefused(`legacy_not_allowed: ${error.message}`);
 			state.mode = "plaintext";
 			return this.sendPlaintext(state, request, snapshot);
+		}
+	}
+
+	/**
+	 * A busy listener speaks Noise and is only at a cap, so it never leads to
+	 * plaintext or changes this address's mode. Retry it a bounded number of
+	 * times, then fail the request with the reason.
+	 */
+	private async overNoiseWhenFree(request: ExecutorArgs, statusPin: string | null): Promise<Sent> {
+		const retry = { ...BUSY_RETRY, ...this.options.busyRetry };
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await this.overNoise(request, statusPin);
+			} catch (error) {
+				if (!(error instanceof DirectNoiseBusy)) throw error;
+				if (attempt >= retry.attempts)
+					throw new PeerTransportRefused(
+						`noise_busy: peer still busy (${busyDetail(error)}) after ${attempt} attempts; try again later`,
+					);
+				await sleep(busyDelayMs(retry, attempt, error.retryAfterS), request[2]?.signal);
+			}
 		}
 	}
 

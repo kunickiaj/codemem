@@ -24,7 +24,35 @@ export class DirectNoiseNotOffered extends Error {
 	}
 }
 
+/**
+ * The listener is at a cap right now: 503 for its handshake or stream caps,
+ * 429 for its per-address request limit, or "closed" when it closed the
+ * connection before sending any byte, which is how its socket caps refuse.
+ * Retry later. This never means the peer lacks Noise.
+ */
+export class DirectNoiseBusy extends Error {
+	constructor(
+		readonly status: 429 | 503 | "closed",
+		/** The listener's Retry-After, in seconds, when it sent one. */
+		readonly retryAfterS: number | undefined,
+	) {
+		super(`peer is busy (${status})`);
+		this.name = "DirectNoiseBusy";
+	}
+}
+
 const MAX_RESPONSE_HEAD_BYTES = 16 * 1024;
+
+/** A non-101 answer to the upgrade: busy for 429 and 503, otherwise not offered. */
+function refusedSwitch(head: string, status: string | undefined): Error {
+	if (status !== "429" && status !== "503")
+		return new DirectNoiseNotOffered(`status ${status ?? "none"}`);
+	const retryAfter = /\r\nretry-after:[ \t]*(\d{1,4})[ \t]*\r\n/i.exec(head)?.[1];
+	return new DirectNoiseBusy(
+		status === "429" ? 429 : 503,
+		retryAfter ? Number(retryAfter) : undefined,
+	);
+}
 
 export interface DirectNoiseEndpoint {
 	readonly db: Database;
@@ -95,12 +123,20 @@ function readSwitch(socket: net.Socket, signal: AbortSignal): Promise<void> {
 				if (buffered.byteLength > MAX_RESPONSE_HEAD_BYTES) done(new DirectNoiseNotOffered("head"));
 				return;
 			}
-			const status = /^HTTP\/1\.1 (\d{3}) /.exec(buffered.toString("latin1"))?.[1];
-			if (status !== "101") return done(new DirectNoiseNotOffered(`status ${status ?? "none"}`));
+			const head = buffered.subarray(0, end + 4).toString("latin1");
+			const status = /^HTTP\/1\.1 (\d{3}) /.exec(head)?.[1];
+			if (status !== "101") return done(refusedSwitch(head, status));
 			if (buffered.byteLength !== end + 4) return done(new Error("data after the protocol switch"));
 			done();
 		};
-		const onClose = () => done(new DirectNoiseNotOffered("closed"));
+		// A listener without Noise answers the upgrade with a status. Closing with no
+		// answer at all is how the socket caps refuse, so it is busy, never a downgrade.
+		const onClose = () =>
+			done(
+				buffered.byteLength === 0
+					? new DirectNoiseBusy("closed", undefined)
+					: new DirectNoiseNotOffered("closed"),
+			);
 		// A listener that never answers must not hold the socket past the exchange's deadline.
 		const onAbort = () => done(new Error("Direct Noise upgrade got no answer in time"));
 		if (signal.aborted) return onAbort();

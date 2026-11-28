@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
+import { DirectNoiseBusy } from "./direct-noise-client.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import {
@@ -324,4 +325,89 @@ it("accepts each operation on its own route under a base path", async () => {
 	await p.execute("GET", `${base}/v1/snapshot?limit=1`, { operation: "snapshot" });
 
 	expect(stream.opened).toBe(4);
+});
+
+/** Answers busy for the first `busyFor` exchanges, then like a seed that names key-a. */
+function busyThen(busyFor: number) {
+	let calls = 0;
+	return (url: string): [number, Record<string, unknown>] => {
+		calls += 1;
+		if (calls <= busyFor) throw new DirectNoiseBusy(503, undefined);
+		return statusNaming("key-a")(url);
+	};
+}
+
+const FAST_RETRY = { attempts: 3, baseMs: 1, maxMs: 2 };
+
+it.each(["legacy_plaintext", "noise_required"] as const)(
+	"retries a busy listener and never sends plaintext for a %s peer",
+	async (policy) => {
+		const plaintext = recordingPlaintext();
+		const p = pinned("key-a", { plaintext, busyRetry: FAST_RETRY });
+		if (policy === "noise_required")
+			promotePeerToNoiseRequired(p.db, "peer", "transport_statement");
+		stream.pin = "key-a";
+		stream.answer = busyThen(2);
+
+		const [status] = await p.execute("GET", "http://127.0.0.1:7/v1/status", {
+			operation: "status",
+		});
+
+		expect(status).toBe(200);
+		expect(stream.opened).toBe(3);
+		expect(plaintext).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["legacy_plaintext", "noise_required"] as const)(
+	"fails a %s peer's request with the reason once the retries run out",
+	async (policy) => {
+		const plaintext = recordingPlaintext();
+		const p = pinned("key-a", { plaintext, busyRetry: FAST_RETRY });
+		if (policy === "noise_required")
+			promotePeerToNoiseRequired(p.db, "peer", "transport_statement");
+		stream.pin = "key-a";
+		stream.answer = busyThen(Number.POSITIVE_INFINITY);
+
+		await expect(
+			p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" }),
+		).rejects.toThrow("noise_busy: peer still busy (status 503) after 3 attempts; try again later");
+
+		expect(stream.opened).toBe(3);
+		expect(plaintext).not.toHaveBeenCalled();
+		expect(readPeerTransportPolicy(p.db, "peer")).toBe(policy);
+	},
+);
+
+it("keeps a legacy peer on Noise attempts after a busy failure, then promotes it over Noise", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext, busyRetry: FAST_RETRY });
+	stream.pin = "key-a";
+	stream.answer = busyThen(3);
+	const status = () => p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" });
+
+	await expect(status()).rejects.toThrow(/noise_busy/);
+	const [code] = await status();
+
+	expect(code).toBe(200);
+	expect(stream.opened).toBe(4);
+	expect(plaintext).not.toHaveBeenCalled();
+	expect(readPeerTransportPolicy(p.db, "peer")).toBe("noise_required");
+});
+
+it("stops waiting on a busy listener when the request is cancelled", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 6, baseMs: 10_000, maxMs: 10_000 } });
+	stream.answer = busyThen(Number.POSITIVE_INFINITY);
+	const controller = new AbortController();
+	const started = performance.now();
+
+	const request = p.execute("GET", "http://127.0.0.1:7/v1/status", {
+		operation: "status",
+		signal: controller.signal,
+	});
+	setTimeout(() => controller.abort(new Error("cancelled")), 20);
+
+	await expect(request).rejects.toThrow("cancelled");
+	expect(performance.now() - started).toBeLessThan(1_000);
+	expect(stream.opened).toBe(1);
 });
