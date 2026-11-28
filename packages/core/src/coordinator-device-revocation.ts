@@ -4,6 +4,11 @@ import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
 } from "./coordinator-ed25519-key-id-compat.js";
+import {
+	hasReadinessGenerationByAll,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 
 export interface CoordinatorDeviceRevocationRecord {
 	readonly subject_kind: "device_id" | "ed25519_key";
@@ -248,8 +253,9 @@ LEFT JOIN enrolled_devices e ON e.group_id = i.group_id AND e.device_id = i.devi
 function revocationStatements(
 	input: CapturedRevocation,
 	keyId: string | null,
-	now: string,
+	options: { now: string; readiness: boolean },
 ): RevocationStatement[] {
+	const { now } = options;
 	const tuple = [input.groupId, input.deviceId, input.publicKey, input.fingerprint];
 	let evidenceSql =
 		input.evidenceKind === "enrollment" ? CURRENT_TUPLE_SQL : CURRENT_TOMBSTONE_TUPLE_SQL;
@@ -271,11 +277,11 @@ ON CONFLICT(subject_kind, subject_value) DO NOTHING`,
 		},
 		// A retry may win just the ID while the key belongs to a previous revocation.
 		// Rows without a filled key ID cannot rule out a canonical key match.
-		{
+		...readinessInvalidation(options.readiness, {
 			sql: `UPDATE groups SET readiness_generation=NULL WHERE changes()=1 AND readiness_generation IS NOT NULL
 AND group_id IN (SELECT group_id FROM enrolled_devices WHERE ${kind === "device_id" ? "device_id=?" : "key_id=? OR key_id IS NULL"})`,
 			values: [value],
-		},
+		}),
 	]);
 	return [
 		{ sql: evidenceSql, values: evidenceValues, read: true },
@@ -337,7 +343,11 @@ t.public_key AS publicKey, t.fingerprint ${ACTIVE_TOMBSTONE_SQL}${requiredRemova
 		const keyId = await ed25519KeyIdForRevocation(input.publicKey);
 		if (input.evidenceKind === "removal_tombstone" && !keyId)
 			return { kind: "rejected", error: "invalid_input" };
-		const statements = revocationStatements(input, keyId, new Date(this.clock()).toISOString());
+		const statements = revocationStatements(input, keyId, {
+			now: new Date(this.clock()).toISOString(),
+			readiness:
+				knownReadinessGeneration(this.backend) || (await hasReadinessGenerationByAll(this.backend)),
+		});
 		const results = await this.backend.batch(statements).catch(incompleteResult);
 		if (results.length !== statements.length) throw new Error("device_revocation_incomplete");
 		for (const result of results.slice(1, -1)) resultChanges(result);

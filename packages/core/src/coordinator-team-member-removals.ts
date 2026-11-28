@@ -1,5 +1,10 @@
 import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
-import { INVALIDATE_CHANGED_GROUP } from "./coordinator-readiness-invalidation.js";
+import {
+	hasReadinessGenerationByAll,
+	INVALIDATE_CHANGED_GROUP,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
 
 /*
@@ -283,6 +288,13 @@ export class TeamMemberRemovalOperations implements CoordinatorTeamMemberRemoval
 		const input = captureRecord(raw);
 		const key = [input.groupId, input.teamId, input.identityId];
 		return this.withStorage(async () => {
+			const invalidation = readinessInvalidation(
+				knownReadinessGeneration(this.backend) || (await hasReadinessGenerationByAll(this.backend)),
+				{
+					sql: INVALIDATE_CHANGED_GROUP,
+					values: [input.groupId],
+				},
+			);
 			const results = await this.backend.batch([
 				{
 					sql: INSERT_SQL,
@@ -296,9 +308,10 @@ export class TeamMemberRemovalOperations implements CoordinatorTeamMemberRemoval
 				},
 				{ sql: REMOVAL_SQL, values: key, read: true },
 				{ sql: GROUP_EXISTS_SQL, values: [input.groupId], read: true },
-				{ sql: INVALIDATE_CHANGED_GROUP, values: [input.groupId] },
+				...invalidation,
 			]);
-			if (results.length !== 4) throw new Error("team_member_removal_incomplete");
+			if (results.length !== 3 + invalidation.length)
+				throw new Error("team_member_removal_incomplete");
 			const [row] = resultRows(results[1]);
 			if (row === undefined) {
 				const present = resultRows<{ present: number }>(results[2])[0]?.present;

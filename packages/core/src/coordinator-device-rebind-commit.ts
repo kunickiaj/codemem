@@ -18,6 +18,11 @@ import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
 } from "./coordinator-ed25519-key-id-compat.js";
+import {
+	hasReadinessGeneration,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 
 /** Finalized rebinds allowed per target Identity in any 24 hours (ADR 0005 Section 8). */
 export const DEVICE_REBIND_DAILY_LIMIT = 3;
@@ -328,6 +333,7 @@ function statements(
 		keyProofHash: string;
 		nullCount: number;
 		enrollments: string;
+		readiness: boolean;
 	},
 ): AuthLinkStatement[] {
 	const { now, bindingId, eventId, keyProofHash } = fields;
@@ -366,12 +372,12 @@ function statements(
 			values: [a.target_identity_id, a.device_id, ...winner],
 		},
 		assertWrite(winner, a.start_authority_json ? fields.nullCount : count),
-		{
+		...readinessInvalidation(fields.readiness, {
 			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL
  AND group_id IN (SELECT json_extract(value,'$.groupId') FROM json_each(?) WHERE json_extract(value,'$.deviceId') = ?)
  AND EXISTS (SELECT 1 FROM ${ATTEMPT} WHERE ${WINNER})`,
 			values: [fields.enrollments, a.device_id, ...winner],
-		},
+		}),
 		{
 			sql: `INSERT INTO coordinator_device_rebind_audit_log
  (coordinator_id, event_id, attempt_id, action, binding_id, device_id, previous_identity_id,
@@ -479,6 +485,7 @@ export async function commitDeviceRebind(
 		nullCount: (JSON.parse(scan.enrollments) as KeyRow[]).filter(
 			(e) => e.deviceId === row.device_id && e.identityId === null,
 		).length,
+		readiness: knownReadinessGeneration(backend) || (await hasReadinessGeneration(backend)),
 	});
 	// A changed authority read aborts the batch with nothing written. Either way the
 	// receipt read below reports this commit, a concurrent exact retry that won, or a refusal.

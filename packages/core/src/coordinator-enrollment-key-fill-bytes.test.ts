@@ -4,6 +4,16 @@ import {
 	CANONICAL_PUBLIC_KEY,
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { READINESS_GENERATION_PRESENT } from "./coordinator-readiness-invalidation.js";
+
+type Read = { sql: string; values: (string | number | null)[] };
+/** A backend whose database has migration 0056, so each fill batch has three statements. */
+const migrated =
+	(read: (statement: Read) => Promise<unknown>) =>
+	async (statement: Read): Promise<unknown> =>
+		statement.sql === READINESS_GENERATION_PRESENT
+			? { results: [{ present: 1 }] }
+			: read(statement);
 
 it("fill consumes a contiguous byte-bounded prefix, skips individually oversized rows, and does not write an all-oversized page", async () => {
 	const key = `${CANONICAL_PUBLIC_KEY} ${'é"\\\n'.repeat(62_000)}`;
@@ -14,7 +24,9 @@ it("fill consumes a contiguous byte-bounded prefix, skips individually oversized
 	}));
 	const written: { row_id: number; key_id: string; public_key: string }[][] = [];
 	const store = new DeviceRemovalOperations({
-		all: async ({ values }) => ({ results: rows.filter((row) => row.row_id > Number(values[0])) }),
+		all: migrated(async ({ values }) => ({
+			results: rows.filter((row) => row.row_id > Number(values[0])),
+		})),
 		batch: async (statements) => {
 			const entries = JSON.parse(String(statements[0]?.values[0]));
 			written.push(entries);
@@ -41,7 +53,7 @@ it("fill consumes a contiguous byte-bounded prefix, skips individually oversized
 	}
 	let writes = 0;
 	const largeOnly = new DeviceRemovalOperations({
-		all: async () => ({ results: [rows[3]] }),
+		all: migrated(async () => ({ results: [rows[3]] })),
 		batch: async () => {
 			writes++;
 			throw new Error("Must not write");
@@ -63,7 +75,7 @@ it("fill consumes a contiguous byte-bounded prefix, skips individually oversized
 	const boundary = { row_id: 4, public_key: "x".repeat(1_000_000 - overhead) };
 	let sent = 0;
 	const bounded = new DeviceRemovalOperations({
-		all: async () => ({ results: [boundary] }),
+		all: migrated(async () => ({ results: [boundary] })),
 		batch: async (statements) => {
 			sent++;
 			expect(new TextEncoder().encode(String(statements[0]?.values[0])).byteLength).toBe(1_000_000);

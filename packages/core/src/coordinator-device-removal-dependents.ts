@@ -1,3 +1,4 @@
+import { readinessInvalidation } from "./coordinator-readiness-invalidation.js";
 /**
  * What a removal writes beyond the tombstone and the enrollment, as statements
  * for the removal's own transaction or batch. Every statement finds its rows
@@ -159,12 +160,13 @@ export interface RemovalDependents {
 	/** Receipts, audit rows, memberships, bootstrap grants and join requests, in that order. */
 	writes: RemovalDependentStatement[];
 	complete: RemovalDependentStatement;
-	invalidate: RemovalDependentStatement;
+	/** Empty before migration 0056 adds `groups.readiness_generation`. */
+	invalidate: RemovalDependentStatement[];
 }
 
 export function removalDependentStatements(
 	own: OwnTombstones,
-	removal: { actorId: string | null; now: string },
+	removal: { actorId: string | null; now: string; readiness: boolean },
 ): RemovalDependents {
 	const { actorId, now } = removal;
 	return {
@@ -178,7 +180,7 @@ export function removalDependentStatements(
 		complete: completeStatement(own),
 		// A last enrollment can revoke memberships outside its tombstone group.
 		// The receipt identifies the scope, whose group may have changed since the grant.
-		invalidate: {
+		invalidate: readinessInvalidation(removal.readiness, {
 			sql: `UPDATE groups SET readiness_generation=NULL WHERE readiness_generation IS NOT NULL AND group_id IN (
  SELECT t.group_id FROM coordinator_device_removals t WHERE ${own.sql}
  UNION ALL
@@ -188,7 +190,7 @@ export function removalDependentStatements(
  JOIN coordinator_scopes s ON s.scope_id=r.scope_id
  WHERE ${own.sql})`,
 			values: [...own.values, ...own.values],
-		},
+		}),
 	};
 }
 

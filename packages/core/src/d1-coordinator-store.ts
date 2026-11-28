@@ -252,8 +252,12 @@ import { selectDeviceListingCapabilities } from "./coordinator-presence-capabili
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
 	CLEAR_CHANGED_GROUP,
+	hasReadinessGeneration,
 	INVALIDATE_CHANGED_GROUP,
 	INVALIDATE_CHANGED_SCOPE_GROUP,
+	knownReadinessGeneration,
+	readinessInvalidation,
+	shareReadinessGenerationCheck,
 } from "./coordinator-readiness-invalidation.js";
 import {
 	readRecipientOwnerConsistency,
@@ -592,7 +596,12 @@ async function runAuditedBatch(
 	if (!db.batch) {
 		throw new Error("D1 batch support is required for audited scope membership changes.");
 	}
-	return await db.batch([...statements, db.prepare(INVALIDATE_CHANGED_SCOPE_GROUP).bind(scopeId)]);
+	const invalidation = readinessInvalidation(
+		knownReadinessGeneration(db) || (await readinessGenerationPresent(db)),
+		db.prepare(INVALIDATE_CHANGED_SCOPE_GROUP).bind(scopeId),
+	);
+	const results = await db.batch([...statements, ...invalidation]);
+	return results.slice(0, statements.length);
 }
 
 function batchResultChanges(result: unknown): number {
@@ -654,6 +663,11 @@ async function firstRow<T>(statement: D1PreparedStatementLike): Promise<T | null
 	return await statement.first<T>();
 }
 
+/** Whether this database has `groups.readiness_generation` yet (migration 0056). */
+function readinessGenerationPresent(db: D1DatabaseLike): Promise<boolean> {
+	return hasReadinessGeneration({ first: ({ sql }) => firstRow(db.prepare(sql)) }, db);
+}
+
 function requireScopeAuthorizationRows<T>(result: { results?: T[] }): T[] {
 	// A lost read receipt is not an empty authority source.
 	if (
@@ -680,13 +694,14 @@ async function groupWriteBatch(
 	statements: D1PreparedStatementLike[],
 ) {
 	if (!db.batch) throw new Error("device_ownership_authorization_unavailable");
-	const results = await db.batch([
-		...statements,
+	const invalidation = readinessInvalidation(
+		knownReadinessGeneration(db) || (await readinessGenerationPresent(db)),
 		db.prepare(INVALIDATE_CHANGED_GROUP).bind(groupId),
-	]);
-	if (results.length !== statements.length + 1)
+	);
+	const results = await db.batch([...statements, ...invalidation]);
+	if (results.length !== statements.length + invalidation.length)
 		throw new Error("device_ownership_authorization_unavailable");
-	return results.slice(0, -1);
+	return results.slice(0, statements.length);
 }
 
 async function groupWriteChanges(
@@ -1078,7 +1093,10 @@ async function repairBoundRecipientInviteIdentity(
 					opts.fingerprint,
 					...guard.values,
 				),
-			db.prepare(INVALIDATE_CHANGED_GROUP).bind(invite.group_id),
+			...readinessInvalidation(
+				knownReadinessGeneration(db) || (await readinessGenerationPresent(db)),
+				db.prepare(INVALIDATE_CHANGED_GROUP).bind(invite.group_id),
+			),
 		],
 		{ ...guard, guards: firstWriteGuards },
 	);
@@ -1493,18 +1511,22 @@ function prepareRecipientInviteBootstrap(db: D1DatabaseLike, write: RecipientInv
 function prepareFreshRecipientInvite(
 	db: D1DatabaseLike,
 	write: RecipientInviteConsume,
-	lifting: boolean,
+	options: { lifting: boolean; readiness: boolean },
 ) {
 	const statements = prepareRecipientInviteConsume(db, write);
-	if (lifting)
+	if (options.lifting)
 		statements.push(
 			db.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('device_removed') END"),
 		);
 	// The invitation pins a live group. Matching that row even when its generation
 	// is already NULL preserves changes() (one or zero) for the bootstrap grant.
+	// Before migration 0056 there is no clear, and changes() is the consume's own.
 	return [
 		...statements,
-		db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id),
+		...readinessInvalidation(
+			options.readiness,
+			db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id),
+		),
 		...prepareRecipientInviteBootstrap(db, write),
 	];
 }
@@ -1522,7 +1544,10 @@ async function consumeFreshRecipientInvite(
 	const { lift, consistency } = options;
 	const changes = await runRecipientInviteBatch(
 		db,
-		prepareFreshRecipientInvite(db, write, lift.length > 0),
+		prepareFreshRecipientInvite(db, write, {
+			lifting: lift.length > 0,
+			readiness: knownReadinessGeneration(db) || (await readinessGenerationPresent(db)),
+		}),
 		{
 			sql: write.eligibilitySql,
 			values: write.eligibilityValues,
@@ -1737,23 +1762,28 @@ function prepareProjectInviteConsume(
  * A retry repairs only its pinned enrollment. Fresh enrollment requires the
  * consume winner of this batch.
  */
-function prepareProjectInviteTokenAndEnrollment(
+async function prepareProjectInviteTokenAndEnrollment(
 	db: D1DatabaseLike,
 	write: ProjectInviteConsume,
 	lift: AuthLinkStatement[],
-): D1PreparedStatementLike[] {
+): Promise<D1PreparedStatementLike[]> {
+	// Before migration 0056 there is no clear, and the bootstrap reads the enrollment's changes().
+	const clear = readinessInvalidation(
+		knownReadinessGeneration(db) || (await readinessGenerationPresent(db)),
+		db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id),
+	);
 	if (!write.invite.consumed_at) {
 		const statements = prepareProjectInviteConsume(db, write);
 		if (lift.length)
 			statements.push(
 				db.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('device_removed') END"),
 			);
-		return [...statements, db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id)];
+		return [...statements, ...clear];
 	}
 	return [
 		prepareProjectInviteRetryConsume(db, write),
 		prepareBoundProjectInviteIdentityRepair(db, write),
-		db.prepare(CLEAR_CHANGED_GROUP).bind(write.invite.group_id),
+		...clear,
 	];
 }
 
@@ -1879,6 +1909,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				);
 			},
 		};
+		shareReadinessGenerationCheck(ledgerBackend, db);
 		this.deviceRevocations = new DeviceRevocationOperations(ledgerBackend, options.authClock);
 		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
 		this.boundaryReadiness = new BoundaryReadinessOperations(
@@ -1892,6 +1923,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const authBackend = createD1AuthLinkBackend(db);
 		this.controllerBackend = authBackend;
 		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
+		for (const backend of [authBackend, this.accountChangeBackend])
+			shareReadinessGenerationCheck(backend, db);
 		this.accountChangesCapability = new AccountChangeOperations(
 			this.accountChangeBackend,
 			options.authClock,
@@ -3301,7 +3334,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			guard,
 		};
 		const statements = [
-			...prepareProjectInviteTokenAndEnrollment(this.db, consume, guard.lift),
+			...(await prepareProjectInviteTokenAndEnrollment(this.db, consume, guard.lift)),
 			this.db
 				.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 					trust_state = 'bootstrap_grant_created'
@@ -4144,7 +4177,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			);
 		const [receipt] = await this.db.batch([
 			insert,
-			this.db.prepare(INVALIDATE_CHANGED_GROUP).bind(normalized.groupId),
+			...readinessInvalidation(
+				knownReadinessGeneration(this.db) || (await readinessGenerationPresent(this.db)),
+				this.db.prepare(INVALIDATE_CHANGED_GROUP).bind(normalized.groupId),
+			),
 		]);
 		if (batchResultChanges(receipt) !== 1) throw new Error("scope insert returned no row");
 		const scope = await this.getScope(normalized.scopeId);
@@ -4159,7 +4195,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const { write, invalidate } = scopePolicyUpdate(opts, existing, nowISO());
 		if (!this.db.batch) throw new Error("scope_update_atomic_batch_required");
 		const statements = [this.db.prepare(write.sql).bind(...write.values)];
-		if (invalidate) statements.push(this.db.prepare(invalidate.sql).bind(...invalidate.values));
+		if (
+			invalidate &&
+			(knownReadinessGeneration(this.db) || (await readinessGenerationPresent(this.db)))
+		)
+			statements.push(this.db.prepare(invalidate.sql).bind(...invalidate.values));
 		const [receipt] = await this.db.batch(statements);
 		if (batchResultChanges(receipt) !== 1) throw new Error("scope_update_conflict");
 		return await this.getScope(existing.scope_id);

@@ -122,17 +122,27 @@ function registerWriterBoundaries(run: Run) {
 				expect.objectContaining({ group_id: groupId, readiness_generation: "prepared" }),
 			);
 		}));
-	it("cannot commit an enrollment without migration 0056", () =>
+	it("commits an enrollment before migration 0056 and clears readiness once it runs", () =>
 		run(async (f) => {
 			const { groupId, deviceId } = f.input;
-			await f.store.createGroup(groupId);
+			const second = `${groupId}-second`;
+			for (const group of [groupId, second]) await f.store.createGroup(group);
+			// A Worker deployed before its D1 migration keeps enrolling devices.
 			await f.exec("ALTER TABLE groups DROP COLUMN readiness_generation");
 			try {
-				await expect(f.store.enrollDevice(groupId, f.input)).rejects.toThrow();
-				expect(await f.store.getEnrollment(groupId, deviceId)).toBeNull();
+				await f.store.enrollDevice(groupId, f.input);
+				expect(await f.store.getEnrollment(groupId, deviceId)).toEqual(
+					expect.objectContaining({ group_id: groupId, device_id: deviceId }),
+				);
 			} finally {
 				await f.exec("ALTER TABLE groups ADD COLUMN readiness_generation TEXT");
 			}
+			// After the migration the same store clears a generation in the enrollment write.
+			await f.exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id=?", second);
+			await f.store.enrollDevice(second, f.input);
+			expect(await f.rows("groups")).toContainEqual(
+				expect.objectContaining({ group_id: second, readiness_generation: null }),
+			);
 		}));
 	it("a two-group removal returns its own two-row receipt and clears both generations", () =>
 		run(async (f) => {

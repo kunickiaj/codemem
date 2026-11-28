@@ -5,7 +5,6 @@ import { writeGuarded } from "./coordinator-auth-read-set.js";
 import {
 	enrollmentKeyIdSql,
 	hasDeviceRemovalSchema,
-	type RemovalColumnSql,
 	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
 import {
@@ -20,6 +19,11 @@ import {
 	verifyOwnerEnrollmentCompletion,
 } from "./coordinator-owner-enrollment-proof.js";
 import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
+import {
+	hasReadinessGeneration,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 import { readOwnerLinkAuthority } from "./owner-enrollment-link-authority.js";
 import { matchesAdmissionOwner } from "./owner-enrollment-owner-pin.js";
 
@@ -179,9 +183,10 @@ export async function commitOwnerEnrollment(input: OwnerEnrollmentCommitInput): 
 		update.sql += " AND a.owner_qualification_id IS ?";
 		update.values.push(a.owner_qualification_id ?? null);
 	}
-	// The attempt already holds the canonical key ID; an older schema has no column for it.
-	const keyIdSql = enrollmentKeyIdSql(await hasDeviceRemovalSchema(backend), "a.key_id");
-	const writes = [update, ...dependentWrites(winner, { now, grantCount: grants.length, keyIdSql })];
+	const writes = [
+		update,
+		...(await dependentWrites(backend, winner, { now, grantCount: grants.length })),
+	];
 	return writeOwnerEnrollment(backend, consistency.guards, writes, winner);
 }
 
@@ -307,11 +312,15 @@ function winningUpdate(
 		],
 	};
 }
-function dependentWrites(
+async function dependentWrites(
+	backend: AuthLinkBackend,
 	winner: string[],
-	options: { now: number; grantCount: number; keyIdSql: RemovalColumnSql },
-): AuthLinkStatement[] {
-	const { now, grantCount, keyIdSql } = options;
+	options: { now: number; grantCount: number },
+): Promise<AuthLinkStatement[]> {
+	const { now, grantCount } = options;
+	// The attempt already holds the canonical key ID; an older schema has no column for it.
+	const keyIdSql = enrollmentKeyIdSql(await hasDeviceRemovalSchema(backend), "a.key_id");
+	const readiness = knownReadinessGeneration(backend) || (await hasReadinessGeneration(backend));
 	const binding: AuthLinkStatement = {
 		sql: `INSERT INTO coordinator_device_ownership_bindings
    (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
@@ -342,12 +351,12 @@ function dependentWrites(
 		assertWrite(winner, 1),
 		enrollment,
 		assertWrite(winner, grantCount),
-		{
+		...readinessInvalidation(readiness, {
 			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
  (SELECT json_extract(p.value,'$.groupId') FROM coordinator_owner_enrollment_attempts a,
  json_each(a.grant_revisions_json) p WHERE ${WINNER})`,
 			values: winner,
-		},
+		}),
 		audit,
 		assertWrite(winner, 1),
 	];

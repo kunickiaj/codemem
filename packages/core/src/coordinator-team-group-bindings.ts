@@ -1,5 +1,10 @@
 import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
-import { INVALIDATE_CHANGED_GROUP } from "./coordinator-readiness-invalidation.js";
+import {
+	hasReadinessGenerationByAll,
+	INVALIDATE_CHANGED_GROUP,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
 
 /*
@@ -210,18 +215,27 @@ export class TeamGroupBindingOperations implements CoordinatorTeamGroupBindingSt
 			throw new Error("invalid_input");
 		await this.withStorage(async () => {
 			const now = new Date(this.clock()).toISOString();
+			// The invalidation reads the claim's changes(), so it directly follows the claim.
+			const invalidation = readinessInvalidation(
+				knownReadinessGeneration(this.backend) || (await hasReadinessGenerationByAll(this.backend)),
+				{
+					sql: INVALIDATE_CHANGED_GROUP,
+					values: [groupId],
+				},
+			);
+			const insert = 1 + invalidation.length;
 			const results = await this.backend.batch([
 				{ sql: CLAIM_SQL, values: [teamId, groupId, now, teamId, teamId, groupId] },
-				{ sql: INVALIDATE_CHANGED_GROUP, values: [groupId] },
+				...invalidation,
 				{
 					sql: boundTeamInviteInsertSql(input.insertSql),
 					values: [...input.values, teamId, groupId],
 				},
 				{ sql: BINDING_SQL, values: [teamId], read: true },
 			]);
-			if (results.length !== 4) throw new Error("team_group_binding_incomplete");
-			if (changes(results[2]) === 1) return;
-			const bound = rows<{ group_id: string }>(results[3])[0];
+			if (results.length !== insert + 2) throw new Error("team_group_binding_incomplete");
+			if (changes(results[insert]) === 1) return;
+			const bound = rows<{ group_id: string }>(results[insert + 1])[0];
 			if (bound && bound.group_id !== groupId) throw new Error("team_bound_to_other_group");
 			if (!bound) throw new Error("team_binding_conflict");
 			throw new Error("team_group_binding_incomplete");
@@ -262,13 +276,21 @@ export class TeamGroupBindingOperations implements CoordinatorTeamGroupBindingSt
 			throw new Error("invalid_input");
 		return this.withStorage(async (): Promise<CoordinatorBindTeamGroupResult> => {
 			const now = new Date(this.clock()).toISOString();
+			const invalidation = readinessInvalidation(
+				knownReadinessGeneration(this.backend) || (await hasReadinessGenerationByAll(this.backend)),
+				{
+					sql: INVALIDATE_CHANGED_GROUP,
+					values: [groupId],
+				},
+			);
 			const results = await this.backend.batch([
 				{ sql: ADMIN_BIND_SQL, values: [teamId, groupId, now, groupId, teamId] },
 				{ sql: BINDING_SQL, values: [teamId], read: true },
 				{ sql: GROUP_EXISTS_SQL, values: [groupId], read: true },
-				{ sql: INVALIDATE_CHANGED_GROUP, values: [groupId] },
+				...invalidation,
 			]);
-			if (results.length !== 4) throw new Error("team_group_binding_incomplete");
+			if (results.length !== 3 + invalidation.length)
+				throw new Error("team_group_binding_incomplete");
 			const bound = rows<{ group_id: string }>(results[1])[0];
 			if (!bound) {
 				if (rows<{ present: number }>(results[2])[0]?.present === 0)

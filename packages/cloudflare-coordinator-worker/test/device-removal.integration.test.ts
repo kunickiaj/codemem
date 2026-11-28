@@ -150,13 +150,18 @@ describe("native D1 device removal", () => {
 		try {
 			await f.store.createGroup(enrollment.groupId);
 			await f.store.enrollDevice(enrollment.groupId, { deviceId: enrollment.deviceId, ...key });
-			// Act
-			const between = { ready: await ready(), removal: f.store.removeEnrollment(enrollment) };
-			const preview = f.store.previewDeviceRemoval({ deviceIds: [enrollment.deviceId] });
+			// Act: each refusal gets its handler at once, so neither is reported unhandled.
+			const between = await ready();
+			const removal = expect(f.store.removeEnrollment(enrollment)).rejects.toThrow(
+				"device_removal_unavailable",
+			);
+			const preview = expect(
+				f.store.previewDeviceRemoval({ deviceIds: [enrollment.deviceId] }),
+			).rejects.toThrow("device_removal_unavailable");
 			// Assert
-			expect(between.ready).toBe(0);
-			await expect(between.removal).rejects.toThrow("device_removal_unavailable");
-			await expect(preview).rejects.toThrow("device_removal_unavailable");
+			expect(between).toBe(0);
+			await removal;
+			await preview;
 			expect(
 				await f.rows("SELECT key_id FROM enrolled_devices WHERE device_id = ?", enrollment.deviceId),
 			).toEqual([{ key_id: key.keyId }]);

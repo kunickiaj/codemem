@@ -11,6 +11,7 @@ const OP = {
 	removalId: "b0b2b292-bec4-4d16-a583-3a18950f0810",
 	actorId: null,
 	now: "2026-11-18T00:00:00Z",
+	readiness: true,
 };
 function target(count: number, publicKey = "opaque"): DeviceRemovalTarget {
 	const rows = Array.from({ length: count }, (_, i) => ({
