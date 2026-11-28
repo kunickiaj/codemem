@@ -4359,7 +4359,7 @@ function rejectUnretiredScopeFailures(
  * Whether an op would change a memory this device stores, or has recorded as
  * storing, more than one copy of. Its clock would be compared against one copy
  * and the others left to diverge, so it applies to none of them and is held until
- * the duplicates are repaired (replayReleasedHeldOps). A cleanup notice
+ * the duplicates are repaired (heldReplay). A cleanup notice
  * still applies, since it only removes copies.
  */
 function opTargetsAmbiguousCopies(db: Database, op: ReplicationOp): boolean {
@@ -4393,7 +4393,7 @@ function skipOwnRetiredOrAppliedOp(
 			.get() !== undefined;
 	if (applied) return true;
 	// Held, not applied or failed: which copy the op would change is unclear. The
-	// sender's cursor moves on, and replayReleasedHeldOps applies the op once the
+	// sender's cursor moves on, and heldReplay runs the op ahead of a later batch once the
 	// memory is repaired or its copies are gone.
 	if (!opTargetsAmbiguousCopies(db, op)) return false;
 	holdAmbiguousOp(db, op, inboundSender(options));
@@ -4406,42 +4406,42 @@ function inboundSender(options: ApplyReplicationOpsOptions): string | null {
 }
 
 /**
- * Applies the changes held for memories that are no longer stored or recorded
- * more than once, one at a time, each checked again against its sender's current
- * access to the scopes it writes. A change whose sender is no longer a member of
- * its scope is dropped; any other rejection or failure leaves it held. Returns
- * their vector work.
+ * The held changes an apply runs ahead of its incoming ops: those whose memory is
+ * no longer stored or recorded more than once, in the order they arrived, each
+ * checked again against its sender's current access to the scopes it writes. A
+ * change whose sender is no longer a member is dropped; one with any other
+ * rejection stays held for a later apply. They run ahead of the batch's own ops.
+ * beginOp starts each op: it clears the op's vector work and opens its savepoint,
+ * and a replayed change leaves the held table
+ * inside it, so a change that fails stays held.
  */
-export function replayReleasedHeldOps(
+function heldReplay(
 	db: Database,
 	localDeviceId: string,
-	scanner?: SecretScanner,
-): ReplicationVectorWork {
-	const work: ReplicationVectorWork = { upsertMemoryIds: [], deleteMemoryIds: [] };
+	effects: Parameters<typeof finishReplicationOp>[2],
+) {
+	const ops: ReplicationOp[] = [];
 	for (const held of releasedHeldOps(db)) {
 		const validation = held.senderDeviceId ? { peerDeviceId: held.senderDeviceId } : null;
-		const replay = db.transaction(() => {
-			forgetHeldOp(db, held.op.op_id);
-			const result = applyReplicationOpsInternal(db, [held.op], localDeviceId, scanner, {
-				inboundScopeValidation: validation,
-			});
-			// Dropped only when its sender lost access to the scope. Any other rejection
-			// (a stale membership epoch, say) or failure rolls back, keeping it held.
-			const senderLostAccess = result.rejections.some(
-				(rejection) => rejection.reason === "sender_not_member",
-			);
-			if (!senderLostAccess && result.errors.length > 0) throw new Error(result.errors.join("; "));
-			return result;
+		const rejected = rejectedInboundBatch(db, [held.op], localDeviceId, {
+			inboundScopeValidation: validation,
 		});
-		try {
-			const { vectorWork } = replay();
-			work.upsertMemoryIds.push(...vectorWork.upsertMemoryIds);
-			work.deleteMemoryIds.push(...vectorWork.deleteMemoryIds);
-		} catch {
-			// Still held; a later apply or repair tries again.
-		}
+		if (!rejected) ops.push(held.op);
+		else if (rejected.rejections.some((r) => r.reason === "sender_not_member"))
+			forgetHeldOp(db, held.op.op_id);
 	}
-	return work;
+	const heldIds = new Set(ops.map((op) => op.op_id));
+	// A replayed change was received earlier, not from the peer this batch came from.
+	const replayEffects = { ...effects, activityPeer: undefined };
+	return {
+		ops,
+		beginOp: (op: ReplicationOp) => {
+			effects.opVectorWork.clear();
+			db.exec("SAVEPOINT codemem_replication_op");
+			if (heldIds.has(op.op_id)) forgetHeldOp(db, op.op_id);
+		},
+		effectsFor: (op: ReplicationOp) => (heldIds.has(op.op_id) ? replayEffects : effects),
+	};
 }
 
 function rollbackReplicationOp(
@@ -4538,31 +4538,6 @@ export function applyReplicationOps(
 	scanner?: SecretScanner,
 	options: ApplyReplicationOpsOptions = {},
 ): ApplyResult {
-	// Changes held while a memory was stored twice apply once its copies are gone.
-	const replayed = replayReleasedHeldOps(db, localDeviceId, scanner);
-	return withReplayedVectorWork(applyBatch(db, ops, localDeviceId, scanner, options), replayed);
-}
-
-function withReplayedVectorWork(result: ApplyResult, replayed: ReplicationVectorWork): ApplyResult {
-	if (replayed.upsertMemoryIds.length === 0 && replayed.deleteMemoryIds.length === 0) return result;
-	result.vectorWork = {
-		upsertMemoryIds: [
-			...new Set([...result.vectorWork.upsertMemoryIds, ...replayed.upsertMemoryIds]),
-		],
-		deleteMemoryIds: [
-			...new Set([...result.vectorWork.deleteMemoryIds, ...replayed.deleteMemoryIds]),
-		],
-	};
-	return result;
-}
-
-function applyBatch(
-	db: Database,
-	ops: ReplicationOp[],
-	localDeviceId: string,
-	scanner: SecretScanner | undefined,
-	options: ApplyReplicationOpsOptions,
-): ApplyResult {
 	const peer = options.activityPeerDeviceId;
 	if (!peer) return applyReplicationOpsInternal(db, ops, localDeviceId, scanner, options);
 	ensureSyncTransferActivitySchema(db);
@@ -4629,11 +4604,11 @@ function applyReplicationOpsInternal(
 		activityPeer: options.activityPeerDeviceId,
 	};
 	const applyAll = db.transaction(() => {
-		for (const op of ops) {
+		const replay = heldReplay(db, localDeviceId, effects);
+		for (const op of [...replay.ops, ...ops]) {
 			const result = emptyApplyResult();
-			opVectorWork.clear();
 			// Per-op failures must roll back content, provenance, refs, and op acknowledgement together.
-			db.exec("SAVEPOINT codemem_replication_op");
+			replay.beginOp(op);
 			try {
 				// Skip own, retired, and already-applied ops.
 				if (skipOwnRetiredOrAppliedOp(db, d, op, localDeviceId, options)) {
@@ -5008,7 +4983,7 @@ function applyReplicationOpsInternal(
 				rollbackReplicationOp(db, result, opVectorWork);
 				result.errors.push(`op ${op.op_id}: ${err instanceof Error ? err.message : String(err)}`);
 			} finally {
-				finishReplicationOp(db, result, effects, op.op_id);
+				finishReplicationOp(db, result, replay.effectsFor(op), op.op_id);
 			}
 		}
 	});

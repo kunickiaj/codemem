@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { repairAmbiguousMemoryCopy } from "./memory-copy-ambiguity.js";
 import { repairAmbiguousMemory } from "./memory-copy-repair.js";
 import { applyReplicationOps } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
@@ -152,6 +153,48 @@ it("replays held changes in the order they arrived, so a later delete stays appl
 	// Assert: the upsert recreated the memory, then the delete removed it again.
 	expect(db.prepare("SELECT active, rev FROM memory_items").all()).toEqual([{ active: 0, rev: 4 }]);
 	expect(heldOpIds()).toEqual([]);
+});
+
+it("leaves a replayed memory only in the delete list when its held changes end in a delete", () => {
+	// Arrange: a survivor whose held changes are an upsert, then a delete.
+	const kept = insertCopy(1, "Revision 1");
+	const removed = insertCopy(1, "Revision 1, again");
+	const deletion: ReplicationOp = {
+		...incomingUpsert(4),
+		op_id: "incoming-4-delete",
+		op_type: "delete",
+		payload_json: null,
+	};
+	applyReplicationOps(db, [incomingUpsert(3), deletion], "local");
+	db.prepare("DELETE FROM memory_items WHERE id = ?").run(removed);
+	expect(repairAmbiguousMemoryCopy(db, kept)).toMatchObject({ status: "repaired" });
+
+	// Act: the next batch replays both.
+	const { vectorWork } = applyReplicationOps(db, [], "local");
+
+	// Assert: the survivor's embeddings are removed, not rebuilt for a deleted memory.
+	expect(vectorWork).toEqual({ upsertMemoryIds: [], deleteMemoryIds: [kept] });
+	expect(db.prepare("SELECT active FROM memory_items WHERE id = ?").pluck().get(kept)).toBe(0);
+});
+
+it("does not record a replayed change as received from the peer whose batch ran it", () => {
+	insertCopy(1, "Revision 1");
+	insertCopy(1, "Revision 1, again");
+	applyReplicationOps(db, [incomingUpsert(3)], "local");
+	db.prepare("DELETE FROM memory_items").run();
+
+	applyReplicationOps(db, [otherUpsert(1)], "local", undefined, { activityPeerDeviceId: "peer-b" });
+
+	expect(db.prepare("SELECT body_text FROM memory_items ORDER BY id").pluck().all()).toEqual([
+		"Revision 3",
+		"Revision 1",
+	]);
+	expect(
+		db
+			.prepare("SELECT transfer_id FROM sync_transfer_receipts WHERE peer_device_id = 'peer-b'")
+			.pluck()
+			.all(),
+	).toEqual(["other-1"]);
 });
 
 it("keeps a change held again at its first place in the order", () => {

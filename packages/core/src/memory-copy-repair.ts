@@ -9,7 +9,7 @@ import type { Database } from "./db.js";
 import { type AmbiguousCopyRepair, repairAmbiguousMemoryCopy } from "./memory-copy-ambiguity.js";
 import { memoryWrittenHere } from "./memory-copy-provenance.js";
 import type { SecretScanner } from "./secret-scanner.js";
-import { recordReplicationOp, replayReleasedHeldOps } from "./sync-replication.js";
+import { applyReplicationOps, recordReplicationOp } from "./sync-replication.js";
 import { queueVectorBackfillForIncrementalSync } from "./vector-migration.js";
 
 export function repairAmbiguousMemory(
@@ -23,8 +23,9 @@ export function repairAmbiguousMemory(
 		return repaired;
 	})();
 	if (outcome.status !== "repaired") return outcome;
-	const work = replayReleasedHeldOps(db, context.localDeviceId, context.scanner);
-	queueVectorBackfillForIncrementalSync(db, work);
+	// An apply with no incoming ops runs the held changes, like any other batch.
+	const { vectorWork } = applyReplicationOps(db, [], context.localDeviceId, context.scanner);
+	queueVectorBackfillForIncrementalSync(db, vectorWork);
 	return outcome;
 }
 
