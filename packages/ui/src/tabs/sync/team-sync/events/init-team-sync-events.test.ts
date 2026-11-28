@@ -354,7 +354,7 @@ describe("stale invite review results", () => {
 			undefined,
 			"legacy_team_invite",
 		);
-		await vi.waitFor(() => expect(invite.value).toBe(""));
+		expect(invite.value).toBe("");
 		await vi.waitFor(() => expect(button.textContent).toBe("Review invite"));
 	});
 

@@ -7,7 +7,7 @@ import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-ru
 import {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
-	coordinatorImportInviteAction as importInviteAction,
+	coordinatorImportInviteAction,
 } from "./coordinator-actions.js";
 import { decodeInvitePayload, encodeInvitePayload } from "./coordinator-invites.js";
 import { connect } from "./db.js";
@@ -16,10 +16,6 @@ import { initDatabase } from "./maintenance.js";
 import { recipientReviewedIntentDigest } from "./recipient-reviewed-intent.js";
 import { requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
-
-/** Invitations here are accepted by a user who confirmed joining the coordinator. */
-const coordinatorImportInviteAction: typeof importInviteAction = (opts) =>
-	importInviteAction({ confirmCoordinatorJoin: true, ...opts });
 
 async function listen(server: Server): Promise<string> {
 	await new Promise<void>((resolve, reject) => {

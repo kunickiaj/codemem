@@ -14,7 +14,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { coordinatorImportInviteAction } from "./coordinator-actions.js";
 import {
 	attestCoordinatorFree,
 	fileWitness,
@@ -24,7 +23,6 @@ import {
 	readCoordinatorFreeStatus,
 	type WitnessBackend,
 } from "./coordinator-free-attestation.js";
-import { encodeInvitePayload } from "./coordinator-invites.js";
 import { readCoordinatorSyncConfig, registerCoordinatorPresence } from "./coordinator-runtime.js";
 import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -270,41 +268,6 @@ describe("attestation is serialized and bound to one witness kind", () => {
 	});
 });
 
-describe("joining a coordinator needs confirmation", () => {
-	function invite() {
-		return encodeInvitePayload({
-			v: 1,
-			kind: "coordinator_team_invite",
-			coordinator_url: "https://coord.example.test",
-			group_id: "team-a",
-			policy: "auto_admit",
-			token: "join-token",
-			expires_at: "2099-01-01T00:00:00.000Z",
-			team_name: "Team A",
-		});
-	}
-
-	it("refuses an unconfirmed join before any request or mark, unless the store is already managed", async () => {
-		const path = join(directory, "invite.sqlite");
-		const fetchMock = vi.fn(async () => Response.json({ ok: true, status: "enrolled" }));
-		vi.stubGlobal("fetch", fetchMock);
-
-		await expect(
-			coordinatorImportInviteAction({ inviteValue: invite(), dbPath: path, keysDir }),
-		).rejects.toThrow("coordinator_join_confirmation_required");
-
-		expect(fetchMock).not.toHaveBeenCalled();
-		const db = new Database(path);
-		expect(db.prepare("SELECT COUNT(*) FROM coordinator_history").pluck().get()).toBe(0);
-		expect(readdirSync(keysDir).filter((name) => name.startsWith("attestation-"))).toEqual([]);
-		// A store that is already managed loses nothing more, so it isn't asked again.
-		markCoordinatorManaged(db, { keysDir });
-		db.close();
-		await coordinatorImportInviteAction({ inviteValue: invite(), dbPath: path, keysDir });
-		expect(fetchMock).toHaveBeenCalledOnce();
-	});
-});
-
 describe("the managed mark follows the key's bound witness", () => {
 	it("keeps a keychain-bound store closed after trust in file mode and a rollback", () => {
 		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
@@ -365,35 +328,6 @@ describe("presence makes the managed mark durable first", () => {
 		).rejects.toThrow(WITNESS_UNAVAILABLE);
 		expect(fetchMock).not.toHaveBeenCalled();
 		store.db.close();
-	});
-});
-
-describe("join confirmation depends on the key's durable mark", () => {
-	it("asks before a join from a store with history only, whose key another store attested", async () => {
-		const attested = openStore("attested");
-		expect(attestCoordinatorFree(attested.db, { keysDir })).toBe("standalone");
-		const historyOnly = openStore("history-only");
-		addCoordinatorHistory(historyOnly.db);
-		historyOnly.db.close();
-		const fetchMock = vi.fn(async () => Response.json({ ok: true, status: "enrolled" }));
-		vi.stubGlobal("fetch", fetchMock);
-		const invite = encodeInvitePayload({
-			v: 1,
-			kind: "coordinator_team_invite",
-			coordinator_url: "https://coord.example.test",
-			group_id: "team-a",
-			policy: "auto_admit",
-			token: "join-token",
-			expires_at: "2099-01-01T00:00:00.000Z",
-			team_name: "Team A",
-		});
-
-		await expect(
-			coordinatorImportInviteAction({ inviteValue: invite, dbPath: historyOnly.path, keysDir }),
-		).rejects.toThrow("coordinator_join_confirmation_required");
-		expect(fetchMock).not.toHaveBeenCalled();
-		expect(readCoordinatorFreeStatus(attested.db, { keysDir })).toBe("standalone");
-		attested.db.close();
 	});
 });
 

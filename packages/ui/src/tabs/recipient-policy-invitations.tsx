@@ -14,7 +14,6 @@ import type {
 import type { ImportInviteResult } from "../lib/api/types";
 import { humanPresentationLabel, isMachinePresentationLabel } from "../lib/identity-presentation";
 import { projectIdentityMemorySummaryGroups } from "../lib/project-identity-presentation";
-import { acceptCoordinatorInvite } from "./coordinator-join-confirmation";
 import { openProjectShareFlow } from "./project-sharing";
 
 type CreateKind = "team_member" | "add_device";
@@ -755,10 +754,10 @@ async function importInspectedInvitation(
 	inspected: AcceptableInspection,
 ): Promise<ImportInviteResult> {
 	if (inspected.kind === "legacy_team_invite") {
-		return acceptCoordinatorInvite(state.invite.trim(), {}, inspected.kind);
+		return api.importCoordinatorInvite(state.invite.trim(), {}, inspected.kind);
 	}
 	if (inspected.kind === "project_share_invite") {
-		return acceptCoordinatorInvite(
+		return api.importCoordinatorInvite(
 			state.invite.trim(),
 			{
 				recipient_name: state.projectRecipientName.trim(),
@@ -769,7 +768,7 @@ async function importInspectedInvitation(
 	}
 	const recipientName =
 		inspected.kind === "team_member" ? { recipient_name: state.recipientName.trim() } : {};
-	return acceptCoordinatorInvite(
+	return api.importCoordinatorInvite(
 		state.invite.trim(),
 		{
 			...recipientName,

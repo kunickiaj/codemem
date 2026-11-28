@@ -261,14 +261,6 @@ const PROJECT_INVITE_ACCEPTANCE_ERROR_CODES = new Set([
 	"recipient_display_name_too_long",
 ]);
 
-/** The server asks for confirmation before a join that turns off syncing without a coordinator. */
-export class CoordinatorJoinConfirmationRequiredError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "CoordinatorJoinConfirmationRequiredError";
-	}
-}
-
 export class ProjectInviteAcceptanceError extends Error {
 	constructor(
 		message: string,
@@ -301,21 +293,17 @@ export async function importCoordinatorInvite(
 	invite: string,
 	identity?: CoordinatorInviteIdentity,
 	inviteKind?: InspectInviteResult["kind"],
-	options: { confirmCoordinatorJoin?: boolean } = {},
 ): Promise<ImportInviteResult> {
-	const confirmation = options.confirmCoordinatorJoin ? { confirm_coordinator_join: true } : {};
 	const resp = await fetch("/api/sync/invites/import", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ invite, ...identity, ...confirmation }),
+		body: JSON.stringify({ invite, ...identity }),
 	});
 	const { text, payload: data } = await readJsonPayload<ImportInviteResult>(resp);
 	if (!resp.ok) {
 		const detail = typeof data?.detail === "string" ? data.detail.trim() : "";
 		const errorCode = payloadError(data);
 		const message = detail || errorCode || text || "request failed";
-		if (errorCode === "coordinator_join_confirmation_required")
-			throw new CoordinatorJoinConfirmationRequiredError(message);
 		if (
 			inviteKind === "project_share_invite" &&
 			errorCode &&

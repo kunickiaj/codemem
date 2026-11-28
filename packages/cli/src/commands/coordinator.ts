@@ -13,8 +13,6 @@ import { readFileSync } from "node:fs";
 
 import * as p from "@clack/prompts";
 import {
-	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
-	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	coordinatorCreateGroupAction,
 	coordinatorCreateScopeAction,
 	coordinatorDisableDeviceAction,
@@ -136,7 +134,6 @@ interface ImportInviteOptions {
 	deviceName?: string;
 	review?: boolean;
 	reviewedOnboardingDigest?: string;
-	confirmCoordinatorJoin?: boolean;
 	json?: boolean;
 }
 
@@ -148,7 +145,6 @@ function inviteImportProfile(invite: string, opts: ImportInviteOptions) {
 		configPath: opts.config ?? null,
 		recipientDisplayName: opts.recipientName?.trim() || null,
 		deviceDisplayName: opts.deviceName?.trim() || null,
-		confirmCoordinatorJoin: opts.confirmCoordinatorJoin === true,
 	};
 }
 
@@ -162,57 +158,6 @@ async function acceptInviteWithProfileCheck(
 		if (review.reviewed_onboarding_digest !== digest) throw new Error("reviewed_onboarding_stale");
 	}
 	return coordinatorImportInviteAction({ ...profile, reviewedOnboardingDigest: digest });
-}
-
-const COORDINATOR_JOIN_WARNING =
-	"Joining a coordinator permanently turns off syncing without a coordinator for this device's key, including other codemem profiles that use the same key.";
-
-function addInviteAcceptOptions(command: Command): void {
-	addDbOption(command);
-	addConfigOption(command);
-	addJsonOption(command);
-	command.option(
-		"--confirm-coordinator-join",
-		"Join even though it permanently turns off syncing without a coordinator for this device's key",
-	);
-}
-
-/** The invitation is fine; this device couldn't record the join before sending it. */
-function explainRecordFailure(error: unknown): never {
-	if (error instanceof Error && error.message === COORDINATOR_FREE_WITNESS_UNAVAILABLE) {
-		throw new Error(
-			"codemem couldn't save this device's coordinator record. Unlock or repair the keychain, or make the codemem keys folder writable, then try again.",
-		);
-	}
-	throw error;
-}
-
-/** Accepts after the user confirms a join that turns off syncing without a coordinator. */
-async function acceptInviteWithJoinConfirmation(
-	profile: ReturnType<typeof inviteImportProfile>,
-	opts: Pick<ImportInviteOptions, "json" | "reviewedOnboardingDigest">,
-) {
-	const accept = (accepted: typeof profile) =>
-		acceptInviteWithProfileCheck(accepted, opts.reviewedOnboardingDigest).catch(
-			explainRecordFailure,
-		);
-	try {
-		return await accept(profile);
-	} catch (error) {
-		if (!(error instanceof Error) || error.message !== COORDINATOR_JOIN_CONFIRMATION_REQUIRED)
-			throw error;
-		if (opts.json || !process.stdin.isTTY) {
-			throw new Error(
-				`${COORDINATOR_JOIN_WARNING} To join, run the command again with --confirm-coordinator-join.`,
-			);
-		}
-		const confirmed = await p.confirm({
-			message: `${COORDINATOR_JOIN_WARNING} Join this coordinator?`,
-			initialValue: false,
-		});
-		if (confirmed !== true) throw new Error("Invitation not accepted.");
-		return accept({ ...profile, confirmCoordinatorJoin: true });
-	}
 }
 
 function rejectConflictingInviteReviewOptions(opts: {
@@ -1237,7 +1182,9 @@ export function buildCoordinatorCommand(): Command {
 		.option("--review", "Review recipient access without accepting")
 		.option("--reviewed-onboarding-digest <digest>", "Accept the reviewed recipient access")
 		.option("--keys-dir <path>", "keys directory");
-	addInviteAcceptOptions(importInviteCmd);
+	addDbOption(importInviteCmd);
+	addConfigOption(importInviteCmd);
+	addJsonOption(importInviteCmd);
 	importInviteCmd.action(async (invite: string, opts: ImportInviteOptions) => {
 		try {
 			if (rejectConflictingInviteReviewOptions(opts)) return;
@@ -1247,7 +1194,7 @@ export function buildCoordinatorCommand(): Command {
 				printInviteReview(review, opts);
 				return;
 			}
-			const result = await acceptInviteWithJoinConfirmation(profile, opts);
+			const result = await acceptInviteWithProfileCheck(profile, opts.reviewedOnboardingDigest);
 			if (opts.json) {
 				console.log(JSON.stringify(result, null, 2));
 				return;

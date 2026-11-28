@@ -155,7 +155,6 @@ function importCore() {
 		recipientActorId: fixture.store.actorId,
 		recipientDisplayName: "Fixture Owner",
 		deviceDisplayName: "Fixture Laptop",
-		confirmCoordinatorJoin: true,
 	});
 }
 function acceptedResponse() {

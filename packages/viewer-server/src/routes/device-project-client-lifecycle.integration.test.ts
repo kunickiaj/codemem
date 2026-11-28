@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { afterEach, expect, it, vi } from "vitest";
-import { coordinatorImportInviteAction as importInviteAction } from "../../../core/src/coordinator-actions.js";
+import { coordinatorImportInviteAction } from "../../../core/src/coordinator-actions.js";
 import { createCoordinatorApp } from "../../../core/src/coordinator-api.js";
 import { setupStore } from "../../../core/src/coordinator-auth-store-test-fixtures.js";
 import {
@@ -41,10 +41,6 @@ import { createApp } from "../index.js";
 import { createSyncApp } from "../sync-app.js";
 import { deviceRemovalCommitRoutes } from "./device-removal-commit.js";
 import { deviceRemovalReviewRoutes } from "./device-removal-review.js";
-
-/** Invitations here are accepted by a user who confirmed joining the coordinator. */
-const coordinatorImportInviteAction: typeof importInviteAction = (opts) =>
-	importInviteAction({ confirmCoordinatorJoin: true, ...opts });
 
 vi.mock("../../../ui/src/tabs/sync/sync-dialogs", () => ({
 	openSyncConfirmDialog: () => {

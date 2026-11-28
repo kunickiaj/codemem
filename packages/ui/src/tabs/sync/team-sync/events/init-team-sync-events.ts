@@ -15,7 +15,6 @@ import { humanPresentationLabel } from "../../../../lib/identity-presentation";
 import { handlePrimaryActionKeyboard } from "../../../../lib/keyboard";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { state } from "../../../../lib/state";
-import { acceptCoordinatorInvite } from "../../../coordinator-join-confirmation";
 import { openProjectShareFlow } from "../../../project-sharing";
 import type { SyncActionFeedback } from "../../components/sync-inline-feedback";
 import { summarizeSyncRunResult } from "../../view-model";
@@ -256,7 +255,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		syncJoinButton.disabled = true;
 		syncJoinButton.textContent = pendingInviteAction(inspectedInviteKind);
 		try {
-			const result = await acceptCoordinatorInvite(inviteValue, identity, inspectedInviteKind);
+			const result = await api.importCoordinatorInvite(inviteValue, identity, inspectedInviteKind);
 			state.lastTeamJoin = result;
 			let feedback = joinFeedback(result);
 			state.syncJoinFlowFeedback = feedback;
