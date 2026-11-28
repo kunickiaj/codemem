@@ -9,6 +9,7 @@ import {
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
+import { ensurePairingInstanceSchema } from "./pairing-instance.js";
 import { ensurePeerProjectFilterManagementSchema } from "./peer-project-filter-management.js";
 import { ensurePeerProjectFilterRetentionSchema } from "./peer-project-filter-retention.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
@@ -18,6 +19,7 @@ import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
 import { ensureSyncPeerTransportPolicySchema } from "./sync-transport-policy.js";
 import { teamMemberRemovalLinkKey } from "./team-member-removal-lookup.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
+import { ensureUnpairedPeerPinSchema } from "./unpaired-peer-pin.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
 import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
 
@@ -926,6 +928,8 @@ export function bootstrapSchema(db: Database): void {
 		ensureSyncPeerTransportPolicySchema(db);
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerExplicitPairingColumns(db);
+		ensurePairingInstanceSchema(db);
+		ensureUnpairedPeerPinSchema(db);
 		ensurePolicyTeamMemberRemovalsTable(db);
 		ensurePolicyTeamRecoveryExclusionsTable(db);
 		ensurePolicyTeamRecoveryHoldsTable(db);

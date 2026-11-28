@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { pairingStillExists } from "./pairing-instance.js";
 
 export interface SyncChannelBoundary {
 	generation: number;
@@ -14,6 +15,8 @@ interface ProgressTarget {
 	peerDeviceId: string;
 	scopeId: string;
 	boundary: SyncChannelBoundary;
+	/** The pairing instance the pass started under. A write for any other pairing is skipped. */
+	pairingInstanceId?: string | null;
 }
 
 // Installed only by the opt-in channel pass, after explicit scope authorization.
@@ -43,12 +46,21 @@ export function getSyncChannelProgress(
 	);
 }
 
+/** With `pairingInstanceId`, clears only the progress of the pairing the caller started under. */
 export function clearSyncChannelProgress(
 	db: Database,
 	peerDeviceId: string,
 	scopeId: string,
+	pairingInstanceId?: string | null,
 ): void {
 	ensureSyncChannelProgress(db);
+	if (pairingInstanceId) {
+		const pairing = pairingStillExists(peerDeviceId, pairingInstanceId);
+		db.prepare(
+			`DELETE FROM sync_channel_progress WHERE peer_device_id = ? AND scope_id = ? AND ${pairing.sql}`,
+		).run(peerDeviceId, scopeId, ...pairing.params);
+		return;
+	}
 	db.prepare("DELETE FROM sync_channel_progress WHERE peer_device_id = ? AND scope_id = ?").run(
 		peerDeviceId,
 		scopeId,
@@ -103,18 +115,20 @@ export function hasCompletedSyncChannelBoundary(
 
 /*
  * A channel pass saves progress after network I/O, and the peer can be removed
- * meanwhile. Each write requires the pairing in the same statement, so a pass that
- * outlives its pairing cannot put progress back. A skipped write is not an error.
+ * meanwhile. Each write requires the pairing, and the pairing instance the pass started
+ * under, in the same statement, so a pass that outlives its pairing cannot put progress
+ * back, even into a pairing created again under the same device ID. A skipped write is
+ * not an error.
  */
-const PAIRING_EXISTS = "EXISTS (SELECT 1 FROM sync_peers WHERE peer_device_id = ?)";
 
 /** Save only after durable pull success. A changed peer boundary invalidates its outbound ACK. */
 export function saveSyncChannelCompletedBoundary(db: Database, target: ProgressTarget): void {
 	ensureSyncChannelProgress(db);
 	const { peerDeviceId, scopeId, boundary } = target;
+	const pairing = pairingStillExists(peerDeviceId, target.pairingInstanceId);
 	db.prepare(`INSERT INTO sync_channel_progress
 		(peer_device_id, scope_id, generation, snapshot_id, baseline_cursor, last_acked_cursor)
-		SELECT ?, ?, ?, ?, ?, NULL WHERE ${PAIRING_EXISTS}
+		SELECT ?, ?, ?, ?, ?, NULL WHERE ${pairing.sql}
 		ON CONFLICT (peer_device_id, scope_id) DO UPDATE SET
 		last_acked_cursor = CASE WHEN generation = excluded.generation
 			AND snapshot_id = excluded.snapshot_id AND baseline_cursor IS excluded.baseline_cursor
@@ -126,7 +140,7 @@ export function saveSyncChannelCompletedBoundary(db: Database, target: ProgressT
 		boundary.generation,
 		boundary.snapshot_id,
 		boundary.baseline_cursor,
-		peerDeviceId,
+		...pairing.params,
 	);
 }
 
@@ -136,11 +150,12 @@ export function saveSyncChannelOutboundAck(
 	target: ProgressTarget & { cursor: string },
 ): void {
 	const { peerDeviceId, scopeId, boundary, cursor } = target;
+	const pairing = pairingStillExists(peerDeviceId, target.pairingInstanceId);
 	const result = db
 		.prepare(`UPDATE sync_channel_progress SET last_acked_cursor = ?
 		WHERE peer_device_id = ? AND scope_id = ? AND generation = ? AND snapshot_id = ?
 		AND baseline_cursor IS ? AND (last_acked_cursor IS NULL OR last_acked_cursor <= ?)
-		AND ${PAIRING_EXISTS}`)
+		AND ${pairing.sql}`)
 		.run(
 			cursor,
 			peerDeviceId,
@@ -149,10 +164,16 @@ export function saveSyncChannelOutboundAck(
 			boundary.snapshot_id,
 			boundary.baseline_cursor,
 			cursor,
-			peerDeviceId,
+			...pairing.params,
 		);
 	if (result.changes === 1) return;
-	// A peer removed during the pass has no progress to acknowledge against.
-	if (!db.prepare(`SELECT ${PAIRING_EXISTS}`).pluck().get(peerDeviceId)) return;
+	// A pairing removed, or created again, during the pass has no progress to acknowledge against.
+	if (
+		!db
+			.prepare(`SELECT ${pairing.sql}`)
+			.pluck()
+			.get(...pairing.params)
+	)
+		return;
 	throw new Error("channel progress changed");
 }

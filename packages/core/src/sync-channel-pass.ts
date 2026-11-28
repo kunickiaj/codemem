@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { UnexpectedPeerError } from "@libp2p/interface";
 import type { Database } from "./db.js";
+import { readPairingInstanceId } from "./pairing-instance.js";
 import { createPeerHttpExecutor, type PeerHttpConnectionFactory } from "./peer-http-client.js";
 import { adoptPeerHttpConnection } from "./peer-http-client-lifecycle.js";
 import { parseRelayEd25519PublicKey } from "./relay-ed25519.js";
@@ -107,6 +108,8 @@ function captureContext(input: ScopedChannelSyncOptions) {
 		limit: Math.min(options.limit ?? 500, 1000),
 		local: currentIdentity(options.db),
 		peer: currentPeer(options.db, options.peerDeviceId),
+		// Progress is saved only into this pairing, even if it is deleted and created again.
+		pairingInstanceId: readPairingInstanceId(options.db, options.peerDeviceId),
 		open: options.factory.open.bind(options.factory),
 	};
 }
@@ -118,7 +121,10 @@ function checkAuthorization(context: Context): void {
 		local.device_id !== context.local.device_id ||
 		local.public_key !== context.local.public_key ||
 		peer.public_key !== context.peer.public_key ||
-		peer.pinned_fingerprint !== context.peer.pinned_fingerprint
+		peer.pinned_fingerprint !== context.peer.pinned_fingerprint ||
+		// A pairing deleted and created again is not the one this pass started under.
+		(context.pairingInstanceId &&
+			readPairingInstanceId(context.db, context.peerDeviceId) !== context.pairingInstanceId)
 	)
 		throw new ChannelNegotiationError("trust");
 	const admission = parseSyncScopeRequest(context.scopeId, true, {
@@ -425,6 +431,7 @@ async function pushOutbound(
 			scopeId: context.scopeId,
 			boundary,
 			cursor: acked,
+			pairingInstanceId: context.pairingInstanceId,
 		});
 	// Each confirmed batch saves its own ACK, so a pass that runs out of time keeps
 	// what the peer already applied instead of resending the whole window next pass.
@@ -479,6 +486,7 @@ function completeChannelPull(context: Context, boundary: SyncChannelBoundary): v
 		peerDeviceId: context.peerDeviceId,
 		scopeId: context.scopeId,
 		boundary,
+		pairingInstanceId: context.pairingInstanceId,
 	});
 }
 
@@ -535,10 +543,16 @@ export async function syncScopedChannelOnce(
 			limit: context.limit,
 			completedNullBaseline: hasCompletedSyncChannelBoundary(progress, status.scope.sync_reset),
 			pinnedFingerprint: context.peer.pinned_fingerprint,
+			pairingInstanceId: context.pairingInstanceId,
 			sourceDeviceId: context.peerDeviceId,
 			validateCurrentAuthorization: () => checkAuthorization(context),
 			invalidateCompletedBoundary: () =>
-				clearSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId),
+				clearSyncChannelProgress(
+					context.db,
+					context.peerDeviceId,
+					context.scopeId,
+					context.pairingInstanceId,
+				),
 		});
 		if (!result.ok) return failedPullResult(options, result);
 		completeChannelPull(context, status.scope.sync_reset);

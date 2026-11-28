@@ -29,6 +29,7 @@ import {
 } from "./memory-scope-retirement.js";
 import { memorySourceNamespace } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
+import { pairingStillExists } from "./pairing-instance.js";
 import { readRetainedPeerProjectFilters } from "./peer-project-filter-retention.js";
 import { projectBasename } from "./project.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
@@ -779,18 +780,27 @@ function seedDefaultReplicationCursorFromLegacy(db: Database): void {
  * meanwhile. Each write therefore requires the pairing in the same statement, so a
  * pass that outlives its pairing cannot put sync progress back.
  */
-const PAIRING_EXISTS = "EXISTS (SELECT 1 FROM sync_peers WHERE peer_device_id = ?)";
+interface ReplicationCursorWrite {
+	lastApplied?: string | null;
+	lastAcked?: string | null;
+	/**
+	 * The pairing instance the pass started under. When set, the write also requires it, so a
+	 * late write cannot reach a pairing that was deleted and created again.
+	 */
+	pairingInstanceId?: string | null;
+}
 
 function mirrorDefaultReplicationCursorToLegacy(
 	db: Database,
 	peerDeviceId: string,
-	options: { lastApplied?: string | null; lastAcked?: string | null },
+	options: ReplicationCursorWrite,
 	updatedAt: string,
 ): void {
+	const pairing = pairingStillExists(peerDeviceId, options.pairingInstanceId);
 	db.prepare(
 		`INSERT INTO replication_cursors
 			(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at)
-		 SELECT ?, ?, ?, ? WHERE ${PAIRING_EXISTS}
+		 SELECT ?, ?, ?, ? WHERE ${pairing.sql}
 		 ON CONFLICT(peer_device_id) DO UPDATE SET
 			last_applied_cursor = COALESCE(excluded.last_applied_cursor, last_applied_cursor),
 			last_acked_cursor = COALESCE(excluded.last_acked_cursor, last_acked_cursor),
@@ -800,7 +810,7 @@ function mirrorDefaultReplicationCursorToLegacy(
 		options.lastApplied ?? null,
 		options.lastAcked ?? null,
 		updatedAt,
-		peerDeviceId,
+		...pairing.params,
 	);
 }
 
@@ -848,7 +858,7 @@ export function getReplicationCursor(
 export function setReplicationCursor(
 	db: Database,
 	peerDeviceId: string,
-	options: { lastApplied?: string | null; lastAcked?: string | null } = {},
+	options: ReplicationCursorWrite = {},
 	scopeId?: string | null,
 ): void {
 	ensureReplicationCursorTables(db);
@@ -857,12 +867,13 @@ export function setReplicationCursor(
 	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
 		seedDefaultReplicationCursorFromLegacy(db);
 	}
+	const pairing = pairingStillExists(peerDeviceId, options.pairingInstanceId);
 	// One statement: no gap between the pairing check and the write, and no race
 	// between concurrent sync workers. COALESCE keeps the cursor a caller left unset.
 	db.prepare(
 		`INSERT INTO replication_cursors_v2
 			(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
-		 SELECT ?, ?, ?, ?, ? WHERE ${PAIRING_EXISTS}
+		 SELECT ?, ?, ?, ?, ? WHERE ${pairing.sql}
 		 ON CONFLICT(peer_device_id, scope_id) DO UPDATE SET
 			last_applied_cursor = COALESCE(excluded.last_applied_cursor, last_applied_cursor),
 			last_acked_cursor = COALESCE(excluded.last_acked_cursor, last_acked_cursor),
@@ -873,21 +884,36 @@ export function setReplicationCursor(
 		options.lastApplied ?? null,
 		options.lastAcked ?? null,
 		now,
-		peerDeviceId,
+		...pairing.params,
 	);
 	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
 		mirrorDefaultReplicationCursorToLegacy(db, peerDeviceId, options, now);
 	}
 }
 
+/**
+ * Clears the inbound and acknowledged positions for one scope. With `pairingInstanceId` it
+ * clears them only in the pairing the caller started under, so a reset that arrives late,
+ * after Unpair and a new pairing, cannot erase the new pairing's progress.
+ */
 export function clearReplicationCursorLastApplied(
 	db: Database,
 	peerDeviceId: string,
 	scopeId?: string | null,
+	pairingInstanceId?: string | null,
 ): void {
 	ensureReplicationCursorTables(db);
 	const now = new Date().toISOString();
 	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
+	if (pairingInstanceId) {
+		const pairing = pairingStillExists(peerDeviceId, pairingInstanceId);
+		db.prepare(
+			`UPDATE replication_cursors_v2
+			 SET last_applied_cursor = NULL, last_acked_cursor = NULL, updated_at = ?
+			 WHERE peer_device_id = ? AND scope_id = ? AND ${pairing.sql}`,
+		).run(now, peerDeviceId, effectiveScopeId, ...pairing.params);
+		return;
+	}
 	drizzle(db, { schema })
 		.update(schema.replicationCursorsV2)
 		.set({

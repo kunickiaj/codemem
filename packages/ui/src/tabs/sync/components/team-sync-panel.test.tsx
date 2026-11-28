@@ -2,7 +2,7 @@ import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { deriveTeamSyncPrimaryStatus, type UiSyncAttentionItem } from "../view-model";
-import { type TeamSyncDiscoveredRow, TeamSyncPanel } from "./team-sync-panel";
+import { TeamSyncPanel } from "./team-sync-panel";
 
 let mount: HTMLDivElement | null = null;
 
@@ -17,15 +17,10 @@ function renderPrimaryStatus(
 			<TeamSyncPanel
 				actionItems={actionItems}
 				actionableCount={actionItems.length}
-				discoveredListMount={null}
-				discoveredRows={[]}
 				joinRequestsMount={null}
 				onApproveJoinRequest={async () => null}
 				onAttentionAction={async () => {}}
 				onDenyJoinRequest={async () => null}
-				onInspectConflict={() => {}}
-				onRemoveConflict={async () => null}
-				onReviewDiscoveredDevice={async () => null}
 				pendingJoinRequests={[]}
 				presenceStatus="posted"
 				primaryStatus={primaryStatus}
@@ -34,72 +29,6 @@ function renderPrimaryStatus(
 		);
 	});
 	return mount;
-}
-
-function discoveredRow(overrides: Partial<TeamSyncDiscoveredRow> = {}): TeamSyncDiscoveredRow {
-	return {
-		actionMessage: null,
-		actionLabel: "Approve on this device",
-		approvalBadgeLabel: "Needs your approval",
-		approvalState: "needs-local-approval",
-		availabilityLabel: "Available",
-		connectionLabel: "Paired on this device",
-		coordinatorUrl: "https://coord.example.test",
-		deviceId: "device-a",
-		displayName: "Desk Mini",
-		displayTitle: "device-a",
-		fingerprint: "fingerprint-a",
-		groupId: "team-a",
-		incomingRequestId: "request-a",
-		mode: "accept",
-		note: "No fresh addresses",
-		pairedMessage: null,
-		...overrides,
-	};
-}
-
-function renderDiscoveredRows(
-	rows: TeamSyncDiscoveredRow[],
-	onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<{
-		message: string;
-		tone: "success" | "warning";
-	} | null> = async () => null,
-) {
-	const discoveredListMount = document.createElement("div");
-	document.body.appendChild(discoveredListMount);
-	mount = document.createElement("div");
-	document.body.appendChild(mount);
-	act(() => {
-		render(
-			<TeamSyncPanel
-				actionItems={[]}
-				actionableCount={rows.filter((row) => row.mode === "accept").length}
-				discoveredListMount={discoveredListMount}
-				discoveredRows={rows}
-				joinRequestsMount={null}
-				onApproveJoinRequest={async () => null}
-				onAttentionAction={async () => {}}
-				onDenyJoinRequest={async () => null}
-				onInspectConflict={() => {}}
-				onRemoveConflict={async () => null}
-				onReviewDiscoveredDevice={onReviewDiscoveredDevice}
-				pendingJoinRequests={[]}
-				presenceStatus="posted"
-				primaryStatus={deriveTeamSyncPrimaryStatus({
-					status: { enabled: true, daemon_state: "ok", daemon_running: true },
-					coordinator: {
-						configured: true,
-						sync_enabled: true,
-						groups: ["Acme"],
-						presence_status: "posted",
-					},
-					peers: [{ peer_device_id: "device-a", status: { peer_state: "online" } }],
-				})}
-			/>,
-			mount as HTMLDivElement,
-		);
-	});
-	return discoveredListMount;
 }
 
 afterEach(() => {
@@ -295,68 +224,5 @@ describe("TeamSyncPanel when Project access needs review", () => {
 		expect(root.querySelector(".sync-section-label")?.textContent).toBe("Needs attention");
 		expect(root.querySelectorAll(".sync-action .sync-action-guidance")).toHaveLength(2);
 		expect(root.querySelector(".sync-action-command")).toBeNull();
-	});
-});
-
-describe("TeamSyncPanel discovered approval rows", () => {
-	it.each(["Available", "Offline"])(
-		"preserves discovered badge spans and classes when %s",
-		(availabilityLabel) => {
-			// Arrange
-			const row = discoveredRow({
-				availabilityLabel,
-				approvalBadgeLabel: availabilityLabel === "Offline" ? null : "Needs your approval",
-			});
-			// Act
-			const discovered = renderDiscoveredRows([row]);
-			const badges = [...discovered.querySelectorAll(".peer-title .badge")];
-			// Assert: Chip must leave the existing CSS hooks and optional badge output unchanged.
-			expect(badges.map((badge) => [badge.tagName, badge.className, badge.textContent])).toEqual([
-				[
-					"SPAN",
-					availabilityLabel === "Offline" ? "badge actor-badge" : "badge actor-badge local",
-					availabilityLabel,
-				],
-				["SPAN", "badge actor-badge", "Paired on this device"],
-				...(row.approvalBadgeLabel ? [["SPAN", "badge actor-badge", row.approvalBadgeLabel]] : []),
-			]);
-			expect(badges.some((badge) => badge.classList.contains("kind-chip"))).toBe(false);
-		},
-	);
-
-	it("renders approval pending as ordinary status without another approval action", () => {
-		const discovered = renderDiscoveredRows([
-			discoveredRow({
-				actionMessage:
-					"Waiting for refreshed coordinator status. You do not need to approve again.",
-				actionLabel: null,
-				approvalBadgeLabel: "Approval sent",
-				approvalState: "approval-pending",
-				mode: "approval-pending",
-			}),
-		]);
-
-		expect(discovered.textContent).toContain("Approval sent");
-		expect(discovered.textContent).toContain(
-			"Waiting for refreshed coordinator status. You do not need to approve again.",
-		);
-		expect(discovered.querySelector("button")).toBeNull();
-		expect(discovered.querySelector('[role="status"]')).toBeNull();
-	});
-
-	it("keeps a failed approval action retryable", async () => {
-		const discovered = renderDiscoveredRows([discoveredRow()], async () => ({
-			message: "Approval failed before submission. Try again.",
-			tone: "warning",
-		}));
-		const button = discovered.querySelector("button") as HTMLButtonElement;
-
-		await act(async () => button.click());
-
-		expect(button.textContent).toBe("Retry");
-		expect(button.disabled).toBe(false);
-		expect(discovered.querySelector('[role="alert"]')?.textContent).toContain(
-			"Approval failed before submission",
-		);
 	});
 });

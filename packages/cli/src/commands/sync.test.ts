@@ -24,7 +24,7 @@ import {
 	signingContexts,
 } from "../../../core/src/sync-status-test-fixtures.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
-import { removeSyncPeer, syncCommand } from "./sync.js";
+import { syncCommand } from "./sync.js";
 import {
 	buildServeLifecycleArgs,
 	collectAdvertiseAddresses,
@@ -834,9 +834,12 @@ async function runPeersRemove(args: string[]) {
 	await remove?.parseAsync(args, { from: "user" });
 }
 
-const REMOVE_NOTICE =
-	"Other devices still sync with work until they remove it too. If the coordinator still lists work, this device pairs with it again at the next refresh.";
-const KEPT_NOTICE = "work was not removed from Projects. An administrator's device can remove it.";
+const RESUME_NOTICE =
+	"This device stops syncing with work. If both devices share a Team Project, codemem can pair them again automatically.";
+const REMOVE_NOTICE = "To stop syncing with work on all your devices, use Remove device.";
+const WITH_COORDINATOR_NOTICE = `${RESUME_NOTICE} ${REMOVE_NOTICE}`;
+const WITHOUT_COORDINATOR_NOTICE =
+	"This device stops syncing with work. work keeps syncing with your other devices.";
 const WITHOUT_ADMIN_SECRET = {
 	sync_coordinator_url: "https://coord.example.test",
 	sync_coordinator_groups: ["group-a"],
@@ -901,10 +904,43 @@ async function removeAsJson(
 	}
 }
 
-describe("sync peers remove: ending the other device's binding", () => {
+describe("sync peers remove: leaves the other device's binding", () => {
 	isolateCoordinatorSettings();
 
-	it("keeps the binding with truncated config through the real default reader", async () => {
+	const expectedPayload = (notice: string) => ({
+		ok: true,
+		peer_device_id: "peer-1",
+		name: "work",
+		removed: {
+			sync_peers: 1,
+			replication_cursors: 1,
+			replication_cursors_v2: 1,
+			sync_channel_progress: 1,
+			identity_devices: 0,
+		},
+		binding: "kept",
+		remove_from_projects: "needs_admin_device",
+		notice,
+	});
+
+	it.each([
+		["no coordinator is configured", {}, WITHOUT_COORDINATOR_NOTICE],
+		["there is no admin secret", WITHOUT_ADMIN_SECRET, WITH_COORDINATOR_NOTICE],
+		["this device holds the admin secret", ADMIN_DEVICE, WITH_COORDINATOR_NOTICE],
+	])(
+		"when %s, removes the pairing and its sync progress, keeps the binding, and wakes no Project policy",
+		async (_name, settings, notice) => {
+			useCoordinatorSettings(settings);
+
+			const result = await removeAsJson();
+
+			expect(result.state).toEqual(DISCONNECTED);
+			expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
+			expect(result.payload).toEqual(expectedPayload(notice));
+		},
+	);
+
+	it("keeps the binding with truncated config", async () => {
 		writeFileSync(
 			join(peersRemoveConfigDir, "config.json"),
 			'{"sync_coordinator_url":"https://coordinator.invalid"',
@@ -915,32 +951,8 @@ describe("sync peers remove: ending the other device's binding", () => {
 		expect(result.payload).toMatchObject({ binding: "kept" });
 	});
 
-	it("without the admin secret, removes the pairing and its sync progress, keeps the binding, wakes no Project policy, and says an admin device removes it from Projects", async () => {
-		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
-
-		const result = await removeAsJson();
-
-		expect(result.state).toEqual(DISCONNECTED);
-		expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
-		expect(result.payload).toEqual({
-			ok: true,
-			peer_device_id: "peer-1",
-			name: "work",
-			removed: {
-				sync_peers: 1,
-				replication_cursors: 1,
-				replication_cursors_v2: 1,
-				sync_channel_progress: 1,
-				identity_devices: 0,
-			},
-			binding: "kept",
-			remove_from_projects: "needs_admin_device",
-			notice: `${KEPT_NOTICE} ${REMOVE_NOTICE}`,
-		});
-	});
-
-	it("without the admin secret, prints that the device was disconnected and that an admin device removes it from Projects", async () => {
-		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
+	it("on an admin device, prints that the device was unpaired, that it can pair again, and that Remove device stops syncing everywhere", async () => {
+		useCoordinatorSettings(ADMIN_DEVICE);
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-kept-text-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
 		const store = seedRemovablePeer(dbPath);
@@ -949,11 +961,11 @@ describe("sync peers remove: ending the other device's binding", () => {
 			await runPeersRemove(["peer-1", "--db-path", dbPath]);
 
 			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
-			expect(rendered).toContain("Disconnected this device from work");
+			expect(rendered).toContain("Unpaired this device from work.");
 			expect(rendered).not.toContain("Removed peer");
-			expect(rendered).toContain(KEPT_NOTICE);
+			expect(rendered).toContain(RESUME_NOTICE);
 			expect(rendered).toContain(REMOVE_NOTICE);
-			expect(rendered).toContain("Identity bindings ended: 0");
+			expect(rendered).not.toContain("Identity bindings ended");
 			expect(removedPeerState(store)).toEqual(DISCONNECTED);
 		} finally {
 			writeSpy.mockRestore();
@@ -961,62 +973,12 @@ describe("sync peers remove: ending the other device's binding", () => {
 			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
-
-	it("without the admin secret, keeps the binding when the coordinator says the device is enrolled", async () => {
-		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
-
-		const result = await removeAsJson((dbPath) =>
-			removeSyncPeer(
-				"work",
-				{ dbPath, json: true },
-				{ lookupCoordinatorAnswer: async () => "enrolled" },
-			),
-		);
-
-		expect(result.payload).toMatchObject({ binding: "kept" });
-		expect(result.state).toEqual(DISCONNECTED);
-		expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
-	});
-
-	it("without the admin secret, ends the binding when the coordinator says the device is removed", async () => {
-		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
-		const asked: string[] = [];
-
-		const result = await removeAsJson((dbPath) =>
-			removeSyncPeer(
-				"work",
-				{ dbPath, json: true },
-				{
-					lookupCoordinatorAnswer: async (deviceId) => {
-						asked.push(deviceId);
-						return "removed";
-					},
-				},
-			),
-		);
-
-		expect(asked).toEqual(["peer-1"]);
-		expect(result.payload).toMatchObject({ binding: "ended", notice: REMOVE_NOTICE });
-		expect(result.payload).not.toHaveProperty("remove_from_projects");
-		expect(result.state).toEqual({ ...DISCONNECTED, binding: "removed" });
-		expect(result.policyLastAttemptAt).toBeNull();
-	});
-
-	it("ends the binding on a device that holds the admin secret", async () => {
-		useCoordinatorSettings(ADMIN_DEVICE);
-
-		const result = await removeAsJson();
-
-		expect(result.payload).toMatchObject({ binding: "ended", notice: REMOVE_NOTICE });
-		expect(result.state).toEqual({ ...DISCONNECTED, binding: "removed" });
-		expect(result.policyLastAttemptAt).toBeNull();
-	});
 });
 
 describe("sync peers remove", () => {
 	isolateCoordinatorSettings();
 
-	it("K1: with no coordinator configured, removes a peer by exact name from both cursor tables, ends its binding, and returns the counts as JSON", async () => {
+	it("K1: removes a peer by exact name from both cursor tables, keeps its binding, and returns the counts as JSON", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
 		const store = seedRemovablePeer(dbPath);
@@ -1037,10 +999,11 @@ describe("sync peers remove", () => {
 							replication_cursors: 1,
 							replication_cursors_v2: 1,
 							sync_channel_progress: 1,
-							identity_devices: 1,
+							identity_devices: 0,
 						},
-						binding: "ended",
-						notice: REMOVE_NOTICE,
+						binding: "kept",
+						remove_from_projects: "needs_admin_device",
+						notice: WITHOUT_COORDINATOR_NOTICE,
 					},
 					null,
 					2,
@@ -1051,7 +1014,7 @@ describe("sync peers remove", () => {
 				cursors: 0,
 				cursorsV2: 0,
 				channelProgress: 0,
-				binding: "removed",
+				binding: "active",
 			});
 			expect(process.exitCode).toBeUndefined();
 		} finally {
@@ -1071,10 +1034,9 @@ describe("sync peers remove", () => {
 			await runPeersRemove(["peer-1", "--db-path", dbPath]);
 
 			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
-			expect(rendered).toContain(REMOVE_NOTICE);
+			expect(rendered).toContain(WITHOUT_COORDINATOR_NOTICE);
 			expect(rendered).toContain("pairing: 1");
 			expect(rendered).toContain("sync progress rows: 3");
-			expect(rendered).toContain("Identity bindings ended: 1");
 			expect(removedPeerState(store).pairings).toBe(0);
 		} finally {
 			writeSpy.mockRestore();

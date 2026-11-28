@@ -868,11 +868,14 @@ coordinator only when a 200 reply lists it in none of the three arrays. A failed
 or missing reply is no answer, and the client then changes nothing.
 
 Removing a peer with `codemem sync peers remove` or the Viewer's peer removal
-route always deletes that client's own pairing and sync progress. A client
-without the admin secret also ends the device's Identity binding only when no
-coordinator is configured or this reply shows the device as removed, revoked,
-or absent from the coordinator. In every other case, including no answer, the
-binding stays active and an administrator's device ends it.
+route only deletes that client's own pairing and sync progress. It never ends
+the device's Identity binding or cached scope authorization and never wakes a
+Project policy, on an admin device or any other, and it does not read this
+reply. Remove device ends the binding. Unpairing keeps the device's last
+verified pin in a record that is read only to ask this lookup about the key,
+to record a retired alias, and to remove the device. No sync path reads it. It
+is cleared when the device is removed, answered as removed, or revoked, and when
+a different verified pin is saved for the same device ID.
 
 A client requires the three arrays and the integer. A reply without them is invalid,
 and the client keeps every pairing. For each `removed` ID that it sent, the

@@ -6,6 +6,7 @@ import {
 	normalizeCoordinatorAccountLinkOrigin,
 	queryPeerRemoval,
 	type readCoordinatorSyncConfig,
+	readUnpairedPeerPin,
 	verifiedLocalKeyId,
 } from "@codemem/core";
 
@@ -29,16 +30,37 @@ type LookupResult =
 			revoked: boolean;
 	  };
 
+/**
+ * The pairing's pin, or the last verified pin kept when this device unpaired the device. The
+ * coordinator is asked about the key either way, so a key-only revocation filed under another
+ * device ID is found. The kept pin never authorizes sync.
+ */
+function readPin(store: RemovalStore, deviceId: string): PairingPin | undefined {
+	const live = store.db
+		.prepare(
+			"SELECT public_key, pinned_fingerprint, created_at FROM sync_peers WHERE peer_device_id = ?",
+		)
+		.get(deviceId) as PairingPin | undefined;
+	if (live) return live;
+	const kept = readUnpairedPeerPin(store.db, {
+		localDeviceId: store.deviceId,
+		peerDeviceId: deviceId,
+	});
+	return kept
+		? {
+				public_key: kept.publicKey,
+				pinned_fingerprint: kept.pinnedFingerprint,
+				created_at: kept.recordedAt,
+			}
+		: undefined;
+}
+
 function readSubject(store: RemovalStore, deviceId: string): Subject | Refusal {
 	const configKey = verifiedLocalKeyId(store.db, store.deviceId);
 	if (deviceId === store.deviceId)
 		return { error: "cannot_remove_this_device", status: 400 } as const;
 	if (!configKey) return { error: "local_identity_unverified", status: 409 } as const;
-	const pin = store.db
-		.prepare(
-			"SELECT public_key, pinned_fingerprint, created_at FROM sync_peers WHERE peer_device_id = ?",
-		)
-		.get(deviceId) as PairingPin | undefined;
+	const pin = readPin(store, deviceId);
 	const key = pin?.public_key;
 	if (key && canonicalKeyId(key) === configKey)
 		return { error: "cannot_remove_this_device", status: 400 } as const;

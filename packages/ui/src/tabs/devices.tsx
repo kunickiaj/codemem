@@ -37,6 +37,11 @@ import { hasPendingPairingCode, onPendingPairingCode } from "../lib/pairing-hand
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
+import {
+	DevicesToReview,
+	type DiscoveredDevicesApi,
+	discoveredDevicesApi,
+} from "./device-discovered";
 import { DeviceJoinRequests, type DeviceJoinRequestsApi } from "./device-join-requests";
 import { type DevicePairingApi, DevicePairingForm } from "./device-pairing-form";
 import { DeviceRejoinHistory } from "./device-rejoin-history";
@@ -51,6 +56,7 @@ import {
 } from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
 import type { CoordinatorAccess } from "./recipient-policy-team-create";
+import type { TeamSyncDiscoveredRow } from "./sync/team-sync/discovered-devices";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -111,6 +117,9 @@ export interface DevicesRendererOptions {
 	joinRequestsRevision?: number;
 	joinRequestsApi?: DeviceJoinRequestsApi;
 	pairingApi?: DevicePairingApi;
+	/** Team devices the coordinator lists that this device can pair with or approve. */
+	discoveredRows?: TeamSyncDiscoveredRow[];
+	discoveredApi?: DiscoveredDevicesApi;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
@@ -2666,6 +2675,13 @@ function DevicesRoot({
 					api={options.joinRequestsApi}
 					onReviewed={options.onCommitted}
 					openRevision={options.joinRequestsRevision}
+				/>
+			) : null}
+			{!options.loading && !options.loadError ? (
+				<DevicesToReview
+					api={options.discoveredApi ?? discoveredDevicesApi(() => void options.onCommitted?.())}
+					onDone={() => options.onCommitted?.()}
+					rows={options.discoveredRows ?? []}
 				/>
 			) : null}
 			<DevicesView

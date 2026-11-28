@@ -21536,7 +21536,7 @@ describe("viewer-server", () => {
 					.run("peer-delete-me", "cursor-1", "cursor-1", new Date().toISOString());
 				const res = await app.request("/api/sync/peers/peer-delete-me", { method: "DELETE" });
 				expect(res.status).toBe(200);
-				expect(await res.json()).toEqual({ ok: true, binding: "ended" });
+				expect(await res.json()).toMatchObject({ ok: true, binding: "kept" });
 				const remaining = store.db
 					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
 					.get("peer-delete-me");

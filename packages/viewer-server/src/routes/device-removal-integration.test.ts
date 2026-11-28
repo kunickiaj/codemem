@@ -13,6 +13,8 @@ import {
 	MemoryStore,
 	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
+	readUnpairedPeerPin,
+	removePairingState,
 	verifiedLocalKeyId,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -349,6 +351,94 @@ it("uses signed global evidence to commit a mounted Remove for a locally paired,
 	expect(f.remote).toEqual(["/v1/peers/revocations", "/v1/peers/revocations"]);
 	expect(f.localSnapshot()).toMatchObject({ paired: false, binding: "removed" });
 	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
+});
+
+it("Remove ends the binding and wakes the Project policies of its Identity, which unpairing does not", async () => {
+	const f = await fixture({ mounted: true });
+	const peer = "local-only-peer";
+	const peerKey = key.replace("dam", "zam");
+	f.db
+		.prepare("UPDATE sync_peers SET peer_device_id = ?, public_key = ?, pinned_fingerprint = ?")
+		.run(peer, peerKey, fingerprintPublicKey(peerKey));
+	f.db.prepare("UPDATE identity_devices SET device_id = ?").run(peer);
+	f.db
+		.prepare(
+			`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
+			 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
+			 VALUES ('project-a', 'identity', 'fixture-identity', 'active', 'test', '1', 'native', 'recipient:a', 'then', 'then')`,
+		)
+		.run();
+	f.db
+		.prepare(
+			`INSERT INTO recipient_policy_authority_states(canonical_project_identity, authority_state,
+			 generation, state_changed_at, last_attempt_at, created_at, updated_at)
+			 VALUES ('project-a', 'active', 1, 'then', 'then', 'then', 'then')`,
+		)
+		.run();
+	const attemptedAt = () =>
+		f.db.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states").pluck().get();
+	expect(attemptedAt()).toBe("then");
+
+	await confirmAndCommitDeviceRemoval(
+		{ deviceId: peer, displayName: "Local peer" },
+		{ confirm: async () => true },
+	);
+
+	expect(f.localSnapshot()).toMatchObject({ paired: false, binding: "removed" });
+	// The reconciler clears this when a Project's policy is woken.
+	expect(attemptedAt()).toBeNull();
+});
+
+function unpair(f: { db: ReturnType<typeof localStore>["db"] }) {
+	removePairingState(f.db, { localDeviceId: localId, reason: "disconnect", deviceIds: [deviceId] });
+}
+
+it("lets Remove finish offline after Unpair, from the last verified pin", async () => {
+	const f = await fixture({ localOnly: true });
+	unpair(f);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "active" });
+
+	expect(await confirmAndCommitDeviceRemoval(target, { confirm: async () => true })).toEqual({
+		state: "removed",
+		mode: "local",
+	});
+
+	expect(f.remote).toEqual([]);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	// Remove dealt with the device, so its pin is not kept any longer.
+	expect(readUnpairedPeerPin(f.db, { localDeviceId: localId, peerDeviceId: deviceId })).toBeNull();
+});
+
+it("finds a key-only revocation filed under another device ID after Unpair deleted the pairing", async () => {
+	const f = await fixture({ mounted: true });
+	f.config.syncCoordinatorAdminSecret = "";
+	// The coordinator revokes this key by another device ID's enrollment, not by the peer's ID.
+	const alias = "alias-of-peer";
+	await f.store.enrollDevice(groupId, {
+		deviceId: alias,
+		publicKey: key,
+		fingerprint: fingerprintPublicKey(key),
+	});
+	await expect(
+		f.store.createDeviceRevocation({
+			groupId,
+			deviceId: alias,
+			publicKey: key,
+			fingerprint: fingerprintPublicKey(key),
+		}),
+	).resolves.toMatchObject({ kind: "revoked" });
+	unpair(f);
+
+	await expect(
+		confirmAndCommitDeviceRemoval(target, { confirm: async () => true }),
+	).resolves.toEqual({ state: "removed", mode: "already_removed" });
+
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	expect(listRetiredDeviceAliases(f.db).get(deviceId)).toEqual({
+		kind: "key",
+		keyId: canonicalKeyId(key),
+		fingerprint: fingerprintPublicKey(key),
+	});
 });
 
 it("never falls back to Remove when a mounted Viewer cannot obtain signed evidence", async () => {

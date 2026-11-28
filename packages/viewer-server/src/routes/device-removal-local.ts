@@ -6,6 +6,7 @@ import {
 	type MemoryStore,
 	readCodememConfigFileForMutation,
 	readCoordinatorSyncConfig,
+	readUnpairedPeerPin,
 	removePairingState,
 	verifiedLocalKeyId,
 } from "@codemem/core";
@@ -24,12 +25,13 @@ export function hasNoRemovalCoordinator(readConfig?: typeof readCoordinatorSyncC
 	return !readCoordinatorSyncConfig(data).syncCoordinatorUrl;
 }
 
-export function readLocalRemoval(store: LocalStore, deviceId: string) {
-	if (deviceId === store.deviceId)
-		return { error: "cannot_remove_this_device", status: 400 } as const;
-	const localKeyId = verifiedLocalKeyId(store.db, store.deviceId);
-	if (!localKeyId) return { error: "local_identity_unverified", status: 409 } as const;
-	const pin = store.db
+/**
+ * The pairing's pin, or the last verified pin kept when this device unpaired the device, so
+ * Remove still works after Unpair. The kept pin only identifies the key to remove. It never
+ * authorizes sync.
+ */
+function readPin(store: LocalStore, deviceId: string) {
+	const live = store.db
 		.prepare(
 			"SELECT public_key, pinned_fingerprint, created_at FROM sync_peers WHERE peer_device_id = ?",
 		)
@@ -40,6 +42,26 @@ export function readLocalRemoval(store: LocalStore, deviceId: string) {
 				created_at: string;
 		  }
 		| undefined;
+	if (live) return live;
+	const kept = readUnpairedPeerPin(store.db, {
+		localDeviceId: store.deviceId,
+		peerDeviceId: deviceId,
+	});
+	return kept
+		? {
+				public_key: kept.publicKey,
+				pinned_fingerprint: kept.pinnedFingerprint,
+				created_at: kept.recordedAt,
+			}
+		: undefined;
+}
+
+export function readLocalRemoval(store: LocalStore, deviceId: string) {
+	if (deviceId === store.deviceId)
+		return { error: "cannot_remove_this_device", status: 400 } as const;
+	const localKeyId = verifiedLocalKeyId(store.db, store.deviceId);
+	if (!localKeyId) return { error: "local_identity_unverified", status: 409 } as const;
+	const pin = readPin(store, deviceId);
 	if (!pin) return { error: "removal_target_not_enrolled", status: 404 } as const;
 	const peerKeyId = pin.public_key && canonicalKeyId(pin.public_key);
 	if (peerKeyId === localKeyId) return { error: "cannot_remove_this_device", status: 400 } as const;

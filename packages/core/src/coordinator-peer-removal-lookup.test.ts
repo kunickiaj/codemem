@@ -11,6 +11,7 @@ import {
 } from "./coordinator-runtime.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
+import { removePairingState } from "./pairing-removal.js";
 import { readAppliedRemovalSeq } from "./peer-removal-check-state.js";
 import { listRetiredDeviceAliases } from "./retired-device-aliases.js";
 import { saveSyncChannelCompletedBoundary } from "./sync-channel-progress.js";
@@ -121,6 +122,75 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	db.close();
 	rmSync(root, { recursive: true, force: true });
+});
+
+describe("coordinator removal lookup after Unpair", () => {
+	it("still sends the key of an unpaired device, so a key-only revocation filed under another ID is found", async () => {
+		removePairingState(db, {
+			localDeviceId,
+			reason: "disconnect",
+			deviceIds: ["peer-a"],
+		});
+		stubCoordinator(() => valid({ revoked: ["peer-a"] }));
+
+		const result = await refresh();
+
+		expect(lookups[0]?.entries).toEqual([
+			{ device_id: "peer-b", public_key: "key-peer-b" },
+			{ device_id: "peer-a", public_key: "key-peer-a" },
+		]);
+		expect(result.status).toBe("checked");
+		expect(bindingStatus("peer-a")).toBe("removed");
+		expect(listRetiredDeviceAliases(db).get("peer-a")).toMatchObject({ kind: "key" });
+	});
+
+	it("does not let a superseded pin end the binding of the device that replaced it", async () => {
+		// Arrange: key A is unpaired, then key B pairs under the same device ID, then policy
+		// drops B's pairing when the last shared Project ends.
+		removePairingState(db, { localDeviceId, reason: "disconnect", deviceIds: ["peer-a"] });
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at,
+			 trust_provenance, discovered_via_coordinator_id, discovered_via_group_id)
+			 VALUES ('peer-a', ?, 'key-b', ?, 'coordinator_policy', ?, 'group-a')`,
+		).run(fingerprintPublicKey("key-b"), NOW, COORDINATOR);
+		removePairingState(db, {
+			localDeviceId,
+			reason: "policy",
+			pairings: [{ deviceId: "peer-a", coordinatorId: COORDINATOR, groupId: "group-a" }],
+		});
+		expect(pairedIds()).toEqual(["peer-b"]);
+		// The coordinator revoked key A, and key A only.
+		stubCoordinator((call) =>
+			valid({
+				revoked: call.entries
+					.filter((entry) => entry.public_key === "key-peer-a")
+					.map((entry) => entry.device_id),
+			}),
+		);
+
+		// Act
+		await refresh();
+
+		// Assert: no lookup named key A for the device, so B's binding stands.
+		expect(lookups.flatMap((call) => call.entries)).not.toContainEqual({
+			device_id: "peer-a",
+			public_key: "key-peer-a",
+		});
+		expect(bindingStatus("peer-a")).toBe("active");
+		expect(listRetiredDeviceAliases(db).size).toBe(0);
+	});
+
+	it("stops asking about the unpaired device once the coordinator reports it removed", async () => {
+		removePairingState(db, { localDeviceId, reason: "disconnect", deviceIds: ["peer-a"] });
+		stubCoordinator(() => valid({ removed: ["peer-a"] }));
+		await refresh();
+		lookups.length = 0;
+		stubCoordinator(() => valid());
+
+		await refresh();
+
+		expect(lookups[0]?.entries.map((entry) => entry.device_id)).toEqual(["peer-b"]);
+	});
 });
 
 describe("coordinator removal lookup", () => {

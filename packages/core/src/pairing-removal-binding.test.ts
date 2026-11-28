@@ -182,14 +182,14 @@ describe("a disconnect that keeps the binding", () => {
 	});
 });
 
-describe("default peer-removal config", () => {
+describe("unpairing, whatever the coordinator settings", () => {
 	it.each([
-		["truncated", '{"sync_coordinator_url":"https://coordinator.invalid"', "kept"],
-		["empty", "", "kept"],
-		["unreadable", null, "kept"],
-		["missing", null, "ended"],
-		["valid empty object", "{}", "ended"],
-	] as const)("handles %s config through the real default reader", async (kind, text, outcome) => {
+		["truncated", '{"sync_coordinator_url":"https://coordinator.invalid"'],
+		["empty", ""],
+		["unreadable", null],
+		["missing", null],
+		["valid empty object", "{}"],
+	] as const)("keeps the binding with %s config", async (kind, text) => {
 		const directory = mkdtempSync(join(tmpdir(), "peer-removal-config-"));
 		const path = join(directory, "config.json");
 		if (text !== null) writeFileSync(path, text);
@@ -206,20 +206,20 @@ describe("default peer-removal config", () => {
 				scopeId: "scope-a",
 				boundary: { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null },
 			});
-			const result = await removePeerFromThisDevice(db, {
+			const result = removePeerFromThisDevice(db, {
 				localDeviceId: LOCAL,
 				peerDeviceId: PEER,
 			});
-			expect(result.binding).toBe(outcome);
+			expect(result.binding).toBe("kept");
 			expect(result.removed).toMatchObject({
 				replicationCursors: 1,
 				replicationCursorsV2: 2,
 				syncChannelProgress: 1,
 			});
-			expect(binding()).toMatchObject({ status: outcome === "kept" ? "active" : "removed" });
+			expect(binding()).toMatchObject({ status: "active" });
 			expect(
 				db.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states").pluck().get(),
-			).toBe(outcome === "kept" ? NOW : null);
+			).toBe(NOW);
 			expect(
 				[
 					"sync_peers",
