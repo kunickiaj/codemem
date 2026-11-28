@@ -1,4 +1,4 @@
-/* People card — people, devices, sharing review, legacy device claims. */
+/* People card — people, devices, sharing review. */
 
 import * as api from "../../lib/api";
 import {
@@ -13,10 +13,8 @@ import { renderProjectShareOperations } from "./components/project-share-operati
 import { renderSyncActorsList } from "./components/sync-actors";
 import { renderSyncEmptyState } from "./components/sync-diagnostics";
 import type { SyncActionFeedback } from "./components/sync-inline-feedback";
-import { renderLegacyClaimsSlice } from "./components/sync-legacy-claims";
 import { canManageLegacyCoordinatorSpaces, renderSyncPeersList } from "./components/sync-peers";
 import { hideSkeleton, isPeerScopeReviewPending, shouldClearStalePeersFeedback } from "./helpers";
-import { openSyncConfirmDialog } from "./sync-dialogs";
 import {
 	deriveVisiblePeopleActors,
 	summarizeSyncRunResult,
@@ -26,7 +24,6 @@ import {
 /* ── loadSyncData callback (set by index module) ─────────── */
 
 let _loadSyncData: () => Promise<void> = async () => {};
-let legacyDeviceValue = "";
 
 function setPeopleCreateControlsDisabled(disabled: boolean) {
 	const createButton = document.getElementById("syncActorCreateButton") as HTMLButtonElement | null;
@@ -220,29 +217,6 @@ export function renderSyncPeopleUnavailable() {
 	}
 }
 
-/* ── Legacy device claims renderer ───────────────────────── */
-
-export function renderLegacyDeviceClaims() {
-	const panel = document.getElementById("syncLegacyClaims");
-	const mount = document.getElementById("syncLegacyDeviceSelectMount") as HTMLElement | null;
-	const meta = document.getElementById("syncLegacyClaimsMeta");
-	if (!panel || !mount || !meta) return;
-
-	const devices = Array.isArray(state.lastSyncLegacyDevices) ? state.lastSyncLegacyDevices : [];
-	renderLegacyClaimsSlice({
-		devices,
-		meta,
-		mount,
-		onValueChange: (value) => {
-			if (value === legacyDeviceValue) return;
-			legacyDeviceValue = value;
-			renderLegacyDeviceClaims();
-		},
-		panel,
-		value: legacyDeviceValue,
-	});
-}
-
 /* ── Event wiring ────────────────────────────────────────── */
 
 export function initPeopleEvents(loadSyncData: () => Promise<void>) {
@@ -252,9 +226,6 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
 	const syncActorCreateInput = document.getElementById(
 		"syncActorCreateInput",
 	) as HTMLInputElement | null;
-	const syncLegacyClaimButton = document.getElementById(
-		"syncLegacyClaimButton",
-	) as HTMLButtonElement | null;
 
 	// Enter inside the create-person input triggers Create person so the
 	// user does not need to chase the button after typing the name.
@@ -291,34 +262,5 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
 		syncActorCreateButton.textContent = "Create person";
 		syncActorCreateButton.disabled = false;
 		syncActorCreateInput.disabled = false;
-	});
-
-	syncLegacyClaimButton?.addEventListener("click", async () => {
-		const originDeviceId = String(legacyDeviceValue || "").trim();
-		if (!originDeviceId || !syncLegacyClaimButton) return;
-		const confirmed = await openSyncConfirmDialog({
-			title: `Attach history from ${originDeviceId}?`,
-			description:
-				"This updates legacy provenance so the older device history is attached to you on this device.",
-			confirmLabel: "Attach history",
-			cancelLabel: "Cancel",
-			tone: "danger",
-		});
-		if (!confirmed) return;
-		syncLegacyClaimButton.disabled = true;
-		const originalText = syncLegacyClaimButton.textContent || "Attach device history";
-		syncLegacyClaimButton.textContent = "Attaching\u2026";
-		try {
-			await api.claimLegacyDeviceIdentity(originDeviceId);
-			showGlobalNotice("Old device history attached to you.");
-			await loadSyncData();
-		} catch (error) {
-			showGlobalNotice(friendlyError(error, "Failed to attach old device history."), "warning");
-			syncLegacyClaimButton.textContent = "Retry";
-			syncLegacyClaimButton.disabled = false;
-			return;
-		}
-		syncLegacyClaimButton.textContent = originalText;
-		syncLegacyClaimButton.disabled = false;
 	});
 }

@@ -2237,6 +2237,14 @@
       .device-identity-review-panel ul { margin: var(--sp-3) 0; padding-left: var(--sp-5); }
       .device-identity-review-panel .peer-actions { margin-top: var(--sp-4); }
 
+      .devices-header-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+      .devices-history,
+      .devices-history p,
+      .devices-history h3 { margin: 0; }
+      .devices-history { display: grid; gap: var(--sp-2); margin-top: var(--sp-4); }
+      .devices-history-list { display: grid; gap: var(--sp-2); list-style: none; margin: 0; padding: 0; }
+      .devices-history-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+      .devices-history-identity { display: grid; min-width: 0; overflow-wrap: anywhere; }
       #devicesMount .recipient-policy-sharing-header {
         display: flex;
         align-items: flex-start;
@@ -5454,7 +5462,6 @@
       <section class="card advanced-sync-status">
         <div id="syncAdvancedStatusMount"></div>
         <div class="section-actions">
-          <button class="settings-button" id="syncNowButton" disabled>Sync now</button>
           <a class="sync-subview-link" href="#advanced/sync/diagnostics">View diagnostics &rarr;</a>
           <button class="settings-save" id="syncTurnOnButton" type="button" hidden>Turn on sync</button>
         </div>
@@ -5519,15 +5526,6 @@
           <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
           <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
           <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
-        </div>
-        <div id="syncLegacyClaims" hidden>
-          <h3 class="settings-group-title" style="margin-top: 20px">Legacy device history</h3>
-          <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
-          <div class="peer-actions sync-legacy-claim-row">
-            <label for="syncLegacyDeviceSelect" class="sr-only">Legacy device</label>
-            <div class="sync-radix-select-host sync-legacy-select-host" id="syncLegacyDeviceSelectMount"></div>
-            <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
-          </div>
         </div>
         </details>
       </div>

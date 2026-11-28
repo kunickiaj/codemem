@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import html from "../static/index.html?raw";
 
 describe("Advanced recovery layout", () => {
-	it("keeps Sync now with the main status instructions", () => {
+	it("leaves Sync all devices to Devices", () => {
 		const main = html.slice(
 			html.indexOf('id="syncMainView"'),
 			html.indexOf('id="syncDiagnosticsView"'),
@@ -14,7 +14,16 @@ describe("Advanced recovery layout", () => {
 			html.indexOf('id="advancedSyncContent"'),
 		);
 
-		expect(main).toContain('id="syncNowButton"');
+		expect(main).not.toContain('id="syncNowButton"');
 		expect(diagnostics).not.toContain('id="syncNowButton"');
+	});
+
+	it("keeps the Sync panel's markup balanced so each sub-view stays inside its parent", () => {
+		const main = html.slice(
+			html.indexOf('id="syncMainView"'),
+			html.indexOf('id="syncDiagnosticsView"'),
+		);
+
+		expect(main.match(/<div\b/g)?.length).toBe(main.match(/<\/div>/g)?.length);
 	});
 });

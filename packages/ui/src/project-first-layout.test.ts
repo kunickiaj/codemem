@@ -277,14 +277,10 @@ describe("project-first navigation boundaries", () => {
 		expect(html).toContain('id="advancedSharingLink"');
 	});
 
-	it("keeps legacy claims inside manual identity controls", () => {
-		const disclosure = html.indexOf('id="manualDeviceIdentityControls"');
-		const claims = html.indexOf('id="syncLegacyClaims"');
-		const disclosureClose = html.indexOf("</details>", disclosure);
-
-		expect(disclosure).toBeGreaterThan(-1);
-		expect(claims).toBeGreaterThan(disclosure);
-		expect(disclosureClose).toBeGreaterThan(claims);
+	it("leaves older device history to Devices", () => {
+		expect(html).toContain('id="manualDeviceIdentityControls"');
+		expect(html).not.toContain('id="syncLegacyClaims"');
+		expect(html).not.toContain('id="syncLegacyClaimButton"');
 	});
 
 	it("keeps the legacy upgrade review destination available", () => {
