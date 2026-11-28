@@ -40,6 +40,10 @@ import {
 	INVITE_TOKEN_SEAL_STORAGE_PRESENT_SQL,
 } from "./coordinator-invite-token-seal.js";
 import {
+	READINESS_BINDING_MIGRATION,
+	READINESS_BINDING_PRESENT,
+} from "./coordinator-readiness-binding.js";
+import {
 	READINESS_GENERATION_PRESENT,
 	READINESS_PREPARATION_MIGRATION,
 } from "./coordinator-readiness-invalidation.js";
@@ -130,6 +134,7 @@ const POST_STAGE_MIGRATION_READINESS_SQL: Readonly<Record<string, string>> = Obj
 	[COORDINATOR_METADATA_MIGRATION_NAME]: COORDINATOR_METADATA_STORAGE_PRESENT_SQL,
 	[INVITE_TOKEN_SEAL_MIGRATION_NAME]: INVITE_TOKEN_SEAL_STORAGE_PRESENT_SQL,
 	[READINESS_PREPARATION_MIGRATION]: READINESS_GENERATION_PRESENT,
+	[READINESS_BINDING_MIGRATION]: READINESS_BINDING_PRESENT,
 });
 
 /**
@@ -171,9 +176,11 @@ export function coordinatorD1ConditionalBaselineMigrations(
 	return coordinatorD1BaselineMigrations(stage).filter((name) => conditional.includes(name));
 }
 
-const POST_STAGE_GUARD_SQL = Object.entries(POST_STAGE_MIGRATION_READINESS_SQL)
-	.map(([name, readiness]) => `(column1 <> ${quote(name)} OR (${readiness}))`)
-	.join(" AND ");
+// One CASE rather than a chain of ANDs: D1 refuses an expression tree deeper than
+// 100, and each migration after the last auth stage added a level to the chain.
+const POST_STAGE_GUARD_SQL = `(CASE column1 ${Object.entries(POST_STAGE_MIGRATION_READINESS_SQL)
+	.map(([name, readiness]) => `WHEN ${quote(name)} THEN (${readiness})`)
+	.join(" ")} ELSE 1 END)`;
 
 // Check every V2 table for every stage, without relying on the narrower V2 readiness query.
 // Group column names per table to avoid repeating long names near D1's statement-size limit.

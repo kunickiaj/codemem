@@ -50,6 +50,8 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_legacy_team_completions",
 	"coordinator_metadata",
 	"coordinator_owner_enrollment_attempts",
+	"coordinator_readiness_bindings",
+	"coordinator_readiness_discards",
 	"coordinator_reciprocal_approvals",
 	"coordinator_scope_membership_audit_log",
 	"coordinator_scope_membership_effect_receipts",

@@ -15,7 +15,7 @@ describe("native D1 readiness records", () => {
 		});
 		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 		try {
-			await use({ store, prefix: `readiness-native-${++sequence}` });
+			await use({ store, prefix: `readiness-native-${++sequence}`, exec:async(sql,...params)=>{await env.COORDINATOR_DB.prepare(sql).bind(...params).run();} });
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();

@@ -1,4 +1,13 @@
 import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
+import {
+	bindAcceptedRecord,
+	currentBinding,
+	MARK_READINESS_DISCARDED,
+	type ReadinessBinding,
+	type ReadinessPreparation,
+	signerCondition,
+	validReadinessBinding,
+} from "./coordinator-readiness-binding.js";
 import type {
 	CoordinatorScopeAuthorizationInput,
 	CoordinatorScopeAuthorizationResult,
@@ -108,6 +117,8 @@ export interface BoundaryReadinessRecord {
 }
 
 export interface PutBoundaryReadinessInput {
+	/** Only supplied by the v2 verifier, never copied directly from JSON. */
+	binding?: ReadinessBinding;
 	groupId: string;
 	deviceId: string;
 	/** Rises with every change the device makes to its record. An older or equal one is not stored. */
@@ -128,6 +139,7 @@ export interface BoundaryReadinessRejection {
 }
 
 export type PutBoundaryReadinessResult =
+	| { kind: "binding_mismatch" }
 	/** Stored with the entries the coordinator accepts. `rejected` lists the ones it left out. */
 	| { kind: "stored"; sequence: number; rejected: BoundaryReadinessRejection[] }
 	/** The stored record is as new or newer. `sequence` is the stored one. */
@@ -143,6 +155,9 @@ export interface BoundaryReadinessDeviceInput {
 }
 
 export interface CoordinatorBoundaryReadinessStore {
+	getVerifiedBoundaryReadiness(
+		input: ReadinessPreparation & { deviceId: string },
+	): Promise<VerifiedBoundaryReadiness | null>;
 	/** Replaces the device's record for the group when `sequence` is newer than the stored one. */
 	putBoundaryReadiness(input: PutBoundaryReadinessInput): Promise<PutBoundaryReadinessResult>;
 	getBoundaryReadiness(
@@ -151,6 +166,16 @@ export interface CoordinatorBoundaryReadinessStore {
 	/** Removes the device's record for the group. Returns whether one was stored. */
 	discardBoundaryReadiness(input: BoundaryReadinessDeviceInput): Promise<boolean>;
 }
+
+interface StoredBinding {
+	record_id: string;
+	sequence: number;
+	key_id: string;
+	filter_evidence: ReadinessBinding["filterEvidence"];
+	refresh_revision: number;
+}
+type VerifiedBoundaryReadiness = BoundaryReadinessRecord &
+	Omit<StoredBinding, "record_id"> & { group_generation: string; coordinator_id: string };
 
 /**
  * The scopes, out of `scopeIds`, that the device is an authorized member of in
@@ -299,16 +324,25 @@ function capturePut(raw: PutBoundaryReadinessInput): PutBoundaryReadinessInput {
 	) {
 		throw new Error("boundary_readiness_too_large");
 	}
-	return { ...device, sequence: raw.sequence, projects, omittedProjects };
+	if (raw.binding && !validReadinessBinding(raw.binding)) throw new Error("invalid_input");
+	return {
+		...device,
+		sequence: raw.sequence,
+		projects,
+		omittedProjects,
+		binding: raw.binding ? { ...raw.binding } : undefined,
+	};
 }
 
 // The header is written only for an enabled enrollment and only by a newer sequence.
-const PUT_HEADER_SQL = `INSERT INTO coordinator_boundary_readiness
+function putHeaderSql(condition: string) {
+	return `INSERT INTO coordinator_boundary_readiness
 	(group_id, device_id, sequence, record_id, omitted_projects,
 	 invalid_boundary_entries, unauthorized_source_scope_ids_json, updated_at)
 	SELECT ?, ?, ?, ?, ?, ?, ?, ?
 	WHERE EXISTS (SELECT 1 FROM enrolled_devices
 		WHERE group_id = ? AND device_id = ? AND enabled = 1)
+	AND (${condition})
 	ON CONFLICT(group_id, device_id) DO UPDATE SET
 		sequence = excluded.sequence,
 		record_id = excluded.record_id,
@@ -317,6 +351,7 @@ const PUT_HEADER_SQL = `INSERT INTO coordinator_boundary_readiness
 		unauthorized_source_scope_ids_json = excluded.unauthorized_source_scope_ids_json,
 		updated_at = excluded.updated_at
 	WHERE excluded.sequence > coordinator_boundary_readiness.sequence`;
+}
 
 const HEADER_HAS_RECORD_ID_SQL = `EXISTS (SELECT 1 FROM coordinator_boundary_readiness
 	WHERE group_id = ? AND device_id = ? AND record_id = ?)`;
@@ -342,6 +377,13 @@ const READ_HEADER_SQL = `SELECT sequence, record_id, omitted_projects,
 
 const READ_ENROLLED_SQL = `SELECT COUNT(*) AS enrolled FROM enrolled_devices
 	WHERE group_id = ? AND device_id = ? AND enabled = 1`;
+
+// Only the winning header owns this inventory. A SQL error rolls back the whole batch
+// on both stores; checking the returned insert receipt would be too late.
+const ASSERT_PROJECT_COUNT_SQL = `SELECT CASE WHEN ${HEADER_HAS_RECORD_ID_SQL}
+	AND (SELECT COUNT(*) FROM coordinator_boundary_readiness_projects
+	     WHERE group_id=? AND device_id=?) != ? THEN json('boundary_readiness_incomplete')
+	ELSE 1 END AS complete`;
 
 const READ_PROJECTS_SQL = `SELECT source_scope_id, boundary_scope_id, state,
 		own_rows_in_source, own_rows_in_boundary
@@ -392,6 +434,72 @@ function resultRows<T>(result: unknown): T[] {
 function resultChanges(result: unknown): number {
 	const changes = (result as { meta?: { changes?: unknown } } | null)?.meta?.changes;
 	return typeof changes === "number" ? changes : 0;
+}
+
+function classifyBinding(
+	input: PutBoundaryReadinessInput,
+	recordId: string,
+	result: unknown,
+): PutBoundaryReadinessResult | null {
+	if (!input.binding) return null;
+	const bound = resultRows<StoredBinding>(result)[0];
+	if (!bound || bound.key_id !== input.binding.keyId) return { kind: "binding_mismatch" };
+	if (bound.record_id === recordId) return null;
+	if (bound.sequence >= input.sequence) return { kind: "stale", sequence: bound.sequence };
+	return { kind: "binding_mismatch" };
+}
+
+type SortedInventory = {
+	accepted: BoundaryReadinessProject[];
+	rejected: BoundaryReadinessRejection[];
+	invalidBoundaryEntries: number;
+	unauthorizedSourceScopeIds: string[];
+};
+
+function writeStatements(
+	input: PutBoundaryReadinessInput,
+	sorted: SortedInventory,
+	recordId: string,
+	timestamp: string,
+) {
+	const device = [input.groupId, input.deviceId];
+	const condition = input.binding
+		? signerCondition(input.binding, device, input.sequence)
+		: { sql: "1", values: [] };
+	const statements = [
+		{
+			sql: putHeaderSql(condition.sql),
+			values: [
+				...device,
+				input.sequence,
+				recordId,
+				input.omittedProjects ?? 0,
+				sorted.invalidBoundaryEntries,
+				JSON.stringify(sorted.unauthorizedSourceScopeIds),
+				timestamp,
+				...device,
+				...condition.values,
+			],
+		},
+		{ sql: CLEAR_PROJECTS_SQL, values: [...device, ...device, recordId] },
+		{
+			sql: PUT_PROJECTS_SQL,
+			values: [...device, JSON.stringify(sorted.accepted), ...device, recordId],
+		},
+		{ sql: READ_HEADER_SQL, values: device, read: true },
+		{ sql: READ_ENROLLED_SQL, values: device, read: true },
+		{
+			sql: ASSERT_PROJECT_COUNT_SQL,
+			values: [...device, recordId, ...device, sorted.accepted.length],
+			read: true,
+		},
+	];
+	if (input.binding)
+		statements.push(
+			bindAcceptedRecord(input.binding, device, recordId),
+			currentBinding({ ...input.binding, groupId: input.groupId }, input.deviceId),
+		);
+	return statements;
 }
 
 /** Internal storage capability. The caller authenticates the device. */
@@ -463,37 +571,20 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 		return this.whenStoragePresent<PutBoundaryReadinessResult>(
 			async () => {
 				const sorted = await this.sortProjects(input);
-				const { accepted, rejected } = sorted;
+				const { rejected } = sorted;
 				const recordId = globalThis.crypto.randomUUID();
-				const device = [input.groupId, input.deviceId];
-				const results = await this.backend.batch([
-					{
-						sql: PUT_HEADER_SQL,
-						values: [
-							...device,
-							input.sequence,
-							recordId,
-							input.omittedProjects ?? 0,
-							sorted.invalidBoundaryEntries,
-							JSON.stringify(sorted.unauthorizedSourceScopeIds),
-							new Date(this.clock()).toISOString(),
-							...device,
-						],
-					},
-					{ sql: CLEAR_PROJECTS_SQL, values: [...device, ...device, recordId] },
-					{
-						sql: PUT_PROJECTS_SQL,
-						values: [...device, JSON.stringify(accepted), ...device, recordId],
-					},
-					{ sql: READ_HEADER_SQL, values: device, read: true },
-					{ sql: READ_ENROLLED_SQL, values: device, read: true },
-				]);
-				if (results.length !== 5) throw new Error("boundary_readiness_incomplete");
+				const statements = writeStatements(
+					input,
+					sorted,
+					recordId,
+					new Date(this.clock()).toISOString(),
+				);
+				const results = await this.backend.batch(statements);
+				if (results.length !== statements.length) throw new Error("boundary_readiness_incomplete");
 				const header = resultRows<HeaderRow>(results[3])[0];
+				const denial = classifyBinding(input, recordId, results.at(-1));
+				if (denial) return denial;
 				if (header?.record_id === recordId) {
-					if (resultChanges(results[2]) !== accepted.length) {
-						throw new Error("boundary_readiness_incomplete");
-					}
 					return { kind: "stored", sequence: header.sequence, rejected };
 				}
 				const enrolled = resultRows<{ enrolled: number }>(results[4])[0]?.enrolled ?? 0;
@@ -503,6 +594,39 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 			},
 			{ kind: "unavailable" },
 		);
+	}
+
+	async getVerifiedBoundaryReadiness(input: ReadinessPreparation & { deviceId: string }) {
+		const { coordinatorId, generation, groupId, deviceId } = input;
+		const device = [groupId, deviceId];
+		const results = await this.backend.batch([
+			currentBinding({ coordinatorId, generation, groupId }, deviceId),
+			{ sql: READ_HEADER_SQL, values: device, read: true },
+			{ sql: READ_PROJECTS_SQL, values: device, read: true },
+		]);
+		if (results.length !== 3) throw new Error("boundary_readiness_incomplete");
+		const binding = resultRows<StoredBinding>(results[0])[0];
+		const header = resultRows<HeaderRow>(results[1])[0];
+		if (
+			!binding ||
+			!header ||
+			binding.record_id !== header.record_id ||
+			binding.sequence !== header.sequence
+		)
+			return null;
+		return {
+			group_id: groupId,
+			device_id: deviceId,
+			coordinator_id: coordinatorId,
+			group_generation: generation,
+			sequence: header.sequence,
+			key_id: binding.key_id,
+			filter_evidence: binding.filter_evidence,
+			refresh_revision: binding.refresh_revision,
+			...recordGaps(header),
+			updated_at: header.updated_at,
+			projects: resultRows<BoundaryReadinessProject>(results[2]),
+		};
 	}
 
 	async getBoundaryReadiness(
@@ -533,11 +657,12 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 		const device = [input.groupId, input.deviceId];
 		return this.whenStoragePresent(async () => {
 			const results = await this.backend.batch([
+				{ sql: MARK_READINESS_DISCARDED, values: [input.deviceId, input.groupId] },
 				{ sql: DISCARD_PROJECTS_SQL, values: device },
 				{ sql: DISCARD_HEADER_SQL, values: device },
 			]);
-			if (results.length !== 2) throw new Error("boundary_readiness_incomplete");
-			return resultChanges(results[1]) > 0;
+			if (results.length !== 3) throw new Error("boundary_readiness_incomplete");
+			return resultChanges(results[2]) > 0;
 		}, false);
 	}
 }

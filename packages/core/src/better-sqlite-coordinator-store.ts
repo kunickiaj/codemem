@@ -9,6 +9,12 @@ import type { CoordinatorListDeviceRemovalsInput } from "./coordinator-device-re
 import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 import { membershipGrantStatement } from "./coordinator-membership-enrollment.js";
 import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-removal-query.js";
+import {
+	READINESS_AUDIENCE_COLUMN,
+	READINESS_BINDING_PRESENT,
+	READINESS_BINDING_SCHEMA,
+	type ReadinessPreparation,
+} from "./coordinator-readiness-binding.js";
 import { scopePolicyUpdate } from "./coordinator-scope-policy-update.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
@@ -824,8 +830,18 @@ function namingRemovalRefusal<T>(write: () => T): T {
 
 /** Readiness record storage. A database that already has it is only read. */
 function initializeBoundaryReadinessSchema(db: DatabaseType): void {
-	if (db.prepare(BOUNDARY_READINESS_STORAGE_PRESENT_SQL).pluck().get() === 1) return;
-	db.exec(BOUNDARY_READINESS_SCHEMA_SQL);
+	if (db.prepare(BOUNDARY_READINESS_STORAGE_PRESENT_SQL).pluck().get() !== 1)
+		db.exec(BOUNDARY_READINESS_SCHEMA_SQL);
+	if (db.prepare(READINESS_BINDING_PRESENT).pluck().get() === 1) return;
+	db.transaction(() => {
+		if (
+			!db
+				.prepare("SELECT 1 FROM pragma_table_info('groups') WHERE name='readiness_coordinator_id'")
+				.get()
+		)
+			db.exec(READINESS_AUDIENCE_COLUMN);
+		db.exec(READINESS_BINDING_SCHEMA);
+	}).immediate();
 }
 
 function hasDeviceRemovalSchemaSync(db: DatabaseType): boolean {
@@ -2334,6 +2350,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async putBoundaryReadiness(input: PutBoundaryReadinessInput) {
 		return this.boundaryReadiness.putBoundaryReadiness(input);
+	}
+
+	getVerifiedBoundaryReadiness(input: ReadinessPreparation & { deviceId: string }) {
+		return this.boundaryReadiness.getVerifiedBoundaryReadiness(input);
 	}
 
 	async getBoundaryReadiness(input: BoundaryReadinessDeviceInput) {

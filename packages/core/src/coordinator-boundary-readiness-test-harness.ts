@@ -7,10 +7,18 @@ import {
 	fitBoundaryReadinessProjects,
 	type PutBoundaryReadinessInput,
 } from "./coordinator-boundary-readiness.js";
-import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { discardReadinessWithoutFeature } from "./coordinator-boundary-readiness-route.js";
+import {
+	CANONICAL_PUBLIC_KEY,
+	EXPECTED_KEY_ID,
+} from "./coordinator-ed25519-key-id-test-fixtures.js";
 
 /** A store and a prefix that no other test uses, so tests can share one database. */
-export type BoundaryReadinessFixture = { store: Store; prefix: string };
+export type BoundaryReadinessFixture = {
+	store: Store;
+	prefix: string;
+	exec: (sql: string, ...params: string[]) => Promise<void>;
+};
 
 export function boundaryReadinessHarness(
 	fixture: (use: (f: BoundaryReadinessFixture) => Promise<void>) => Promise<void>,
@@ -38,6 +46,7 @@ const NOTHING_LEFT_OUT = {
 };
 
 interface World {
+	exec: BoundaryReadinessFixture["exec"];
 	store: Store;
 	groupId: string;
 	deviceId: string;
@@ -53,7 +62,7 @@ async function world(f: BoundaryReadinessFixture): Promise<World> {
 	await addScope(f.store, groupId, sourceScopeId);
 	await enroll(f.store, groupId, deviceId);
 	await grant(f.store, sourceScopeId, deviceId);
-	return { store: f.store, groupId, deviceId, sourceScopeId };
+	return { exec: f.exec, store: f.store, groupId, deviceId, sourceScopeId };
 }
 
 async function addScope(store: Store, groupId: string, scopeId: string) {
@@ -548,6 +557,7 @@ function registerAuthorizationReads(test: BoundaryReadinessTest) {
 
 /** The readiness record contract, for the SQLite store and both D1 runtimes. */
 export function registerBoundaryReadinessContract(test: BoundaryReadinessTest): void {
+	registerVerifiedRecords(test);
 	registerStoring(test);
 	registerOrdering(test);
 	registerEnrollmentChecks(test);
@@ -557,4 +567,325 @@ export function registerBoundaryReadinessContract(test: BoundaryReadinessTest): 
 	registerSizeLimit(test);
 	registerWhatARecordLeavesOut(test);
 	registerAuthorizationReads(test);
+}
+
+const coordinatorId = "https://readiness.example.test";
+async function preparation(w: World) {
+	const generation = crypto.randomUUID();
+	await w.exec(
+		"UPDATE groups SET readiness_generation=?,readiness_coordinator_id=? WHERE group_id=?",
+		generation,
+		coordinatorId,
+		w.groupId,
+	);
+	const binding = {
+		coordinatorId,
+		generation,
+		revision: 6,
+		keyId: EXPECTED_KEY_ID,
+		publicKey: CANONICAL_PUBLIC_KEY,
+		filterEvidence: "present" as const,
+	};
+	const verified = () =>
+		w.store.getVerifiedBoundaryReadiness({
+			coordinatorId,
+			generation,
+			groupId: w.groupId,
+			deviceId: w.deviceId,
+		});
+	return { binding, verified };
+}
+
+function registerVerifiedRecords(test: BoundaryReadinessTest) {
+	registerLegacyHeartbeat(test);
+	registerSignerChanges(test);
+	registerSequenceFloor(test);
+	registerDowngradeOrdering(test);
+	registerInventoryRollback(test);
+	registerPreparationChanges(test);
+}
+
+async function enrollPeer(w: World) {
+	const peer = { ...w, deviceId: `${w.deviceId}-peer` };
+	await enroll(w.store, w.groupId, peer.deviceId);
+	return peer;
+}
+
+function registerLegacyHeartbeat(test: BoundaryReadinessTest) {
+	test("the verified read checks the device discard marker even with a retained header", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+		// Keep an otherwise valid empty inventory to isolate the read predicate from deletion.
+		await w.exec(
+			"CREATE TRIGGER retain_header BEFORE DELETE ON coordinator_boundary_readiness BEGIN SELECT RAISE(IGNORE); END",
+		);
+		try {
+			await discardReadinessWithoutFeature(w.store, w);
+			expect(await stored(w)).toMatchObject({ sequence: 1, complete: true });
+			expect(await verified()).toBeNull();
+			expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+		} finally {
+			await w.exec("DROP TRIGGER retain_header");
+		}
+	});
+	test("an unrelated legacy heartbeat preserves the prepared generation and verified inventory", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding })).toMatchObject({ kind: "stored" });
+		const presence = {
+			groupId: peer.groupId,
+			deviceId: peer.deviceId,
+			capabilities: {},
+			addresses: [],
+			ttlS: 180,
+		};
+		for (let i = 0; i < 2; i++) {
+			await discardReadinessWithoutFeature(w.store, presence);
+			await w.store.upsertPresence(presence);
+		}
+		expect(await verified()).toMatchObject({ sequence: 1, group_generation: binding.generation });
+		expect(await put(w, { binding, sequence: 2 })).toMatchObject({ kind: "stored" });
+		expect(await put(peer, { binding, sequence: 8, projects: [] })).toEqual({
+			kind: "binding_mismatch",
+		});
+	});
+}
+
+function registerSignerChanges(test: BoundaryReadinessTest) {
+	test("revoking a signing key blocks both a later write and use of the stored record", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding })).toMatchObject({ kind: "stored" });
+		await w.exec(
+			`INSERT INTO coordinator_device_revocations(subject_kind,subject_value,revocation_id,evidence_group_id,evidence_device_id,evidence_public_key,evidence_fingerprint,created_at)
+			VALUES('ed25519_key',?,?,?,?,?,'fixture','now')`,
+			binding.keyId,
+			crypto.randomUUID(),
+			w.groupId,
+			w.deviceId,
+			binding.publicKey,
+		);
+		try {
+			expect(await put(w, { sequence: 2, binding })).toEqual({ kind: "binding_mismatch" });
+			expect(await verified()).toBeNull();
+		} finally {
+			await w.exec(
+				"DELETE FROM coordinator_device_revocations WHERE evidence_group_id=?",
+				w.groupId,
+			);
+		}
+	});
+	test("a changed enrollment key blocks delayed evidence and withdraws a previous acknowledgement even with the same generation", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding })).toMatchObject({ kind: "stored" });
+		expect(await verified()).not.toBeNull();
+		await w.exec(
+			"UPDATE enrolled_devices SET key_id=? WHERE group_id=? AND device_id=?",
+			"a".repeat(64),
+			w.groupId,
+			w.deviceId,
+		);
+		expect(await put(w, { binding, sequence: 2 })).toEqual({ kind: "binding_mismatch" });
+		expect(await verified()).toBeNull();
+		expect(await stored(w)).toMatchObject({ sequence: 1 });
+	});
+}
+
+function registerSequenceFloor(test: BoundaryReadinessTest) {
+	test("only current bound evidence survives a decision read; a legacy replacement cannot inherit the binding", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		await put(w);
+		expect(await verified()).toBeNull();
+		expect(await put(w, { sequence: 2, binding })).toMatchObject({ kind: "stored" });
+		expect(await verified()).toMatchObject({
+			sequence: 2,
+			group_generation: binding.generation,
+			key_id: EXPECTED_KEY_ID,
+			filter_evidence: "present",
+			refresh_revision: 6,
+			projects: [project(w)],
+		});
+		await put(w, { sequence: 3, projects: [] });
+		expect(await verified()).toBeNull();
+	});
+	test("a downgrade after a higher sequence commits withdraws it and requires a new preparation", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding, sequence: 4 })).toMatchObject({ kind: "stored" });
+		expect(await put(w, { binding: { ...binding, revision: 5 }, sequence: 5 })).toEqual({
+			kind: "binding_mismatch",
+		});
+		expect(await put(w, { binding, sequence: 5 })).toMatchObject({ kind: "stored" });
+		expect(await verified()).toMatchObject({ sequence: 5 });
+		await w.store.discardBoundaryReadiness(w);
+		expect(await verified()).toBeNull();
+		expect(await put(w, { binding, sequence: 6 })).toEqual({ kind: "binding_mismatch" });
+		expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+		const next = await preparation(w);
+		expect(await put(w, { binding: next.binding, sequence: 6 })).toMatchObject({ kind: "stored" });
+		expect(await verified()).toBeNull();
+	});
+}
+
+function registerDowngradeOrdering(test: BoundaryReadinessTest) {
+	test("a downgrade before an in-flight higher sequence commits fences even the first inventory", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		const access = w.store.listDeviceScopeMemberships.bind(w.store);
+		const discard = vi
+			.spyOn(w.store, "listDeviceScopeMemberships")
+			.mockImplementationOnce(async (...args) => {
+				const memberships = await access(...args);
+				expect(await w.store.discardBoundaryReadiness(w)).toBe(false);
+				return memberships;
+			});
+		try {
+			expect(await put(w, { binding, sequence: 8 })).toEqual({ kind: "binding_mismatch" });
+			expect(await verified()).toBeNull();
+			expect(await stored(w)).toBeNull();
+			expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+		} finally {
+			discard.mockRestore();
+		}
+	});
+	test("a failed inventory delete rolls back the device marker and a retry fences only that device", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const peer = await enrollPeer(w);
+		const { binding, verified } = await preparation(w);
+		await put(w, { binding });
+		await w.exec(
+			"CREATE TRIGGER reject_discard BEFORE DELETE ON coordinator_boundary_readiness BEGIN SELECT RAISE(ABORT,'injected_failure'); END",
+		);
+		try {
+			await expect(w.store.discardBoundaryReadiness(w)).rejects.toThrow();
+			expect(await verified()).toMatchObject({ sequence: 1, projects: [project(w)] });
+		} finally {
+			await w.exec("DROP TRIGGER reject_discard");
+		}
+		expect(await put(w, { binding, sequence: 2 })).toMatchObject({ kind: "stored" });
+		expect(await w.store.discardBoundaryReadiness(w)).toBe(true);
+		expect(await put(peer, { binding, projects: [] })).toMatchObject({ kind: "stored" });
+	});
+}
+
+function registerInventoryRollback(test: BoundaryReadinessTest) {
+	test("a short Project insert rolls back the replacement header, inventory and binding", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		await put(w, { binding });
+		const previous = await verified();
+		expect(previous).toMatchObject({ sequence: 1, projects: [project(w)] });
+		await w.exec(
+			"CREATE TRIGGER skip_project BEFORE INSERT ON coordinator_boundary_readiness_projects WHEN NEW.own_rows_in_source=13 BEGIN SELECT RAISE(IGNORE); END",
+		);
+		try {
+			const projects = [
+				project(w, { own_rows_in_source: 2 }),
+				project(w, { boundary_scope_id: OTHER_BOUNDARY, own_rows_in_source: 13 }),
+			];
+			await expect(put(w, { binding, sequence: 2, projects })).rejects.toThrow();
+			expect(await verified()).toEqual(previous);
+			expect(await stored(w)).toMatchObject({ sequence: 1, projects: [project(w)] });
+		} finally {
+			await w.exec("DROP TRIGGER skip_project");
+		}
+		expect(await put(w, { binding, sequence: 2 })).toMatchObject({ kind: "stored" });
+	});
+}
+
+function registerPreparationChanges(test: BoundaryReadinessTest) {
+	test("a different coordinator cannot consume a record even if the generation matches", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		expect(await put(w, { binding })).toMatchObject({ kind: "stored" });
+		const other = "https://elsewhere.example.test";
+		await w.exec("UPDATE groups SET readiness_coordinator_id=? WHERE group_id=?", other, w.groupId);
+		expect(await verified()).toBeNull();
+		expect(
+			await w.store.getVerifiedBoundaryReadiness({
+				groupId: w.groupId,
+				deviceId: w.deviceId,
+				coordinatorId: other,
+				generation: binding.generation,
+			}),
+		).toBeNull();
+	});
+	test("rotating preparation withdraws previous evidence and refuses delayed writes", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const previous = await preparation(w);
+		await put(w, { binding: previous.binding });
+		const next = await preparation(w);
+		expect(await previous.verified()).toBeNull();
+		expect(await next.verified()).toBeNull();
+		expect(await put(w, { binding: previous.binding, sequence: 3 })).toEqual({
+			kind: "binding_mismatch",
+		});
+		expect(await put(w, { binding: next.binding, sequence: 2 })).toMatchObject({ kind: "stored" });
+	});
+	registerDelayedWrite(test);
+}
+
+function registerDelayedWrite(test: BoundaryReadinessTest) {
+	test("a write checks the enrolled key, audience and group after the inventory authorization reads", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const { binding, verified } = await preparation(w);
+		const other = await world({ ...fixture, prefix: `${fixture.prefix}-other` });
+		for (const changed of [
+			{ keyId: "0".repeat(64) },
+			{ publicKey: `${CANONICAL_PUBLIC_KEY} other` },
+			{ coordinatorId: "https://other.example.test" },
+		]) {
+			expect(await put(w, { binding: { ...binding, ...changed } })).toEqual({
+				kind: "binding_mismatch",
+			});
+		}
+		expect(await put(other, { binding })).toEqual({ kind: "binding_mismatch" });
+		await put(w, { binding });
+		const access = w.store.listDeviceScopeMemberships.bind(w.store);
+		const change = vi
+			.spyOn(w.store, "listDeviceScopeMemberships")
+			.mockImplementationOnce(async (...args) => {
+				const scopes = await access(...args);
+				await enroll(w.store, w.groupId, `${w.deviceId}-new`);
+				return scopes;
+			});
+		try {
+			expect(await put(w, { binding, sequence: 2 })).toEqual({ kind: "binding_mismatch" });
+			expect(await verified()).toBeNull();
+			expect(await stored(w)).toMatchObject({ sequence: 1 });
+		} finally {
+			change.mockRestore();
+		}
+	});
 }
