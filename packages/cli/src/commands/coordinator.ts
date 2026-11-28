@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 
 import * as p from "@clack/prompts";
 import {
+	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	coordinatorCreateGroupAction,
 	coordinatorCreateScopeAction,
@@ -176,14 +177,27 @@ function addInviteAcceptOptions(command: Command): void {
 	);
 }
 
+/** The invitation is fine; this device couldn't record the join before sending it. */
+function explainRecordFailure(error: unknown): never {
+	if (error instanceof Error && error.message === COORDINATOR_FREE_WITNESS_UNAVAILABLE) {
+		throw new Error(
+			"codemem couldn't save this device's coordinator record. Unlock or repair the keychain, or make the codemem keys folder writable, then try again.",
+		);
+	}
+	throw error;
+}
+
 /** Accepts after the user confirms a join that turns off syncing without a coordinator. */
 async function acceptInviteWithJoinConfirmation(
 	profile: ReturnType<typeof inviteImportProfile>,
 	opts: Pick<ImportInviteOptions, "json" | "reviewedOnboardingDigest">,
 ) {
-	const reviewedOnboardingDigest = opts.reviewedOnboardingDigest;
+	const accept = (accepted: typeof profile) =>
+		acceptInviteWithProfileCheck(accepted, opts.reviewedOnboardingDigest).catch(
+			explainRecordFailure,
+		);
 	try {
-		return await acceptInviteWithProfileCheck(profile, reviewedOnboardingDigest);
+		return await accept(profile);
 	} catch (error) {
 		if (!(error instanceof Error) || error.message !== COORDINATOR_JOIN_CONFIRMATION_REQUIRED)
 			throw error;
@@ -197,8 +211,7 @@ async function acceptInviteWithJoinConfirmation(
 			initialValue: false,
 		});
 		if (confirmed !== true) throw new Error("Invitation not accepted.");
-		const confirmedProfile = { ...profile, confirmCoordinatorJoin: true };
-		return acceptInviteWithProfileCheck(confirmedProfile, reviewedOnboardingDigest);
+		return accept({ ...profile, confirmCoordinatorJoin: true });
 	}
 }
 

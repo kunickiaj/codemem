@@ -230,6 +230,8 @@ export {
 	attestCoordinatorFree,
 	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	type CoordinatorFreeStatus,
+	keychainWitness,
+	keyHasManagedMark,
 	markCoordinatorManaged,
 	propagateCoordinatorManaged,
 	readCoordinatorFreeStatus,

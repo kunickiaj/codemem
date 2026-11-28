@@ -11,10 +11,7 @@ import {
 	type CoordinatorDeviceRemovalListResult,
 	parseDeviceRemovalListPage,
 } from "./coordinator-device-removal-list.js";
-import {
-	markCoordinatorManaged,
-	readCoordinatorFreeStatus,
-} from "./coordinator-free-attestation.js";
+import { keyHasManagedMark, markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	type CoordinatorIdentityGroupGrantActionResult,
@@ -2682,8 +2679,9 @@ export const COORDINATOR_JOIN_CONFIRMATION_REQUIRED = "coordinator_join_confirma
 function prepareStoreForJoin({ device, confirmed }: InviteJoinTransport): void {
 	const conn = connect(device.dbPath);
 	try {
-		const status = readCoordinatorFreeStatus(conn, { keysDir: device.keysDir });
-		if (!confirmed && status !== "managed") throw new Error(COORDINATOR_JOIN_CONFIRMATION_REQUIRED);
+		// Only a durable mark on the key means joining takes nothing more away.
+		const keyManaged = keyHasManagedMark(conn, { keysDir: device.keysDir });
+		if (!confirmed && !keyManaged) throw new Error(COORDINATOR_JOIN_CONFIRMATION_REQUIRED);
 		recordStoreCoordinatorHistory(conn, "enrollment");
 		markCoordinatorManaged(conn, { keysDir: device.keysDir });
 	} finally {

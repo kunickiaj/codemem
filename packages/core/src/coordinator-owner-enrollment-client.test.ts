@@ -4,6 +4,7 @@ import {
 	linkSync,
 	lstatSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
@@ -34,7 +35,12 @@ import { MemoryStore } from "./store.js";
 // Keep real filesystem publication except at the selected crash boundary.
 vi.mock("node:fs", async (original) => {
 	const fs = await original<typeof import("node:fs")>();
-	return { ...fs, linkSync: vi.fn(fs.linkSync), unlinkSync: vi.fn(fs.unlinkSync) };
+	return {
+		...fs,
+		linkSync: vi.fn(fs.linkSync),
+		unlinkSync: vi.fn(fs.unlinkSync),
+		openSync: vi.fn(fs.openSync),
+	};
 });
 const realLink = (await vi.importActual<typeof import("node:fs")>("node:fs")).linkSync;
 const realUnlink = (await vi.importActual<typeof import("node:fs")>("node:fs")).unlinkSync;
@@ -237,6 +243,25 @@ async function fixture() {
 		},
 	};
 }
+
+it("sends no owner enrollment request when the managed mark can't be written", async () => {
+	// Arrange: the witness beside the profile's key refuses new records.
+	const c = await fixture();
+	const realOpen = (await vi.importActual<typeof import("node:fs")>("node:fs")).openSync;
+	vi.mocked(openSync).mockImplementation(((path: string, ...rest: never[]) => {
+		if (String(path).includes("attestation-"))
+			throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+		return realOpen(path, ...rest);
+	}) as typeof openSync);
+	const fetch = vi.fn(c.options.fetch);
+	// Act
+	await expect(runOwnerEnrollment({ ...c.options, fetch })).rejects.toThrow(
+		"Owner pilot incomplete",
+	);
+	// Assert
+	expect(fetch).not.toHaveBeenCalled();
+	vi.mocked(openSync).mockImplementation(realOpen);
+});
 
 it("records coordinator history before the first owner enrollment request", async () => {
 	// Arrange

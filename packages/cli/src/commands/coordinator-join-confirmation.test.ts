@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { encodeInvitePayload } from "@codemem/core";
+import { connect, encodeInvitePayload, ensureDeviceIdentity, initTestSchema } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { buildCoordinatorCommand } from "./coordinator.js";
 
@@ -37,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	if (existsSync(join(directory, "keys"))) chmodSync(join(directory, "keys"), 0o700);
 	process.stdin.isTTY = isTTY as boolean;
 	process.exitCode = undefined;
 	vi.restoreAllMocks();
@@ -95,4 +96,20 @@ it.each([
 		expect.objectContaining({ message: expect.stringContaining(WARNING), initialValue: false }),
 	);
 	expect(fetchMock).toHaveBeenCalledTimes(joins);
+});
+
+it("says to unlock or repair the keychain when the join can't be recorded", async () => {
+	const db = connect(join(directory, "mem.sqlite"));
+	initTestSchema(db);
+	ensureDeviceIdentity(db, { keysDir: join(directory, "keys") });
+	db.close();
+	chmodSync(join(directory, "keys"), 0o500);
+	const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+	await accept("--json", "--confirm-coordinator-join");
+
+	expect(fetchMock).not.toHaveBeenCalled();
+	expect(JSON.parse(String(log.mock.calls[0]?.[0])).message).toBe(
+		"codemem couldn't save this device's coordinator record. Unlock or repair the keychain, or make the codemem keys folder writable, then try again.",
+	);
 });

@@ -7,6 +7,8 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	rmSync,
+	statSync,
 	writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -114,55 +116,111 @@ const unavailableKeychain: WitnessBackend = {
 	create: () => "failed",
 };
 
-/** The same keychain the device key uses: `security` on macOS, `secret-tool` on Linux. */
-function platformKeychain(): WitnessBackend {
-	// The test setup turns the real keychain off, so a test can't leave records in it.
-	if ((globalThis as Record<symbol, unknown>)[REAL_KEYCHAIN_DISABLED] === true)
-		return unavailableKeychain;
-	const run = (command: string, args: string[], input?: string) =>
-		execFileSync(command, args, { input, stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+type KeychainRunner = (command: string, args: string[], input?: string) => string;
+
+export interface KeychainWitnessOptions {
+	/** Holds the lock file that serializes keychain writers on this device. */
+	directory: string;
+	platform?: NodeJS.Platform;
+	run?: KeychainRunner;
+	lockTimeoutMs?: number;
+}
+
+const KEYCHAIN_LOCK_NAME = "attestation-keychain.lock";
+const STALE_KEYCHAIN_LOCK_MS = 30_000;
+
+function pause(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Runs `write` while holding a lock file beside the device key, or returns null when the lock
+ * can't be taken in time. `secret-tool store` replaces an existing item, so a lookup and a
+ * store are one step only while every writer on this device holds this lock.
+ */
+/** Takes the lock file, clearing one a stopped writer left behind. False when time runs out. */
+function takeKeychainLock(path: string, deadline: number): boolean {
+	for (;;) {
+		try {
+			closeSync(openSync(path, "wx", 0o600));
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+			const heldSince = statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Date.now();
+			if (Date.now() - heldSince > STALE_KEYCHAIN_LOCK_MS) rmSync(path, { force: true });
+			else if (Date.now() >= deadline) return false;
+			else pause(10);
+		}
+	}
+}
+
+function withKeychainLock<T>(directory: string, timeoutMs: number, write: () => T): T | null {
+	const path = join(directory, KEYCHAIN_LOCK_NAME);
+	try {
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+	} catch {
+		return null;
+	}
+	if (!takeKeychainLock(path, Date.now() + timeoutMs)) return null;
+	try {
+		return write();
+	} finally {
+		rmSync(path, { force: true });
+	}
+}
+
+/** The keychain the device key uses: `security` on macOS, `secret-tool` on Linux. */
+export function keychainWitness(options: KeychainWitnessOptions): WitnessBackend {
+	const platform = options.platform ?? process.platform;
+	const run: KeychainRunner =
+		options.run ??
+		((command, args, input) =>
+			execFileSync(command, args, { input, stdio: ["pipe", "pipe", "pipe"] }).toString("utf8"));
 	const read = (name: string): string | null => {
 		try {
-			if (process.platform === "darwin")
+			if (platform === "darwin")
 				return run("security", ["find-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE, "-w"]);
-			if (process.platform === "linux")
+			if (platform === "linux")
 				return run("secret-tool", ["lookup", "service", KEYCHAIN_SERVICE, "account", name]);
 		} catch {
 			// Not found and unavailable look the same, and both leave the store closed.
 		}
 		return null;
 	};
+	const store = (name: string, value: string): void => {
+		if (platform === "darwin") {
+			// Without -U, the keychain refuses to replace an existing item.
+			run("security", ["add-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE, "-w", value]);
+			return;
+		}
+		if (platform !== "linux") throw new Error("keychain_unsupported");
+		const label = ["--label", "codemem sync attestation"];
+		run("secret-tool", ["store", ...label, "service", KEYCHAIN_SERVICE, "account", name], value);
+	};
+	const create = (name: string, value: string): WitnessCreateResult => {
+		if (read(name) !== null) return "exists";
+		try {
+			store(name, value);
+		} catch {
+			return read(name) !== null ? "exists" : "failed";
+		}
+		return read(name) === value ? "created" : "failed";
+	};
 	return {
 		kind: "keychain",
 		read,
-		create: (name, value) => {
-			if (read(name) !== null) return "exists";
-			try {
-				if (process.platform === "darwin") {
-					// Without -U, the keychain refuses to replace an existing item.
-					run("security", [
-						"add-generic-password",
-						"-a",
-						name,
-						"-s",
-						KEYCHAIN_SERVICE,
-						"-w",
-						value,
-					]);
-				} else if (process.platform === "linux") {
-					const label = ["--label", "codemem sync attestation"];
-					run(
-						"secret-tool",
-						["store", ...label, "service", KEYCHAIN_SERVICE, "account", name],
-						value,
-					);
-				} else return "failed";
-			} catch {
-				return read(name) !== null ? "exists" : "failed";
-			}
-			return read(name) === value ? "created" : "failed";
-		},
+		create: (name, value) =>
+			withKeychainLock(options.directory, options.lockTimeoutMs ?? 5_000, () =>
+				create(name, value),
+			) ?? "failed",
 	};
+}
+
+function platformKeychain(directory: string): WitnessBackend {
+	// The test setup turns the real keychain off, so a test can't leave records in it.
+	if ((globalThis as Record<symbol, unknown>)[REAL_KEYCHAIN_DISABLED] === true)
+		return unavailableKeychain;
+	return keychainWitness({ directory });
 }
 
 function keysDirectory(keysDir?: string): string {
@@ -179,12 +237,25 @@ interface Witnesses {
 }
 
 function witnesses(options: AttestationOptions): Witnesses {
-	const file = fileWitness(keysDirectory(options.keysDir));
+	const directory = keysDirectory(options.keysDir);
+	const file = fileWitness(directory);
 	if (process.env.CODEMEM_SYNC_KEY_STORE?.toLowerCase() !== "keychain") {
 		return { primary: file, all: [file], file };
 	}
-	const keychain = options.keychain ?? platformKeychain();
+	const keychain = options.keychain ?? platformKeychain(directory);
 	return { primary: keychain, all: [keychain, file], file };
+}
+
+/**
+ * Every witness a managed mark must reach: the current ones, and the kind the key was bound to
+ * at attestation. A process in another mode still marks the bound witness, so switching modes
+ * can't hide the mark from a store read back in the bound mode.
+ */
+function markWitnesses(options: AttestationOptions, fingerprint: string): WitnessBackend[] {
+	const found = witnesses(options);
+	if (!fingerprint || found.all.some((backend) => backend.kind === "keychain")) return found.all;
+	if (keyBinding(found.file, fingerprint) !== "keychain") return found.all;
+	return [options.keychain ?? platformKeychain(keysDirectory(options.keysDir)), ...found.all];
 }
 
 const storeRecordName = (storeId: string) => `attestation-store-${storeId}`;
@@ -257,7 +328,7 @@ const markedThisProcess = new Set<string>();
 export function markCoordinatorManaged(db: Database, options: AttestationOptions = {}): void {
 	const storeId = readStoreId(db);
 	const fingerprint = deviceFingerprint(db) ?? "";
-	const { all } = witnesses(options);
+	const all = markWitnesses(options, fingerprint);
 	const memo = [storeId, fingerprint, keysDirectory(options.keysDir), ...all.map((w) => w.kind)];
 	if (markedThisProcess.has(memo.join("|")) && attestationRow(db)?.state === "managed") return;
 	db.transaction(() => {
@@ -324,6 +395,15 @@ function managedByWitness(found: Witnesses, storeId: string, fingerprint: string
 		(backend) =>
 			backend.read(keyRecordName(fingerprint)) !== null ||
 			backend.read(storeManagedName(storeId)) !== null,
+	);
+}
+
+/** Whether a witness, current or bound, durably holds a managed mark for this device's key. */
+export function keyHasManagedMark(db: Database, options: AttestationOptions = {}): boolean {
+	const fingerprint = deviceFingerprint(db);
+	if (!fingerprint) return false;
+	return markWitnesses(options, fingerprint).some(
+		(backend) => backend.read(keyRecordName(fingerprint)) !== null,
 	);
 }
 

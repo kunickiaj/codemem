@@ -51,6 +51,7 @@ import {
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
+	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	type CoordinatorDeviceAnswerLookup,
 	CoordinatorReciprocalApprovalRequestChangedError,
@@ -3588,16 +3589,36 @@ const COORDINATOR_JOIN_CONFIRMATION = {
 		"Joining a coordinator permanently turns off syncing without a coordinator for this device's key, including other codemem profiles that use the same key.",
 };
 
+const COORDINATOR_RECORD_UNAVAILABLE = {
+	error: COORDINATOR_FREE_WITNESS_UNAVAILABLE,
+	detail:
+		"codemem couldn't save this device's coordinator record. Unlock or repair the keychain, or make the codemem keys folder writable, then try again.",
+};
+
+/** The status and body for a failed invitation import. */
+export function inviteImportFailureResponse(
+	error: unknown,
+	invite: { projectInvite: boolean; recipientInvite: boolean },
+): { status: 400 | 409 | 503; body: Record<string, string> } {
+	const code = error instanceof Error ? error.message : String(error);
+	if (code === COORDINATOR_JOIN_CONFIRMATION_REQUIRED)
+		return { status: 409, body: COORDINATOR_JOIN_CONFIRMATION };
+	// The invitation is fine; this device couldn't record the join before sending it.
+	if (code === COORDINATOR_FREE_WITNESS_UNAVAILABLE)
+		return { status: 503, body: COORDINATOR_RECORD_UNAVAILABLE };
+	if (invite.projectInvite) return { status: 400, body: projectInviteAcceptanceFailure(error) };
+	if (invite.recipientInvite)
+		return { status: 400, body: { error: safeRecipientInviteError(error) } };
+	return { status: 400, body: { error: code } };
+}
+
 function inviteImportFailure(
 	c: Context,
 	error: unknown,
 	invite: { projectInvite: boolean; recipientInvite: boolean },
 ): Response {
-	if (error instanceof Error && error.message === COORDINATOR_JOIN_CONFIRMATION_REQUIRED)
-		return c.json(COORDINATOR_JOIN_CONFIRMATION, 409);
-	if (invite.projectInvite) return c.json(projectInviteAcceptanceFailure(error), 400);
-	if (invite.recipientInvite) return c.json({ error: safeRecipientInviteError(error) }, 400);
-	return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+	const { status, body } = inviteImportFailureResponse(error, invite);
+	return c.json(body, status);
 }
 
 function pinBootstrapGrantPeer(

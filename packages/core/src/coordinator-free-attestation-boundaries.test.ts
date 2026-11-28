@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdtempSync,
 	readdirSync,
@@ -17,12 +18,14 @@ import { coordinatorImportInviteAction } from "./coordinator-actions.js";
 import {
 	attestCoordinatorFree,
 	fileWitness,
+	keychainWitness,
 	markCoordinatorManaged,
 	propagateCoordinatorManaged,
 	readCoordinatorFreeStatus,
 	type WitnessBackend,
 } from "./coordinator-free-attestation.js";
 import { encodeInvitePayload } from "./coordinator-invites.js";
+import { readCoordinatorSyncConfig, registerCoordinatorPresence } from "./coordinator-runtime.js";
 import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { initTestSchema } from "./test-utils.js";
@@ -299,5 +302,138 @@ describe("joining a coordinator needs confirmation", () => {
 		db.close();
 		await coordinatorImportInviteAction({ inviteValue: invite(), dbPath: path, keysDir });
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+});
+
+describe("the managed mark follows the key's bound witness", () => {
+	it("keeps a keychain-bound store closed after trust in file mode and a rollback", () => {
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+		const keychain = memoryKeychain();
+		const store = openStore();
+		expect(attestCoordinatorFree(store.db, { keysDir, keychain })).toBe("standalone");
+		const backup = backupOf(store);
+		const keysBackup = join(directory, "keys-backup");
+		cpSync(keysDir, keysBackup, { recursive: true });
+		// Coordinator trust is taken by a process configured for file key storage.
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+		markCoordinatorManaged(store.db, { keysDir, keychain });
+
+		restore(store, backup);
+		rmSync(keysDir, { recursive: true, force: true });
+		cpSync(keysBackup, keysDir, { recursive: true });
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+
+		expect(readCoordinatorFreeStatus(store.db, { keysDir, keychain })).toBe("managed");
+		store.db.close();
+	});
+
+	it("refuses the trust step when the bound keychain can't take the mark", () => {
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+		const keychain = memoryKeychain();
+		const store = openStore();
+		attestCoordinatorFree(store.db, { keysDir, keychain });
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+		const locked: WitnessBackend = {
+			kind: "keychain",
+			read: keychain.read,
+			create: () => "failed",
+		};
+
+		expect(() => markCoordinatorManaged(store.db, { keysDir, keychain: locked })).toThrow(
+			WITNESS_UNAVAILABLE,
+		);
+		store.db.close();
+	});
+});
+
+describe("presence makes the managed mark durable first", () => {
+	it("doesn't announce this device when the witness can't take the mark", async () => {
+		const store = openStore();
+		const fetchMock = vi.fn(async () => Response.json({ ok: true, addresses: [] }));
+		vi.stubGlobal("fetch", fetchMock);
+		chmodSync(keysDir, 0o500);
+
+		await expect(
+			registerCoordinatorPresence(
+				{ db: store.db, dbPath: store.path },
+				readCoordinatorSyncConfig({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_groups: ["team-a"],
+				}),
+				{ keysDir },
+			),
+		).rejects.toThrow(WITNESS_UNAVAILABLE);
+		expect(fetchMock).not.toHaveBeenCalled();
+		store.db.close();
+	});
+});
+
+describe("join confirmation depends on the key's durable mark", () => {
+	it("asks before a join from a store with history only, whose key another store attested", async () => {
+		const attested = openStore("attested");
+		expect(attestCoordinatorFree(attested.db, { keysDir })).toBe("standalone");
+		const historyOnly = openStore("history-only");
+		addCoordinatorHistory(historyOnly.db);
+		historyOnly.db.close();
+		const fetchMock = vi.fn(async () => Response.json({ ok: true, status: "enrolled" }));
+		vi.stubGlobal("fetch", fetchMock);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: "join-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+		});
+
+		await expect(
+			coordinatorImportInviteAction({ inviteValue: invite, dbPath: historyOnly.path, keysDir }),
+		).rejects.toThrow("coordinator_join_confirmation_required");
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(readCoordinatorFreeStatus(attested.db, { keysDir })).toBe("standalone");
+		attested.db.close();
+	});
+});
+
+describe("keychain writers are serialized on this device", () => {
+	/** `secret-tool` as it behaves: `store` replaces an existing item. */
+	function secretTool(onStore?: () => void) {
+		const items = new Map<string, string>();
+		const run = (_command: string, args: string[], input?: string) => {
+			const account = args[args.indexOf("account") + 1] ?? "";
+			if (args[0] === "lookup") {
+				const value = items.get(account);
+				if (value === undefined) throw new Error("not found");
+				return value;
+			}
+			onStore?.();
+			items.set(account, input ?? "");
+			return "";
+		};
+		return { items, run };
+	}
+
+	it("lets only one of two competing writers create an item", () => {
+		let competitor: string | null = null;
+		const lockDirectory = join(directory, "lock");
+		const tool = secretTool(() => {
+			if (competitor !== null) return;
+			// Another process on this device writes the same item at the same moment.
+			const other = keychainWitness({
+				directory: lockDirectory,
+				platform: "linux",
+				run: tool.run,
+				lockTimeoutMs: 20,
+			});
+			competitor = other.create("item", "second");
+		});
+		const first = keychainWitness({ directory: lockDirectory, platform: "linux", run: tool.run });
+
+		expect(first.create("item", "first")).toBe("created");
+		expect(competitor).toBe("failed");
+		expect(first.create("item", "third")).toBe("exists");
+		expect(tool.items.get("item")).toBe("first");
 	});
 });
