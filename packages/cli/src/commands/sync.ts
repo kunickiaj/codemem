@@ -11,7 +11,6 @@ import {
 	applyBootstrapSnapshot,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
-	type CoordinatorDeviceAnswerLookup,
 	DeviceIdentityError,
 	ensureDeviceIdentity,
 	expandUserPath,
@@ -23,7 +22,6 @@ import {
 	MemoryStore,
 	mdnsEnabled,
 	mutateCodememConfigFile,
-	type PeerBindingOutcome,
 	type PeerRemovalResult,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
@@ -754,16 +752,14 @@ peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => 
 	}
 });
 
-/** What the user is told after a removal, the access sentence first when the binding was kept. */
-function peerRemovalNotices(label: string, binding: PeerBindingOutcome): string[] {
-	const pairingNotice = [
-		`Other devices still sync with ${label} until they remove it too.`,
-		`If the coordinator still lists ${label}, this device pairs with it again at the next refresh.`,
-	].join(" ");
-	if (binding === "ended") return [pairingNotice];
+/** What the user is told after a removal: the peer keeps its Project access. */
+function peerRemovalNotices(label: string): string[] {
 	return [
-		`${label} was not removed from Projects. An administrator's device can remove it.`,
-		pairingNotice,
+		`${label} was not removed from Projects. Use Remove device on an administrator's device.`,
+		[
+			`Other devices still sync with ${label} until they remove it too.`,
+			`If the coordinator still lists ${label}, this device pairs with it again at the next refresh.`,
+		].join(" "),
 	];
 }
 
@@ -774,7 +770,7 @@ function reportPeerRemoved(
 ): void {
 	const label = match.name || match.peer_device_id;
 	const { binding, removed } = result;
-	const notices = peerRemovalNotices(label, binding);
+	const notices = peerRemovalNotices(label);
 	if (options.json) {
 		const payload = {
 			ok: true,
@@ -788,38 +784,26 @@ function reportPeerRemoved(
 				identity_devices: removed.identityDevices,
 			},
 			binding,
-			...(binding === "kept" ? { remove_from_projects: "needs_admin_device" } : {}),
+			remove_from_projects: "needs_admin_device",
 			notice: notices.join(" "),
 		};
 		console.log(JSON.stringify(payload, null, 2));
 		return;
 	}
 	p.intro("codemem sync peers remove");
-	p.log.success(
-		binding === "kept" ? `Disconnected this device from ${label}` : `Removed peer ${label}`,
-	);
+	p.log.success(`Unpaired this device from ${label}`);
 	const progressRows =
 		removed.replicationCursors + removed.replicationCursorsV2 + removed.syncChannelProgress;
 	p.log.message(
-		[
-			`  pairing: ${removed.syncPeers}`,
-			`  sync progress rows: ${progressRows}`,
-			`  Identity bindings ended: ${removed.identityDevices}`,
-		].join("\n"),
+		[`  pairing: ${removed.syncPeers}`, `  sync progress rows: ${progressRows}`].join("\n"),
 	);
 	for (const notice of notices) p.log.warn(notice);
 	p.outro(match.peer_device_id);
 }
 
-export interface PeerRemoveDependencies {
-	/** What the coordinator says about the peer. Without it there is no answer. */
-	lookupCoordinatorAnswer?: CoordinatorDeviceAnswerLookup;
-}
-
 export async function removeSyncPeer(
 	peerRef: string,
 	opts: { db?: string; dbPath?: string; json?: boolean },
-	dependencies: PeerRemoveDependencies = {},
 ): Promise<void> {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
@@ -846,10 +830,9 @@ export async function removeSyncPeer(
 		const label = match.name || match.peer_device_id;
 		let result: PeerRemovalResult;
 		try {
-			result = await removePeerFromThisDevice(store.db, {
+			result = removePeerFromThisDevice(store.db, {
 				localDeviceId: store.deviceId,
 				peerDeviceId: match.peer_device_id,
-				lookupCoordinatorAnswer: dependencies.lookupCoordinatorAnswer,
 			});
 		} catch {
 			const message = `Could not remove peer ${label}. Nothing was changed.`;

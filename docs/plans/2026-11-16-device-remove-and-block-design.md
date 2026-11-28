@@ -434,13 +434,12 @@ caller's own group.
 | The lookup says the device is not enrolled, removed, or blocked | Local-only removal. |
 | The lookup gives no answer: the coordinator cannot be reached, predates the lookup, or does not list this device | Refuse and say why. The Viewer does not guess. An operator can still run `codemem sync peers remove`. |
 
-`codemem sync peers remove` and the Viewer's peer removal route always allow
-this device to disconnect. Without the admin secret, when a coordinator is
-configured and has not confirmed that the device is removed, blocked, or not
-enrolled, they delete only the pairing and sync progress. The binding stays
-active and no Project policy is woken. An administrator's device ends the
-binding and removes the device from Projects. Until the lookup client ships,
-the coordinator's answer is unknown.
+`codemem sync peers remove` and the Viewer's peer removal route (**Unpair
+device…** in Devices) only unpair this device. On every device, admin or not,
+and whatever the coordinator says, they delete the pairing and sync progress
+and nothing else. The binding stays active, the cached scope authorization
+stays, and no Project policy is woken. Remove device ends the binding and
+removes the device from Projects, through its own route.
 
 Local-only removal runs one function in one transaction: delete the pairing,
 delete its rows in both cursor tables, end the binding, and keep the pinned

@@ -123,9 +123,7 @@ const ADMIN_DEVICE = coordinatorSettings({
 });
 
 /** A paired, bound device with sync progress, and a Project shared with its Identity. */
-function peerDeleteFixture(
-	options: Pick<AppOptions, "readCoordinatorConfig" | "lookupCoordinatorDeviceAnswer">,
-) {
+function peerDeleteFixture(options: Pick<AppOptions, "readCoordinatorConfig">) {
 	const directory = mkdtempSync(join(tmpdir(), "viewer-peer-delete-"));
 	const store = new MemoryStore(join(directory, "mem.sqlite"));
 	cleanups.push(async () => {
@@ -176,6 +174,10 @@ function peerDeleteFixture(
 		store.db.prepare(`SELECT COUNT(*) FROM ${table} WHERE peer_device_id = 'peer-1'`).pluck().get();
 	return {
 		remove: () => app.request("/api/sync/peers/peer-1", { method: "DELETE" }),
+		recipients: () =>
+			store.db
+				.prepare("SELECT recipient_id, status FROM project_recipients ORDER BY recipient_id")
+				.all(),
 		state: () => ({
 			pairingAndProgress: [
 				count("sync_peers"),
@@ -196,11 +198,6 @@ function peerDeleteFixture(
 	};
 }
 
-const BINDING_ENDED = {
-	pairingAndProgress: [0, 0, 0, 0],
-	binding: "removed",
-	policyLastAttemptAt: null,
-};
 const BINDING_KEPT = {
 	pairingAndProgress: [0, 0, 0, 0],
 	binding: "active",
@@ -210,7 +207,7 @@ const KEPT_REPLY = {
 	ok: true,
 	binding: "kept",
 	remove_from_projects: "needs_admin_device",
-	notice: "The device stays in Projects. An administrator's device can remove it.",
+	notice: "Only this device's pairing was removed. Remove device changes its Project access.",
 };
 
 describe("DELETE /api/sync/peers/:peer_device_id", () => {
@@ -226,62 +223,30 @@ describe("DELETE /api/sync/peers/:peer_device_id", () => {
 		expect(await response.json()).toEqual(KEPT_REPLY);
 	});
 
-	it("deletes the pairing and all its sync progress and ends the binding when no coordinator is configured", async () => {
-		const f = peerDeleteFixture({ readCoordinatorConfig: NO_COORDINATOR });
+	it.each([
+		["no coordinator is configured", NO_COORDINATOR],
+		["there is no admin secret", WITHOUT_ADMIN_SECRET],
+		["this device holds the admin secret", ADMIN_DEVICE],
+	])(
+		"when %s, deletes the pairing and its sync progress, keeps the Identity binding, and wakes no Project policy",
+		async (_name, readCoordinatorConfig) => {
+			const f = peerDeleteFixture({ readCoordinatorConfig });
 
-		const response = await f.remove();
+			const response = await f.remove();
 
-		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({ ok: true, binding: "ended" });
-		expect(f.state()).toEqual(BINDING_ENDED);
-	});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual(KEPT_REPLY);
+			expect(f.state()).toEqual(BINDING_KEPT);
+		},
+	);
 
-	it("without the admin secret, deletes the pairing and its sync progress, keeps the binding, wakes no Project policy, and says an admin device removes it from Projects", async () => {
-		const f = peerDeleteFixture({ readCoordinatorConfig: WITHOUT_ADMIN_SECRET });
-
-		const response = await f.remove();
-
-		expect(response.status).toBe(200);
-		expect(f.state()).toEqual(BINDING_KEPT);
-		expect(await response.json()).toEqual(KEPT_REPLY);
-	});
-
-	it("without the admin secret, keeps the binding when the coordinator says the device is enrolled", async () => {
-		const f = peerDeleteFixture({
-			readCoordinatorConfig: WITHOUT_ADMIN_SECRET,
-			lookupCoordinatorDeviceAnswer: async () => "enrolled",
-		});
-
-		const response = await f.remove();
-
-		expect(await response.json()).toEqual(KEPT_REPLY);
-		expect(f.state()).toEqual(BINDING_KEPT);
-	});
-
-	it("without the admin secret, ends the binding when the coordinator says the device is removed", async () => {
-		const asked: string[] = [];
-		const f = peerDeleteFixture({
-			readCoordinatorConfig: WITHOUT_ADMIN_SECRET,
-			lookupCoordinatorDeviceAnswer: async (deviceId) => {
-				asked.push(deviceId);
-				return "removed";
-			},
-		});
-
-		const response = await f.remove();
-
-		expect(await response.json()).toEqual({ ok: true, binding: "ended" });
-		expect(asked).toEqual(["peer-1"]);
-		expect(f.state()).toEqual(BINDING_ENDED);
-	});
-
-	it("ends the binding on a device that holds the admin secret", async () => {
+	it("leaves the Project recipient sets unchanged on an admin device", async () => {
 		const f = peerDeleteFixture({ readCoordinatorConfig: ADMIN_DEVICE });
+		const before = f.recipients();
 
-		const response = await f.remove();
+		await f.remove();
 
-		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({ ok: true, binding: "ended" });
-		expect(f.state()).toEqual(BINDING_ENDED);
+		expect(before).toEqual([{ recipient_id: "identity-a", status: "active" }]);
+		expect(f.recipients()).toEqual(before);
 	});
 });

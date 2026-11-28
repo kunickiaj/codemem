@@ -212,7 +212,6 @@ export interface AppOptions extends SyncAppOptions {
 	/** For manual refresh entry points only. Daemon maintenance already holds the queue. */
 	runManualCoordinatorRefresh?: <T>(work: () => Promise<T>) => Promise<T>;
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
-	lookupCoordinatorDeviceAnswer?: SyncRoutesOptions["lookupCoordinatorDeviceAnswer"];
 	syncReachability?: SyncRoutesOptions["syncReachability"];
 	getSyncRuntimeStatus?: () => {
 		phase:
@@ -343,7 +342,6 @@ function registerViewerSyncRoutes(
 			readCoordinatorConfig: opts?.readCoordinatorConfig,
 			runManualCoordinatorRefresh: opts?.runManualCoordinatorRefresh,
 			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
-			lookupCoordinatorDeviceAnswer: opts?.lookupCoordinatorDeviceAnswer,
 			deviceLifecycleActions: Boolean(opts?.createDeviceRemovalRefreshHooks),
 		}),
 	);

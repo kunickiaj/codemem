@@ -1033,12 +1033,6 @@ export {
 } from "./peer-project-filter-change.js";
 export { rememberPeerProjectFilterManagement } from "./peer-project-filter-management.js";
 export {
-	type CoordinatorDeviceAnswer,
-	type CoordinatorDeviceAnswerLookup,
-	decidePeerBinding,
-	noCoordinatorDeviceAnswer,
-	type PeerBindingDecisionInput,
-	type PeerBindingOutcome,
 	type PeerRemovalOptions,
 	type PeerRemovalResult,
 	removePeerFromThisDevice,

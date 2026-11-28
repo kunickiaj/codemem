@@ -351,6 +351,42 @@ it("uses signed global evidence to commit a mounted Remove for a locally paired,
 	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
 });
 
+it("Remove ends the binding and wakes the Project policies of its Identity, which unpairing does not", async () => {
+	const f = await fixture({ mounted: true });
+	const peer = "local-only-peer";
+	const peerKey = key.replace("dam", "zam");
+	f.db
+		.prepare("UPDATE sync_peers SET peer_device_id = ?, public_key = ?, pinned_fingerprint = ?")
+		.run(peer, peerKey, fingerprintPublicKey(peerKey));
+	f.db.prepare("UPDATE identity_devices SET device_id = ?").run(peer);
+	f.db
+		.prepare(
+			`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
+			 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
+			 VALUES ('project-a', 'identity', 'fixture-identity', 'active', 'test', '1', 'native', 'recipient:a', 'then', 'then')`,
+		)
+		.run();
+	f.db
+		.prepare(
+			`INSERT INTO recipient_policy_authority_states(canonical_project_identity, authority_state,
+			 generation, state_changed_at, last_attempt_at, created_at, updated_at)
+			 VALUES ('project-a', 'active', 1, 'then', 'then', 'then', 'then')`,
+		)
+		.run();
+	const attemptedAt = () =>
+		f.db.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states").pluck().get();
+	expect(attemptedAt()).toBe("then");
+
+	await confirmAndCommitDeviceRemoval(
+		{ deviceId: peer, displayName: "Local peer" },
+		{ confirm: async () => true },
+	);
+
+	expect(f.localSnapshot()).toMatchObject({ paired: false, binding: "removed" });
+	// The reconciler clears this when a Project's policy is woken.
+	expect(attemptedAt()).toBeNull();
+});
+
 it("never falls back to Remove when a mounted Viewer cannot obtain signed evidence", async () => {
 	const f = await fixture({ mounted: true, lookupUnavailable: true });
 	const before = f.localSnapshot();

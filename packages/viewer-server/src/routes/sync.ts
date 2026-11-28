@@ -56,7 +56,6 @@ import {
 	COORDINATOR_FREE_BINDING_UNVERIFIED,
 	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
-	type CoordinatorDeviceAnswerLookup,
 	CoordinatorReciprocalApprovalRequestChangedError,
 	canonicalRepositoryProjectIdentity,
 	canonicalWorkspaceIdentity,
@@ -278,8 +277,6 @@ export interface SyncRoutesOptions {
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	runManualCoordinatorRefresh?: ManualCoordinatorRefresh;
 	renameCoordinatorGroup?: typeof coordinatorRenameGroupAction;
-	/** What the coordinator says about a peer being removed. Without it there is no answer. */
-	lookupCoordinatorDeviceAnswer?: CoordinatorDeviceAnswerLookup;
 }
 
 type ManualCoordinatorRefresh = <T>(work: () => Promise<T>) => Promise<T>;
@@ -7512,11 +7509,7 @@ export function installRecipientAccessChangeGate(
 	);
 }
 
-async function removeLocalPeerRoute(
-	c: Context,
-	getStore: StoreFactory,
-	options: SyncRoutesOptions,
-): Promise<Response> {
+function removeLocalPeerRoute(c: Context, getStore: StoreFactory): Response {
 	const store = getStore();
 	const d = drizzle(store.db, { schema });
 	const peerDeviceId = c.req.param("peer_device_id")?.trim();
@@ -7527,19 +7520,17 @@ async function removeLocalPeerRoute(
 		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 		.get();
 	if (!exists) return c.json({ error: "peer not found" }, 404);
-	const { binding } = await removePeerFromThisDevice(store.db, {
+	// Unpairing never changes the device's Identity binding or Project recipients, on an
+	// admin device or any other. Remove device is the route that does.
+	const { binding } = removePeerFromThisDevice(store.db, {
 		localDeviceId: store.deviceId,
 		peerDeviceId,
-		readConfig: options.readCoordinatorConfig,
-		lookupCoordinatorAnswer: options.lookupCoordinatorDeviceAnswer,
 	});
-	if (binding === "ended") return c.json({ ok: true, binding });
-	// The device stays in Projects shared with its Identity until an admin device removes it.
 	return c.json({
 		ok: true,
 		binding,
 		remove_from_projects: "needs_admin_device",
-		notice: "The device stays in Projects. An administrator's device can remove it.",
+		notice: "Only this device's pairing was removed. Remove device changes its Project access.",
 	});
 }
 
@@ -10244,7 +10235,7 @@ export function syncRoutes(
 	app.post("/api/sync/bootstrap-grants/revoke", revokeBootstrapGrantRoute);
 
 	// DELETE /api/sync/peers/:peer_device_id
-	app.delete("/api/sync/peers/:peer_device_id", (c) => removeLocalPeerRoute(c, getStore, options));
+	app.delete("/api/sync/peers/:peer_device_id", (c) => removeLocalPeerRoute(c, getStore));
 
 	return app;
 }
