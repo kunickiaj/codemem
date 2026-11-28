@@ -2716,6 +2716,23 @@ async function requestInvitationJoin(
 	}
 }
 
+/** Join refusals the coordinator names, which reach the caller as they are. */
+const INVITE_JOIN_REFUSALS = new Set([
+	"add_device_invite_self_acceptance_forbidden",
+	"invite_already_bound",
+	"invite_expired",
+	"invite_identity_conflict",
+	"invite_invalid",
+	"recipient_display_name_invalid",
+	"recipient_display_name_required",
+	"recipient_display_name_too_long",
+	"device_display_name_invalid",
+	"device_display_name_required",
+	"device_display_name_too_long",
+	"recipient_invite_intent_mismatch",
+	"recipient_invite_review_unavailable",
+]);
+
 export async function coordinatorImportInviteAction(opts: {
 	inviteValue: string;
 	dbPath?: string | null;
@@ -2821,25 +2838,7 @@ export async function coordinatorImportInviteAction(opts: {
 	);
 	if (status < 200 || status >= 300) {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
-		if (
-			[
-				"add_device_invite_self_acceptance_forbidden",
-				"invite_already_bound",
-				"invite_expired",
-				"invite_identity_conflict",
-				"invite_invalid",
-				"recipient_display_name_invalid",
-				"recipient_display_name_required",
-				"recipient_display_name_too_long",
-				"device_display_name_invalid",
-				"device_display_name_required",
-				"device_display_name_too_long",
-				"recipient_invite_intent_mismatch",
-				"recipient_invite_review_unavailable",
-			].includes(detail)
-		) {
-			throw new Error(detail);
-		}
+		if (INVITE_JOIN_REFUSALS.has(detail)) throw new Error(detail);
 		throw new Error(`Invite import failed (${status}).`);
 	}
 	// A successful consume is trusted coordinator state; malformed authority must fail closed,
