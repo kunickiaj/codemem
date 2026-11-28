@@ -5,7 +5,6 @@ import { PresencePip, type PresenceState } from "../../../components/primitives/
 import type { DeviceIdentityInventoryItemV1 } from "../../../lib/api/sync";
 import { formatTimestamp } from "../../../lib/format";
 import { isSyncRedactionEnabled, type SyncActor, state } from "../../../lib/state";
-import { coordinatorIsConfigured, unpairDescription } from "../../device-disconnect";
 import {
 	clearPeerScopeReview,
 	consumePeerScopeReviewRequest,
