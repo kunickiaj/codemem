@@ -14,6 +14,13 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
+import {
+	ambiguousCopiesRecorded,
+	forgetHeldOp,
+	holdAmbiguousOp,
+	recordedAmbiguousScopes,
+	releasedHeldOps,
+} from "./memory-copy-ambiguity.js";
 import { recordOpCopy } from "./memory-copy-provenance.js";
 import {
 	hasMatchingLocalCreation,
@@ -2509,8 +2516,10 @@ const FALLBACK_LOCAL_ACTOR_ID = "local:local";
  * Whether a stored copy is held back from every peer until it is repaired or
  * settled:
  *
- * - Another copy shares its import key in its scope. Which one a peer should
- *   hold is unclear, so none is served while more than one is stored.
+ * - Its import key and scope have been seen with more than one copy. Which one a
+ *   peer should hold is unclear, so none is served, even after copies go away,
+ *   until `codemem sync duplicates repair` finds a single survivor
+ *   (memory-copy-ambiguity.ts).
  * - It still carries the fallback actor this store used before it adopted a
  *   device identity, whatever its origin says. It is served once adoption moves
  *   it to the canonical actor.
@@ -2538,8 +2547,9 @@ function chunked<T>(values: readonly T[]): T[][] {
 
 /**
  * The keys among a page's memories that this device stores more than once in
- * one scope, by copyScopeKey. One query per 500 keys, on the import key index,
- * so the cost follows the page, not the store.
+ * one scope, or has recorded as stored more than once (memory-copy-ambiguity.ts),
+ * by copyScopeKey. Two queries per 500 keys, on the import key index and the
+ * record's key, so the cost follows the page, not the store.
  */
 function duplicatedCopyKeys(
 	db: Database,
@@ -2557,7 +2567,8 @@ function duplicatedCopyKeys(
 				 GROUP BY import_key, scope_id HAVING COUNT(*) > 1`,
 			)
 			.all(...chunk) as Array<{ import_key: string; scope_id: string | null }>;
-		for (const row of rows) duplicated.add(copyScopeKey(row.import_key, row.scope_id));
+		for (const row of [...rows, ...recordedAmbiguousScopes(db, chunk)])
+			duplicated.add(copyScopeKey(row.import_key, row.scope_id));
 	}
 	return duplicated;
 }
@@ -4345,13 +4356,15 @@ function rejectUnretiredScopeFailures(
 }
 
 /**
- * Whether an op would change a memory this device stores more than one copy of.
- * Its clock would be compared against one copy and the others left to diverge,
- * so it applies to none of them until all but one are removed. A cleanup notice
+ * Whether an op would change a memory this device stores, or has recorded as
+ * storing, more than one copy of. Its clock would be compared against one copy
+ * and the others left to diverge, so it applies to none of them and is held until
+ * the duplicates are repaired (heldReplay). A cleanup notice
  * still applies, since it only removes copies.
  */
 function opTargetsAmbiguousCopies(db: Database, op: ReplicationOp): boolean {
 	if (op.entity_type !== "memory_item" || op.op_type === ACCESS_CLEANUP_OP_TYPE) return false;
+	if (ambiguousCopiesRecorded(db, op.entity_id)) return true;
 	return (
 		Number(
 			db
@@ -4367,19 +4380,68 @@ function skipOwnRetiredOrAppliedOp(
 	d: ReturnType<typeof drizzle>,
 	op: ReplicationOp,
 	localDeviceId: string,
+	options: ApplyReplicationOpsOptions,
 ): boolean {
 	if (skipOwnOrRetiredMemoryOp(db, op, localDeviceId)) return true;
 	// Not recorded as applied, so a re-pull after the withdrawal ends applies it.
 	if (opInWithdrawnScope(db, op)) return true;
-	// Not recorded either: which copy the op would change is unclear until repaired.
-	if (opTargetsAmbiguousCopies(db, op)) return true;
-	return (
+	const applied =
 		d
 			.select({ one: sql<number>`1` })
 			.from(schema.replicationOps)
 			.where(eq(schema.replicationOps.op_id, op.op_id))
-			.get() !== undefined
-	);
+			.get() !== undefined;
+	if (applied) return true;
+	// Held, not applied or failed: which copy the op would change is unclear. The
+	// sender's cursor moves on, and heldReplay runs the op ahead of a later batch once the
+	// memory is repaired or its copies are gone.
+	if (!opTargetsAmbiguousCopies(db, op)) return false;
+	holdAmbiguousOp(db, op, inboundSender(options));
+	return true;
+}
+
+/** The peer an inbound batch came from, when the caller names one. */
+function inboundSender(options: ApplyReplicationOpsOptions): string | null {
+	return cleanText(options.inboundScopeValidation?.peerDeviceId ?? options.activityPeerDeviceId);
+}
+
+/**
+ * The held changes an apply runs ahead of its incoming ops: those whose memory is
+ * no longer stored or recorded more than once, in the order they arrived, each
+ * checked again against its sender's current access to the scopes it writes. A
+ * change whose sender is no longer a member is dropped; one with any other
+ * rejection stays held for a later apply. They run ahead of the batch's own ops.
+ * beginOp starts each op: it clears the op's vector work and opens its savepoint,
+ * and a replayed change leaves the held table
+ * inside it, so a change that fails stays held.
+ */
+function heldReplay(
+	db: Database,
+	localDeviceId: string,
+	effects: Parameters<typeof finishReplicationOp>[2],
+) {
+	const ops: ReplicationOp[] = [];
+	for (const held of releasedHeldOps(db)) {
+		const validation = held.senderDeviceId ? { peerDeviceId: held.senderDeviceId } : null;
+		const rejected = rejectedInboundBatch(db, [held.op], localDeviceId, {
+			inboundScopeValidation: validation,
+		});
+		if (!rejected) ops.push(held.op);
+		else if (rejected.rejections.some((r) => r.reason === "sender_not_member"))
+			forgetHeldOp(db, held.op.op_id);
+	}
+	const heldIds = new Set(ops.map((op) => op.op_id));
+	// A replayed change was received earlier, not from the peer this batch came from.
+	const replayEffects = { ...effects, activityPeer: undefined };
+	return {
+		ops,
+		beginOp: (op: ReplicationOp) => {
+			effects.opVectorWork.clear();
+			db.exec("SAVEPOINT codemem_replication_op");
+			if (heldIds.has(op.op_id)) forgetHeldOp(db, op.op_id);
+		},
+		effectsFor: (op: ReplicationOp) => (heldIds.has(op.op_id) ? replayEffects : effects),
+	};
 }
 
 function rollbackReplicationOp(
@@ -4542,14 +4604,14 @@ function applyReplicationOpsInternal(
 		activityPeer: options.activityPeerDeviceId,
 	};
 	const applyAll = db.transaction(() => {
-		for (const op of ops) {
+		const replay = heldReplay(db, localDeviceId, effects);
+		for (const op of [...replay.ops, ...ops]) {
 			const result = emptyApplyResult();
-			opVectorWork.clear();
 			// Per-op failures must roll back content, provenance, refs, and op acknowledgement together.
-			db.exec("SAVEPOINT codemem_replication_op");
+			replay.beginOp(op);
 			try {
 				// Skip own, retired, and already-applied ops.
-				if (skipOwnRetiredOrAppliedOp(db, d, op, localDeviceId)) {
+				if (skipOwnRetiredOrAppliedOp(db, d, op, localDeviceId, options)) {
 					result.skipped++;
 					continue;
 				}
@@ -4921,7 +4983,7 @@ function applyReplicationOpsInternal(
 				rollbackReplicationOp(db, result, opVectorWork);
 				result.errors.push(`op ${op.op_id}: ${err instanceof Error ? err.message : String(err)}`);
 			} finally {
-				finishReplicationOp(db, result, effects, op.op_id);
+				finishReplicationOp(db, result, replay.effectsFor(op), op.op_id);
 			}
 		}
 	});

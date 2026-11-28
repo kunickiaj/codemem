@@ -6,7 +6,8 @@
  * released client knows: memory text and its FTS index, embeddings, captured
  * transcripts and their flush records, prompts, summaries, artifacts, session
  * metadata (which keeps the first prompt), creation snapshots, extracted concept
- * and file references, replication op payloads and the sync identity. The
+ * and file references, replication op payloads (including ops held for a memory
+ * stored twice) and the sync identity. The
  * inventory test in `transitioned-store-inventory.test.ts` fails when a table with
  * a content-like column is added without either appearing here or being reviewed
  * as metadata there.
@@ -24,6 +25,7 @@ export const transitionedNames = {
 	memory_concept_refs: "project_memory_concept_refs",
 	memory_file_refs: "project_memory_file_refs",
 	memory_local_creation_snapshots: "project_memory_local_creation_snapshots",
+	memory_ambiguous_held_ops: "project_memory_ambiguous_held_ops",
 	memory_vectors: "project_memory_vectors",
 	memory_vectors_rowids: "project_memory_vectors_rowids",
 	memory_vectors_v1: "project_memory_vectors_v1",
@@ -57,6 +59,7 @@ export const renamedOptionalTables = [
 	"memory_concept_refs",
 	"memory_file_refs",
 	"memory_local_creation_snapshots",
+	"memory_ambiguous_held_ops",
 ] as const satisfies readonly TransitionedName[];
 
 const physicalByLogical = new Map<string, string>(Object.entries(transitionedNames));
