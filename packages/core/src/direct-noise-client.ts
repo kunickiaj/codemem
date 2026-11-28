@@ -77,12 +77,13 @@ function connect(endpoint: DirectNoiseEndpoint, signal: AbortSignal): Promise<ne
 }
 
 /** Reads the response head. Anything sent after it would be Noise before Message A. */
-function readSwitch(socket: net.Socket): Promise<void> {
+function readSwitch(socket: net.Socket, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
 		let buffered = Buffer.alloc(0);
 		const done = (error?: Error) => {
 			socket.off("data", onData);
 			socket.off("close", onClose);
+			signal.removeEventListener("abort", onAbort);
 			socket.pause();
 			if (error) reject(error);
 			else resolve();
@@ -100,8 +101,12 @@ function readSwitch(socket: net.Socket): Promise<void> {
 			done();
 		};
 		const onClose = () => done(new DirectNoiseNotOffered("closed"));
+		// A listener that never answers must not hold the socket past the exchange's deadline.
+		const onAbort = () => done(new Error("Direct Noise upgrade got no answer in time"));
+		if (signal.aborted) return onAbort();
 		socket.on("data", onData);
 		socket.once("close", onClose);
+		signal.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -148,7 +153,7 @@ async function openStream(
 		socket = await connect(endpoint, options.signal);
 		socket.on("error", () => {});
 		socket.write(upgradeRequest(endpoint, directNoiseUpgradeTarget(sessionId, digest)));
-		await readSwitch(socket);
+		await readSwitch(socket, options.signal);
 		wire.pipe(socket);
 		socket.pipe(wire);
 		socket.resume();

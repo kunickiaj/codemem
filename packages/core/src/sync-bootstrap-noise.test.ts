@@ -6,6 +6,13 @@ vi.mock("./sync-transport-policy.js", async (original) => ({
 	DIRECT_NOISE_ACTIVE: true,
 }));
 
+// Snapshot requests are signed. These tests check routing, so signing needs no key.
+vi.mock("./sync-auth.js", async (original) => ({
+	...(await original<typeof import("./sync-auth.js")>()),
+	buildAuthHeaders: () => ({}),
+	buildDirectPeerAuthHeaders: () => ({}),
+}));
+
 afterEach(() => vi.restoreAllMocks());
 
 const reset = {

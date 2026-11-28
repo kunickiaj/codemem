@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import type { Database } from "./db.js";
+import { PeerHttpExchangeError } from "./peer-http-policy.js";
 import { isRelayPeerClient, type RelayPeerClient } from "./relay-peer-client.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import { supportsSyncFeature } from "./sync-capability.js";
@@ -81,11 +82,27 @@ function networkFailure(error: unknown): boolean {
 }
 
 /**
+ * A direct Noise exchange that timed out or lost its connection, such as a
+ * listener that accepts TCP but never answers the upgrade. The plaintext
+ * executor reports the same cases as network failures.
+ */
+function noiseExchangeUnreachable(error: unknown): boolean {
+	return (
+		error instanceof PeerHttpExchangeError &&
+		(error.code === "deadline" || error.code === "transport")
+	);
+}
+
+/**
  * Before commitment, an unreachable address or a refused plaintext downgrade
  * leaves the relay, which is always encrypted, to try instead.
  */
 function fallbackAllowed(error: unknown): boolean {
-	return networkFailure(error) || error instanceof PeerTransportRefused;
+	return (
+		networkFailure(error) ||
+		noiseExchangeUnreachable(error) ||
+		error instanceof PeerTransportRefused
+	);
 }
 
 function failure(transport: "direct" | "wait", error: string): SyncResult {
