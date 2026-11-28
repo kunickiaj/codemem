@@ -17,6 +17,7 @@ import { adoptLocalCapture, hasPendingLocalCapture } from "./memory-local-captur
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { assertNotRealCodememPath } from "./test-real-path-guard.js";
 
 export { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -150,6 +151,7 @@ export function loadPrivateKeyKeychain(deviceId: string): Buffer | null {
 /** Resolve private and public key file paths. */
 export function resolveKeyPaths(keysDir?: string): [string, string] {
 	const dir = keysDir ?? defaultKeysDir();
+	assertNotRealCodememPath(dir, "keys directory");
 	return [join(dir, PRIVATE_KEY_NAME), join(dir, PUBLIC_KEY_NAME)];
 }
 

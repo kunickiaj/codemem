@@ -48,6 +48,8 @@ function stubRuntimeEnv({ nativeTools }) {
 	writeFileSync(runner, RUNNER_SCRIPT);
 	chmodSync(runner, 0o755);
 	vi.stubEnv("HOME", join(root, "home"));
+	// The default store is the one under this HOME; the test setup's own CODEMEM_DB would win.
+	vi.stubEnv("CODEMEM_DB", undefined);
 	vi.stubEnv("CODEMEM_RAW_EVENTS", "0");
 	vi.stubEnv("CODEMEM_VIEWER", "0");
 	vi.stubEnv("CODEMEM_VIEWER_AUTO", "0");

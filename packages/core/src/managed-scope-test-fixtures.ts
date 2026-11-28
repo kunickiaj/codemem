@@ -65,6 +65,7 @@ export async function refreshManagedScopeFixture(
 		const result = await refreshScopeMembershipCache(db, {
 			coordinatorId,
 			groupIds: [groupId],
+			keysDir: options.keysDir,
 			now: options.now,
 			fetchers: {
 				listScopes: async () => ({ version: 1, items: snapshots.map(({ scope }) => scope) }),

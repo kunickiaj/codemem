@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import {
 	CANONICAL_PUBLIC_KEY,
@@ -11,6 +12,7 @@ import {
 } from "./scope-membership-cache.js";
 import type { ScopeMembershipSnapshot } from "./scope-membership-snapshot.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { resolveKeyPaths } from "./sync-identity.js";
 
 export const cacheTime = "2026-10-07T00:00:00.000Z";
 
@@ -116,12 +118,25 @@ export function refreshFixtureScopeMembershipCache(
 	});
 }
 
+/**
+ * The keys directory a fixture refresh writes its managed mark beside: the caller's,
+ * else the test's CODEMEM_KEYS_DIR, else the default under HOME, which the test setup
+ * and the `node --test` preload point at a temporary home. Resolving it here, rather
+ * than leaving it to the refresh, runs the real-path guard before anything is written.
+ */
+function fixtureKeysDir(explicit?: string): string {
+	const configured = explicit?.trim() || process.env.CODEMEM_KEYS_DIR?.trim();
+	return dirname(resolveKeyPaths(configured || undefined)[0]);
+}
+
 /** Promote test setup rows through the public refresh DTO, never insert retained proofs. */
 export async function refreshTestScopeRows(
 	db: Database,
 	publicKeys: Record<string, string> = {},
-	options: { now?: Date; groupIds?: readonly string[] } = {},
+	options: { now?: Date; groupIds?: readonly string[]; keysDir?: string } = {},
 ) {
+	// The refresh writes a managed mark beside the device key, so it never uses the default.
+	const keysDir = fixtureKeysDir(options.keysDir);
 	const scopes = (
 		db
 			.prepare("SELECT * FROM replication_scopes WHERE authority_type = 'coordinator'")
@@ -138,6 +153,7 @@ export async function refreshTestScopeRows(
 		const result = await refreshScopeMembershipCache(db, {
 			coordinatorId: authority.coordinator_id,
 			groupIds: [authority.group_id ?? ""],
+			keysDir,
 			now: options.now ?? new Date(cacheTime),
 			fetchers: {
 				async listScopes() {

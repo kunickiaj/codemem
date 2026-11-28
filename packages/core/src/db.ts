@@ -72,6 +72,9 @@ export {
 	REQUIRED_BOOTSTRAPPED_TABLES,
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
+
+import { assertNotRealCodememPath } from "./test-real-path-guard.js";
+
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
 export { columnExists, tableExists };
@@ -155,6 +158,12 @@ export const DEFAULT_DB_PATH = join(homedir(), ".codemem", "mem.sqlite");
  * All TS entry points should use this instead of hardcoding fallback logic.
  */
 export function resolveDbPath(explicit?: string): string {
+	const path = resolveDbPathUnchecked(explicit);
+	assertNotRealCodememPath(path, "store");
+	return path;
+}
+
+function resolveDbPathUnchecked(explicit?: string): string {
 	if (explicit) return expandUserPath(explicit);
 	const envPath = process.env.CODEMEM_DB;
 	if (envPath) return expandUserPath(envPath);
@@ -227,6 +236,7 @@ export function migrateLegacyDbPath(dbPath: string): void {
  * opening a brand-new or otherwise uninitialized writable database.
  */
 export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
+	assertNotRealCodememPath(dbPath, "store");
 	migrateLegacyDbPath(dbPath);
 	mkdirSync(dirname(dbPath), { recursive: true });
 	const db = new Database(dbPath);
@@ -286,6 +296,7 @@ export function connectReadOnly(
 	dbPath: string = DEFAULT_DB_PATH,
 	options: ReadOnlyConnectionOptions = {},
 ): DatabaseType {
+	assertNotRealCodememPath(dbPath, "store");
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 	try {
 		db.pragma("foreign_keys = ON");
