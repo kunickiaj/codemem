@@ -1276,6 +1276,30 @@ it("commits only to a request the caller names as status, whatever its URL says"
 	// Act.
 	await runReachableSyncPass(db, "peer", addresses, options(execute));
 	// Assert.
-	expect(refusal).toEqual(new Error("Sync status is required before application requests"));
+	expect(refusal).toEqual(new Error("Sync request operation does not match its route"));
 	expect(execute).not.toHaveBeenCalled();
 });
+
+it.each(["status", "ops"] as const)(
+	"sends nothing for a GET snapshot labeled %s through the reachability wrapper",
+	async (label) => {
+		// Arrange: the first request is a snapshot at a prefixed address, mislabeled.
+		const execute = successfulExchange();
+		let refusal: unknown;
+		vi.spyOn(syncPass, "syncOnce").mockImplementationOnce(
+			async (_db, _peer, _addresses, passOptions) => {
+				refusal = await passOptions
+					?.requestExecutor?.("GET", "http://127.0.0.1:19001/base/v1/snapshot?limit=1", {
+						operation: label,
+					})
+					.catch((error: unknown) => error);
+				return { ok: false, error: "stopped", opsIn: 0, opsOut: 0 };
+			},
+		);
+		// Act.
+		await runReachableSyncPass(db, "peer", ["http://127.0.0.1:19001/base"], options(execute));
+		// Assert.
+		expect(refusal).toEqual(new Error("Sync request operation does not match its route"));
+		expect(execute).not.toHaveBeenCalled();
+	},
+);

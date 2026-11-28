@@ -9,7 +9,7 @@ import { createPeerHttpExecutor } from "./peer-http-client.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import {
-	type PeerOperation,
+	peerOperationMatches,
 	type RequestJsonExecutor,
 	type RequestJsonOptions,
 	requestJson,
@@ -86,13 +86,6 @@ export function peerTransportBlocker(
 	return currentPeerPin(db, peerDeviceId) ? null : PEER_KEY_MISSING_MESSAGE;
 }
 
-const OPERATION_METHOD: Record<PeerOperation, string> = {
-	status: "GET",
-	snapshot: "GET",
-	ops: "GET",
-	push: "POST",
-};
-
 export class PeerTransportRefused extends Error {
 	constructor(message: string) {
 		super(message);
@@ -124,8 +117,10 @@ class PeerTransport {
 		requestOptions: RequestJsonOptions = {},
 	): Promise<ExecutorResult> {
 		const { operation, ...forwarded } = requestOptions;
-		if (!operation || OPERATION_METHOD[operation] !== method)
-			throw new PeerTransportRefused(`operation_required: ${method} needs a matching operation`);
+		if (!peerOperationMatches(operation, method, url))
+			throw new PeerTransportRefused(
+				`operation_required: ${method} ${new URL(url).pathname} needs the operation of its route`,
+			);
 		const blocker = peerTransportBlocker(this.options.db, this.options.peerDeviceId, {
 			active: true,
 		});

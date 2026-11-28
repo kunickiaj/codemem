@@ -295,3 +295,33 @@ it("counts a status at a prefixed address, so it promotes and unlocks the snapsh
 	expect(readPeerTransportPolicy(p.db, "peer")).toBe("noise_required");
 	expect(stream.opened).toBe(2);
 });
+
+it.each([
+	["status", "https://peer.invalid/base/v1/snapshot?limit=1"],
+	["ops", "https://peer.invalid/base/v1/snapshot?limit=1"],
+	["status", "http://127.0.0.1:7/base/v1/snapshot?limit=1"],
+	["ops", "http://127.0.0.1:7/v1/snapshot?limit=1"],
+] as const)("sends nothing for a GET snapshot labeled %s at %s", async (label, url) => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+	stream.answer = statusNaming("key-a");
+
+	await expect(p.execute("GET", url, { operation: label })).rejects.toThrow(/operation_required/);
+
+	expect(plaintext).not.toHaveBeenCalled();
+	expect(stream.opened).toBe(0);
+});
+
+it("accepts each operation on its own route under a base path", async () => {
+	const p = pinned("key-a");
+	stream.pin = "key-a";
+	stream.answer = statusNaming("key-a");
+	const base = "http://127.0.0.1:7/a/b";
+
+	await p.execute("GET", `${base}/v1/status`, { operation: "status" });
+	await p.execute("GET", `${base}/v1/ops?limit=1`, { operation: "ops" });
+	await p.execute("POST", `${base}/v1/ops`, { operation: "push" });
+	await p.execute("GET", `${base}/v1/snapshot?limit=1`, { operation: "snapshot" });
+
+	expect(stream.opened).toBe(4);
+});
