@@ -104,6 +104,7 @@ import {
 	deleteProjectScopeSettingsMapping,
 	diagnoseStalePeerReceivedRows,
 	ensureDeviceIdentity,
+	entriesWithinLimit,
 	executeShareProvisioning,
 	extractInvitePayload,
 	extractReplicationOps,
@@ -208,6 +209,7 @@ import {
 	SYNC_CAPABILITY_HEADER,
 	SYNC_FEATURES_HEADER,
 	SYNC_SCOPE_QUERY_PARAM,
+	SyncEntryTooLargeError,
 	schema,
 	scopeAuthorizationFailureReason,
 	scopesWrittenByInboundOp,
@@ -247,6 +249,7 @@ import {
 	type ChannelBinding,
 	channelBinding,
 	channelRouteAllowed,
+	entryByteLimit,
 	PLAIN_DIRECT_MODE,
 	requiresScope,
 	type SyncServerMode,
@@ -5650,7 +5653,7 @@ function serveAuthorizedSnapshot(
 	c: Context,
 	store: MemoryStore,
 	auth: AuthenticatedSyncPeer,
-	options: { requireScope?: boolean } = {},
+	options: { requireScope?: boolean; maxEntryBytes?: number } = {},
 ) {
 	const peerDeviceId = auth.deviceId;
 	try {
@@ -5668,6 +5671,7 @@ function serveAuthorizedSnapshot(
 		const pageRequest = snapshotPageRequest((name) => c.req.query(name), localDeviceId);
 		const result = loadMemorySnapshotPageForPeer(store.db, {
 			...pageRequest,
+			maxEntryBytes: options.maxEntryBytes,
 			peerDeviceId,
 			scopeId: scopeRequest.mode === "scoped" ? scopeRequest.scope_id : undefined,
 		});
@@ -5684,11 +5688,23 @@ function serveAuthorizedSnapshot(
 			has_more: result.hasMore,
 		});
 	} catch (err) {
+		if (err instanceof SyncEntryTooLargeError) return c.json(err.toResponseBody(), 409);
 		const message = err instanceof Error ? err.message : "";
 		const status = snapshotErrorStatus(message);
 		if (status) return c.json({ error: message }, status);
 		return c.json({ error: "internal_error" }, 500);
 	}
+}
+
+/** Ops a channel can carry, or a typed refusal naming the one it cannot. */
+function opsWithinLimit(ops: ReplicationOp[], limit: number | undefined): ReplicationOp[] {
+	return entriesWithinLimit("op", ops, (op) => op.op_id, limit);
+}
+
+/** A named 409 for an entry too large for the channel. Other read failures stay generic. */
+function syncReadFailureResponse(c: Context, err: unknown): Response {
+	if (err instanceof SyncEntryTooLargeError) return c.json(err.toResponseBody(), 409);
+	return c.json({ error: "internal_error" }, 500);
 }
 
 interface SyncChannelReadOptions {
@@ -5726,7 +5742,9 @@ async function serveChannelRead(c: Context, options: SyncChannelReadOptions): Pr
 	const limited = rateLimitedResponse(c, auth.deviceId, true);
 	if (limited) return limited;
 	const requireScope = requiresScope(mode);
-	if (c.req.path !== "/v1/status") return serveAuthorizedSnapshot(c, store, auth, { requireScope });
+	const maxEntryBytes = entryByteLimit(mode);
+	if (c.req.path !== "/v1/status")
+		return serveAuthorizedSnapshot(c, store, auth, { requireScope, maxEntryBytes });
 	if (requireScope) return serveScopedStatus(c, store, auth);
 	return serveAuthenticatedStatus(c, store, auth);
 }
@@ -5987,13 +6005,13 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				snapshot_id: boundary.snapshot_id,
 				baseline_cursor: boundary.baseline_cursor,
 				retained_floor_cursor: boundary.retained_floor_cursor,
-				ops: filtered.allowed,
+				ops: opsWithinLimit(filtered.allowed, entryByteLimit(mode)),
 				next_cursor: nextCursor,
 				skipped: filtered.skipped,
 				skipped_detail: filtered.skippedDetail,
 			});
-		} catch {
-			return c.json({ error: "internal_error" }, 500);
+		} catch (err) {
+			return syncReadFailureResponse(c, err);
 		}
 	});
 

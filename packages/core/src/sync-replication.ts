@@ -47,6 +47,7 @@ import { LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-resolution.js";
 import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
+import { SyncEntryTooLargeError, syncEntryBytes } from "./sync-entry-size.js";
 import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
 import {
 	ensureSyncTransferActivitySchema,
@@ -98,6 +99,14 @@ export interface SyncResetRequired extends SyncResetBoundary {
  */
 export const SYNC_PAGE_MAX_BYTES = 1_048_576;
 
+/** One item's page bytes. Throws when the caller's transport cannot carry it at all. */
+function snapshotItemBytes(item: SyncMemorySnapshotItem, key: string, limit: number | undefined) {
+	const bytes = syncEntryBytes(item);
+	if (limit !== undefined && bytes > limit)
+		throw new SyncEntryTooLargeError("snapshot_item", key, bytes, limit);
+	return bytes;
+}
+
 /** Returns how many leading entries fit in `maxBytes` of JSON, at least one. */
 function entriesWithinBytes(entries: readonly unknown[], maxBytes: number): number {
 	let total = 0;
@@ -146,6 +155,8 @@ export interface LoadMemorySnapshotPageForPeerOptions {
 	limit?: number;
 	/** Serialized size cap for the returned items. Defaults to SYNC_PAGE_MAX_BYTES. */
 	maxBytes?: number;
+	/** Largest single item the caller's transport can carry. Larger items throw SyncEntryTooLargeError. */
+	maxEntryBytes?: number;
 	pageToken?: string | null;
 	peerDeviceId?: string | null;
 	scopeId?: string | null;
@@ -1653,7 +1664,7 @@ export function loadMemorySnapshotPageForPeer(
 			nextScanToken = { importKey, id: Number(row.memory.id) };
 			const item = snapshotItemForPeer(db, row, importKey, options);
 			if (!item) continue;
-			const itemBytes = Buffer.byteLength(JSON.stringify(item)) + 1;
+			const itemBytes = snapshotItemBytes(item, importKey, options.maxEntryBytes);
 			if (items.length > 0 && pageBytes + itemBytes > maxBytes) {
 				// This row goes on the next page, so the token stops before it.
 				lastScannedToken = tokenBeforeRow;
