@@ -362,6 +362,53 @@ describe("presence makes the managed mark durable first", () => {
 	});
 });
 
+describe("the macOS keychain witness", () => {
+	/** `security` as it behaves: `-w` prints the password and then a newline. */
+	function securityTool() {
+		const items = new Map<string, string>();
+		const run = (_command: string, args: string[]) => {
+			const account = args[args.indexOf("-a") + 1] ?? "";
+			if (args[0] === "find-generic-password") {
+				const value = items.get(account);
+				if (value === undefined) throw new Error("not found");
+				return `${value}\n`;
+			}
+			if (items.has(account)) throw new Error("already exists");
+			items.set(account, args[args.indexOf("-w") + 1] ?? "");
+			return "";
+		};
+		return { items, run };
+	}
+
+	it("verifies and reads back a record it created", () => {
+		const tool = securityTool();
+		const witness = keychainWitness({
+			directory: join(directory, "lock"),
+			platform: "darwin",
+			run: tool.run,
+		});
+
+		expect(witness.create("item", '{"v":1}')).toBe("created");
+		expect(witness.read("item")).toBe('{"v":1}');
+		expect(witness.create("item", '{"v":1}')).toBe("exists");
+	});
+
+	it("lets a store with a macOS keychain witness be attested and stay standalone", () => {
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
+		const tool = securityTool();
+		const keychain = keychainWitness({
+			directory: join(directory, "lock"),
+			platform: "darwin",
+			run: tool.run,
+		});
+		const store = openStore();
+
+		expect(attestCoordinatorFree(store.db, { keysDir, keychain })).toBe("standalone");
+		expect(readCoordinatorFreeStatus(store.db, { keysDir, keychain })).toBe("standalone");
+		store.db.close();
+	});
+});
+
 describe("keychain writers are serialized on this device", () => {
 	/** `secret-tool` as it behaves: `store` replaces an existing item. */
 	function secretTool(onStore?: () => void) {

@@ -180,8 +180,11 @@ export function keychainWitness(options: KeychainWitnessOptions): WitnessBackend
 			execFileSync(command, args, { input, stdio: ["pipe", "pipe", "pipe"] }).toString("utf8"));
 	const read = (name: string): string | null => {
 		try {
-			if (platform === "darwin")
-				return run("security", ["find-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE, "-w"]);
+			if (platform === "darwin") {
+				const args = ["find-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE, "-w"];
+				// `security -w` ends the password with a newline that isn't part of the record.
+				return run("security", args).replace(/\n$/, "");
+			}
 			if (platform === "linux")
 				return run("secret-tool", ["lookup", "service", KEYCHAIN_SERVICE, "account", name]);
 		} catch {
