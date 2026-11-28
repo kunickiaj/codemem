@@ -31,6 +31,51 @@ new storage format can recall bytes a process has already read. Install the
 format change and prepare the proofs in the same exclusive transaction. If the
 store is busy, leave it unchanged and reschedule the transition.
 
+### What the storage format change does and does not do
+
+The transition moves every table that holds or can rebuild memory content to a
+name released clients (0.49.1 through 0.50.0-beta.4) do not know: memory text and
+its search index, embeddings, captured transcripts and their flush records,
+prompts, summaries, artifacts, session metadata, extracted concepts and file
+references, creation snapshots, replication op payloads and the sync identity.
+`packages/core/src/transitioned-store-inventory.test.ts` lists each table and why
+it moves or stays. Released history, search, export, replay and sync commands
+then fail before reading content or sending a request.
+
+The change blocks released application code. It does not erase data from disk.
+Anyone who opens the file with SQLite directly can still read:
+
+- the moved tables under their new names;
+- `sqlite_stat4`, whose planner statistics keep sampled index values, such as
+  concepts and file paths, whenever current code runs `ANALYZE`;
+- freed pages, which SQLite does not overwrite, until a later write reuses them
+  or the file is vacuumed.
+
+Protect the file, its write-ahead log and every backup as before. The
+pre-transition backup still uses the released names and is the recovery copy,
+so keep it offline.
+
+### Rows in the recreated reference tables
+
+Released sync passes recreate empty `memory_concept_refs` and `memory_file_refs`
+tables under their released names. Current code ignores them while they are
+empty. If either ever has rows, current clients refuse to open the store. To
+recover:
+
+1. Stop every client that uses the store and drain transfers, as for a
+   transition.
+2. Back up the store, including its write-ahead log, and keep the backup offline.
+3. With the clients still stopped, confirm that each stray table is exactly one
+   of those two names with the released column layout, and look at its rows.
+4. Move only the verified stray tables out of the store, for example into a
+   separate quarantine database, and drop them from the store.
+5. Leave every `project_*` table, index and trigger unchanged. Then start current
+   clients and confirm they open the store.
+
+Do not rename tables back, copy rows into the `project_*` tables or delete
+anything else. Investigate how a released client wrote those rows before
+reconnecting it.
+
 ## November 16 proposal
 
 ### What a person sees

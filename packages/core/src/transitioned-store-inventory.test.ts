@@ -288,6 +288,69 @@ describe("transitioned store inventory", () => {
 	});
 });
 
+/** One canary in every table that holds content, on a store with the released names. */
+function seedContentCanaries(path: string, canary: string): void {
+	new MemoryStore(path).close();
+	const db = connect(path);
+	try {
+		const session = Number(
+			db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (datetime('now'), '/w', 'p', ?)",
+				)
+				.run(JSON.stringify({ session_context: { firstPrompt: canary } })).lastInsertRowid,
+		);
+		const memory = Number(
+			db
+				.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text, narrative, created_at, updated_at, import_key)
+				VALUES (?, 'discovery', ?, ?, ?, datetime('now'), datetime('now'), 'entity-1')`)
+				.run(session, canary, canary, canary).lastInsertRowid,
+		);
+		db.prepare("INSERT INTO memory_concept_refs(memory_id, concept) VALUES (?, ?)").run(
+			memory,
+			canary,
+		);
+		db.prepare(
+			"INSERT INTO memory_file_refs(memory_id, file_path, relation) VALUES (?, ?, 'read')",
+		).run(memory, canary);
+		db.prepare(
+			"INSERT INTO artifacts(session_id, kind, content_text, created_at) VALUES (?, 'note', ?, datetime('now'))",
+		).run(session, canary);
+		db.prepare(
+			"INSERT INTO user_prompts(session_id, prompt_text, created_at, created_at_epoch) VALUES (?, ?, datetime('now'), 0)",
+		).run(session, canary);
+		db.prepare(
+			"INSERT INTO session_summaries(session_id, learned, created_at, created_at_epoch) VALUES (?, ?, datetime('now'), 0)",
+		).run(session, canary);
+		db.prepare(`INSERT INTO raw_events(opencode_session_id, event_seq, event_type, payload_json, created_at)
+			VALUES ('stream', 1, 'user_prompt', ?, datetime('now'))`).run(
+			JSON.stringify({ text: canary }),
+		);
+		db.prepare(`INSERT INTO raw_event_flush_batches(opencode_session_id, start_event_seq, end_event_seq,
+			extractor_version, status, error_message, created_at, updated_at)
+			VALUES ('stream', 1, 1, 'v', 'failed', ?, datetime('now'), datetime('now'))`).run(canary);
+		db.prepare(`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+			clock_updated_at, clock_device_id, device_id, created_at)
+			VALUES ('op-1', 'memory_item', 'entity-1', 'upsert', ?, 1, 'now', 'd', 'd', 'now')`).run(
+			JSON.stringify({ body_text: canary }),
+		);
+		db.exec(`CREATE TABLE IF NOT EXISTS memory_source_bindings(entity_id TEXT PRIMARY KEY, source_device_id TEXT, evidence TEXT, created_at TEXT);
+			INSERT OR IGNORE INTO memory_source_bindings VALUES ('entity-1', 'd', 'local_creation', 'now');
+			CREATE TABLE IF NOT EXISTS memory_local_creation_snapshots (
+				entity_id TEXT PRIMARY KEY NOT NULL REFERENCES memory_source_bindings(entity_id),
+				scope_id TEXT, content_json TEXT NOT NULL, source_public_key TEXT,
+				source_fingerprint TEXT, created_at TEXT NOT NULL)`);
+		db.prepare(
+			"INSERT INTO memory_local_creation_snapshots(entity_id, content_json, created_at) VALUES ('entity-1', ?, 'now')",
+		).run(JSON.stringify({ body_text: canary }));
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES ('d', 'k', 'f', 'now')",
+		).run();
+	} finally {
+		db.close();
+	}
+}
+
 describe("a transitioned store", () => {
 	const canary = "c4n4ry-transcript-0fa1";
 	let home: string;
@@ -295,67 +358,47 @@ describe("a transitioned store", () => {
 	beforeEach(() => {
 		home = mkdtempSync(join(tmpdir(), "store-inventory-"));
 		path = join(home, "device.sqlite");
-		new MemoryStore(path).close();
+		seedContentCanaries(path, canary);
+	});
+	afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+	it("blocks released table reads without erasing sampled values that ANALYZE keeps on disk", () => {
+		prepareOfflineScopeServingStore(
+			path,
+			{
+				coordinatorId: "fixture",
+				groupId: "team",
+				generation: "ddc460b1-6dd8-4489-ab5c-799c2319af62",
+			},
+			[],
+		);
 		const db = connect(path);
 		try {
-			const session = Number(
-				db
-					.prepare(
-						"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (datetime('now'), '/w', 'p', ?)",
-					)
-					.run(JSON.stringify({ session_context: { firstPrompt: canary } })).lastInsertRowid,
-			);
-			const memory = Number(
-				db
-					.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text, narrative, created_at, updated_at, import_key)
-					VALUES (?, 'discovery', ?, ?, ?, datetime('now'), datetime('now'), 'entity-1')`)
-					.run(session, canary, canary, canary).lastInsertRowid,
-			);
-			db.prepare("INSERT INTO memory_concept_refs(memory_id, concept) VALUES (?, ?)").run(
-				memory,
-				canary,
-			);
-			db.prepare(
-				"INSERT INTO memory_file_refs(memory_id, file_path, relation) VALUES (?, ?, 'read')",
-			).run(memory, canary);
-			db.prepare(
-				"INSERT INTO artifacts(session_id, kind, content_text, created_at) VALUES (?, 'note', ?, datetime('now'))",
-			).run(session, canary);
-			db.prepare(
-				"INSERT INTO user_prompts(session_id, prompt_text, created_at, created_at_epoch) VALUES (?, ?, datetime('now'), 0)",
-			).run(session, canary);
-			db.prepare(
-				"INSERT INTO session_summaries(session_id, learned, created_at, created_at_epoch) VALUES (?, ?, datetime('now'), 0)",
-			).run(session, canary);
-			db.prepare(`INSERT INTO raw_events(opencode_session_id, event_seq, event_type, payload_json, created_at)
-				VALUES ('stream', 1, 'user_prompt', ?, datetime('now'))`).run(
-				JSON.stringify({ text: canary }),
-			);
-			db.prepare(`INSERT INTO raw_event_flush_batches(opencode_session_id, start_event_seq, end_event_seq,
-				extractor_version, status, error_message, created_at, updated_at)
-				VALUES ('stream', 1, 1, 'v', 'failed', ?, datetime('now'), datetime('now'))`).run(canary);
-			db.prepare(`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
-				clock_updated_at, clock_device_id, device_id, created_at)
-				VALUES ('op-1', 'memory_item', 'entity-1', 'upsert', ?, 1, 'now', 'd', 'd', 'now')`).run(
-				JSON.stringify({ body_text: canary }),
-			);
-			db.exec(`CREATE TABLE IF NOT EXISTS memory_source_bindings(entity_id TEXT PRIMARY KEY, source_device_id TEXT, evidence TEXT, created_at TEXT);
-				INSERT OR IGNORE INTO memory_source_bindings VALUES ('entity-1', 'd', 'local_creation', 'now');
-				CREATE TABLE IF NOT EXISTS memory_local_creation_snapshots (
-					entity_id TEXT PRIMARY KEY NOT NULL REFERENCES memory_source_bindings(entity_id),
-					scope_id TEXT, content_json TEXT NOT NULL, source_public_key TEXT,
-					source_fingerprint TEXT, created_at TEXT NOT NULL)`);
-			db.prepare(
-				"INSERT INTO memory_local_creation_snapshots(entity_id, content_json, created_at) VALUES ('entity-1', ?, 'now')",
-			).run(JSON.stringify({ body_text: canary }));
-			db.prepare(
-				"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES ('d', 'k', 'f', 'now')",
-			).run();
+			db.exec("ANALYZE");
 		} finally {
 			db.close();
 		}
+		const raw = new Database(path, { readonly: true });
+		try {
+			// What a released client's query by table name gets.
+			expect(() => raw.prepare("SELECT concept FROM memory_concept_refs").all()).toThrow(
+				"no such table: memory_concept_refs",
+			);
+			// What anyone reading the file directly still finds: planner statistics
+			// sample the moved index's keys under SQLite's fixed table name.
+			const samples = raw.prepare("SELECT tbl, sample FROM sqlite_stat4").all() as {
+				tbl: string;
+				sample: Buffer;
+			}[];
+			expect(
+				samples
+					.filter(({ sample }) => sample.toString("latin1").includes(canary))
+					.map(({ tbl }) => tbl),
+			).toContain("project_memory_concept_refs");
+		} finally {
+			raw.close();
+		}
 	});
-	afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 	it("leaves no content under a released name and no released name for a moved object", () => {
 		const tables = () => {

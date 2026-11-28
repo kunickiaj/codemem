@@ -98,6 +98,9 @@ it("counts one split candidate without exporting names, content, or any readines
 			state: "local_report",
 			local_filters: "none",
 			maintenance_window: expect.stringMatching(/including current versions.*already read/),
+			storage_fence: expect.stringMatching(
+				/does not erase data.*planner statistics.*project_\* tables unchanged/,
+			),
 			projects: { candidate_projects: 1, multiple_sources: 1, own_source_rows: 1 },
 		});
 		expect(readLocalProjectMigrationReport(db, {})).toEqual({ mode: "off", state: "off" });
