@@ -1788,6 +1788,15 @@ export {
 	recordSyncTransferObservation,
 	recordSyncTransferReceipts,
 } from "./sync-transfer-activity.js";
+export {
+	buildPairingPayload,
+	type PairingPayload,
+	recordPairingTransportEvidence,
+} from "./sync-transport-evidence.js";
+export {
+	type PeerTransportPolicy,
+	readPeerTransportPolicy,
+} from "./sync-transport-policy.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 export {
 	type CoordinatorTeamGroupBindingReport,

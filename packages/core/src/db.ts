@@ -60,6 +60,7 @@ import {
 import { columnExists, tableExists } from "./schema-lookups.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
 import { ensureSyncTransferActivitySchema } from "./sync-transfer-activity.js";
+import { ensureSyncPeerTransportPolicySchema } from "./sync-transport-policy.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
 import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
 
@@ -1137,6 +1138,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensurePeerRemovalCheckState(db);
 	ensurePeerProjectFilterRetentionSchema(db);
 	ensurePeerProjectFilterManagementSchema(db);
+	ensureSyncPeerTransportPolicySchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
