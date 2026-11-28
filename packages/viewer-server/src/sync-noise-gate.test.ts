@@ -105,9 +105,9 @@ async function upgradeRequest(f: Fixture, options: UpgradeOptions = {}) {
 }
 
 /** Sends raw bytes and resolves with the status line and the socket, positioned after the head. */
-function send(port: number, raw: string) {
+function send(port: number, raw: string, options: { allowHalfOpen?: boolean } = {}) {
 	return new Promise<{ status: number; socket: net.Socket; rest: Buffer }>((resolve, reject) => {
-		const socket = net.connect({ port, host: "127.0.0.1" }, () => socket.write(raw));
+		const socket = net.connect({ port, host: "127.0.0.1", ...options }, () => socket.write(raw));
 		cleanups.push(() => socket.destroy());
 		let buffered = Buffer.alloc(0);
 		const onData = (chunk: Buffer) => {
@@ -166,10 +166,12 @@ function closedWithin(socket: net.Socket, ms: number): Promise<boolean> {
 	return new Promise((resolve) => {
 		if (socket.destroyed || socket.readableEnded) return resolve(true);
 		const timer = setTimeout(() => resolve(false), ms);
-		socket.once("close", () => {
-			clearTimeout(timer);
-			resolve(true);
-		});
+		// A half-open client sees the server's close as end of its readable side.
+		for (const event of ["close", "end"])
+			socket.once(event, () => {
+				clearTimeout(timer);
+				resolve(true);
+			});
 		socket.resume();
 	});
 }
@@ -352,4 +354,43 @@ it("holds response reservations within the budget and serves waiters in order", 
 	expect(order).toEqual(["second"]);
 	expect(budget.availableBytes).toBe(10);
 	await expect(budget.acquire(11)).rejects.toThrow(RangeError);
+});
+
+const adoption = (f: Fixture) =>
+	f.store.db
+		.prepare(
+			`SELECT state.highest_observed_direct_signature_version AS state, peer.highest_observed_direct_signature_version AS mirror
+			 FROM sync_peers AS peer LEFT JOIN sync_peer_signature_state AS state USING (peer_device_id)
+			 WHERE peer.peer_device_id = ?`,
+		)
+		.get(f.peerDeviceId);
+
+it("leaves only the nonce when the handshake fails, and records v3 after inner traffic", async () => {
+	const f = await gate({ limits: { handshakeMs: 300 } });
+	const silent = await upgradeRequest(f);
+	const held = await send(f.port, silent.raw);
+	expect(held.status).toBe(101);
+	expect(await closedWithin(held.socket, 2_000)).toBe(true);
+
+	expect(nonceCount(f)).toBe(1);
+	expect(adoption(f)).toEqual({ state: null, mirror: null });
+
+	const request = await upgradeRequest(f);
+	const { socket } = await send(f.port, request.raw);
+	expect((await exchange(f, request, socket))[0]).toBe(200);
+	expect(adoption(f)).toEqual({ state: 3, mirror: 3 });
+});
+
+it("destroys a refused socket whose client keeps writing open, returning its slot", async () => {
+	const f = await gate({ listener: { maxSocketsPerIp: 1 } });
+	const refused = await upgradeRequest(f, { target: (t) => `${t}&x=1` });
+
+	const first = await send(f.port, refused.raw, { allowHalfOpen: true });
+	expect(first.status).toBe(400);
+	expect(await closedWithin(first.socket, 2_000)).toBe(true);
+
+	const next = await upgradeRequest(f);
+	const { status, socket } = await send(f.port, next.raw);
+	expect(status).toBe(101);
+	expect((await exchange(f, next, socket))[0]).toBe(200);
 });

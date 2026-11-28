@@ -3390,15 +3390,30 @@ function authorizeSyncRequest(
 	const createdAt = new Date().toISOString();
 	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
 	if (nonceResult) return nonceResult;
-	if (verification.version === DIRECT_PEER_SIGNATURE_VERSION_NUMBER) {
-		const versionResult = recordDirectPeerSignatureVersion(store, deviceId, verification.version);
-		if (versionResult) return versionResult;
-	}
+	const versionResult = recordAdoptedSignatureVersion(store, deviceId, verification, binding);
+	if (versionResult) return versionResult;
 	return authenticatedSyncPeer(deviceId, publicKey);
 }
 
-/** No channel exists before the upgrade, so the only binding demanded is the v3 signature. */
-const REQUIRE_DIRECT_SIGNATURE: ChannelBinding = () => true;
+/** Records that the peer now signs with v3, unless the binding defers that to later traffic. */
+function recordAdoptedSignatureVersion(
+	store: MemoryStore,
+	deviceId: string,
+	verification: { version: 2 | 3 },
+	binding: ChannelBinding | undefined,
+): SyncAuthResult | null {
+	if (verification.version !== DIRECT_PEER_SIGNATURE_VERSION_NUMBER) return null;
+	if (binding?.deferSignatureAdoption) return null;
+	return recordDirectPeerSignatureVersion(store, deviceId, verification.version);
+}
+
+/**
+ * No channel exists before the upgrade, so the only binding demanded is the v3
+ * signature. Its adoption is recorded later, by the authenticated inner traffic.
+ */
+const REQUIRE_DIRECT_SIGNATURE: ChannelBinding = Object.assign(() => true, {
+	deferSignatureAdoption: true,
+});
 
 /**
  * Authorizes a direct Noise upgrade before any Noise byte is sent: a pinned

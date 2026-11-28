@@ -99,10 +99,24 @@ const STATUS_TEXT = {
 	503: "Service Unavailable",
 };
 
+/** Time a refused client has to read its refusal before the socket is destroyed anyway. */
+const REFUSAL_FLUSH_MS = 1_000;
+
+/**
+ * Sends a plain HTTP refusal, then destroys the socket. Ending it would wait
+ * for the client to close its side, so a client that kept writing open would
+ * keep holding the socket and its slot.
+ */
 function refuse(socket: Socket, refusal: GateRefusal): void {
 	const body = JSON.stringify({ error: refusal.body });
-	socket.end(
+	const timer = setTimeout(() => socket.destroy(), REFUSAL_FLUSH_MS);
+	timer.unref();
+	socket.write(
 		`HTTP/1.1 ${refusal.status} ${STATUS_TEXT[refusal.status]}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+		() => {
+			clearTimeout(timer);
+			socket.destroy();
+		},
 	);
 }
 
@@ -230,6 +244,10 @@ async function handleUpgrade(
 ): Promise<void> {
 	const releasePending = context.pending.reserve(address);
 	if (!releasePending) throw new GateRefusal(503, "busy");
+	// Node applies no timeout to an upgraded socket. This one covers everything
+	// up to an authenticated stream, including writing the 101.
+	const deadline = setTimeout(() => socket.destroy(), context.limits.handshakeMs);
+	deadline.unref();
 	let releaseStream: (() => void) | null = null;
 	try {
 		const target = parseUpgrade(request, head);
@@ -237,9 +255,11 @@ async function handleUpgrade(
 		releaseStream = context.streams.reserve(peer.deviceId);
 		if (!releaseStream) throw new GateRefusal(503, "busy");
 		const duplex = await handshake(context, socket, target, peer);
+		clearTimeout(deadline);
 		releasePending();
 		await serveStream(context, socket, duplex, peer.deviceId);
 	} finally {
+		clearTimeout(deadline);
 		releasePending();
 		releaseStream?.();
 	}
