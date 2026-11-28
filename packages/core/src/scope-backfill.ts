@@ -16,6 +16,7 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+import { writeMemoryRevision } from "./memory-revision-writes.js";
 import { LEGACY_SHARED_REVIEW_SCOPE_ID, LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 
 // Re-exported from its single source of truth (scope-resolution.ts) so existing
@@ -104,6 +105,7 @@ type ScopeBackfillMetadata = {
 
 interface MemoryScopeCandidateRow {
 	id: number;
+	scope_id: string | null;
 	visibility: string | null;
 	workspace_id: string | null;
 	workspace_kind: string | null;
@@ -319,6 +321,7 @@ function selectMemoryScopeCandidates(db: SqliteDatabase, limit: number): MemoryS
 		.prepare(
 			`SELECT
 				mi.id,
+				mi.scope_id,
 				mi.visibility,
 				mi.workspace_id,
 				mi.workspace_kind,
@@ -370,6 +373,11 @@ function selectReplicationOpScopeCandidates(
 				  AND (ro.scope_id IS NULL OR ro.scope_id = '')
 				  AND mi.scope_id IS NOT NULL
 				  AND mi.scope_id != ''
+				  AND ro.clock_rev = COALESCE(mi.rev, 0)
+				  AND NOT EXISTS (
+					SELECT 1 FROM memory_items sibling
+					WHERE sibling.import_key = ro.entity_id AND sibling.id != mi.id
+				  )
 				UNION ALL
 				SELECT ro.op_id, ro.entity_id, mi.scope_id, ro.created_at
 				FROM replication_ops ro
@@ -379,6 +387,7 @@ function selectReplicationOpScopeCandidates(
 				  AND mi.scope_id IS NOT NULL
 				  AND mi.scope_id != ''
 				  AND CAST(mi.id AS TEXT) = ro.entity_id
+				  AND ro.clock_rev = COALESCE(mi.rev, 0)
 				  AND NOT EXISTS (
 					SELECT 1
 					FROM memory_items import_match
@@ -403,12 +412,6 @@ export function backfillScopeIds(
 	const seededScopes = ensureScopeBackfillScopes(db, options.now);
 	const memoryRows = selectMemoryScopeCandidates(db, memoryLimit);
 
-	const updateMemoryScope = db.prepare(
-		`UPDATE memory_items
-		 SET scope_id = ?
-		 WHERE id = ?
-		   AND (scope_id IS NULL OR scope_id = '')`,
-	);
 	const updateOpScope = db.prepare(
 		`UPDATE replication_ops
 		 SET scope_id = ?
@@ -430,9 +433,13 @@ export function backfillScopeIds(
 				cwd: row.cwd,
 				gitRemote: row.git_remote,
 			});
-			updatedMemoryItems += Number(
-				updateMemoryScope.run(classification.scopeId, row.id).changes ?? 0,
-			);
+			// A memory this device created takes a revision with its op; any other row is stamped here only.
+			const stamped = writeMemoryRevision(db, {
+				memoryId: row.id,
+				changes: { scope_id: classification.scopeId },
+				expectedValues: { scope_id: row.scope_id },
+			});
+			updatedMemoryItems += Number(stamped);
 		}
 
 		// Prioritize draining memory_items before scanning replication_ops. The

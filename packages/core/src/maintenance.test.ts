@@ -2376,8 +2376,8 @@ describe("aiBackfillStructuredContent concept references", () => {
 			expect(result).toMatchObject({ updated: 1, failed: 0, staleWrites: 0 });
 			const row = readStructuredRow(db, id);
 			expect(row.concepts).toBe(JSON.stringify(["problem-solution", "pattern"]));
-			// Local-only maintenance: the backfill does not bump rev or record a
-			// replication op, matching the behavior before revision fencing.
+			// This store holds no creation evidence for the row, so the backfill changes
+			// this copy only and takes no revision.
 			expect(row.rev).toBe(1);
 			expect(conceptRefs(db, id)).toEqual(["pattern", "problem-solution"]);
 			const ops = db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as { n: number };

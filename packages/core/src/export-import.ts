@@ -12,6 +12,7 @@ import {
 } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
+import { writeMemoryRevision } from "./memory-revision-writes.js";
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
@@ -1061,9 +1062,11 @@ function reconcileImportedPromptLink(
 	if (metadata?.source !== "export" || metadata.import_key !== existing.import_key) return;
 	authorizeContext(Number(incomingSession?.id), sessionId);
 	recordForeignMemoryRevision(db, String(existing.import_key), "import");
-	db.prepare(
-		"UPDATE memory_items SET user_prompt_id = ? WHERE id = ? AND user_prompt_id IS NULL",
-	).run(promptId, memoryId);
+	writeMemoryRevision(db, {
+		memoryId,
+		changes: { user_prompt_id: promptId },
+		expectedValues: { user_prompt_id: null },
+	});
 }
 
 interface MappedImportContext {

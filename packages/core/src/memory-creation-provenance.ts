@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { recordCopyCreatedHere } from "./memory-copy-provenance.js";
 import { getVerifiedMemorySource, memorySourceNamespace } from "./memory-source-identity.js";
 import { tableExists as hasTable } from "./schema-lookups.js";
 
@@ -51,6 +52,7 @@ export function recordLocalCreationSnapshot(db: Database, memoryId: number): voi
 	)
 		return;
 	ensureCreationProvenanceSchema(db);
+	recordCopyCreatedHere(db, memoryId);
 	let publicKeySql = "NULL";
 	let fingerprintSql = "NULL";
 	if (hasTable(db, "sync_device")) {

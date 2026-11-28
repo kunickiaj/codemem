@@ -17,6 +17,7 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "../maintenance-jobs.js";
+import { writeMemoryRevision } from "../memory-revision-writes.js";
 import {
 	loadObserverConfig,
 	ObserverClient,
@@ -291,19 +292,16 @@ function writeStructuredBackfill(
 	next: StructuredBackfillWrite,
 ): boolean {
 	return db.transaction(() => {
-		const result = db
-			.prepare(
-				"UPDATE memory_items SET narrative = ?, facts = ?, concepts = ?, updated_at = ? WHERE id = ? AND rev IS ?",
-			)
-			.run(
-				next.narrative,
-				JSON.stringify(next.facts),
-				JSON.stringify(next.concepts),
-				new Date().toISOString(),
-				row.id,
-				row.rev,
-			);
-		if (result.changes === 0) return false;
+		const written = writeMemoryRevision(db, {
+			memoryId: row.id,
+			changes: {
+				narrative: next.narrative,
+				facts: JSON.stringify(next.facts),
+				concepts: JSON.stringify(next.concepts),
+			},
+			expectedRev: row.rev ?? null,
+		});
+		if (!written) return false;
 		db.prepare("DELETE FROM memory_concept_refs WHERE memory_id = ?").run(row.id);
 		const insertRef = db.prepare(
 			"INSERT OR IGNORE INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)",

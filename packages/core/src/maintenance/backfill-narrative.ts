@@ -2,6 +2,7 @@
  */
 
 import type { Database } from "../db.js";
+import { writeMemoryRevision } from "../memory-revision-writes.js";
 import { SecretScanner } from "../secret-scanner.js";
 import { extractNarrativeFromBody } from "./narrative-extract.js";
 
@@ -36,7 +37,7 @@ export function backfillNarrativeFromBody(
 
 	const rows = db
 		.prepare(
-			`SELECT id, body_text
+			`SELECT id, rev, body_text, narrative
 			 FROM memory_items
 			 WHERE kind = 'session_summary'
 			   AND active = 1
@@ -46,13 +47,18 @@ export function backfillNarrativeFromBody(
 			 ORDER BY created_at ASC
 			 ${limitClause}`,
 		)
-		.all() as Array<{ id: number; body_text: string }>;
+		.all() as Array<{
+		id: number;
+		rev: number | null;
+		body_text: string;
+		narrative: string | null;
+	}>;
 
 	const scanner = opts.scanner ?? new SecretScanner();
 	let checked = 0;
 	let updated = 0;
 	let skipped = 0;
-	const updates: Array<{ id: number; narrative: string }> = [];
+	const updates: Array<{ row: (typeof rows)[number]; narrative: string }> = [];
 
 	for (const row of rows) {
 		checked++;
@@ -62,18 +68,26 @@ export function backfillNarrativeFromBody(
 			continue;
 		}
 		const narrative = scanner.scan(extracted).redacted;
-		updates.push({ id: row.id, narrative });
+		updates.push({ row, narrative });
 		updated++;
 	}
 
 	if (updates.length > 0 && opts.dryRun !== true) {
 		const now = new Date().toISOString();
-		const updateStmt = db.prepare(
-			"UPDATE memory_items SET narrative = ?, updated_at = ? WHERE id = ?",
-		);
+		// Each narrative is a new revision with its op, so peers that hold the memory get it.
+		// A row edited or redacted since it was read keeps its current text.
 		db.transaction(() => {
-			for (const update of updates) {
-				updateStmt.run(update.narrative, now, update.id);
+			for (const { row, narrative } of updates) {
+				const written = writeMemoryRevision(db, {
+					memoryId: row.id,
+					changes: { narrative },
+					expectedRev: row.rev,
+					expectedValues: { body_text: row.body_text, narrative: row.narrative },
+					now,
+				});
+				if (written) continue;
+				updated--;
+				skipped++;
 			}
 		})();
 	}

@@ -181,7 +181,7 @@ it("failed identity persistence rolls back adoption without losing genuine creat
 	const devices = factRows("sync_device");
 	const keys = keyBytes();
 	fixture.store.db.exec(
-		"CREATE TRIGGER fail_adoption BEFORE UPDATE ON memory_items BEGIN SELECT RAISE(ABORT, 'actor_update_failed'); END",
+		"CREATE TRIGGER fail_adoption BEFORE INSERT ON actors BEGIN SELECT RAISE(ABORT, 'actor_update_failed'); END",
 	);
 	// Act
 	expect(() => fixture.store.adoptEnsuredDeviceIdentity("capture-device")).toThrow(
@@ -337,9 +337,19 @@ it.each(["existing enrollment", "fallback store actor", "configured store actor"
 			} else {
 				expect(listener).toHaveBeenCalledTimes(1);
 				expect(fixture.store.deviceId).toBe("capture-device");
+				// Moving a memory to the canonical actor is a new revision of it, with its op.
+				const revised =
+					boundary === "fallback store actor"
+						? {
+								rev: Number((original as { rev: number }).rev) + 1,
+								updated_at: expect.any(String),
+								metadata_json: expect.stringContaining('"clock_device_id":"capture-device"'),
+							}
+						: {};
 				expect(row(id)).toMatchObject({
 					...original,
 					actor_id: fixture.store.actorId,
+					...revised,
 				});
 			}
 		} finally {

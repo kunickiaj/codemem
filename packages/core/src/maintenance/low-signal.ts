@@ -3,6 +3,7 @@
 
 import type { Database } from "../db.js";
 import { isLowSignalObservation } from "../ingest-filters.js";
+import { writeMemoryRevision } from "../memory-revision-writes.js";
 
 export interface DeactivateLowSignalResult {
 	checked: number;
@@ -92,14 +93,10 @@ export function deactivateLowSignalMemories(
 	}
 
 	const now = new Date().toISOString();
-	const chunkSize = 200;
-	for (let start = 0; start < ids.length; start += chunkSize) {
-		const chunk = ids.slice(start, start + chunkSize);
-		const chunkPlaceholders = chunk.map(() => "?").join(",");
-		db.prepare(
-			`UPDATE memory_items SET active = 0, updated_at = ? WHERE id IN (${chunkPlaceholders})`,
-		).run(now, ...chunk);
-	}
+	// Each deactivation is a new revision with its delete op, so peers that hold the memory drop it.
+	db.transaction(() => {
+		for (const memoryId of ids) writeMemoryRevision(db, { memoryId, changes: { active: 0 }, now });
+	})();
 
 	return { checked, deactivated: ids.length };
 }

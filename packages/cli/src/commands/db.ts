@@ -1069,6 +1069,12 @@ const runMemoryRedactSecrets = (
 			});
 			p.log.info(`Affected memories:\n${lines.join("\n")}`);
 		}
+		if (result.unpropagatedRedactions.length > 0) {
+			const ids = result.unpropagatedRedactions.map((entry) => `#${entry.id}`).join(", ");
+			p.log.warn(
+				`Redacted here only: ${result.unpropagatedRedactions.length} memories in synced scopes that this device cannot show it created, so peers that received them keep the unredacted copy: ${ids}. Redact them on the device that wrote them, or remove them from the peers.`,
+			);
+		}
 		p.outro("Re-run with no changes to confirm idempotency");
 	} catch (error) {
 		p.log.error(error instanceof Error ? error.message : String(error));

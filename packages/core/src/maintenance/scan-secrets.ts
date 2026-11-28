@@ -21,8 +21,11 @@
  */
 
 import type { Database } from "../db.js";
+import { memoryWrittenHere } from "../memory-copy-provenance.js";
+import { writeMemoryRevision } from "../memory-revision-writes.js";
 import { normalizeConcept } from "../ref-populate.js";
 import { mergeDetections, type ScanDetection, SecretScanner } from "../secret-scanner.js";
+import { DEFAULT_SYNC_SCOPE_ID, localReplicationDeviceId } from "../sync-replication.js";
 import { queueVectorBackfill } from "../vector-backfill-queue.js";
 
 export interface ScanSecretsRetroactiveOptions {
@@ -53,6 +56,17 @@ export interface ScanSecretsRetroactiveSample {
 	detections: ScanDetection[];
 }
 
+/**
+ * A memory redacted on this device only, though sync may already have delivered
+ * its content: no revision can carry the redaction, because this device cannot
+ * show it created this copy. Its peers keep the unredacted copy until it is redacted
+ * where it was written, or removed from them.
+ */
+export interface UnpropagatedRedaction {
+	id: number;
+	scope_id: string | null;
+}
+
 export interface ScanSecretsRetroactiveResult {
 	checked: number;
 	updated: number;
@@ -60,11 +74,33 @@ export interface ScanSecretsRetroactiveResult {
 	staleWrites: number;
 	detections: ScanDetection[];
 	samples: ScanSecretsRetroactiveSample[];
+	unpropagatedRedactions: UnpropagatedRedaction[];
+}
+
+/**
+ * The report entry for a redaction that stays on this device although sync may
+ * already have delivered the memory: it sits in a scope that sync serves, by
+ * ops or by snapshot pages. Whether an op for it survives here does not matter,
+ * since snapshots carry memories without ops and retention prunes old ops.
+ */
+function unpropagatedRedaction(
+	db: Database,
+	row: Pick<MemoryRow, "id" | "import_key" | "scope_id">,
+	deviceId: string,
+): UnpropagatedRedaction | null {
+	if (!row.import_key || !row.scope_id || row.scope_id === DEFAULT_SYNC_SCOPE_ID) return null;
+	if (memoryWrittenHere(db, row.id, deviceId)) return null;
+	const served = db
+		.prepare("SELECT 1 FROM replication_scopes WHERE scope_id = ? AND authority_type != 'local'")
+		.get(row.scope_id);
+	return served ? { id: row.id, scope_id: row.scope_id } : null;
 }
 
 interface MemoryRow {
 	id: number;
 	rev: number;
+	import_key: string | null;
+	scope_id: string | null;
 	title: string | null;
 	subtitle: string | null;
 	body_text: string | null;
@@ -241,7 +277,7 @@ export function scanSecretsRetroactive(
 
 	const rows = db
 		.prepare(
-			`SELECT id, rev, title, subtitle, body_text, narrative, tags_text,
+			`SELECT id, rev, import_key, scope_id, title, subtitle, body_text, narrative, tags_text,
 			        facts, concepts, files_read, files_modified, metadata_json,
 			        actor_display_name, origin_source
 			 FROM memory_items
@@ -249,15 +285,6 @@ export function scanSecretsRetroactive(
 			 ${limitClause}`,
 		)
 		.all() as MemoryRow[];
-
-	const updateStmt = db.prepare(
-		`UPDATE memory_items
-		 SET title = ?, subtitle = ?, body_text = ?, narrative = ?, tags_text = ?,
-		     facts = ?, concepts = ?, files_read = ?, files_modified = ?,
-		     metadata_json = ?, actor_display_name = ?, origin_source = ?,
-		     updated_at = ?
-		 WHERE id = ? AND rev = ?`,
-	);
 
 	// Accumulate detections inline into a single map. We previously kept an
 	// array-of-arrays and called `mergeDetections(...detectionLists)` at the
@@ -268,6 +295,8 @@ export function scanSecretsRetroactive(
 		for (const d of list) detectionCounts.set(d.kind, (detectionCounts.get(d.kind) ?? 0) + d.count);
 	};
 	const samples: ScanSecretsRetroactiveSample[] = [];
+	const unpropagatedRedactions: UnpropagatedRedaction[] = [];
+	const deviceId = localReplicationDeviceId(db);
 	let checked = 0;
 	let updated = 0;
 	let skippedOversized = 0;
@@ -315,38 +344,30 @@ export function scanSecretsRetroactive(
 		// until after the transaction-with-rev-guard succeeds, so a stale
 		// write (concurrent rev bump) does not appear in `detections` /
 		// `samples` as if it had been redacted.
+		const fieldResults = [
+			titleResult,
+			subtitleResult,
+			bodyResult,
+			narrativeResult,
+			actorNameResult,
+			originSourceResult,
+			tagsResult,
+			factsResult,
+			conceptsResult,
+			filesReadResult,
+			filesModifiedResult,
+			metaResult,
+		];
 		const recordResult = (): void => {
-			recordDetections(titleResult.detections);
-			recordDetections(subtitleResult.detections);
-			recordDetections(bodyResult.detections);
-			recordDetections(narrativeResult.detections);
-			recordDetections(actorNameResult.detections);
-			recordDetections(originSourceResult.detections);
-			recordDetections(tagsResult.detections);
-			recordDetections(factsResult.detections);
-			recordDetections(conceptsResult.detections);
-			recordDetections(filesReadResult.detections);
-			recordDetections(filesModifiedResult.detections);
-			recordDetections(metaResult.detections);
-			const perRow = mergeDetections(
-				titleResult.detections,
-				subtitleResult.detections,
-				bodyResult.detections,
-				narrativeResult.detections,
-				actorNameResult.detections,
-				originSourceResult.detections,
-				tagsResult.detections,
-				factsResult.detections,
-				conceptsResult.detections,
-				filesReadResult.detections,
-				filesModifiedResult.detections,
-				metaResult.detections,
-			);
+			for (const result of fieldResults) recordDetections(result.detections);
+			const perRow = mergeDetections(...fieldResults.map((result) => result.detections));
 			samples.push({
 				id: row.id,
 				redactedTitle: titleResult.value,
 				detections: perRow,
 			});
+			const unpropagated = unpropagatedRedaction(db, row, deviceId);
+			if (unpropagated) unpropagatedRedactions.push(unpropagated);
 		};
 
 		if (dryRun) {
@@ -360,23 +381,27 @@ export function scanSecretsRetroactive(
 		// the same transaction so the row's stored columns and its derived
 		// indexes never disagree.
 		const ok = db.transaction(() => {
-			const result = updateStmt.run(
-				titleResult.value,
-				subtitleResult.value,
-				bodyResult.value,
-				narrativeResult.value,
-				tagsResult.text,
-				factsResult.json,
-				conceptsResult.json,
-				filesReadResult.json,
-				filesModifiedResult.json,
-				metaResult.json,
-				actorNameResult.value,
-				originSourceResult.value,
-				new Date().toISOString(),
-				row.id,
-				row.rev,
-			);
+			// A redaction of a copy this device created is a new revision with its op, so
+			// peers that hold it get it. Any other redaction stays here and is reported.
+			const written = writeMemoryRevision(db, {
+				memoryId: row.id,
+				changes: {
+					title: titleResult.value,
+					subtitle: subtitleResult.value,
+					body_text: bodyResult.value,
+					narrative: narrativeResult.value,
+					tags_text: tagsResult.text,
+					facts: factsResult.json,
+					concepts: conceptsResult.json,
+					files_read: filesReadResult.json,
+					files_modified: filesModifiedResult.json,
+					metadata_json: metaResult.json,
+					actor_display_name: actorNameResult.value,
+					origin_source: originSourceResult.value,
+				},
+				expectedRev: row.rev,
+			});
+			const result = { changes: Number(written) };
 			if (!finishRedactionUpdate(db, row.id, result, [titleResult, bodyResult])) return false;
 			// Junction tables derive from concepts and files_read/files_modified
 			// and index the raw strings. If we redacted any of those columns,
@@ -425,5 +450,6 @@ export function scanSecretsRetroactive(
 		staleWrites,
 		detections: Array.from(detectionCounts.entries()).map(([kind, count]) => ({ kind, count })),
 		samples,
+		unpropagatedRedactions,
 	};
 }
