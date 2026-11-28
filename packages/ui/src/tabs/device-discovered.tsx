@@ -126,17 +126,17 @@ function ConflictAction({
 	return (
 		<>
 			<p className="peer-meta">
-				The pairing saved on this device does not match the device your team lists. Disconnect it
-				here, then pair {row.displayName} again.
+				The pairing saved on this device does not match the device your team lists. Unpair it here,
+				then pair {row.displayName} again.
 			</p>
 			<button
-				aria-label={`Disconnect from ${row.displayName}`}
+				aria-label={`Unpair ${row.displayName}`}
 				className="settings-button danger"
 				disabled={busy}
 				onClick={() => void run()}
 				type="button"
 			>
-				Disconnect on this device…
+				Unpair device…
 			</button>
 		</>
 	);

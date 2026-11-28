@@ -347,7 +347,7 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 	);
 	const [syncBusy, setSyncBusy] = useState(false);
 	const [removeBusy, setRemoveBusy] = useState(false);
-	const [removeLabel, setRemoveLabel] = useState("Remove device");
+	const [removeLabel, setRemoveLabel] = useState("Unpair device");
 
 	useEffect(() => {
 		if (rawPendingScopeReview && authorizedDomains.total > 0) clearPeerScopeReview(peerId);
@@ -357,7 +357,7 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 		setFeedback(state.syncPeerFeedbackById.get(peerId) ?? null);
 		setSyncBusy(false);
 		setRemoveBusy(false);
-		setRemoveLabel("Remove device");
+		setRemoveLabel("Unpair device");
 	}, [displayName, peer.actor_id, peerId]);
 
 	useEffect(() => {
@@ -396,10 +396,10 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 	async function remove() {
 		if (!peerId) return;
 		const confirmed = await openSyncConfirmDialog({
-			title: `Remove device ${destructiveLabel}?`,
-			description: "This removes the local record for this paired device on this machine.",
-			confirmLabel: "Remove device",
-			cancelLabel: "Keep device",
+			title: `Unpair ${destructiveLabel}?`,
+			description: `This device stops syncing with ${destructiveLabel}. ${destructiveLabel} stays in your Teams and keeps syncing with your other devices. Memories already synced stay on both devices.`,
+			confirmLabel: "Unpair",
+			cancelLabel: "Keep paired",
 			tone: "danger",
 		});
 		if (!confirmed) return;
@@ -410,10 +410,10 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 			await onRemove(peerId, destructiveLabel);
 			ok = true;
 		} catch {
-			setRemoveLabel("Retry remove");
+			setRemoveLabel("Retry unpair");
 		} finally {
 			setRemoveBusy(false);
-			if (ok) setRemoveLabel("Remove device");
+			if (ok) setRemoveLabel("Unpair device");
 		}
 	}
 

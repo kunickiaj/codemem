@@ -145,10 +145,10 @@ describe("Devices waiting for review", () => {
 		expect(onDone).not.toHaveBeenCalled();
 	});
 
-	it("offers to disconnect a pairing that conflicts with the team's device", async () => {
+	it("offers to unpair a pairing that conflicts with the team's device", async () => {
 		const api = fakeApi({
 			disconnect: vi.fn(async () => ({
-				message: "Disconnected this device from Desk Mini.",
+				message: "Unpaired this device from Desk Mini. Desk Mini stays in your Teams.",
 				tone: "success" as const,
 			})),
 		});
@@ -158,13 +158,13 @@ describe("Devices waiting for review", () => {
 			"The pairing saved on this device does not match the device your team lists.",
 		);
 		await act(async () =>
-			mount.querySelector<HTMLButtonElement>('[aria-label="Disconnect from Desk Mini"]')?.click(),
+			mount.querySelector<HTMLButtonElement>('[aria-label="Unpair Desk Mini"]')?.click(),
 		);
 		await act(async () => {});
 
 		expect(api.disconnect).toHaveBeenCalledOnce();
 		expect(onDone).toHaveBeenCalledOnce();
-		expect(mount.textContent).toContain("Disconnected this device from Desk Mini.");
+		expect(mount.textContent).toContain("Unpaired this device from Desk Mini.");
 	});
 });
 

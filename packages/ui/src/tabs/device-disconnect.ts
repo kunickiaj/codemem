@@ -15,10 +15,10 @@ const defaults: DeviceDisconnectDependencies = {
 };
 
 /**
- * Stops this device from syncing with a paired device, whatever the coordinator says about
- * it. Remove device acts on the coordinator and needs the admin secret. This acts only here,
- * so a device without that secret can still withdraw its own pairing. Returns null when the
- * person cancels.
+ * Unpairs this device from a paired device, on every device and whatever the coordinator says
+ * about it. It deletes only this device's pairing and sync progress for that peer. It never
+ * changes the peer's Identity binding or Project access. Remove device does that and needs
+ * the admin secret. Returns null when the person cancels.
  */
 export async function confirmAndDisconnectDevice(
 	device: { deviceId: string; displayName: string },
@@ -27,25 +27,22 @@ export async function confirmAndDisconnectDevice(
 	const { confirm, disconnect } = { ...defaults, ...dependencies };
 	const name = device.displayName;
 	const confirmed = await confirm({
-		title: `Disconnect from ${name}?`,
-		description: `This device stops syncing with ${name}. The coordinator and your other devices are not changed, so they keep syncing with it. To stop sharing with it everywhere, use Remove device.`,
-		confirmLabel: "Disconnect",
-		cancelLabel: "Keep connected",
+		title: `Unpair ${name}?`,
+		description: `This device stops syncing with ${name}. ${name} stays in your Teams and keeps syncing with your other devices. Memories already synced stay on both devices.`,
+		confirmLabel: "Unpair",
+		cancelLabel: "Keep paired",
 		autoFocusAction: "cancel",
 		tone: "danger",
 	});
 	if (!confirmed) return null;
 	try {
 		const result = await disconnect(device.deviceId);
-		return peerRemovalFeedback(result, {
-			label: name,
-			removedMessage: `Disconnected this device from ${name}.`,
-		});
+		return peerRemovalFeedback(result, { label: name });
 	} catch (error) {
 		return {
 			message: friendlyError(
 				error,
-				`Could not disconnect from ${name}. This device is still paired with it.`,
+				`Could not unpair ${name}. This device is still paired with it.`,
 			),
 			tone: "warning",
 		};

@@ -19,23 +19,14 @@ beforeEach(() => {
 	setLoadSyncData(async () => {});
 });
 
-it("explains that disconnecting keeps the device in Projects", async () => {
+it("says the device stays in its Teams after unpairing", async () => {
 	vi.mocked(api.deletePeer).mockResolvedValue({ binding: "kept" });
 	renderSyncPeers();
 	const options = vi.mocked(renderSyncPeersList).mock.calls[0]?.[1];
 	const feedback = await options?.onRemove("fixture-peer", "Desk");
-	expect(feedback?.message).toBe(
-		"Disconnected this device from Desk. The device stays in Projects. An administrator's device can remove it.",
-	);
+	expect(feedback?.message).toBe("Unpaired this device from Desk. Desk stays in your Teams.");
 	expect(state.syncPeersSectionFeedback?.message).toBe(feedback?.message);
 	expect(api.deletePeer).toHaveBeenCalledWith("fixture-peer");
-});
-
-it("keeps the removal message when the binding was ended", async () => {
-	vi.mocked(api.deletePeer).mockResolvedValue({ binding: "ended" });
-	renderSyncPeers();
-	const options = vi.mocked(renderSyncPeersList).mock.calls[0]?.[1];
-	expect((await options?.onRemove("fixture-peer", "Desk"))?.message).toBe("Removed peer Desk.");
 });
 
 describe("people on a device that may not change them", () => {
