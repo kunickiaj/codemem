@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { createCoordinatorOwnerEnrollmentReceiver } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	ownerEnrollmentFinalMessage,
@@ -203,14 +204,16 @@ function assertProfileFiles(dir: string, options: { resume: boolean }): void {
 	}
 	if (stale.length) fsyncDirectory(dir);
 }
+const MANAGED_RECORD = /^attestation-(?:store-[0-9a-f-]{36}-managed|key-[0-9a-f]{32})\.json$/u;
 function assertProfileKeys(dir: string): void {
 	const keys = join(dir, "keys");
 	if (!existsSync(keys)) return;
 	if (!lstatSync(keys).isDirectory()) fail();
 	for (const name of readdirSync(keys)) {
 		const stat = lstatSync(join(keys, name));
-		if (!["device.key", "device.key.pub"].includes(name) || !stat.isFile() || stat.isSymbolicLink())
-			fail();
+		// Enrollment leaves the key's coordinator managed records beside it.
+		const known = ["device.key", "device.key.pub"].includes(name) || MANAGED_RECORD.test(name);
+		if (!known || !stat.isFile() || stat.isSymbolicLink()) fail();
 	}
 }
 function assertStaleProcess(pid: number): void {
@@ -544,6 +547,15 @@ function adopt(
 		});
 	}).immediate();
 }
+/**
+ * Owner enrollment enrolls this signing key, so the store records that history and the key's
+ * managed mark is made durable before the first request. A witness failure stops enrollment.
+ */
+function recordEnrollmentManaged(db: Database, keysDir: string): void {
+	recordStoreCoordinatorHistory(db, "enrollment");
+	markCoordinatorManaged(db, { keysDir });
+}
+
 /** Isolated opt-in only. The caller launches with CODEMEM_CONFIG=<profileDir>/config.json. */
 export async function runOwnerEnrollment(
 	options: OwnerEnrollmentOptions,
@@ -563,13 +575,12 @@ async function preflight(
 	db: Database,
 ) {
 	assertFresh(db);
-	// Owner enrollment enrolls this key, so it is recorded before the first request.
-	recordStoreCoordinatorHistory(db, "enrollment");
 	const [deviceId] = ensureDeviceIdentity(db, { keysDir: paths.keys });
 	const publicKey = loadPublicKey(paths.keys);
 	const privateKey = loadPrivateKey(paths.keys, paths.db, deviceId);
 	const keyId = publicKey && (await ed25519KeyId(publicKey));
 	if (!publicKey || !privateKey || !keyId) return fail();
+	recordEnrollmentManaged(db, paths.keys);
 	privateFile(paths.config);
 	const configText = readFileSync(paths.config, "utf8");
 	const configNode = lstatSync(paths.config, { bigint: true });

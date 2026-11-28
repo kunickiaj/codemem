@@ -8,6 +8,7 @@
 
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { propagateCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { recordConfiguredCoordinatorHistory } from "./coordinator-history.js";
 import type { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
 import { readCoordinatorRemovalState } from "./coordinator-removal-notice.js";
@@ -239,6 +240,7 @@ export async function refreshCoordinatorForDaemon(
 	// Every refresh rereads the settings, so a coordinator added since startup is recorded
 	// before any coordinator call, including a partial setting that enables nothing yet.
 	recordConfiguredCoordinatorHistory(db, config);
+	propagateCoordinatorManaged(db, { keysDir });
 	if (!coordinatorEnabled(config)) return { refreshed: false, peers: null };
 	// First, because presence and peer lookups throw when any one group rejects this device.
 	const revocations = await removeCoordinatorRevokedPeers({ db, dbPath }, config, { keysDir });

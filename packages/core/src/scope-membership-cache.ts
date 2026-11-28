@@ -1,3 +1,4 @@
+import { markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { ensureCoordinatorHistorySchema } from "./coordinator-history.js";
 import { BetterSqliteCoordinatorStore, DEFAULT_COORDINATOR_DB_PATH } from "./coordinator-store.js";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
@@ -469,6 +470,8 @@ export async function refreshScopeMembershipCache(
 		coordinatorId,
 		groupId,
 	});
+	// Scopes and memberships are coordinator trust, so the managed mark must be durable first.
+	markCoordinatorManaged(db, { keysDir: opts.keysDir ?? undefined });
 	const fetchers = opts.fetchers ?? defaultFetchers(db, opts);
 	const timestamp = nowIso(opts.now);
 	const results: RefreshScopeMembershipCacheGroupResult[] = [];

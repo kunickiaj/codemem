@@ -59,7 +59,34 @@ CREATE TABLE IF NOT EXISTS coordinator_history (
 	recorded_at TEXT NOT NULL,
 	PRIMARY KEY (subject_kind, device_id, fingerprint)
 );
+CREATE TABLE IF NOT EXISTS coordinator_free_attestation (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	store_id TEXT NOT NULL,
+	key_fingerprint TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('standalone', 'managed')),
+	token TEXT NOT NULL,
+	counter INTEGER NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS coordinator_free_attestation_managed_is_final
+BEFORE UPDATE OF state ON coordinator_free_attestation
+WHEN OLD.state = 'managed' AND NEW.state <> 'managed'
+BEGIN SELECT RAISE(ABORT, 'coordinator_free_attestation_managed'); END;
+CREATE TRIGGER IF NOT EXISTS coordinator_free_attestation_kept
+BEFORE DELETE ON coordinator_free_attestation
+BEGIN SELECT RAISE(ABORT, 'coordinator_free_attestation_kept'); END;
+-- REPLACE removes the old row without delete triggers unless recursive triggers are on.
+CREATE TRIGGER IF NOT EXISTS coordinator_free_attestation_not_replaced
+BEFORE INSERT ON coordinator_free_attestation
+WHEN EXISTS (SELECT 1 FROM coordinator_free_attestation WHERE id = NEW.id AND state = 'managed')
+BEGIN SELECT RAISE(ABORT, 'coordinator_free_attestation_managed'); END;
 `;
+
+const OWNED_TRIGGERS = [
+	"coordinator_free_attestation_managed_is_final",
+	"coordinator_free_attestation_kept",
+	"coordinator_free_attestation_not_replaced",
+];
 
 const PEER_COORDINATOR_FIELDS = `(NEW.discovered_via_coordinator_id IS NOT NULL
 	OR NEW.discovered_via_group_id IS NOT NULL
@@ -238,8 +265,16 @@ function backfill(db: Database, tables: Set<string>): void {
  */
 export function ensureCoordinatorHistorySchema(db: Database): void {
 	const watched = [...new Set(HISTORY_TRIGGERS.map((item) => item.table))];
-	const tables = existingTables(db, ["store_identity", "coordinator_history", ...watched]);
-	const created = !tables.has("coordinator_history") || !tables.has("store_identity");
+	const owned = ["store_identity", "coordinator_history", "coordinator_free_attestation"];
+	const tables = existingTables(db, [...owned, ...watched]);
+	const ownedTriggers = db
+		.prepare(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (${OWNED_TRIGGERS.map(() => "?").join(", ")})`,
+		)
+		.pluck()
+		.get(...OWNED_TRIGGERS);
+	const created =
+		owned.some((table) => !tables.has(table)) || ownedTriggers !== OWNED_TRIGGERS.length;
 	const triggers = missingTriggers(db, tables);
 	if (!created && triggers.length === 0) return;
 	db.transaction(() => {

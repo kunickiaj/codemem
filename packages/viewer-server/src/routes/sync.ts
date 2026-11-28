@@ -142,6 +142,7 @@ import {
 	loadReplicationOpsForPeer,
 	loadRuntimeSigningPublicKey,
 	lookupCoordinatorPeers,
+	markCoordinatorManaged,
 	mergeAddresses,
 	migrateRecipientPolicyIntent,
 	mutateCodememConfigFile,
@@ -3655,6 +3656,7 @@ function pinBootstrapGrantPeer(
 	deviceId: string,
 	enrollment: Pick<CoordinatorEnrollment, "display_name" | "fingerprint" | "public_key">,
 ): void {
+	markCoordinatorManaged(db, { keysDir: syncKeysDir() });
 	db.transaction(() => {
 		recordDeviceCoordinatorHistory(db, {
 			deviceId,

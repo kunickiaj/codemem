@@ -325,6 +325,9 @@ describe("manual and invite scopes never authorize another device", () => {
 				.pluck()
 				.get(peer.deviceId, fingerprintPublicKey(peer.publicKey)),
 		).toBe("bootstrap_grant");
+		expect(store.db.prepare("SELECT state FROM coordinator_free_attestation").pluck().get()).toBe(
+			"managed",
+		);
 		expect(await authorizedScopeIds()).toEqual([]);
 		await expectUnmanagedScopesRefused();
 

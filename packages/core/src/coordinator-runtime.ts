@@ -6,9 +6,10 @@ import {
 	normalizeAddress,
 } from "./address-utils.js";
 import {
-	recordListedCoordinatorPeers,
-	recordStoreCoordinatorHistory,
-} from "./coordinator-history.js";
+	markCoordinatorManaged,
+	recordCoordinatorListing,
+} from "./coordinator-free-attestation.js";
+import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	fetchPeerRemovalLookup,
 	type PeerRemovalLookup,
@@ -268,6 +269,8 @@ export async function registerCoordinatorPresence(
 	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
 	const publicKey = loadPublicKey(keysDir);
 	if (!publicKey) throw new Error("public key missing");
+	// The signing key is known now, so its managed mark must be durable before the request.
+	markCoordinatorManaged(store.db, { keysDir });
 	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
 	const payload = {
 		fingerprint,
@@ -371,7 +374,7 @@ export async function lookupCoordinatorPeers(
 	}
 	const peers = [...merged.values()];
 	// Before any caller trusts a listed device or refreshes a pin from this listing.
-	recordListedCoordinatorPeers(store.db, peers);
+	recordCoordinatorListing(store.db, peers, { keysDir });
 	return peers;
 }
 
