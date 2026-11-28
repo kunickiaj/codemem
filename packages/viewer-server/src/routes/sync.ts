@@ -54,6 +54,7 @@ import {
 	buildDirectPeerAuthHeaders,
 	buildPairingPayload,
 	COORDINATOR_FREE_BINDING_UNVERIFIED,
+	COORDINATOR_FREE_LANE,
 	COORDINATOR_FREE_WITNESS_UNAVAILABLE,
 	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	CoordinatorReciprocalApprovalRequestChangedError,
@@ -256,6 +257,7 @@ import {
 	requiresScope,
 	type SyncServerMode,
 } from "../sync-server-mode.js";
+import { serveCoordinatorFree } from "./coordinator-free-lane.js";
 
 export type {
 	AdvancePendingProjectSharesResult,
@@ -5818,8 +5820,39 @@ function registerSyncChannelRestriction(app: Hono, options: SyncChannelReadOptio
 			return c.json({ error: "not found" }, 404);
 		}
 		if (c.req.raw.signal.aborted) return c.json(unauthorizedPayload(), 401);
+		if (c.req.query("lane") === COORDINATOR_FREE_LANE) return serveChannelLane(c, options);
 		if (c.req.method === "GET" && c.req.path !== "/v1/ops") return serveChannelRead(c, options);
 		await next();
+	});
+}
+
+/** Sync without a coordinator, which is served only on this authenticated channel. */
+async function serveChannelLane(c: Context, options: SyncChannelReadOptions): Promise<Response> {
+	const store = options.getStore();
+	const body =
+		c.req.method === "POST"
+			? await readBoundedRequestBytes(c.req.raw, MAX_SYNC_BODY_BYTES)
+			: Buffer.alloc(0);
+	if (body === null) return c.json({ error: "payload_too_large" }, 413);
+	const auth = authorizeSyncRequest(store, c.req, body, options.binding);
+	if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
+	if (!auth.ok) {
+		logDirectPeerAuthDiagnostic(auth.reason);
+		return options.rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(), 401);
+	}
+	const limited = options.rateLimitedResponse(c, auth.deviceId, true);
+	if (limited) return limited;
+	const [localDeviceId, localFingerprint] = ensureDeviceIdentity(store.db, {
+		keysDir: syncKeysDir(),
+	});
+	return serveCoordinatorFree(c, {
+		store,
+		peerDeviceId: auth.deviceId,
+		peerSigningKey: auth.authenticatedPeerSigningKey,
+		localDeviceId,
+		localFingerprint,
+		keysDir: syncKeysDir(),
+		bodyBytes: body,
 	});
 }
 

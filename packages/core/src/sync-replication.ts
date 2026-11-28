@@ -128,6 +128,8 @@ interface LoadReplicationOpsForPeerBaseOptions {
 	generation?: number | null;
 	snapshotId?: string | null;
 	baselineCursor?: string | null;
+	/** Keep default-scope memory ops for sync without a coordinator, which filters them itself. */
+	coordinatorFreeLane?: boolean;
 }
 
 export type LoadReplicationOpsForPeerOptions =
@@ -1553,6 +1555,8 @@ export function loadReplicationOpsForPeer(
 			return true;
 		}
 		const scopeId = cleanText(op.scope_id);
+		// Sync without a coordinator filters these default-scope ops itself, after this load.
+		if (options.coordinatorFreeLane) return scopeId === DEFAULT_SYNC_SCOPE_ID;
 		return Boolean(scopeId && scopeId !== DEFAULT_SYNC_SCOPE_ID);
 	});
 	const page = opsPageWithinBytes(peerBoundaryOps, nextCursor, options.maxBytes);

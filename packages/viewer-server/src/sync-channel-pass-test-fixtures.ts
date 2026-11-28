@@ -94,7 +94,13 @@ function key(keysDir: string) {
 	return createPrivateKey(bytes);
 }
 
-async function openNoise(remote: Remote, wrongPin = false) {
+/** An authenticated Noise connection between a client key and a server key, in memory. */
+export async function openNoisePair(keys: {
+	clientKeysDir: string;
+	clientPin: string;
+	serverKeysDir: string;
+	serverPin: string;
+}) {
 	const channels = channelPair({ deferredDelivery: true });
 	const deadlineMs = performance.now() + 60000;
 	const raw = [
@@ -105,18 +111,16 @@ async function openNoise(remote: Remote, wrongPin = false) {
 		stream.on("error", () => {});
 		void stream.disposed.catch(() => {});
 	}
-	const targetKeys = wrongPin ? remote.peerKeysDir : serverKeys(remote);
-	const targetPin = wrongPin ? remote.peerPublicKey : remote.localPublicKey;
 	const attempt = prepareTraversalNoiseInitiator({
-		localIdentity: { key: key(remote.peerKeysDir), expectedPin: remote.peerPublicKey },
-		expectedRemotePin: targetPin,
+		localIdentity: { key: key(keys.clientKeysDir), expectedPin: keys.clientPin },
+		expectedRemotePin: keys.serverPin,
 		deadlineMs,
 	});
 	const opening = await attempt.opening;
 	const inbound = acceptTraversalNoiseResponder({
 		stream: raw[1],
-		localIdentity: { key: key(targetKeys), expectedPin: targetPin },
-		expectedRemotePin: remote.peerPublicKey,
+		localIdentity: { key: key(keys.serverKeysDir), expectedPin: keys.serverPin },
+		expectedRemotePin: keys.clientPin,
 		sessionId: attempt.sessionId,
 		verifiedMessageADigest: opening.digest,
 		deadlineMs,
@@ -134,6 +138,15 @@ async function openNoise(remote: Remote, wrongPin = false) {
 			await Promise.allSettled([sourceOwner.completion, targetOwner.completion]);
 		},
 	};
+}
+
+function openNoise(remote: Remote, wrongPin = false) {
+	return openNoisePair({
+		clientKeysDir: remote.peerKeysDir,
+		clientPin: remote.peerPublicKey,
+		serverKeysDir: wrongPin ? remote.peerKeysDir : serverKeys(remote),
+		serverPin: wrongPin ? remote.peerPublicKey : remote.localPublicKey,
+	});
 }
 
 type DispatcherOptions = Omit<Parameters<typeof createSyncChannelDispatcher>[0], "storeFactory">;
