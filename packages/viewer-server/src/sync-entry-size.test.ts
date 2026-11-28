@@ -45,7 +45,10 @@ it("refuses an oversized snapshot item by name and saves no snapshot progress", 
 
 	expect(result.ok).toBe(false);
 	expect(result.error).toMatch(/sync_entry_too_large: memory \S+ is 0\.0 MiB, over the 0\.0 MiB/);
-	expect(result.error).toContain("Trim or delete it on the peer, or exclude its project");
+	expect(result.error).toContain(
+		"Trim it on the peer, or exclude its Project from this pairing, then sync again.",
+	);
+	expect(result.error).not.toContain("delete");
 	expect(savedProgress(f)).toBeNull();
 	expect(getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE)[0]).toBeNull();
 	expect(memoryTitles(f)).not.toContain("big-memory");

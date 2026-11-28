@@ -102,7 +102,8 @@ export function syncEntryTooLargeMessage(refusal: SyncEntryTooLargeRefusal): str
 	// The op log keeps the oversized change, so editing the memory adds a new change behind it.
 	if (refusal.kind === "op")
 		return `${SYNC_ENTRY_TOO_LARGE}: change ${refusal.key} ${size} Exclude its Project from this pairing, then sync again. Trimming or deleting the memory won't clear it, because the peer still has the oversized change.`;
-	return `${SYNC_ENTRY_TOO_LARGE}: memory ${refusal.key} ${size} Trim or delete it on the peer, or exclude its project, then sync again.`;
+	// A deleted memory still carries its body in a snapshot, so deleting it wouldn't help.
+	return `${SYNC_ENTRY_TOO_LARGE}: memory ${refusal.key} ${size} Trim it on the peer, or exclude its Project from this pairing, then sync again.`;
 }
 
 /** A snapshot page refused as too large. It carries the checked refusal for the caller. */

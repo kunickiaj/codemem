@@ -46,7 +46,7 @@ describe("sync entry size", () => {
 			limit: 16 * MiB,
 		});
 		expect(refusal && syncEntryTooLargeMessage(refusal)).toBe(
-			"sync_entry_too_large: memory memory-source-v1:abc is 20.0 MiB, over the 16.0 MiB this connection carries. Trim or delete it on the peer, or exclude its project, then sync again.",
+			"sync_entry_too_large: memory memory-source-v1:abc is 20.0 MiB, over the 16.0 MiB this connection carries. Trim it on the peer, or exclude its Project from this pairing, then sync again.",
 		);
 		const op = parseSyncEntryTooLarge({ ...reply, kind: "op", key: "op-1" });
 		expect(op && syncEntryTooLargeMessage(op)).toBe(
