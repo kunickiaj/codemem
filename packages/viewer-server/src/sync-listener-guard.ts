@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
+import { DIRECT_NOISE_ACTIVE } from "@codemem/core/internal/relay-runtime";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
+import { attachDirectNoiseGate, type DirectNoiseGateOptions } from "./sync-noise-gate.js";
 
 /**
  * Limits for the network-facing sync listener. The header and request
@@ -35,10 +37,20 @@ export const SYNC_LISTENER_LIMITS: SyncListenerLimits = Object.freeze({
 /** Distinct address buckets the listener's limiter keeps. Churn evicts the stalest. */
 export const SYNC_LISTENER_MAX_BUCKETS = 4_096;
 
+/**
+ * The limiter the sync listener, its routes and its Noise streams share. It
+ * holds at most SYNC_LISTENER_MAX_BUCKETS buckets.
+ */
+export function createSyncListenerLimiter(): InMemoryRequestRateLimiter {
+	return createInMemoryRequestRateLimiter(60_000, { maxBuckets: SYNC_LISTENER_MAX_BUCKETS });
+}
+
 export interface SyncListenerGuardOptions {
 	readonly limits?: Partial<SyncListenerLimits>;
 	/** Shared with the upgrade gate, so every request from one address draws on one budget. */
 	readonly limiter?: InMemoryRequestRateLimiter;
+	/** Direct Noise upgrades. Attached only while direct Noise is active. */
+	readonly directNoise?: DirectNoiseGateOptions & { readonly active?: boolean };
 }
 
 type RequestListener = (request: IncomingMessage, response: ServerResponse) => void;
@@ -144,9 +156,7 @@ export function createGuardedSyncServer(
 	options: SyncListenerGuardOptions = {},
 ): typeof createServer {
 	const limits = { ...SYNC_LISTENER_LIMITS, ...options.limits };
-	const limiter =
-		options.limiter ??
-		createInMemoryRequestRateLimiter(60_000, { maxBuckets: SYNC_LISTENER_MAX_BUCKETS });
+	const limiter = options.limiter ?? createSyncListenerLimiter();
 	const guarded = (_serverOptions: unknown, listener?: RequestListener): Server => {
 		const server = createServer(
 			{
@@ -161,7 +171,12 @@ export function createGuardedSyncServer(
 		);
 		if (limits.maxSockets !== undefined) server.maxConnections = limits.maxSockets;
 		if (limits.maxSocketsPerIp !== undefined) capSocketsPerAddress(server, limits.maxSocketsPerIp);
-		closeSilentSockets(server, limits);
+		const settle = closeSilentSockets(server, limits);
+		const directNoise = options.directNoise;
+		if (directNoise && (directNoise.active ?? DIRECT_NOISE_ACTIVE)) {
+			const admit = { limiter, perMinute: limits.requestsPerIpPerMinute, settle };
+			attachDirectNoiseGate(server, directNoise, admit, remoteAddressKey);
+		}
 		return server;
 	};
 	return guarded as unknown as typeof createServer;

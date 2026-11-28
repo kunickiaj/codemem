@@ -3,6 +3,16 @@ export {
 	readRelayClientSettings,
 } from "../coordinator-sync-config.js";
 export {
+	DIRECT_NOISE_LOGICAL_ORIGIN,
+	DIRECT_NOISE_PATH,
+	DIRECT_NOISE_TRANSPORT_LABEL,
+	DIRECT_NOISE_UPGRADE_PROTOCOL,
+	directNoiseUpgradeTarget,
+	parseDirectNoiseUpgradeTarget,
+} from "../direct-noise-upgrade.js";
+export { PEER_HTTP_LIMITS } from "../peer-http-policy.js";
+export { servePeerHttpConnection } from "../peer-http-server.js";
+export {
 	canonicalRelayServiceKey,
 	fetchRelayInfo,
 	RELAY_ADMISSION_PATH,
@@ -22,6 +32,7 @@ export {
 } from "../relay-coordinator-client.js";
 export { RelayHealthMonitor, type RelayHealthRuntimeOptions } from "../relay-health.js";
 export type { RelayHealthClockStamp } from "../relay-health-probe.js";
+export { acceptRelayNoiseResponder, RELAY_NOISE_LIMITS } from "../relay-noise.js";
 export {
 	createRelayPeerClient,
 	type RelayPeerClient,
@@ -61,3 +72,4 @@ export type {
 	SyncPeerReachabilityResolver,
 	SyncReachabilityOptions,
 } from "../sync-reachability-pass.js";
+export { DIRECT_NOISE_ACTIVE } from "../sync-transport-policy.js";

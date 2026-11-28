@@ -35,11 +35,18 @@ export const PLAIN_DIRECT_MODE: SyncServerMode = Object.freeze({ kind: "plain-di
  * Checks that a signed request came from the peer its channel authenticated.
  * Undefined for plain-direct, where the signature is the only proof.
  */
-export type ChannelBinding = (
+export type ChannelBinding = ((
 	request: Request | undefined,
 	deviceId: string,
 	publicKey: string,
-) => boolean;
+) => boolean) & {
+	/**
+	 * Verify a v3 signature without recording that the peer adopted v3. A
+	 * direct Noise upgrade uses this, so a handshake that fails afterwards
+	 * leaves only its nonce. The authenticated inner requests record adoption.
+	 */
+	readonly deferSignatureAdoption?: boolean;
+};
 
 function canonicalPin(publicKey: string): string | null {
 	const [algorithm, blob] = publicKey.split(/\s+/);

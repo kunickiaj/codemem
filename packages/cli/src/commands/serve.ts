@@ -1342,24 +1342,35 @@ async function openViewerStore(
 	return store;
 }
 
-/** The sync listener is network-facing, so it runs on the guarded server. */
-function syncListenerOptions(
-	serverModule: typeof import("@codemem/server"),
-	syncApp: { fetch: (request: Request) => Response | Promise<Response> },
+/**
+ * The sync listener is network-facing, so it runs on the guarded server. Its
+ * routes and any direct Noise streams share one request limiter.
+ */
+export function syncListenerOptions(
+	serverModule: Pick<
+		typeof import("@codemem/server"),
+		"createSyncListenerLimiter" | "createSyncApp" | "createGuardedSyncServer"
+	>,
+	appOpts: import("@codemem/server").AppOptions & { storeFactory: () => MemoryStore },
 	syncConfig: { syncHost: string; syncPort: number },
 ) {
+	const limiter = serverModule.createSyncListenerLimiter();
+	const syncApp = serverModule.createSyncApp({ ...appOpts, syncRequestRateLimit: { limiter } });
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 	return {
 		fetch: syncApp.fetch,
 		hostname: syncConfig.syncHost,
 		port: syncConfig.syncPort,
-		createServer: serverModule.createGuardedSyncServer(),
+		createServer: serverModule.createGuardedSyncServer({
+			limiter,
+			directNoise: { storeFactory: appOpts.storeFactory, keysDir },
+		}),
 	};
 }
 
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
-	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
-		serverModule;
+	const { createApp, closeStoreAsync, createViewerRawEventInbox, getStore } = serverModule;
 	const createRawEventInbox = createViewerRawEventInbox;
 	const coordinatorMaintenanceDependencies =
 		createServeCoordinatorMaintenanceDependencies(serverModule);
@@ -1416,8 +1427,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	let syncServer: ReturnType<typeof serve> | null = null;
 	let syncListenerReady = false;
 	if (syncEnabled) {
-		const syncApp = createSyncApp(appOpts);
-		syncServer = serve(syncListenerOptions(serverModule, syncApp, syncConfig), (info) => {
+		syncServer = serve(syncListenerOptions(serverModule, appOpts, syncConfig), (info) => {
 			syncListenerReady = true;
 			p.log.step(`Sync protocol listening on http://${info.address}:${info.port}`);
 		});

@@ -3390,11 +3390,46 @@ function authorizeSyncRequest(
 	const createdAt = new Date().toISOString();
 	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
 	if (nonceResult) return nonceResult;
-	if (verification.version === DIRECT_PEER_SIGNATURE_VERSION_NUMBER) {
-		const versionResult = recordDirectPeerSignatureVersion(store, deviceId, verification.version);
-		if (versionResult) return versionResult;
-	}
+	const versionResult = recordAdoptedSignatureVersion(store, deviceId, verification, binding);
+	if (versionResult) return versionResult;
 	return authenticatedSyncPeer(deviceId, publicKey);
+}
+
+/** Records that the peer now signs with v3, unless the binding defers that to later traffic. */
+function recordAdoptedSignatureVersion(
+	store: MemoryStore,
+	deviceId: string,
+	verification: { version: 2 | 3 },
+	binding: ChannelBinding | undefined,
+): SyncAuthResult | null {
+	if (verification.version !== DIRECT_PEER_SIGNATURE_VERSION_NUMBER) return null;
+	if (binding?.deferSignatureAdoption) return null;
+	return recordDirectPeerSignatureVersion(store, deviceId, verification.version);
+}
+
+/**
+ * No channel exists before the upgrade, so the only binding demanded is the v3
+ * signature. Its adoption is recorded later, by the authenticated inner traffic.
+ */
+const REQUIRE_DIRECT_SIGNATURE: ChannelBinding = Object.assign(() => true, {
+	deferSignatureAdoption: true,
+});
+
+/**
+ * Authorizes a direct Noise upgrade before any Noise byte is sent: a pinned
+ * device, its current key, a fresh nonce, and a recipient-bound v3 signature
+ * over the exact target. Bootstrap grants are never accepted here.
+ */
+export function authorizeDirectNoiseUpgrade(
+	store: MemoryStore,
+	request: { method: string; url: string; header(name: string): string | undefined },
+): { ok: true; deviceId: string; publicKey: string } | { ok: false; busy: boolean } {
+	const auth = authorizeSyncRequest(store, request, Buffer.alloc(0), REQUIRE_DIRECT_SIGNATURE);
+	if (!auth.ok) {
+		logDirectPeerAuthDiagnostic(auth.reason);
+		return { ok: false, busy: isSyncAuthStoreBusy(auth) };
+	}
+	return { ok: true, deviceId: auth.deviceId, publicKey: auth.authenticatedPeerSigningKey };
 }
 
 function bootstrapPayloadRecord(value: unknown): value is Record<string, unknown> {
