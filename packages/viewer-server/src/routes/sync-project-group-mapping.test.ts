@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore } from "@codemem/core";
+import { ensureDeviceIdentity, MemoryStore } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { syncRoutes } from "./sync.js";
 
@@ -55,6 +55,9 @@ describe("saving a Space for a folded Project group", () => {
 		dir = mkdtempSync(join(tmpdir(), "codemem-group-mapping-"));
 		vi.stubEnv("CODEMEM_KEYS_DIR", join(dir, "keys"));
 		store = new MemoryStore(join(dir, "mem.sqlite"));
+		// Space changes use the device identity the Viewer sets up on its first Devices load.
+		const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: join(dir, "keys") });
+		store.adoptEnsuredDeviceIdentity(deviceId);
 		seedFoldedGroup(store);
 		app = syncRoutes(() => store);
 	});

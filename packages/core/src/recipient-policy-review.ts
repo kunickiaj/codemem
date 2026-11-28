@@ -39,6 +39,11 @@ export interface RecipientPolicyReviewContext {
 	localActorId: string;
 	localDeviceId: string;
 	now?: () => string;
+	/**
+	 * Runs first inside the write transaction, before any decision is read or
+	 * recorded. A caller rechecks its authority here and throws to refuse.
+	 */
+	beforeResolve?: () => void;
 }
 
 export type RecipientPolicyReviewActionOptionV1 = RecipientPolicyReviewOptionV1 & {
@@ -935,9 +940,10 @@ export function resolveRecipientPolicyReview(
 	if (!isValidResolveRequest(request)) return invalid(request, "request_invalid");
 	try {
 		return db
-			.transaction(() =>
-				resolveInTransaction(db, context, request, deriveResolutionOperation(db, context)),
-			)
+			.transaction(() => {
+				context.beforeResolve?.();
+				return resolveInTransaction(db, context, request, deriveResolutionOperation(db, context));
+			})
 			.immediate();
 	} catch (error) {
 		const conflict = conflictResult(error, request);
@@ -969,6 +975,7 @@ export function resolveRecipientPolicyReviewBulk(
 	}
 	const attemptedResults: RecipientPolicyReviewResolveResultV1[] = [];
 	const resolveBulk = db.transaction(() => {
+		context.beforeResolve?.();
 		const operation = deriveResolutionOperation(db, context);
 		const resolveOne = db.transaction((request: RecipientPolicyReviewResolveRequestV1) =>
 			resolveInTransaction(db, context, request, operation),

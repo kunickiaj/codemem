@@ -986,11 +986,18 @@ function offeredScopeGroups(): ProjectsInventoryViewModel["scopeGroups"] {
 const ACCESS_CHANGE_REFUSED =
 	"Only a device that holds the coordinator admin secret can share this Project more widely. Nothing changed. Make the change on that device, or keep the Project local-only here.";
 
+// Space changes need this device's one existing sync identity; the Viewer never creates one here.
+const MAPPING_ERROR_MESSAGES: Record<string, string> = {
+	access_change_needs_admin_device: ACCESS_CHANGE_REFUSED,
+	device_identity_missing:
+		"This device's sync identity isn't set up yet. Nothing changed. Open Devices once to finish setting it up, then try again.",
+	device_identity_ambiguous:
+		"This database has more than one device identity, so codemem can't tell which device the change is for. Nothing changed. Report this as a codemem issue.",
+};
+
 function mappingErrorMessage(error: unknown, fallback: string): string {
 	if (!(error instanceof Error)) return fallback;
-	return error.message === "access_change_needs_admin_device"
-		? ACCESS_CHANGE_REFUSED
-		: error.message;
+	return MAPPING_ERROR_MESSAGES[error.message] ?? error.message;
 }
 
 function hideProjectInventorySkeleton() {
