@@ -40,6 +40,7 @@ import { ensurePairingInstanceSchema } from "./pairing-instance.js";
 import { ensurePeerProjectFilterManagementSchema } from "./peer-project-filter-management.js";
 import { ensurePeerProjectFilterRetentionSchema } from "./peer-project-filter-retention.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
+import { selectProjectStorage } from "./project-storage-connection.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
 import { deleteOrphanReplicationCursorsOnce } from "./replication-cursor-orphan-cleanup.js";
@@ -246,6 +247,7 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 		// Match Python's connect() pragmas exactly
 		db.pragma("foreign_keys = ON");
 		db.pragma("busy_timeout = 5000");
+		selectProjectStorage(db);
 		const configureWal = canAutoBootstrapSchema(db) || hasBootstrappedCodememSchema(db);
 
 		ensureSchemaBootstrapped(db);
@@ -304,6 +306,7 @@ export function connectReadOnly(
 		db.pragma("foreign_keys = ON");
 		db.pragma("busy_timeout = 5000");
 		// Read tuning only — safe on a read-only connection (per-connection state).
+		selectProjectStorage(db);
 		db.pragma("cache_size = -65536");
 		db.pragma("mmap_size = 1073741824");
 		db.pragma("temp_store = MEMORY");

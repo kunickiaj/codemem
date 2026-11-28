@@ -6,7 +6,9 @@ import {
 	isSameDatabaseFile,
 } from "./database-file-identity.js";
 import { assertSchemaReadyReadOnly, getSchemaVersion, SCHEMA_VERSION, tableExists } from "./db.js";
+import { selectProjectStorage } from "./project-storage-connection.js";
 import { prepareScopeServingStore } from "./scope-serving-proof-store.js";
+import { installTransitionedTables } from "./transitioned-store-tables.js";
 
 function requireSelectedFile(path: string, selected: DatabaseFileIdentity): void {
 	if (!isSameDatabaseFile(selected, databaseFileAt(path)) || statSync(selected.path).nlink !== 1)
@@ -39,9 +41,11 @@ export function prepareOfflineScopeServingStore(
 			if (db.pragma("journal_mode", { simple: true }) !== "wal")
 				throw new Error("Offline preparation requires an existing WAL store.");
 			requireSelectedFile(path, selected);
+			selectProjectStorage(db);
 			if (getSchemaVersion(db) !== SCHEMA_VERSION || !tableExists(db, "memory_fts"))
 				throw new Error("Offline preparation requires the current device store schema.");
 			assertSchemaReadyReadOnly(db);
+			installTransitionedTables(db);
 			prepareScopeServingStore(db, preparation, envelopes);
 			requireSelectedFile(path, selected);
 		}).exclusive();

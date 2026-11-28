@@ -15,7 +15,7 @@ import {
 import { ensureDeviceIdentity, loadPublicKey } from "../../packages/core/src/sync-identity.js";
 import { recordReplicationOp } from "../../packages/core/src/sync-replication.js";
 import { initTestSchema, insertTestSession } from "../../packages/core/src/test-utils.js";
-import { prepareScopeServingStore } from "../../packages/core/src/scope-serving-proof-store.js";
+import { prepareOfflineScopeServingStore } from "../../packages/core/src/offline-serving-preparation.js";
 
 export const scopes = ["fixture-team", "fixture-project"];
 export const groupId = "fixture-group";
@@ -52,6 +52,9 @@ export function peer(home: string, coordinator: string) {
 	};
 }
 export type Peer = ReturnType<typeof peer>;
+export function reopen(p: Peer) {
+	p.db = connect(p.dbPath);
+}
 
 export async function prime(p: Peer, other: Peer, coordinatorId: string) {
 	p.db
@@ -122,6 +125,8 @@ export function transition(p: Peer, other: Peer, coordinatorId: string, generati
 			return { scopeId, deviceId: member.deviceId, keyId, envelope: Buffer.from(String(evidence)) };
 		}),
 	);
-	prepareScopeServingStore(p.db, prepared, proofs);
+	p.db.close();
+	prepareOfflineScopeServingStore(p.dbPath, prepared, proofs);
+	p.db = connect(p.dbPath);
 	assert.equal(p.db.prepare("SELECT count(*) FROM scope_serving_proofs_v2").pluck().get(), 4);
 }

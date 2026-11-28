@@ -15,6 +15,7 @@
  * answers were stored under.
  */
 import type { Database, Statement } from "better-sqlite3";
+import { physicalTableName } from "./project-storage-connection.js";
 
 interface SchemaLookups {
 	schemaVersion: number;
@@ -60,8 +61,9 @@ export function tableExists(db: Database, table: string): boolean {
 		db,
 		JSON.stringify([table]),
 		() =>
-			db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !==
-			undefined,
+			db
+				.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+				.get(physicalTableName(db, table)) !== undefined,
 	);
 }
 
@@ -84,7 +86,8 @@ export function columnExists(db: Database, table: string, column: string): boole
 		db,
 		JSON.stringify([table, column]),
 		() =>
-			db.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1").get(table, column) !==
-			undefined,
+			db
+				.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1")
+				.get(physicalTableName(db, table), column) !== undefined,
 	);
 }

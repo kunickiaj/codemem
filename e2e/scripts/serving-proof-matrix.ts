@@ -58,6 +58,32 @@ async function disconnectedUrl() {
 function count(p: Peer, key: string) {
 	return p.db.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key=?").pluck().get(key);
 }
+const visibleTitle = "Synthetic stored history sample";
+function readControls(p: Peer, build: string, id: number, expected: "visible" | "refused") {
+	const cli = join(build, "packages/cli/dist/index.js");
+	for (const args of [
+		["memory", "list", "--all-projects", "--json", "--limit", "100"],
+		["memory", "show", String(id), "--json"],
+		["memory", "search", "sample", "--all-projects", "--json"],
+		["memory", "export", "-", "--all-projects"],
+	]) {
+		const r = run([cli, ...args, "--db-path", p.dbPath], p);
+		if (expected === "visible") {
+			assert.equal(r.status, 0, r.stderr);
+			assert.ok(r.stdout.includes(visibleTitle), `${args[1]} positive control`);
+		} else {
+			assert.equal(r.status, 1);
+			assert.match(r.stderr + r.stdout, /Required tables missing: memory_items/);
+			assert.ok(!(r.stdout + r.stderr).includes(visibleTitle));
+		}
+	}
+	const viewer = run([script("serving-proof-peer.mjs"), build, "viewer"], p);
+	assert.equal(viewer.status, 0, viewer.stderr);
+	const response = JSON.parse(viewer.stdout);
+	assert.equal(response.status, expected === "visible" ? 200 : 500);
+	assert.equal(response.text.includes(visibleTitle), expected === "visible");
+	if (expected === "refused") assert.match(viewer.stderr, /Required tables missing: memory_items/);
+}
 async function exchange(
 	sender: Peer,
 	receiver: Peer,
@@ -68,7 +94,9 @@ async function exchange(
 	const keys = fixture.seedCanaries(sender);
 	const wireFile = join(receiver.env.HOME, "wire.jsonl");
 	writeFileSync(wireFile, "");
-	const server = fork(script("serving-proof-peer.mjs"), [target, "serve"], {
+	const refused = join(receiver.env.HOME, "open-refused");
+	writeFileSync(refused, "");
+	const server = fork(script("serving-proof-peer.mjs"), [target, "serve-lazy"], {
 		execArgv: [],
 		env: receiver.env,
 		silent: false,
@@ -99,17 +127,28 @@ async function exchange(
 			],
 			sender,
 		);
-		const result = JSON.parse(r.stdout);
-		if (!expectTransfer && !result.ok) {
+		if (expectTransfer) {
+			assert.equal(r.status, 0, r.stderr);
+			assert.equal(JSON.parse(r.stdout).ok, true);
+		} else if (source !== current) {
 			assert.equal(r.status, 1);
-			assert.equal(result.results.length, 1);
 			assert.match(
-				result.results[0].error,
-				/(?:409: reset_required:missing_scope\)|peer access ended during push)$/,
+				r.stdout + r.stderr,
+				/Required tables missing: memory_items|no such table: (?:main\.)?(memory_items|replication_ops|sync_device)/,
 			);
 		} else {
-			assert.equal(r.status, 0, r.stderr);
-			assert.equal(result.ok, true);
+			assert.equal(r.status, 1, r.stdout);
+			assert.ok(
+				readFileSync(refused, "utf8").length > 0,
+				"Released receiver must refuse the store on the real sync route",
+			);
+		}
+		if (!expectTransfer && source !== current) {
+			const daemon = run([script("serving-proof-peer.mjs"), source, "daemon-pass"], sender);
+			assert.match(
+				daemon.stdout + daemon.stderr,
+				/no such table: (?:main\.)?(memory_items|replication_ops|sync_device)|Required tables missing: memory_items/,
+			);
 		}
 		for (const key of keys) {
 			assert.equal(count(sender, key), 1);
@@ -158,8 +197,9 @@ async function matrix(source: string, target: string, legacy: string, directory:
 				p,
 			);
 		await exchange(a, b, source, target, { expectTransfer: true });
-		for (const stage of ["purge", "first-envelope"])
+		for (const stage of ["purge", "first-envelope", "format-before-envelope"])
 			for (const p of [a, b]) {
+				if (stage === "format-before-envelope") p.db.close();
 				const r = run(
 					[
 						"--import",
@@ -174,6 +214,14 @@ async function matrix(source: string, target: string, legacy: string, directory:
 					p,
 				);
 				assert.equal(r.signal, "SIGKILL", r.stderr);
+				if (!p.db.open) fixture.reopen(p);
+				assert.equal(
+					p.db
+						.prepare("SELECT count(*) FROM sqlite_schema WHERE name='project_memory_items'")
+						.pluck()
+						.get(),
+					0,
+				);
 				const installed = p.db
 					.prepare("SELECT count(*) FROM sqlite_master WHERE name='scope_serving_preparations'")
 					.pluck()
@@ -202,32 +250,54 @@ async function matrix(source: string, target: string, legacy: string, directory:
 		// An interrupted preparation cannot acknowledge a transition. The old
 		// state still works end to end until preparation succeeds on retry.
 		await exchange(a, b, source, target, { expectTransfer: true });
+		let historyId = 0;
+		if (source === legacy && target === legacy) {
+			historyId = Number(
+				a.db
+					.prepare(`INSERT INTO memory_items(session_id,kind,title,body_text,active,created_at,updated_at,scope_id,visibility)
+				SELECT id,'discovery',?,'offline local sample',1,datetime('now'),datetime('now'),'local-default','shared' FROM sessions LIMIT 1`)
+					.run(visibleTitle).lastInsertRowid,
+			);
+			readControls(a, legacy, historyId, "visible");
+		}
 		fixture.transition(a, b, coordinator, generation);
 		fixture.transition(b, a, coordinator, generation);
 		const offlineBody = await exchange(a, b, source, target, { expectTransfer: false });
 		for (const p of [a, b]) {
-			checked([script("serving-proof-peer.mjs"), legacy, "refresh", coordinator], p);
-			checked(
+			const attempt = run([script("serving-proof-peer.mjs"), legacy, "refresh", coordinator], p);
+			assert.equal(attempt.status, 1);
+			assert.match(attempt.stderr, /Required tables missing: memory_items/);
+			const init = run(
 				[
-					script("serving-proof-peer.mjs"),
-					legacy,
-					"inspect-cache",
-					coordinator,
-					"absent",
-					...fixture.scopes,
+					join(legacy, "packages/cli/dist/index.js"),
+					"maintenance",
+					"database",
+					"init",
+					"--db-path",
+					p.dbPath,
 				],
 				p,
 			);
+			assert.match(init.stdout + init.stderr, /Required tables missing: memory_items/);
+			for (const table of ["memory_items", "memory_fts", "sync_device", "replication_ops"])
+				assert.equal(
+					p.db.prepare("SELECT count(*) FROM sqlite_schema WHERE name=?").pluck().get(table),
+					0,
+				);
 		}
 		const refreshedBody = await exchange(a, b, source, target, { expectTransfer: false });
+		if (historyId) {
+			readControls(a, legacy, historyId, "refused");
+			readControls(a, current, historyId, "visible");
+		}
 		assert.deepEqual(
 			{ offlineBody, refreshedBody },
 			{ offlineBody: [], refreshedBody: [] },
 			"Synthetic body crossed the peer connection",
 		);
 	} finally {
-		a.db.close();
-		b.db.close();
+		if (a.db.open) a.db.close();
+		if (b.db.open) b.db.close();
 	}
 }
 const failures: Error[] = [];

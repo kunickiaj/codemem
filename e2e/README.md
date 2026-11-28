@@ -274,11 +274,21 @@ disconnected coordinator. The listener records the direction and exact synthetic
 body IDs without saving payloads. The controls require each new memory to
 arrive before preparation and after crash recovery. The harness kills the
 preparing process both during the legacy purge and immediately before the
-first envelope insert. Neither interruption may leave a prepared group. After a
+first envelope insert. It also kills the process after the table changes and
+purge in the exclusive transaction. Recovery must restore the old table names
+and searchable history. After a
 successful retry, both the offline exchange and the exchange after a released
 client attempts a refresh must keep the bodies off the wire. The command exits
 nonzero if any pairing fails. It does not start production preparation, test
 online proof issuance, or decide proof freshness.
+
+For each tag the harness checks that `memory list`, `memory show`, `memory
+search`, `memory export` and the Viewer's observations route can return a known
+local record before the transition. After the transition the released clients
+must refuse that store, while the current build must still return the record.
+The harness also runs the released daemon's sync pass on its direct SQLite
+connection and attempts database initialization. Metadata commands can still
+inspect the file. They do not need access to the memory or replication tables.
 
 To check the maintenance window separately, run:
 
