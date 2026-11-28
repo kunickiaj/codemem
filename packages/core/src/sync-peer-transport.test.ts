@@ -9,17 +9,21 @@ import { initTestSchema } from "./test-utils.js";
 const stream = vi.hoisted(() => ({
 	pin: "",
 	opened: 0,
+	expectedPins: [] as string[],
 	answer: (_url: string): [number, Record<string, unknown>] => [404, {}],
 }));
 
 vi.mock("./direct-noise-client.js", async (original) => ({
 	...(await original<typeof import("./direct-noise-client.js")>()),
-	directNoiseConnectionFactory: () => ({
+	directNoiseConnectionFactory: (endpoint: { expectedPin: string }) => ({
 		open: async () => {
 			throw new Error("unused");
 		},
 		lastFailure: () => undefined,
-		authenticatedPin: () => stream.pin,
+		authenticatedPin: () => {
+			stream.expectedPins.push(endpoint.expectedPin);
+			return stream.pin;
+		},
 	}),
 }));
 
@@ -35,6 +39,7 @@ const databases: Database.Database[] = [];
 afterEach(() => {
 	for (const db of databases.splice(0)) db.close();
 	stream.opened = 0;
+	stream.expectedPins = [];
 });
 
 function pinned(pin: string) {
@@ -71,7 +76,9 @@ it("neither promotes nor unlocks snapshots when the stream proved a different pi
 	stream.pin = "key-other";
 	stream.answer = statusNaming("key-current");
 
-	await p.execute("GET", "http://127.0.0.1:7/v1/status");
+	await expect(p.execute("GET", "http://127.0.0.1:7/v1/status")).rejects.toThrow(
+		PeerTransportRefused,
+	);
 
 	expect(readPeerTransportPolicy(p.db, "peer")).toBe("legacy_plaintext");
 	await expect(p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1")).rejects.toThrow(
@@ -94,4 +101,45 @@ it("refuses a snapshot after a re-pin, though the earlier status was valid for t
 		/status_first/,
 	);
 	expect(stream.opened).toBe(1);
+});
+
+it("asks the snapshot's handshake to prove the pin its status named", async () => {
+	const p = pinned("key-a");
+	stream.pin = "key-a";
+	stream.answer = statusNaming("key-a");
+	await p.execute("GET", "http://127.0.0.1:7/v1/status");
+
+	await p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1");
+
+	expect(stream.expectedPins).toEqual(["key-a", "key-a"]);
+});
+
+it("drops a Noise answer when the pin rotates while the response is pending", async () => {
+	const p = pinned("key-a");
+	stream.pin = "key-a";
+	stream.answer = (url) => {
+		p.repin("key-b");
+		return statusNaming("key-a")(url);
+	};
+
+	await expect(p.execute("GET", "http://127.0.0.1:7/v1/status")).rejects.toThrow(
+		/peer key changed while the response was pending/,
+	);
+
+	expect(readPeerTransportPolicy(p.db, "peer")).toBe("legacy_plaintext");
+});
+
+it("holds a snapshot to the status pin when the pin rotates before dialing", async () => {
+	const p = pinned("key-a");
+	stream.pin = "key-a";
+	stream.answer = statusNaming("key-a");
+	await p.execute("GET", "http://127.0.0.1:7/v1/status");
+
+	// The status check passes, then a re-pin lands before the connection is set up.
+	const snapshot = p.execute("GET", "http://127.0.0.1:7/v1/snapshot?limit=1");
+	p.repin("key-b");
+	stream.pin = "key-b";
+
+	await expect(snapshot).rejects.toThrow(PeerTransportRefused);
+	expect(stream.expectedPins.at(-1)).toBe("key-a");
 });

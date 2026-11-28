@@ -34,6 +34,8 @@ export interface DirectNoiseEndpoint {
 	readonly peerDeviceId: string;
 	readonly keysDir?: string;
 	readonly dbPath?: string;
+	/** The key the handshake must prove. It must still be the current pin when dialing. */
+	readonly expectedPin: string;
 }
 
 function localIdentity(endpoint: DirectNoiseEndpoint) {
@@ -120,14 +122,16 @@ function upgradeRequest(endpoint: DirectNoiseEndpoint, target: string): string {
 /**
  * Opens one Noise stream to a peer's sync listener. Message A is prepared
  * first so its digest can be signed into the upgrade target, and it is sent
- * only after the peer answers 101. The peer must prove the pinned key.
+ * only after the peer answers 101. The peer must prove the expected pin, and
+ * that pin must be current both before dialing and after the handshake.
  */
 async function openStream(
 	endpoint: DirectNoiseEndpoint,
 	options: { signal: AbortSignal; deadlineMs: number },
 ): Promise<OwnedPeerHttpConnection & { pin: string }> {
-	const pin = currentPeerPin(endpoint.db, endpoint.peerDeviceId);
-	if (!pin) throw new Error("peer not pinned");
+	const pin = endpoint.expectedPin;
+	if (currentPeerPin(endpoint.db, endpoint.peerDeviceId) !== pin)
+		throw new Error("peer key changed before dialing");
 	const sessionId = randomBytes(16);
 	const [client, wire] = duplexPair();
 	const prepared = prepareRelayNoiseInitiator({

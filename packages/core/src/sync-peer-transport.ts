@@ -108,14 +108,18 @@ class PeerTransport {
 		return readPeerTransportPolicy(this.options.db, this.options.peerDeviceId);
 	}
 
-	/** Snapshots need a status on the same transport, naming the pin that is current now. */
-	private requireStatusFor(state: AddressState, transport: Transport): void {
+	/**
+	 * Snapshots need a status on the same transport, naming the pin that is
+	 * current now. Returns that pin, which a Noise snapshot's handshake must prove.
+	 */
+	private requireStatusFor(state: AddressState, transport: Transport): string {
 		const pin = currentPeerPin(this.options.db, this.options.peerDeviceId);
 		const validated = state.validated;
 		if (!validated || validated.transport !== transport || validated.pin !== pin)
 			throw new PeerTransportRefused(
 				"status_first: a snapshot needs a status on the same transport and pin",
 			);
+		return validated.pin;
 	}
 
 	private recordStatus(state: AddressState, sent: Sent): void {
@@ -142,10 +146,10 @@ class PeerTransport {
 	): Promise<Sent> {
 		if (state.mode === "plaintext" && this.policy() !== "noise_required")
 			return this.sendPlaintext(state, request, snapshot);
-		if (snapshot) this.requireStatusFor(state, "noise");
+		const statusPin = snapshot ? this.requireStatusFor(state, "noise") : null;
 		if (this.policy() === "noise_required") await this.pinWithGrant(state, request);
 		try {
-			const sent = await this.overNoise(request);
+			const sent = await this.overNoise(request, statusPin);
 			state.mode = "noise";
 			return sent;
 		} catch (error) {
@@ -190,18 +194,31 @@ class PeerTransport {
 		state.grantPinned = true;
 	}
 
-	private async overNoise([method, url, requestOptions = {}]: ExecutorArgs): Promise<Sent> {
+	/**
+	 * Sends one request over Noise. The handshake must prove expectedPin: the
+	 * validated status pin for a snapshot, otherwise the pin current now. The
+	 * answer is dropped if that pin stopped being current while it was pending.
+	 */
+	private async overNoise(
+		[method, url, requestOptions = {}]: ExecutorArgs,
+		statusPin: string | null,
+	): Promise<Sent> {
 		const parsed = new URL(url);
 		const endpoint = endpointOf(parsed);
 		if (!endpoint) throw new DirectNoiseNotOffered(`${parsed.protocol} address`);
-		const factory = directNoiseConnectionFactory({ ...this.options, ...endpoint });
+		const expectedPin = statusPin ?? currentPeerPin(this.options.db, this.options.peerDeviceId);
+		if (!expectedPin) throw new Error("peer not pinned");
+		const factory = directNoiseConnectionFactory({ ...this.options, ...endpoint, expectedPin });
 		const execute = createPeerHttpExecutor({ factory, signal: requestOptions.signal });
 		// The caller signed the path and query, which the logical origin keeps unchanged.
 		const logical = `${DIRECT_NOISE_LOGICAL_ORIGIN}${parsed.pathname}${parsed.search}`;
 		const result = await execute(method, logical, requestOptions).catch((error: unknown) => {
 			throw factory.lastFailure() ?? error;
 		});
-		return { result, transport: "noise", pin: factory.authenticatedPin() };
+		const pin = factory.authenticatedPin();
+		if (pin !== expectedPin || currentPeerPin(this.options.db, this.options.peerDeviceId) !== pin)
+			throw new PeerTransportRefused("peer key changed while the response was pending");
+		return { result, transport: "noise", pin };
 	}
 }
 

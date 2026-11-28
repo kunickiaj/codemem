@@ -4,7 +4,7 @@ import { buildDirectPeerAuthHeaders, fingerprintPublicKey } from "@codemem/core"
 import { afterEach, expect, it, vi } from "vitest";
 import { promotePeerToNoiseRequired } from "../../core/src/sync-transport-policy.js";
 import { createSyncApp } from "./sync-app.js";
-import { channelStore, ORIGIN } from "./sync-channel-dispatch-test-fixtures.js";
+import { channelStore, nonceCount, ORIGIN } from "./sync-channel-dispatch-test-fixtures.js";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(() => {
@@ -106,6 +106,15 @@ it("refuses an unmarked grant status from a worker known to speak Noise once Noi
 	promotePeerToNoiseRequired(on.store.db, on.peerDeviceId, "transport_statement");
 	const refused = await on.read("/v1/status");
 	expect(refused).toEqual({ status: 401, body: { error: "unauthorized" } });
+	// The grant verified, but the refusal came before its nonce or pin was recorded.
+	expect(on.fetch).toHaveBeenCalled();
+	expect(nonceCount(on)).toBe(0);
+	expect(
+		on.store.db
+			.prepare("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = ?")
+			.pluck()
+			.get(on.peerDeviceId),
+	).toBe(0);
 });
 
 it("keeps today's full grant status while Noise is off, even for such a worker", async () => {

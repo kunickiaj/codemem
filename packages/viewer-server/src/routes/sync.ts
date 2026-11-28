@@ -3364,11 +3364,45 @@ function checkedCurrentPeerKey(
 	};
 }
 
+/**
+ * Returns true when the plain listener must refuse a verified device because
+ * the device is recorded as noise_required. Only exists while direct Noise is
+ * on. Auth checks it after the signature verifies and before any nonce or pin
+ * is recorded, so only the device itself can learn of the refusal, and it gets
+ * the same 401 as every other auth failure.
+ */
+type PlaintextTransportGate = (
+	store: MemoryStore,
+	deviceId: string,
+	request: { method: string; url: string },
+) => boolean;
+
+function plaintextTransportGate(mode: SyncServerMode): PlaintextTransportGate | undefined {
+	if (!noiseActive(mode)) return undefined;
+	return (store, deviceId, request) =>
+		!marksNoiseStatusTarget(request) &&
+		readPeerTransportPolicy(store.db, deviceId) === "noise_required";
+}
+
+/**
+ * A status request marked transport=noise1 inside its signed target. A grant
+ * worker needs this one plaintext answer, the pin only, before Noise can admit it.
+ */
+function marksNoiseStatusTarget(request: { method: string; url: string }): boolean {
+	const url = new URL(request.url, "http://sync.invalid");
+	return (
+		request.method === "GET" &&
+		url.pathname === "/v1/status" &&
+		url.searchParams.get("transport") === "noise1"
+	);
+}
+
 function authorizeSyncRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; raw?: Request; header(name: string): string | undefined },
 	body: Buffer,
 	binding?: ChannelBinding,
+	transportGate?: PlaintextTransportGate,
 ): SyncAuthResult {
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
 	const signature = request.header("X-Opencode-Signature") ?? "";
@@ -3399,6 +3433,9 @@ function authorizeSyncRequest(
 	}
 	if (!verification.ok) {
 		return { ok: false, reason: verification.reason, deviceId };
+	}
+	if (transportGate?.(store, deviceId, request)) {
+		return { ok: false, reason: "transport_downgrade_refused", deviceId };
 	}
 
 	const createdAt = new Date().toISOString();
@@ -3575,11 +3612,46 @@ function bootstrapGrantFailureReason(
 	return null;
 }
 
+/** The coordinator's record of a bootstrap grant, or null when no lookup succeeds. */
+async function lookupBootstrapGrant(
+	store: MemoryStore,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+	grantId: string,
+	localDeviceId: string,
+): Promise<Record<string, unknown> | null> {
+	const base = buildBaseUrl(config.syncCoordinatorUrl);
+	const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
+	if (config.syncCoordinatorAdminSecret) {
+		const [status, adminPayload] = await requestJson(
+			"GET",
+			`${base}/v1/admin/bootstrap-grants/${encodeURIComponent(grantId)}`,
+			{ headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret }, timeoutS },
+		);
+		return status === 200 ? adminPayload : null;
+	}
+	for (const groupId of config.syncCoordinatorGroups) {
+		const lookupUrl = `${base}/v1/bootstrap-grants/${encodeURIComponent(grantId)}?group_id=${encodeURIComponent(groupId)}`;
+		const [status, signedPayload] = await requestJson("GET", lookupUrl, {
+			headers: buildAuthHeaders({
+				deviceId: localDeviceId,
+				dbPath: store.dbPath,
+				method: "GET",
+				url: lookupUrl,
+				bodyBytes: Buffer.alloc(0),
+				keysDir: syncKeysDir(),
+			}),
+			timeoutS,
+		});
+		if (status === 200) return signedPayload;
+	}
+	return null;
+}
+
 async function authorizeBootstrapGrantRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
 	body: Buffer,
-	options: { requestedScopeId?: string } = {},
+	options: { requestedScopeId?: string; transportGate?: PlaintextTransportGate } = {},
 ): Promise<SyncAuthResult> {
 	const grantId = (request.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
@@ -3599,37 +3671,7 @@ async function authorizeBootstrapGrantRequest(
 	let verification: CoordinatorBootstrapGrantVerification;
 	try {
 		[localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-		let payload: Record<string, unknown> | null = null;
-		if (config.syncCoordinatorAdminSecret) {
-			const [status, adminPayload] = await requestJson(
-				"GET",
-				`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/bootstrap-grants/${encodeURIComponent(grantId)}`,
-				{
-					headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
-					timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
-				},
-			);
-			if (status === 200) payload = adminPayload;
-		} else {
-			for (const groupId of config.syncCoordinatorGroups) {
-				const lookupUrl = `${buildBaseUrl(config.syncCoordinatorUrl)}/v1/bootstrap-grants/${encodeURIComponent(grantId)}?group_id=${encodeURIComponent(groupId)}`;
-				const [status, signedPayload] = await requestJson("GET", lookupUrl, {
-					headers: buildAuthHeaders({
-						deviceId: localDeviceId,
-						dbPath: store.dbPath,
-						method: "GET",
-						url: lookupUrl,
-						bodyBytes: Buffer.alloc(0),
-						keysDir: syncKeysDir(),
-					}),
-					timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
-				});
-				if (status === 200) {
-					payload = signedPayload;
-					break;
-				}
-			}
-		}
+		const payload = await lookupBootstrapGrant(store, config, grantId, localDeviceId);
 		if (!payload) return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
 		if (!validBootstrapVerification(payload, grantId)) {
 			return { ok: false, reason: "bootstrap_grant_invalid_payload", deviceId };
@@ -3672,6 +3714,9 @@ async function authorizeBootstrapGrantRequest(
 	}
 	if (!isPeerTrustBindingCompatible(store.db, deviceId, workerPublicKey, workerFingerprint)) {
 		return { ok: false, reason: "bootstrap_grant_peer_trust_conflict", deviceId };
+	}
+	if (options.transportGate?.(store, deviceId, request)) {
+		return { ok: false, reason: "transport_downgrade_refused", deviceId };
 	}
 
 	const createdAt = new Date().toISOString();
@@ -5764,32 +5809,8 @@ interface SyncChannelReadOptions {
  * Channel requests never reach the bootstrap-grant fallback in the plain read
  * handlers: their reads are answered here, after the channel binding check.
  */
-/**
- * Once direct Noise is on, the plain listener serves no device recorded as
- * noise_required, whichever way it would authenticate. Both the device
- * signature and a bootstrap grant authenticate the X-Opencode-Device named
- * here, so the refusal comes first and uses no nonce. The marked pin-only
- * status is the one exception: a grant worker needs it to be pinned.
- */
-function registerPlaintextRefusal(app: Hono, options: SyncChannelReadOptions): void {
-	app.use("*", async (c, next) => {
-		const deviceId = (c.req.header("X-Opencode-Device") ?? "").trim();
-		const store = deviceId && !marksNoiseStatus(c) ? options.getStore() : null;
-		if (store && readPeerTransportPolicy(store.db, deviceId) === "noise_required") {
-			logDirectPeerAuthDiagnostic("transport_downgrade_refused");
-			return (
-				options.rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(), 401)
-			);
-		}
-		await next();
-	});
-}
-
 function registerSyncChannelRestriction(app: Hono, options: SyncChannelReadOptions): void {
-	if (options.mode.kind === "plain-direct") {
-		if (noiseActive(options.mode)) registerPlaintextRefusal(app, options);
-		return;
-	}
+	if (options.mode.kind === "plain-direct") return;
 	app.use("*", async (c, next) => {
 		if (!channelRouteAllowed(options.mode, c.req.method, c.req.path)) {
 			return c.json({ error: "not found" }, 404);
@@ -5936,17 +5957,21 @@ async function authorizePeerRead(
 	c: Context,
 	store: MemoryStore,
 	rateLimitedResponse: RateLimitedResponse,
-	options: { allowGrant: boolean; scope?: boolean },
+	options: { allowGrant: boolean; scope?: boolean; transportGate?: PlaintextTransportGate },
 ): Promise<PeerRead | Response> {
-	const device = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+	const { transportGate } = options;
+	const device = authorizeSyncRequest(store, c.req, Buffer.alloc(0), undefined, transportGate);
 	if (isSyncAuthStoreBusy(device)) return syncAuthStoreBusyResponse(c);
 	if (device.ok) return admittedPeerRead(c, rateLimitedResponse, device, false);
 	// Unauthenticated bucket with a stable key: caller headers must not pick the rate-limit identity.
 	const limited = rateLimitedResponse(c, c.req.path, false);
 	if (limited) return limited;
 	if (!options.allowGrant) return refusedPeerRead(c, device.reason, device, false);
-	const scope = options.scope ? scopeOf(c) : undefined;
-	const grant = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), scope);
+	const scope = options.scope ? scopeOf(c) : {};
+	const grant = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), {
+		...scope,
+		transportGate,
+	});
 	if (isSyncAuthStoreBusy(grant)) return syncAuthStoreBusyResponse(c);
 	if (!grant.ok) return refusedPeerRead(c, device.reason, grant, true);
 	return admittedPeerRead(c, rateLimitedResponse, grant, true);
@@ -5984,11 +6009,6 @@ function refusedPeerRead(
 	return c.json(unauthorizedPayload(), 401);
 }
 
-/** A status request marked transport=noise1 inside its signed target. */
-function marksNoiseStatus(c: Context): boolean {
-	return c.req.path === "/v1/status" && c.req.query("transport") === "noise1";
-}
-
 /**
  * The pin-only answer to a marked status, or null to serve the full status.
  * Only while direct Noise is on, and for either auth path: a worker that the
@@ -5996,7 +6016,7 @@ function marksNoiseStatus(c: Context): boolean {
  * the status, with its reset metadata, comes over Noise.
  */
 function grantStatusAnswer(c: Context, store: MemoryStore, mode: SyncServerMode): Response | null {
-	if (!noiseActive(mode) || !marksNoiseStatus(c)) return null;
+	if (!noiseActive(mode) || !marksNoiseStatusTarget(c.req)) return null;
 	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 	return c.json({ device_id: deviceId, fingerprint, transport: "noise1" });
 }
@@ -6006,6 +6026,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	const routeRateLimit = opts.routeRateLimit ?? null;
 	const mode = opts.mode ?? PLAIN_DIRECT_MODE;
 	const binding = channelBinding(mode);
+	const transportGate = plaintextTransportGate(mode);
 	registerSyncChannelRestriction(app, { mode, binding, getStore, rateLimitedResponse });
 
 	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
@@ -6030,7 +6051,10 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	app.get("/v1/status", (c) => {
 		const store = getStore();
 		return (async () => {
-			const read = await authorizePeerRead(c, store, rateLimitedResponse, { allowGrant: true });
+			const read = await authorizePeerRead(c, store, rateLimitedResponse, {
+				allowGrant: true,
+				transportGate,
+			});
 			if (read instanceof Response) return read;
 			return grantStatusAnswer(c, store, mode) ?? serveAuthenticatedStatus(c, store, read.auth);
 		})();
@@ -6039,7 +6063,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	// GET /v1/ops (peer sync protocol)
 	app.get("/v1/ops", (c) => {
 		const store = getStore();
-		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), binding);
+		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), binding, transportGate);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok) {
 			logDirectPeerAuthDiagnostic(auth.reason);
@@ -6127,6 +6151,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const read = await authorizePeerRead(c, store, rateLimitedResponse, {
 				allowGrant,
 				scope: true,
+				transportGate,
 			});
 			if (read instanceof Response) return read;
 			return serveAuthorizedSnapshot(c, store, read.auth);
@@ -6141,7 +6166,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			return c.json({ error: "payload_too_large" }, 413);
 		}
 
-		const auth = authorizeSyncRequest(store, c.req, raw, binding);
+		const auth = authorizeSyncRequest(store, c.req, raw, binding, transportGate);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok) {
 			logDirectPeerAuthDiagnostic(auth.reason);
