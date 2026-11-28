@@ -13,6 +13,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { toJson } from "./db.js";
+import { recordOpCopy } from "./memory-copy-provenance.js";
 import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
@@ -350,6 +351,14 @@ function filterForPeer(
 	ops: ReplicationOp[],
 	peerDeviceId: string,
 ) {
+	// Hand-built ops name the copy they stand for, as recorded ops do.
+	for (const op of ops) {
+		const memoryId = db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+			.pluck()
+			.get(op.entity_id) as number | undefined;
+		if (memoryId) recordOpCopy(db, op.op_id, memoryId);
+	}
 	return filterReplicationOpsForSyncWithStatus(db, ops, peerDeviceId, {
 		localDeviceId: LOCAL_DEVICE,
 	});

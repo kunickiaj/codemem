@@ -14,7 +14,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
-import { recordOpCopy } from "./memory-copy-provenance.js";
+import { opCopyId, recordOpCopy } from "./memory-copy-provenance.js";
 import {
 	hasMatchingLocalCreation,
 	hasRecordedLocalCreation,
@@ -1007,6 +1007,58 @@ export function isNewerClock(
 // Record a replication op
 
 /**
+ * The content an op carries for a memory row: the whole row as it is, with its
+ * session's Project and the scope it is sent in. Recording an op and sending one
+ * both build it here, so an op on the wire always shows the row as it is then.
+ */
+function opPayloadFromRow(
+	row: MemoryItemRow,
+	sessionProject: string | null,
+	scopeId: string | null,
+): Record<string, unknown> {
+	// Parse JSON-string columns so they round-trip as objects, not double-encoded strings
+	const parseSqliteJson = (val: string | null | undefined): unknown => {
+		if (typeof val !== "string") return val ?? null;
+		try {
+			return JSON.parse(val);
+		} catch {
+			return val;
+		}
+	};
+	return {
+		project: sessionProject,
+		session_id: row.session_id,
+		kind: row.kind,
+		title: row.title,
+		subtitle: row.subtitle,
+		body_text: row.body_text,
+		confidence: row.confidence,
+		tags_text: row.tags_text,
+		active: row.active,
+		created_at: row.created_at,
+		updated_at: row.updated_at,
+		metadata_json: parseSqliteJson(row.metadata_json),
+		actor_id: row.actor_id,
+		actor_display_name: row.actor_display_name,
+		visibility: row.visibility,
+		workspace_id: row.workspace_id,
+		workspace_kind: row.workspace_kind,
+		origin_device_id: row.origin_device_id,
+		origin_source: row.origin_source,
+		trust_state: row.trust_state,
+		facts: parseSqliteJson(row.facts),
+		narrative: row.narrative,
+		concepts: parseSqliteJson(row.concepts),
+		files_read: parseSqliteJson(row.files_read),
+		files_modified: parseSqliteJson(row.files_modified),
+		user_prompt_id: row.user_prompt_id,
+		prompt_number: row.prompt_number,
+		deleted_at: row.deleted_at,
+		scope_id: scopeId,
+	};
+}
+
+/**
  * Generate and INSERT a single replication op for a memory item.
  *
  * Reads the memory item's clock fields (rev, updated_at, metadata_json)
@@ -1084,47 +1136,7 @@ function insertReplicationOp(
 			row && opts.opType === "upsert" ? { ...opts.payload, scope_id: scopeId } : opts.payload,
 		);
 	} else if (row && opts.opType === "upsert") {
-		// Parse JSON-string columns so they round-trip as objects, not double-encoded strings
-		const parseSqliteJson = (val: string | null | undefined): unknown => {
-			if (typeof val !== "string") return val ?? null;
-			try {
-				return JSON.parse(val);
-			} catch {
-				return val;
-			}
-		};
-
-		payloadJson = toJson({
-			project: sessionProject,
-			session_id: row.session_id,
-			kind: row.kind,
-			title: row.title,
-			subtitle: row.subtitle,
-			body_text: row.body_text,
-			confidence: row.confidence,
-			tags_text: row.tags_text,
-			active: row.active,
-			created_at: row.created_at,
-			updated_at: row.updated_at,
-			metadata_json: parseSqliteJson(row.metadata_json),
-			actor_id: row.actor_id,
-			actor_display_name: row.actor_display_name,
-			visibility: row.visibility,
-			workspace_id: row.workspace_id,
-			workspace_kind: row.workspace_kind,
-			origin_device_id: row.origin_device_id,
-			origin_source: row.origin_source,
-			trust_state: row.trust_state,
-			facts: parseSqliteJson(row.facts),
-			narrative: row.narrative,
-			concepts: parseSqliteJson(row.concepts),
-			files_read: parseSqliteJson(row.files_read),
-			files_modified: parseSqliteJson(row.files_modified),
-			user_prompt_id: row.user_prompt_id,
-			prompt_number: row.prompt_number,
-			deleted_at: row.deleted_at,
-			scope_id: scopeId,
-		});
+		payloadJson = toJson(opPayloadFromRow(row, sessionProject, scopeId));
 	} else {
 		payloadJson = null;
 	}
@@ -1574,6 +1586,25 @@ function unretiredSnapshotPayload(
 
 type SnapshotRow = { memory: MemoryItemRow; sessionProject: string | null };
 
+/** A snapshot upsert names the session project, so receivers file it under the right Project. */
+function snapshotUpsertPayload(payload: MemoryPayload, row: SnapshotRow): Record<string, unknown> {
+	return { ...payload, project: row.sessionProject ?? null };
+}
+
+/**
+ * A deleted memory's snapshot item names it, its scope, its origin and when it
+ * was deleted, and none of its content. The item's clock fields carry its revision.
+ */
+function snapshotDeletionPayload(payload: MemoryPayload): Record<string, unknown> {
+	return {
+		scope_id: payload.scope_id,
+		origin_device_id: payload.origin_device_id,
+		active: 0,
+		deleted_at: payload.deleted_at,
+		has_deleted_at: payload.deleted_at != null,
+	};
+}
+
 /** The snapshot item for one memory row, or null when the peer may not receive it. */
 function snapshotItemForPeer(
 	db: Database,
@@ -1583,23 +1614,19 @@ function snapshotItemForPeer(
 ): SyncMemorySnapshotItem | null {
 	const payload = unretiredSnapshotPayload(db, row.memory, options.sourceDeviceId);
 	if (!payload) return null;
-	const record = payload as unknown as Record<string, unknown>;
-	const scope = { scope_id: row.memory.scope_id };
-	const peerDeviceId = options.peerDeviceId ?? null;
-	if (
-		(replicationOpRequiresPersonalScopeAuthorization(scope, record) ||
-			!syncVisibilityAllowed(record)) &&
-		!peerCanSyncPrivateOpByPersonalScopeGrant(db, scope, record, peerDeviceId)
-	)
-		return null;
-	if (!syncProjectAllowed(db, row.sessionProject, peerDeviceId)) return null;
-	// Include session project in the payload so targets can associate
-	// replicated memories with the correct project.
-	const payloadWithProject = { ...payload, project: row.sessionProject ?? null };
+	const copy = {
+		payload: payload as unknown as Record<string, unknown>,
+		project: row.sessionProject,
+		scopeId: cleanText(row.memory.scope_id),
+	};
+	if (storedCopyRefusal(db, copy, options.peerDeviceId ?? null)) return null;
+	const deleted = Boolean(row.memory.deleted_at) || row.memory.active === 0;
 	return {
 		entity_id: importKey,
-		op_type: row.memory.deleted_at || row.memory.active === 0 ? "delete" : "upsert",
-		payload_json: toJson(payloadWithProject),
+		op_type: deleted ? "delete" : "upsert",
+		payload_json: toJson(
+			deleted ? snapshotDeletionPayload(payload) : snapshotUpsertPayload(payload, row),
+		),
 		clock_rev: Number(row.memory.rev ?? 0),
 		clock_updated_at: String(
 			row.memory.updated_at ?? row.memory.created_at ?? new Date().toISOString(),
@@ -2432,6 +2459,220 @@ function payloadContradictsOutboundScope(
 	);
 }
 
+/** A copy of a memory this device stores, as sync judges who may read it. */
+interface StoredMemoryCopy {
+	payload: Record<string, unknown>;
+	project: string | null;
+	scopeId: string | null;
+}
+
+type OutboundRefusal = Pick<FilterReplicationSkipped, "reason"> &
+	Partial<Omit<FilterReplicationSkipped, "reason" | "skipped_count">>;
+
+/**
+ * Why the peer may not read a stored copy now, by the copy's current visibility,
+ * personal scope and Project, or null when it may. Snapshot pages and op content
+ * use this one check.
+ */
+function storedCopyRefusal(
+	db: Database,
+	copy: StoredMemoryCopy,
+	peerDeviceId: string | null,
+): OutboundRefusal | null {
+	const scope = { scope_id: copy.scopeId };
+	if (storedCopyWithheld(db, copy)) return { reason: "scope_filter", scope_id: copy.scopeId };
+	if (
+		(replicationOpRequiresPersonalScopeAuthorization(scope, copy.payload) ||
+			!syncVisibilityAllowed(copy.payload)) &&
+		!peerCanSyncPrivateOpByPersonalScopeGrant(db, scope, copy.payload, peerDeviceId)
+	) {
+		const visibility = copy.payload.visibility;
+		return {
+			reason: "visibility_filter",
+			visibility: typeof visibility === "string" ? visibility : null,
+		};
+	}
+	if (!syncProjectAllowed(db, copy.project, peerDeviceId))
+		return { reason: "project_filter", project: copy.project };
+	return null;
+}
+
+/** The actor a store's memories carry before it adopts a device identity. */
+const FALLBACK_LOCAL_ACTOR_ID = "local:local";
+
+/**
+ * Whether a stored copy is held back from every peer until it is repaired or
+ * settled:
+ *
+ * - Another copy shares its import key in its scope. Which one a peer should
+ *   hold is unclear, so none is served while more than one is stored.
+ * - It still carries the fallback actor this store used before it adopted a
+ *   device identity, whatever its origin says. It is served once adoption moves
+ *   it to the canonical actor.
+ */
+function storedCopyWithheld(db: Database, copy: StoredMemoryCopy): boolean {
+	if (copy.payload.actor_id === FALLBACK_LOCAL_ACTOR_ID) return true;
+	const importKey = cleanText(copy.payload.import_key as string | null);
+	if (importKey == null) return false;
+	return (
+		Number(
+			db
+				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ? AND scope_id IS ?")
+				.pluck()
+				.get(importKey, copy.scopeId),
+		) > 1
+	);
+}
+
+/** Whether the op carries a memory's content, as against a tombstone, cleanup or move retraction. */
+function opCarriesMemoryContent(
+	op: ReplicationOp,
+	payload: Record<string, unknown> | null,
+): boolean {
+	if (op.entity_type !== "memory_item" || payload == null) return false;
+	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) return false;
+	return op.op_type !== REASSIGN_SCOPE_OP_TYPE || payload.side !== "old";
+}
+
+/** The op as it may go to the peer now, or why it may not. */
+type OutboundDecision = { op: ReplicationOp; refusal?: undefined } | { refusal: OutboundRefusal };
+
+/** The stored copy an op was recorded for, with its session's Project. */
+interface CurrentCopy {
+	row: MemoryItemRow;
+	sessionProject: string | null;
+}
+
+/**
+ * The copy an op is for, when the op belongs to the copy's current revision.
+ *
+ * An op this device recorded names the stored copy it was built from
+ * (memory-copy-provenance.ts), and only that copy can carry it: the row with
+ * that copy identity, still in the op's scope and at the op's revision. An op
+ * that names no copy, recorded before copies had identities, carries nothing.
+ * The copy's current content still reaches peers through an op recorded for it
+ * since, and through snapshot pages.
+ */
+function currentCopyForOp(db: Database, op: ReplicationOp): CurrentCopy | null {
+	const importKey = cleanText(op.entity_id);
+	const scopeId = cleanText(op.scope_id);
+	const copyId = opCopyId(db, op.op_id);
+	if (!importKey || !scopeId || !copyId) return null;
+	const row = db
+		.prepare(
+			`SELECT memory.*, session.project AS session_project
+			 FROM memory_items AS memory
+			 JOIN memory_copy_identities AS copy ON copy.memory_id = memory.id
+			 LEFT JOIN sessions AS session ON session.id = memory.session_id
+			 WHERE copy.copy_id = ? AND memory.import_key = ? AND memory.scope_id = ?
+			   AND COALESCE(memory.rev, 0) = ?`,
+		)
+		.get(copyId, importKey, scopeId, Number(op.clock_rev ?? 0)) as
+		| (MemoryItemRow & { session_project: string | null })
+		| undefined;
+	if (!row) return null;
+	return { row, sessionProject: cleanText(row.session_project) };
+}
+
+/**
+ * The content to send for an op, built from its copy as stored now, the same way
+ * it was built when the op was recorded. A move's new side also names the move.
+ */
+function currentOpPayload(
+	op: ReplicationOp,
+	stored: Record<string, unknown>,
+	copy: CurrentCopy,
+): Record<string, unknown> {
+	const scopeId = cleanText(op.scope_id);
+	if (op.op_type !== REASSIGN_SCOPE_OP_TYPE)
+		return opPayloadFromRow(copy.row, copy.sessionProject, scopeId);
+	return {
+		...buildPayloadFromMemoryRow(copy.row),
+		project: cleanText(copy.row.project) ?? copy.sessionProject,
+		operation_id: stored.operation_id,
+		memory_id: stored.memory_id,
+		old_scope_id: stored.old_scope_id,
+		new_scope_id: stored.new_scope_id,
+		revision: stored.revision,
+		side: "new",
+		scope_id: scopeId,
+	};
+}
+
+/**
+ * Whether the peer may receive this op now, and the op as it goes out. Both
+ * devices must be authorized in the op's scope.
+ *
+ * An op's stored payload is never sent. An op that carries content goes out only
+ * when it belongs to its copy's current revision, the peer may read that copy by
+ * its current visibility, personal scope and Project, and the copy is not
+ * deleted. Its content is then built from the copy as stored at that moment.
+ * Older content ops send nothing: the current revision's op carries the memory,
+ * and receivers order it after the older ones by its clock. Every write of a
+ * replicated field takes a new revision with its own op (memory-revision-writes.ts),
+ * so the current op exists for every copy this device writes.
+ */
+function outboundDecision(
+	db: Database,
+	op: ReplicationOp,
+	payload: Record<string, unknown> | null,
+	peerDeviceId: string | null,
+	localDeviceId: string | null,
+): OutboundDecision {
+	const scopeRefusal: OutboundRefusal = {
+		reason: "scope_filter",
+		scope_id: cleanText(op.scope_id),
+	};
+	if (!outboundScopeAllowed(db, op, payload, peerDeviceId, localDeviceId))
+		return { refusal: scopeRefusal };
+	if (!payload || !opCarriesMemoryContent(op, payload)) return { op };
+	const copy = currentCopyForOp(db, op);
+	if (!copy || copy.row.active === 0 || copy.row.deleted_at) return { refusal: scopeRefusal };
+	const readable = {
+		payload: buildPayloadFromMemoryRow(copy.row) as unknown as Record<string, unknown>,
+		project: copy.sessionProject,
+		scopeId: cleanText(copy.row.scope_id),
+	};
+	const refusal = storedCopyRefusal(db, readable, peerDeviceId);
+	if (refusal) return { refusal };
+	return { op: { ...op, payload_json: toJson(currentOpPayload(op, payload, copy)) } };
+}
+
+/**
+ * The outbound decision, where the scope filter applies, with the op that goes
+ * out rebuilt from its stored copy. Inbound validation runs without the filter.
+ */
+function scopedOutboundDecision(
+	db: Database,
+	op: ReplicationOp,
+	payload: Record<string, unknown> | null,
+	peerDeviceId: string | null,
+	options: FilterReplicationOpsForSyncOptions,
+): OutboundDecision {
+	if (options.applyScopeFilter === false) return { op };
+	return outboundDecision(db, op, payload, peerDeviceId, options.localDeviceId ?? null);
+}
+
+/**
+ * The ops of an outbound batch as they may go to the peer now, decided and built
+ * immediately before the batch is serialized. A push spans network waits and
+ * split retries, and a memory can move, turn private or change meanwhile. Ops
+ * that carry no content keep the checks they passed when the window was read.
+ */
+export function opsStillSendableToPeer(
+	db: Database,
+	ops: ReplicationOp[],
+	peerDeviceId: string,
+	localDeviceId: string | null,
+): ReplicationOp[] {
+	return ops.flatMap((op) => {
+		const payload = op.entity_type === "memory_item" ? parsePayload(op.payload_json) : null;
+		if (!opCarriesMemoryContent(op, payload)) return [op];
+		const decision = outboundDecision(db, op, payload, peerDeviceId, localDeviceId);
+		return decision.refusal ? [] : [decision.op];
+	});
+}
+
 function existingMemoryFilterContext(
 	db: Database,
 	importKey: string,
@@ -2621,6 +2862,7 @@ export function filterReplicationOpsForSyncWithStatus(
 	const skipped = { count: 0, first: null as FilterReplicationSkipped | null };
 	const applyScopeFilter = options.applyScopeFilter !== false;
 	for (const op of ops) {
+		let outbound = op;
 		if (retirementBlocksMemoryOp(db, op)) {
 			addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
 			nextCursor = computeCursor(op.created_at, op.op_id);
@@ -2670,14 +2912,13 @@ export function filterReplicationOpsForSyncWithStatus(
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}
-			if (
-				applyScopeFilter &&
-				!outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null)
-			) {
-				addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
+			const decision = scopedOutboundDecision(db, op, payload, peerDeviceId, options);
+			if (decision.refusal) {
+				addSkipped(skipped, op, decision.refusal);
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}
+			outbound = decision.op;
 			if (op.op_type === "delete" && payload == null) {
 				const rejection = existingDeleteRejection(db, op, peerDeviceId, { applyScopeFilter });
 				if (rejection) {
@@ -2721,7 +2962,7 @@ export function filterReplicationOpsForSyncWithStatus(
 			}
 		}
 
-		allowed.push(op);
+		allowed.push(outbound);
 		nextCursor = computeCursor(op.created_at, op.op_id);
 	}
 
@@ -4021,6 +4262,24 @@ function rejectUnretiredScopeFailures(
 	return rejected;
 }
 
+/**
+ * Whether an op would change a memory this device stores more than one copy of.
+ * Its clock would be compared against one copy and the others left to diverge,
+ * so it applies to none of them until all but one are removed. A cleanup notice
+ * still applies, since it only removes copies.
+ */
+function opTargetsAmbiguousCopies(db: Database, op: ReplicationOp): boolean {
+	if (op.entity_type !== "memory_item" || op.op_type === ACCESS_CLEANUP_OP_TYPE) return false;
+	return (
+		Number(
+			db
+				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ?")
+				.pluck()
+				.get(op.entity_id),
+		) > 1
+	);
+}
+
 function skipOwnRetiredOrAppliedOp(
 	db: Database,
 	d: ReturnType<typeof drizzle>,
@@ -4030,6 +4289,8 @@ function skipOwnRetiredOrAppliedOp(
 	if (skipOwnOrRetiredMemoryOp(db, op, localDeviceId)) return true;
 	// Not recorded as applied, so a re-pull after the withdrawal ends applies it.
 	if (opInWithdrawnScope(db, op)) return true;
+	// Not recorded either: which copy the op would change is unclear until repaired.
+	if (opTargetsAmbiguousCopies(db, op)) return true;
 	return (
 		d
 			.select({ one: sql<number>`1` })
@@ -4417,7 +4678,9 @@ function applyReplicationOpsInternal(
 								// the sender (older code) omitted the field.
 								project: sql`COALESCE(${typeof payload.project === "string" && payload.project.trim() ? payload.project.trim() : null}, ${schema.memoryItems.project})`,
 							})
-							.where(eq(schema.memoryItems.import_key, importKey))
+							// Only the row whose clock was compared: another copy under the same
+							// import key may hold a newer revision.
+							.where(eq(schema.memoryItems.id, memRow.id))
 							.run();
 						// Re-populate junction tables with updated file/concept refs
 						clearMemoryRefs(db, Number(memRow.id));

@@ -7,7 +7,7 @@ import { preparePeerHttpRequest, readPeerHttpBodyLength } from "./peer-http-head
 import { PeerHttpExchangeError } from "./peer-http-policy.js";
 import { PeerHttpWireAudit } from "./peer-http-wire-audit.js";
 import { RelayNoiseDuplex } from "./relay-noise-stream.js";
-import type { RequestJsonExecutor } from "./sync-http-client.js";
+import type { RequestJsonExecutor, RequestJsonOptions } from "./sync-http-client.js";
 
 export interface OwnedPeerHttpConnection {
 	readonly duplex: Duplex;
@@ -255,12 +255,27 @@ function captureExecutorOptions(options: ExecutorOptions) {
 	}
 }
 
+/** The request's late body builder, read without touching its other fields. */
+function lateBody(options: RequestJsonOptions | undefined): RequestJsonOptions["prepare"] {
+	let prepare: unknown;
+	try {
+		prepare = options?.prepare;
+	} catch {
+		throw new PeerHttpExchangeError("framing");
+	}
+	if (prepare !== undefined && typeof prepare !== "function")
+		throw new PeerHttpExchangeError("framing");
+	return prepare as RequestJsonOptions["prepare"];
+}
+
 /** Inert injected executor. One fresh owned Noise connection per call, with no retry or fallback. */
 export function createPeerHttpExecutor(options: ExecutorOptions): RequestJsonExecutor {
 	const { open, signal, deadlineMs } = captureExecutorOptions(options);
 	return async (method, url, requestOptions = {}) => {
 		const startedAt = performance.now();
-		const prepared = preparePeerHttpRequest(method, url, requestOptions);
+		const prepare = lateBody(requestOptions);
+		// A body built late is framed again once the connection is open.
+		let prepared = preparePeerHttpRequest(method, url, requestOptions);
 		const deadline = Math.min(startedAt + prepared.lifetimeMs, deadlineMs ?? Infinity);
 		const lifetime = new PeerHttpLifetime(deadline, signal);
 		let owner: Owner | undefined;
@@ -276,6 +291,14 @@ export function createPeerHttpExecutor(options: ExecutorOptions): RequestJsonExe
 			});
 			const acquired = await lifetime.wait(opening);
 			if (!acquired.valid) throw lifetime.fail("transport");
+			if (prepare) {
+				const { timeoutS, maxResponseBytes } = requestOptions;
+				prepared = preparePeerHttpRequest(method, url, {
+					...prepare(),
+					timeoutS,
+					maxResponseBytes,
+				});
+			}
 			return await exchange(acquired, prepared, lifetime);
 		} catch {
 			const failure = lifetime.fail("transport");

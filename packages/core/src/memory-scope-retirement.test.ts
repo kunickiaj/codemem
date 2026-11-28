@@ -11,7 +11,7 @@ import {
 	recordReplicationOp,
 	recordScopeReassignment,
 } from "./sync-replication.js";
-import { initTestSchema, insertTestPeer } from "./test-utils.js";
+import { initTestSchema, insertTestMemoryForOp, insertTestPeer } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 let db: InstanceType<typeof Database>;
@@ -169,6 +169,14 @@ it("checks reassignment sides and cleanup targets without denying a valid destin
 		.get() as ReplicationOp;
 	const payload = JSON.parse(destination.payload_json ?? "{}");
 	expect(payload.metadata_json.scope_id).toBe("new");
+	// The source sends the destination side while it stores the memory in "new".
+	expect(
+		filterReplicationOpsForSyncWithStatus(db, [destination], "receiver", {
+			supportsReassignScope: true,
+			localDeviceId: "source",
+		})[0],
+	).toHaveLength(1);
+	// The same database then plays the receiver, which holds no copy yet.
 	db.prepare("DELETE FROM memory_items").run();
 	db.prepare("DELETE FROM replication_ops").run();
 	const invalid = [
@@ -203,12 +211,6 @@ it("checks reassignment sides and cleanup targets without denying a valid destin
 			})[0],
 		).toEqual([]);
 	}
-	expect(
-		filterReplicationOpsForSyncWithStatus(db, [destination], "receiver", {
-			supportsReassignScope: true,
-			localDeviceId: "source",
-		})[0],
-	).toHaveLength(1);
 	expect(
 		applyReplicationOps(db, [destination], "receiver", undefined, {
 			inboundScopeValidation: { enabled: true, peerDeviceId: "source" },
@@ -279,13 +281,10 @@ it("does not transfer old recipients to the destination or suppress unrelated ol
 	)[0];
 	expect(destinationOps).toHaveLength(1);
 	expect(destinationOps[0]?.scope_id).toBe("new");
+	const unrelated = { ...old, op_id: "unrelated-op", entity_id: "unrelated" };
+	insertTestMemoryForOp(db, unrelated);
 	expect(
-		filterReplicationOpsForSyncWithStatus(
-			db,
-			[{ ...old, entity_id: "unrelated" }],
-			"old-only",
-			options,
-		)[0],
+		filterReplicationOpsForSyncWithStatus(db, [unrelated], "old-only", options)[0],
 	).toHaveLength(1);
 });
 

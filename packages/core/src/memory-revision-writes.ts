@@ -1,10 +1,10 @@
 /**
  * The one write path for the fields of a memory that sync replicates.
  *
- * Peers apply a memory's ops by revision, and the replication backfill writes an
- * op only for a revision that has none. A change to a replicated field therefore
- * takes a new revision and records its op in the same transaction, or peers that
- * already hold the old revision never learn of it.
+ * Sync sends a memory's content only through the op for the copy's current
+ * revision, built from the row at the moment it is sent. A change to a
+ * replicated field therefore takes a new revision and records its op in the same
+ * transaction, or peers that already hold the old revision never learn of it.
  *
  * Only a memory this device created takes revisions here, by the immutable
  * creation evidence in memory-copy-provenance.ts. Any other row, including an

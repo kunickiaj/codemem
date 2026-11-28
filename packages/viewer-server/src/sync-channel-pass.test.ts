@@ -960,6 +960,74 @@ it("splits only after a completed authenticated 413 and uses fresh nonces for th
 	assertSignedScope(f);
 });
 
+it("leaves out of a split retry a memory that moved while the first request was in flight", async () => {
+	// Arrange: the first push is refused as too large, and one memory moves meanwhile.
+	const f = await fixture();
+	incremental(f);
+	f.seed("client", "split-a");
+	f.seed("client", "split-b");
+	let refused = false;
+	f.control.beforeDispatch = (request) => {
+		if (request.method === "POST" && !refused)
+			f.remote.store.db.exec("SAVEPOINT controlled_refusal");
+	};
+	f.control.afterDispatch = (request, response) => {
+		if (request.method === "POST" && !refused) {
+			refused = true;
+			f.remote.store.db.exec("ROLLBACK TO controlled_refusal; RELEASE controlled_refusal");
+			f.client.db
+				.prepare("UPDATE memory_items SET scope_id = 'elsewhere' WHERE title = 'split-b'")
+				.run();
+			return { status: 413, bodyBytes: bytes({ error: "payload_too_large" }) };
+		}
+		return response;
+	};
+
+	// Act
+	await syncScopedChannelOnce(f.options);
+
+	// Assert: only the refused request carried the moved memory.
+	expect(
+		posts(f).map((request) =>
+			JSON.parse(Buffer.from(request.bodyBytes).toString()).ops.map(
+				(op: { op_id: string }) => op.op_id,
+			),
+		),
+	).toEqual([["split-a-op", "split-b-op"], ["split-a-op"]]);
+	expect(ids(f, "remote")).not.toContain("split-b");
+});
+
+it("decides and signs a push only after its channel opens", async () => {
+	// Arrange: a memory moves while the push's channel is being set up.
+	const f = await fixture();
+	incremental(f);
+	f.seed("client", "split-a");
+	f.seed("client", "split-b");
+	f.control.beforeOpen = () => {
+		const pulled = f.requests.some(
+			(request) => request.method === "GET" && new URL(request.url).pathname === "/v1/ops",
+		);
+		if (pulled && posts(f).length === 0)
+			f.client.db
+				.prepare("UPDATE memory_items SET scope_id = 'elsewhere' WHERE title = 'split-b'")
+				.run();
+	};
+
+	// Act
+	await syncScopedChannelOnce(f.options);
+
+	// Assert: the push carries only what the peer could receive once the channel was open.
+	expect(
+		posts(f).map((request) =>
+			JSON.parse(Buffer.from(request.bodyBytes).toString()).ops.map(
+				(op: { op_id: string }) => op.op_id,
+			),
+		),
+	).toEqual([["split-a-op"]]);
+	expect(ids(f, "remote")).not.toContain("split-b");
+	assertSignedScope(f);
+});
+
 it("does not split or replay a 413 when the owned channel cannot confirm completion", async () => {
 	// Arrange: HTTP response bytes alone cannot authorize a retry.
 	const f = await fixture();

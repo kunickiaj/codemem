@@ -27,7 +27,10 @@ import { syncEntryTooLargeMessage } from "./sync-entry-size.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import { ensureDeviceIdentity, fingerprintPublicKey } from "./sync-identity.js";
 import { type SyncFailureCategory, type SyncScopeResult, syncScopedPeerPull } from "./sync-pass.js";
-import { filterReplicationOpsForSyncWithStatus } from "./sync-replication.js";
+import {
+	filterReplicationOpsForSyncWithStatus,
+	opsStillSendableToPeer,
+} from "./sync-replication.js";
 import { parseSyncScopeRequest } from "./sync-scope-protocol.js";
 import {
 	recordSyncTransferObservation,
@@ -372,16 +375,28 @@ function checkPushReply(payload: Record<string, unknown> | null, scopeId: string
 		throw new Error("channel push rejected");
 }
 
+/** The ops of a batch the peer may receive now, as they go out. */
+function sendableNow(context: Context, batch: ReplicationOp[]): ReplicationOp[] {
+	return opsStillSendableToPeer(context.db, batch, context.peerDeviceId, context.local.device_id);
+}
+
 async function pushBatch(
 	context: Context,
 	execute: RequestJsonExecutor,
-	ops: ReplicationOp[],
+	batch: ReplicationOp[],
 ): Promise<void> {
+	// Opening a channel can wait on the network, so the body is decided, built and
+	// signed only once it is open. This first check only avoids opening a channel
+	// for a batch with nothing left to send. Split retries come back here.
+	if (sendableNow(context, batch).length === 0) return;
 	const url = `${context.logicalOrigin}/v1/ops`;
-	const bodyBytes = pushBody(context.scopeId, ops);
+	let ops: ReplicationOp[] = [];
 	const [status, payload] = await execute("POST", url, {
-		bodyBytes,
-		headers: signedHeaders(context, "POST", url, bodyBytes),
+		prepare: () => {
+			ops = sendableNow(context, batch);
+			const bodyBytes = pushBody(context.scopeId, ops);
+			return { bodyBytes, headers: signedHeaders(context, "POST", url, bodyBytes) };
+		},
 	});
 	if (
 		status === 413 &&

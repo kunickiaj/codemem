@@ -14,7 +14,7 @@ import * as http from "./sync-http-client.js";
 import * as identity from "./sync-identity.js";
 import { syncOnce } from "./sync-pass.js";
 import { getReplicationCursor, setReplicationCursor } from "./sync-replication.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { initTestSchema, insertTestMemoryForOp, insertTestSession } from "./test-utils.js";
 import type { SyncResetRequired } from "./types.js";
 
 const localId = "executor-local";
@@ -134,6 +134,11 @@ function seedOps() {
 			time,
 			scopeId,
 		);
+		insertTestMemoryForOp(db, {
+			op_id: `executor-op-${index}`,
+			entity_id: `executor-memory-${index}`,
+			scope_id: scopeId,
+		});
 	}
 }
 

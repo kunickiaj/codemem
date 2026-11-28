@@ -21,7 +21,7 @@ import {
 	recordSyncTransferObservation,
 	recordSyncTransferReceipts,
 } from "./sync-transfer-activity.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, insertTestMemoryForOp } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 const localId = "ack-source";
@@ -132,6 +132,7 @@ function seedOps(count: number, visibility = "shared"): ReplicationOp[] {
 			VALUES (@op_id, @entity_type, @entity_id, @op_type, @payload_json, @clock_rev,
 			@clock_updated_at, @clock_device_id, @device_id, @created_at, @scope_id)`)
 			.run(op);
+		insertTestMemoryForOp(source, op);
 		return op;
 	});
 }
@@ -344,7 +345,9 @@ it.each([
 				}),
 			};
 		});
+		// The seeded ops were only a template for what the peer sends.
 		source.prepare("DELETE FROM replication_ops").run();
+		source.prepare("DELETE FROM memory_items").run();
 		const failedIndex = failedStream === "default" ? 0 : 1;
 		const failed = opAt(incoming, failedIndex);
 		source.exec(`CREATE TRIGGER reject_sibling_op AFTER INSERT ON replication_ops
@@ -464,6 +467,7 @@ it("records a positive receive and a signed empty send when there is no outbound
 		clock_device_id: peerId,
 	};
 	source.prepare("DELETE FROM replication_ops").run();
+	source.prepare("DELETE FROM memory_items").run();
 	const push = vi.fn(async () => [200, { errors: [] }] as Awaited<ReturnType<RequestJsonExecutor>>);
 	const base = executorFor(push);
 	const executor: RequestJsonExecutor = async (method, url, request) => {
@@ -925,6 +929,7 @@ it.each(
 			}),
 		};
 		source.prepare("DELETE FROM replication_ops").run();
+		source.prepare("DELETE FROM memory_items").run();
 		const scopedReads: string[] = [];
 		const base = executorFor(async () => [200, { errors: [] }], { scoped: true });
 		const executor: RequestJsonExecutor = async (method, url, request) => {

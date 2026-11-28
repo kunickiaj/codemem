@@ -720,9 +720,10 @@ export class MemoryStore {
 
 	/**
 	 * Moves this device's memories that still carry the fallback actor to the
-	 * canonical one. Only rows that carry both fallback ownership signals move;
+	 * canonical one: rows whose origin is blank, `local` or this device, since
+	 * sharing can name this device as the origin before a row's batch lands.
 	 * origin_device_id remains historical provenance, and a personal workspace
-	 * follows the canonical actor. A memory this device created takes a revision
+	 * follows the canonical actor. Sync withholds a row until it moves. A memory this device created takes a revision
 	 * with its op, so peers that hold it learn its actor.
 	 *
 	 * Each batch is its own short write transaction, so adoption never holds the
@@ -732,11 +733,16 @@ export class MemoryStore {
 	private moveFallbackActorRows(fallbackActorId: string, nextActorId: string): void {
 		const batch = this.db.prepare(
 			`SELECT id, workspace_id FROM memory_items
-			 WHERE actor_id = ? AND COALESCE(TRIM(origin_device_id), '') IN ('', 'local')
+			 WHERE actor_id = ?
+			   AND (COALESCE(TRIM(origin_device_id), '') IN ('', 'local') OR origin_device_id = ?)
 			 ORDER BY id LIMIT ?`,
 		);
 		const moveBatch = this.db.transaction(() => {
-			const rows = batch.all(fallbackActorId, ACTOR_CANONICALIZATION_BATCH) as Array<{
+			const rows = batch.all(
+				fallbackActorId,
+				this.deviceId,
+				ACTOR_CANONICALIZATION_BATCH,
+			) as Array<{
 				id: number;
 				workspace_id: string | null;
 			}>;

@@ -76,6 +76,12 @@ export interface RequestJsonOptions {
 	headers?: Record<string, string>;
 	body?: Record<string, unknown>;
 	bodyBytes?: Uint8Array;
+	/**
+	 * Builds the body and its headers as late as possible: after the connection
+	 * opens, right before the request is written. Its result replaces `headers`
+	 * and `bodyBytes`. A sender uses it to decide what it may send at that moment.
+	 */
+	prepare?: () => { headers: Record<string, string>; bodyBytes: Uint8Array };
 	timeoutS?: number;
 	maxResponseBytes?: number;
 	redirect?: "error";
@@ -83,6 +89,13 @@ export interface RequestJsonOptions {
 }
 
 export type RequestJsonExecutor = typeof requestJson;
+
+/** The headers and body to send, built now when the caller asked to build them late. */
+function requestContent(
+	options: RequestJsonOptions,
+): Pick<RequestJsonOptions, "headers" | "bodyBytes"> {
+	return options.prepare?.() ?? options;
+}
 
 function isolateDirectPeerConnection(headers: Record<string, string>): Record<string, string> {
 	const isDirectPeer = Object.keys(headers).some(
@@ -140,8 +153,9 @@ export async function requestJson(
 	url: string,
 	options: RequestJsonOptions = {},
 ): Promise<[status: number, body: Record<string, unknown> | null]> {
-	const { headers, body, timeoutS = 3 } = options;
-	let { bodyBytes } = options;
+	const { body, timeoutS = 3 } = options;
+	const { headers, bodyBytes: suppliedBytes } = requestContent(options);
+	let bodyBytes = suppliedBytes;
 
 	if (bodyBytes == null && body != null) {
 		bodyBytes = new TextEncoder().encode(JSON.stringify(body));
