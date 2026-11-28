@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
@@ -18,8 +17,12 @@ import {
 	recordListedCoordinatorPeers,
 	storeHasCoordinatorHistory,
 } from "./coordinator-history.js";
+import {
+	assertKeychainCommandAllowed,
+	type KeychainCommand,
+	runKeychainCommand,
+} from "./keychain-command.js";
 import { resolveKeyPaths } from "./sync-identity.js";
-import { REAL_KEYCHAIN_DISABLED } from "./test-environment-keys.js";
 
 /*
  * Sync without a coordinator needs a positive attestation that this store and its device key
@@ -112,12 +115,6 @@ export function fileWitness(directory: string): WitnessBackend {
 	};
 }
 
-const unavailableKeychain: WitnessBackend = {
-	kind: "keychain",
-	read: () => null,
-	create: () => "failed",
-};
-
 type KeychainRunner = (command: string, args: string[], input?: string) => string;
 
 export interface KeychainWitnessOptions {
@@ -171,13 +168,20 @@ function withKeychainLock<T>(directory: string, timeoutMs: number, write: () => 
 	}
 }
 
+const KEYCHAIN_COMMANDS: Partial<Record<NodeJS.Platform, KeychainCommand>> = {
+	darwin: "security",
+	linux: "secret-tool",
+};
+
 /** The keychain the device key uses: `security` on macOS, `secret-tool` on Linux. */
 export function keychainWitness(options: KeychainWitnessOptions): WitnessBackend {
 	const platform = options.platform ?? process.platform;
+	const command = KEYCHAIN_COMMANDS[platform];
+	// Refused here under test, because `read` and `create` treat every failure as "not found".
+	if (!options.run && command) assertKeychainCommandAllowed(command);
 	const run: KeychainRunner =
 		options.run ??
-		((command, args, input) =>
-			execFileSync(command, args, { input, stdio: ["pipe", "pipe", "pipe"] }).toString("utf8"));
+		((tool, args, input) => runKeychainCommand(tool as KeychainCommand, args, input));
 	const read = (name: string): string | null => {
 		try {
 			if (platform === "darwin") {
@@ -222,9 +226,6 @@ export function keychainWitness(options: KeychainWitnessOptions): WitnessBackend
 }
 
 function platformKeychain(directory: string): WitnessBackend {
-	// The test setup turns the real keychain off, so a test can't leave records in it.
-	if ((globalThis as Record<symbol, unknown>)[REAL_KEYCHAIN_DISABLED] === true)
-		return unavailableKeychain;
 	return keychainWitness({ directory });
 }
 

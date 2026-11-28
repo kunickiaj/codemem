@@ -1,16 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import {
-	chmodSync,
-	cpSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
 import { signRequest, verifySignature } from "./sync-auth.js";
@@ -23,6 +15,7 @@ import {
 	resolveKeyPaths,
 	validateExistingKeypair,
 } from "./sync-identity.js";
+import { type FakeKeychain, installFakeKeychain } from "./test-keychain-fake.js";
 import { initTestSchema } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -49,44 +42,18 @@ function slashPath(value: string): string {
 	return value.replace(/\\/g, "/");
 }
 
-function installFakeKeychainCli(
-	baseDir: string,
-	keychainPath: string,
-	expectedAccount: string,
-): void {
-	const binDir = join(baseDir, "bin");
-	mkdirSync(binDir, { recursive: true });
-	const command = process.platform === "darwin" ? "security" : "secret-tool";
-	const script = `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-const command = args[0];
-const keychainPath = ${JSON.stringify(keychainPath)};
-const expectedAccount = ${JSON.stringify(expectedAccount)};
-const accountFlag = command === "lookup" || command === "store" ? "account" : "-a";
-const accountIndex = args.indexOf(accountFlag);
-if (accountIndex < 0 || args[accountIndex + 1] !== expectedAccount) {
-	process.exit(2);
+let fakeKeychain: FakeKeychain | null = null;
+
+/** Opts into the shared in-memory keychain, holding `value` as the device key of `account`. */
+function useFakeKeychain(account: string, value: Buffer): void {
+	fakeKeychain = installFakeKeychain();
+	fakeKeychain.set("codemem-sync", account, value.toString("utf8"));
 }
-if (command === "lookup" || command === "find-generic-password") {
-	try {
-		process.stdout.write(fs.readFileSync(keychainPath));
-	} catch {
-		process.exit(1);
-	}
-} else if (command === "store") {
-	fs.writeFileSync(keychainPath, fs.readFileSync(0));
-} else if (command === "add-generic-password") {
-	const valueIndex = args.indexOf("-w");
-	fs.writeFileSync(keychainPath, args[valueIndex + 1] || "");
-} else {
-	process.exit(1);
-}
-`;
-	const commandPath = join(binDir, command);
-	writeFileSync(commandPath, script);
-	chmodSync(commandPath, 0o755);
-	process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+
+/** The device key the fake keychain holds for `account`. */
+function keychainKey(account: string): Buffer | null {
+	const value = fakeKeychain?.get("codemem-sync", account);
+	return value == null ? null : Buffer.from(value, "utf8");
 }
 
 // ---------------------------------------------------------------------------
@@ -97,22 +64,20 @@ describe("sync-identity", () => {
 	let tmpDir: string;
 	let originalKeyStore: string | undefined;
 	let originalKeychainWarning: string | undefined;
-	let originalPath: string | undefined;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-sync-id-test-"));
 		originalKeyStore = process.env.CODEMEM_SYNC_KEY_STORE;
 		originalKeychainWarning = process.env.CODEMEM_SYNC_KEYCHAIN_WARN;
-		originalPath = process.env.PATH;
 	});
 
 	afterEach(() => {
+		fakeKeychain?.uninstall();
+		fakeKeychain = null;
 		if (originalKeyStore === undefined) delete process.env.CODEMEM_SYNC_KEY_STORE;
 		else process.env.CODEMEM_SYNC_KEY_STORE = originalKeyStore;
 		if (originalKeychainWarning === undefined) delete process.env.CODEMEM_SYNC_KEYCHAIN_WARN;
 		else process.env.CODEMEM_SYNC_KEYCHAIN_WARN = originalKeychainWarning;
-		if (originalPath === undefined) delete process.env.PATH;
-		else process.env.PATH = originalPath;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -377,13 +342,13 @@ describe("sync-identity", () => {
 						writeFileSync(keychainPath, readFileSync(unrelatedPrivatePath));
 					}
 
-					installFakeKeychainCli(tmpDir, keychainPath, originalIdentity[0]);
+					useFakeKeychain(originalIdentity[0], readFileSync(keychainPath));
 					process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 					process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 
 					expect(loadPrivateKey(keysDir, dbPath, originalIdentity[0])).toEqual(restoredPrivateKey);
 					expect(ensureDeviceIdentity(db, { keysDir })).toEqual(originalIdentity);
-					expect(readFileSync(keychainPath)).toEqual(restoredPrivateKey);
+					expect(keychainKey(originalIdentity[0])).toEqual(restoredPrivateKey);
 				} finally {
 					db.close();
 				}
@@ -406,13 +371,13 @@ describe("sync-identity", () => {
 					const unrelatedPrivateKey = readFileSync(unrelatedPrivatePath);
 					writeFileSync(privatePath, unrelatedPrivateKey);
 					writeFileSync(keychainPath, originalPrivateKey);
-					installFakeKeychainCli(tmpDir, keychainPath, originalIdentity[0]);
+					useFakeKeychain(originalIdentity[0], readFileSync(keychainPath));
 					process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 					process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 
 					expect(ensureDeviceIdentity(db, { keysDir })).toEqual(originalIdentity);
 					expect(readFileSync(privatePath)).toEqual(unrelatedPrivateKey);
-					expect(readFileSync(keychainPath)).toEqual(originalPrivateKey);
+					expect(keychainKey(originalIdentity[0])).toEqual(originalPrivateKey);
 				} finally {
 					db.close();
 				}
@@ -432,7 +397,7 @@ describe("sync-identity", () => {
 					const [privatePath] = resolveKeyPaths(keysDir);
 					const originalPrivateKey = readFileSync(privatePath);
 					writeFileSync(keychainPath, originalPrivateKey);
-					installFakeKeychainCli(tmpDir, keychainPath, originalIdentity[0]);
+					useFakeKeychain(originalIdentity[0], readFileSync(keychainPath));
 					process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 					process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 					rmSync(privatePath);
@@ -458,7 +423,7 @@ describe("sync-identity", () => {
 					const [privatePath] = resolveKeyPaths(keysDir);
 					const originalPrivateKey = readFileSync(privatePath);
 					writeFileSync(keychainPath, originalPrivateKey);
-					installFakeKeychainCli(tmpDir, keychainPath, originalIdentity[0]);
+					useFakeKeychain(originalIdentity[0], readFileSync(keychainPath));
 					process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 					process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 					if (fileMaterial === "corrupt") {
@@ -489,7 +454,7 @@ describe("sync-identity", () => {
 					const [privatePath] = resolveKeyPaths(keysDir);
 					const originalPrivateKey = readFileSync(privatePath);
 					writeFileSync(keychainPath, originalPrivateKey);
-					installFakeKeychainCli(tmpDir, keychainPath, originalIdentity[0]);
+					useFakeKeychain(originalIdentity[0], readFileSync(keychainPath));
 					process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 					process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 					rmSync(privatePath);

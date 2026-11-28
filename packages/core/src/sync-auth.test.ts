@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "./db.js";
 import { connect } from "./db.js";
@@ -23,6 +23,7 @@ import {
 	loadPublicKey,
 	resolveKeyPaths,
 } from "./sync-identity.js";
+import { type FakeKeychain, installFakeKeychain } from "./test-keychain-fake.js";
 import { initTestSchema } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -41,33 +42,12 @@ function sshKeygenAvailable(): boolean {
 const _HAS_SSH_KEYGEN = sshKeygenAvailable();
 const HAS_KEYCHAIN_PLATFORM = process.platform === "darwin" || process.platform === "linux";
 
-function installFakeKeychainCli(
-	baseDir: string,
-	keychainPath: string,
-	expectedAccount: string,
-): void {
-	const binDir = join(baseDir, "bin");
-	mkdirSync(binDir, { recursive: true });
-	const executable = process.platform === "darwin" ? "security" : "secret-tool";
-	const script = `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-const command = args[0];
-const accountFlag = command === "lookup" || command === "store" ? "account" : "-a";
-const accountIndex = args.indexOf(accountFlag);
-if (accountIndex < 0 || args[accountIndex + 1] !== ${JSON.stringify(expectedAccount)}) {
-	process.exit(2);
-}
-if (command === "lookup" || command === "find-generic-password") {
-	process.stdout.write(fs.readFileSync(${JSON.stringify(keychainPath)}));
-} else {
-	process.exit(1);
-}
-`;
-	const executablePath = join(binDir, executable);
-	writeFileSync(executablePath, script);
-	chmodSync(executablePath, 0o755);
-	process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+let fakeKeychain: FakeKeychain | null = null;
+
+/** Opts into the shared in-memory keychain, holding `value` as the device key of `account`. */
+function useFakeKeychain(account: string, value: Buffer): void {
+	fakeKeychain = installFakeKeychain();
+	fakeKeychain.set("codemem-sync", account, value.toString("utf8"));
 }
 
 // ---------------------------------------------------------------------------
@@ -79,25 +59,23 @@ describe("sync-auth", () => {
 	let originalDbPath: string | undefined;
 	let originalKeyStore: string | undefined;
 	let originalKeychainWarning: string | undefined;
-	let originalPath: string | undefined;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-sync-auth-test-"));
 		originalDbPath = process.env.CODEMEM_DB;
 		originalKeyStore = process.env.CODEMEM_SYNC_KEY_STORE;
 		originalKeychainWarning = process.env.CODEMEM_SYNC_KEYCHAIN_WARN;
-		originalPath = process.env.PATH;
 	});
 
 	afterEach(() => {
+		fakeKeychain?.uninstall();
+		fakeKeychain = null;
 		if (originalDbPath === undefined) delete process.env.CODEMEM_DB;
 		else process.env.CODEMEM_DB = originalDbPath;
 		if (originalKeyStore === undefined) delete process.env.CODEMEM_SYNC_KEY_STORE;
 		else process.env.CODEMEM_SYNC_KEY_STORE = originalKeyStore;
 		if (originalKeychainWarning === undefined) delete process.env.CODEMEM_SYNC_KEYCHAIN_WARN;
 		else process.env.CODEMEM_SYNC_KEYCHAIN_WARN = originalKeychainWarning;
-		if (originalPath === undefined) delete process.env.PATH;
-		else process.env.PATH = originalPath;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -432,7 +410,7 @@ describe("sync-auth", () => {
 				db.close();
 				if (!publicKey) throw new Error("expected public key");
 
-				installFakeKeychainCli(tmpDir, keychainPath, deviceId);
+				useFakeKeychain(deviceId, readFileSync(keychainPath));
 				process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 				process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 				delete process.env.CODEMEM_DB;
@@ -485,7 +463,7 @@ describe("sync-auth", () => {
 				db.close();
 				if (!publicKey) throw new Error("expected public key");
 
-				installFakeKeychainCli(tmpDir, keychainPath, deviceId);
+				useFakeKeychain(deviceId, readFileSync(keychainPath));
 				process.env.CODEMEM_SYNC_KEY_STORE = "keychain";
 				process.env.CODEMEM_SYNC_KEYCHAIN_WARN = "0";
 				delete process.env.CODEMEM_DB;

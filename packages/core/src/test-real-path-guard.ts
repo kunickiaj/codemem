@@ -5,7 +5,7 @@ import { join, resolve, sep } from "node:path";
  * True in a Vitest run, a `node --test` run, a process the test isolation preload
  * marked, any process those start with the inherited environment, or with NODE_ENV=test.
  */
-function runningUnderTest(): boolean {
+export function runningUnderTest(): boolean {
 	const env = process.env;
 	return (
 		Boolean(env.VITEST) ||

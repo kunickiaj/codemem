@@ -84,7 +84,7 @@ describe("a node --test run with the isolation preload", () => {
 				);
 
 				expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-				expect(result.stdout).toMatch(/\bpass 3\b/u);
+				expect(result.stdout).toMatch(/\bpass 4\b/u);
 				expect(result.stdout).toMatch(/\bfail 0\b/u);
 				expect(readdirSync(decoyHome)).toEqual([]);
 			} finally {

@@ -23,10 +23,12 @@ import { encodeInvitePayload } from "./coordinator-invites.js";
 import { lookupCoordinatorPeers, readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import { refreshCoordinatorForDaemon } from "./sync-daemon.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
+import { type FakeKeychain, installFakeKeychain } from "./test-keychain-fake.js";
 import { initTestSchema } from "./test-utils.js";
 
 let directory: string;
 let keysDir: string;
+let deviceKeychain: FakeKeychain;
 
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "coordinator-free-attestation-"));
@@ -36,12 +38,15 @@ beforeEach(() => {
 	vi.stubEnv("CODEMEM_CONFIG", configPath);
 	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
 	vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
+	// Tests that switch to keychain storage keep the device key in memory.
+	deviceKeychain = installFakeKeychain();
 	for (const name of ["URL", "GROUP", "GROUPS", "ADMIN_SECRET"]) {
 		vi.stubEnv(`CODEMEM_SYNC_COORDINATOR_${name}`, undefined);
 	}
 });
 
 afterEach(() => {
+	deviceKeychain.uninstall();
 	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
 	rmSync(directory, { recursive: true, force: true });
