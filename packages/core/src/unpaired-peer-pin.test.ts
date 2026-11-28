@@ -76,6 +76,37 @@ describe("the pin kept when this device unpairs", () => {
 		},
 	);
 
+	it("is dropped when a different verified pin is saved for the same device ID", () => {
+		remove("disconnect");
+		expect(kept()).not.toBeNull();
+
+		pair(PEER, "key-replacement");
+
+		expect(kept()).toBeNull();
+	});
+
+	it("is dropped when the pairing's key is updated to a different verified pin", () => {
+		remove("disconnect");
+		db.prepare("INSERT INTO sync_peers(peer_device_id, created_at) VALUES (?, 'then')").run(PEER);
+
+		db.prepare(
+			"UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ? WHERE peer_device_id = ?",
+		).run("key-updated", fingerprintPublicKey("key-updated"), PEER);
+
+		expect(kept()).toBeNull();
+	});
+
+	it("survives a pairing under the same key, or one that has no pin yet", () => {
+		remove("disconnect");
+
+		pair(PEER, null);
+		expect(kept()?.publicKey).toBe(KEY);
+
+		db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(PEER);
+		pair(PEER, KEY);
+		expect(kept()?.publicKey).toBe(KEY);
+	});
+
 	it("is not authorization for sync: unpairing leaves no pairing for any sync path to read", () => {
 		remove("disconnect");
 

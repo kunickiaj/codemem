@@ -752,11 +752,20 @@ peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => 
 	}
 });
 
-/** What the user is told after unpairing: sync can resume, and Remove device is the way to stop it everywhere. */
-function peerRemovalNotices(label: string): string[] {
+/**
+ * What the user is told after unpairing. With a coordinator, codemem can pair the devices
+ * again, so Remove device is named as the way to stop everywhere. Without one, nothing
+ * pairs them again.
+ */
+function peerRemovalNotices(label: string, coordinatorConfigured: boolean): string[] {
+	if (!coordinatorConfigured) {
+		return [
+			`This device stops syncing with ${label}. ${label} keeps syncing with your other devices.`,
+		];
+	}
 	return [
-		`This device stops syncing with ${label} until they pair again. If both devices are in a Team, codemem pairs them again automatically.`,
-		`To stop syncing with ${label} on every device, use Remove device.`,
+		`This device stops syncing with ${label}. If both devices share a Team Project, codemem can pair them again automatically.`,
+		`To stop syncing with ${label} on all your devices, use Remove device.`,
 	];
 }
 
@@ -767,7 +776,10 @@ function reportPeerRemoved(
 ): void {
 	const label = match.name || match.peer_device_id;
 	const { binding, removed } = result;
-	const notices = peerRemovalNotices(label);
+	const notices = peerRemovalNotices(
+		label,
+		Boolean(readCoordinatorSyncConfig().syncCoordinatorUrl.trim()),
+	);
 	if (options.json) {
 		const payload = {
 			ok: true,

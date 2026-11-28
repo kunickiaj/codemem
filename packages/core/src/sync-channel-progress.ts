@@ -46,12 +46,21 @@ export function getSyncChannelProgress(
 	);
 }
 
+/** With `pairingInstanceId`, clears only the progress of the pairing the caller started under. */
 export function clearSyncChannelProgress(
 	db: Database,
 	peerDeviceId: string,
 	scopeId: string,
+	pairingInstanceId?: string | null,
 ): void {
 	ensureSyncChannelProgress(db);
+	if (pairingInstanceId) {
+		const pairing = pairingStillExists(peerDeviceId, pairingInstanceId);
+		db.prepare(
+			`DELETE FROM sync_channel_progress WHERE peer_device_id = ? AND scope_id = ? AND ${pairing.sql}`,
+		).run(peerDeviceId, scopeId, ...pairing.params);
+		return;
+	}
 	db.prepare("DELETE FROM sync_channel_progress WHERE peer_device_id = ? AND scope_id = ?").run(
 		peerDeviceId,
 		scopeId,

@@ -543,7 +543,12 @@ export async function syncScopedChannelOnce(
 			sourceDeviceId: context.peerDeviceId,
 			validateCurrentAuthorization: () => checkAuthorization(context),
 			invalidateCompletedBoundary: () =>
-				clearSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId),
+				clearSyncChannelProgress(
+					context.db,
+					context.peerDeviceId,
+					context.scopeId,
+					context.pairingInstanceId,
+				),
 		});
 		if (!result.ok) return failedPullResult(options, result);
 		completeChannelPull(context, status.scope.sync_reset);

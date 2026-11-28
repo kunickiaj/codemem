@@ -835,9 +835,11 @@ async function runPeersRemove(args: string[]) {
 }
 
 const RESUME_NOTICE =
-	"This device stops syncing with work until they pair again. If both devices are in a Team, codemem pairs them again automatically.";
-const REMOVE_NOTICE = "To stop syncing with work on every device, use Remove device.";
-const NOTICE = `${RESUME_NOTICE} ${REMOVE_NOTICE}`;
+	"This device stops syncing with work. If both devices share a Team Project, codemem can pair them again automatically.";
+const REMOVE_NOTICE = "To stop syncing with work on all your devices, use Remove device.";
+const WITH_COORDINATOR_NOTICE = `${RESUME_NOTICE} ${REMOVE_NOTICE}`;
+const WITHOUT_COORDINATOR_NOTICE =
+	"This device stops syncing with work. work keeps syncing with your other devices.";
 const WITHOUT_ADMIN_SECRET = {
 	sync_coordinator_url: "https://coord.example.test",
 	sync_coordinator_groups: ["group-a"],
@@ -905,7 +907,7 @@ async function removeAsJson(
 describe("sync peers remove: leaves the other device's binding", () => {
 	isolateCoordinatorSettings();
 
-	const EXPECTED_PAYLOAD = {
+	const expectedPayload = (notice: string) => ({
 		ok: true,
 		peer_device_id: "peer-1",
 		name: "work",
@@ -918,23 +920,23 @@ describe("sync peers remove: leaves the other device's binding", () => {
 		},
 		binding: "kept",
 		remove_from_projects: "needs_admin_device",
-		notice: NOTICE,
-	};
+		notice,
+	});
 
 	it.each([
-		["no coordinator is configured", {}],
-		["there is no admin secret", WITHOUT_ADMIN_SECRET],
-		["this device holds the admin secret", ADMIN_DEVICE],
+		["no coordinator is configured", {}, WITHOUT_COORDINATOR_NOTICE],
+		["there is no admin secret", WITHOUT_ADMIN_SECRET, WITH_COORDINATOR_NOTICE],
+		["this device holds the admin secret", ADMIN_DEVICE, WITH_COORDINATOR_NOTICE],
 	])(
 		"when %s, removes the pairing and its sync progress, keeps the binding, and wakes no Project policy",
-		async (_name, settings) => {
+		async (_name, settings, notice) => {
 			useCoordinatorSettings(settings);
 
 			const result = await removeAsJson();
 
 			expect(result.state).toEqual(DISCONNECTED);
 			expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
-			expect(result.payload).toEqual(EXPECTED_PAYLOAD);
+			expect(result.payload).toEqual(expectedPayload(notice));
 		},
 	);
 
@@ -1001,7 +1003,7 @@ describe("sync peers remove", () => {
 						},
 						binding: "kept",
 						remove_from_projects: "needs_admin_device",
-						notice: NOTICE,
+						notice: WITHOUT_COORDINATOR_NOTICE,
 					},
 					null,
 					2,
@@ -1032,7 +1034,7 @@ describe("sync peers remove", () => {
 			await runPeersRemove(["peer-1", "--db-path", dbPath]);
 
 			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
-			expect(rendered).toContain(RESUME_NOTICE);
+			expect(rendered).toContain(WITHOUT_COORDINATOR_NOTICE);
 			expect(rendered).toContain("pairing: 1");
 			expect(rendered).toContain("sync progress rows: 3");
 			expect(removedPeerState(store).pairings).toBe(0);

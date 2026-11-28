@@ -874,7 +874,8 @@ Project policy, on an admin device or any other, and it does not read this
 reply. Remove device ends the binding. Unpairing keeps the device's last
 verified pin in a record that is read only to ask this lookup about the key,
 to record a retired alias, and to remove the device. No sync path reads it. It
-is cleared when the device is removed, answered as removed, or revoked.
+is cleared when the device is removed, answered as removed, or revoked, and when
+a different verified pin is saved for the same device ID.
 
 A client requires the three arrays and the integer. A reply without them is invalid,
 and the client keeps every pairing. For each `removed` ID that it sent, the

@@ -203,13 +203,16 @@ const BINDING_KEPT = {
 	binding: "active",
 	policyLastAttemptAt: NOW,
 };
-const KEPT_REPLY = {
+const keptReply = (notice: string) => ({
 	ok: true,
 	binding: "kept",
 	remove_from_projects: "needs_admin_device",
-	notice:
-		"Only this device's pairing was removed. If both devices are in a Team, codemem pairs them again automatically. To stop syncing on every device, use Remove device.",
-};
+	notice,
+});
+const WITH_COORDINATOR_REPLY = keptReply(
+	"Only this device's pairing was removed. If both devices share a Team Project, codemem can pair them again automatically. To stop syncing on all your devices, use Remove device.",
+);
+const WITHOUT_COORDINATOR_REPLY = keptReply("Only this device's pairing was removed.");
 
 describe("DELETE /api/sync/peers/:peer_device_id", () => {
 	it("keeps the binding with truncated config through the real default reader", async () => {
@@ -221,22 +224,22 @@ describe("DELETE /api/sync/peers/:peer_device_id", () => {
 		const response = await f.remove();
 		expect(response.status).toBe(200);
 		expect(f.state()).toEqual(BINDING_KEPT);
-		expect(await response.json()).toEqual(KEPT_REPLY);
+		expect(await response.json()).toEqual(WITHOUT_COORDINATOR_REPLY);
 	});
 
 	it.each([
-		["no coordinator is configured", NO_COORDINATOR],
-		["there is no admin secret", WITHOUT_ADMIN_SECRET],
-		["this device holds the admin secret", ADMIN_DEVICE],
+		["no coordinator is configured", NO_COORDINATOR, WITHOUT_COORDINATOR_REPLY],
+		["there is no admin secret", WITHOUT_ADMIN_SECRET, WITH_COORDINATOR_REPLY],
+		["this device holds the admin secret", ADMIN_DEVICE, WITH_COORDINATOR_REPLY],
 	])(
 		"when %s, deletes the pairing and its sync progress, keeps the Identity binding, and wakes no Project policy",
-		async (_name, readCoordinatorConfig) => {
+		async (_name, readCoordinatorConfig, reply) => {
 			const f = peerDeleteFixture({ readCoordinatorConfig });
 
 			const response = await f.remove();
 
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual(KEPT_REPLY);
+			expect(await response.json()).toEqual(reply);
 			expect(f.state()).toEqual(BINDING_KEPT);
 		},
 	);

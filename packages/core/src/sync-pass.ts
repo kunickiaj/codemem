@@ -966,7 +966,12 @@ interface ScopedPeerPullOptions {
 function resetScopedPullProgress(db: Database, options: ScopedPeerPullOptions): void {
 	// Dropping completion first prevents an interrupted reset from skipping recovery.
 	options.invalidateCompletedBoundary?.();
-	clearReplicationCursorLastApplied(db, options.peerDeviceId, options.scope.scope_id);
+	clearReplicationCursorLastApplied(
+		db,
+		options.peerDeviceId,
+		options.scope.scope_id,
+		options.pairingInstanceId,
+	);
 }
 
 function scopedNullBaselineIsCurrent(options: {

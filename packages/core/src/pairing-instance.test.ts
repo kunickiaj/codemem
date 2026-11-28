@@ -3,10 +3,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensurePairingInstanceSchema, readPairingInstanceId } from "./pairing-instance.js";
 import { removePeerFromThisDevice } from "./peer-removal.js";
 import {
+	clearSyncChannelProgress,
 	saveSyncChannelCompletedBoundary,
 	saveSyncChannelOutboundAck,
 } from "./sync-channel-progress.js";
-import { getReplicationCursor, setReplicationCursor } from "./sync-replication.js";
+import {
+	clearReplicationCursorLastApplied,
+	getReplicationCursor,
+	setReplicationCursor,
+} from "./sync-replication.js";
 import { initTestSchema, insertTestPeer } from "./test-utils.js";
 
 const LOCAL = "device-local";
@@ -128,6 +133,29 @@ describe("progress writes that carry a pairing instance", () => {
 			}),
 		).not.toThrow();
 
+		expect(db.prepare("SELECT COUNT(*) FROM sync_channel_progress").pluck().get()).toBe(0);
+	});
+
+	it("skip a late reset of the cursors and the channel progress, so a new pairing keeps its position", () => {
+		const started = readPairingInstanceId(db, PEER);
+		unpairAndPairAgain();
+		setReplicationCursor(db, PEER, { lastApplied: "new", lastAcked: "new-ack" }, "scope-a");
+		saveSyncChannelCompletedBoundary(db, {
+			peerDeviceId: PEER,
+			scopeId: "scope-a",
+			boundary: BOUNDARY,
+		});
+
+		clearReplicationCursorLastApplied(db, PEER, "scope-a", started);
+		clearSyncChannelProgress(db, PEER, "scope-a", started);
+
+		expect(getReplicationCursor(db, PEER, "scope-a")).toEqual(["new", "new-ack"]);
+		expect(db.prepare("SELECT COUNT(*) FROM sync_channel_progress").pluck().get()).toBe(1);
+		// The new pairing's own reset still works.
+		const current = readPairingInstanceId(db, PEER);
+		clearReplicationCursorLastApplied(db, PEER, "scope-a", current);
+		clearSyncChannelProgress(db, PEER, "scope-a", current);
+		expect(getReplicationCursor(db, PEER, "scope-a")).toEqual([null, null]);
 		expect(db.prepare("SELECT COUNT(*) FROM sync_channel_progress").pluck().get()).toBe(0);
 	});
 

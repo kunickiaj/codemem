@@ -440,10 +440,12 @@ and whatever the coordinator says, they delete the pairing and sync progress
 and nothing else. The binding stays active, the cached scope authorization
 stays, and no Project policy is woken. Remove device ends the binding and
 removes the device from Projects, through its own route. Unpairing does not stop
-sync for good: coordinator discovery pairs the devices again when both are in a
-Team, and a valid bootstrap grant does too. Unpairing keeps the last verified pin
+sync for good with a coordinator: coordinator discovery can pair the devices
+again when both share a Team Project, and a valid bootstrap grant does too. Unpairing keeps the last verified pin
 in a removal-only record that Remove and the revocation lookup read and that no
-sync path reads, so Remove works after Unpair with or without a coordinator.
+sync path reads, so Remove works after Unpair with or without a coordinator. A
+different verified pin saved for the same device ID replaces the record, so an
+old key cannot end the binding of the device that took its place.
 
 Local-only removal runs one function in one transaction: delete the pairing,
 delete its rows in both cursor tables, end the binding, and keep the pinned

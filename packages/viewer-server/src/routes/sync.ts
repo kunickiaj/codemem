@@ -7509,7 +7509,17 @@ export function installRecipientAccessChangeGate(
 	);
 }
 
-function removeLocalPeerRoute(c: Context, getStore: StoreFactory): Response {
+/** With a coordinator, codemem can pair the devices again. Without one, nothing does. */
+function unpairNotice(coordinatorConfigured: boolean): string {
+	if (!coordinatorConfigured) return "Only this device's pairing was removed.";
+	return "Only this device's pairing was removed. If both devices share a Team Project, codemem can pair them again automatically. To stop syncing on all your devices, use Remove device.";
+}
+
+function removeLocalPeerRoute(
+	c: Context,
+	getStore: StoreFactory,
+	options: SyncRoutesOptions,
+): Response {
 	const store = getStore();
 	const d = drizzle(store.db, { schema });
 	const peerDeviceId = c.req.param("peer_device_id")?.trim();
@@ -7530,8 +7540,11 @@ function removeLocalPeerRoute(c: Context, getStore: StoreFactory): Response {
 		ok: true,
 		binding,
 		remove_from_projects: "needs_admin_device",
-		notice:
-			"Only this device's pairing was removed. If both devices are in a Team, codemem pairs them again automatically. To stop syncing on every device, use Remove device.",
+		notice: unpairNotice(
+			Boolean(
+				(options.readCoordinatorConfig ?? readCoordinatorSyncConfig)().syncCoordinatorUrl.trim(),
+			),
+		),
 	});
 }
 
@@ -10236,7 +10249,7 @@ export function syncRoutes(
 	app.post("/api/sync/bootstrap-grants/revoke", revokeBootstrapGrantRoute);
 
 	// DELETE /api/sync/peers/:peer_device_id
-	app.delete("/api/sync/peers/:peer_device_id", (c) => removeLocalPeerRoute(c, getStore));
+	app.delete("/api/sync/peers/:peer_device_id", (c) => removeLocalPeerRoute(c, getStore, options));
 
 	return app;
 }

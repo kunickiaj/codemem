@@ -880,14 +880,29 @@ export function setReplicationCursor(
 	}
 }
 
+/**
+ * Clears the inbound and acknowledged positions for one scope. With `pairingInstanceId` it
+ * clears them only in the pairing the caller started under, so a reset that arrives late,
+ * after Unpair and a new pairing, cannot erase the new pairing's progress.
+ */
 export function clearReplicationCursorLastApplied(
 	db: Database,
 	peerDeviceId: string,
 	scopeId?: string | null,
+	pairingInstanceId?: string | null,
 ): void {
 	ensureReplicationCursorTables(db);
 	const now = new Date().toISOString();
 	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
+	if (pairingInstanceId) {
+		const pairing = pairingStillExists(peerDeviceId, pairingInstanceId);
+		db.prepare(
+			`UPDATE replication_cursors_v2
+			 SET last_applied_cursor = NULL, last_acked_cursor = NULL, updated_at = ?
+			 WHERE peer_device_id = ? AND scope_id = ? AND ${pairing.sql}`,
+		).run(now, peerDeviceId, effectiveScopeId, ...pairing.params);
+		return;
+	}
 	drizzle(db, { schema })
 		.update(schema.replicationCursorsV2)
 		.set({

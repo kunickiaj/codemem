@@ -5,6 +5,7 @@ import { PresencePip, type PresenceState } from "../../../components/primitives/
 import type { DeviceIdentityInventoryItemV1 } from "../../../lib/api/sync";
 import { formatTimestamp } from "../../../lib/format";
 import { isSyncRedactionEnabled, type SyncActor, state } from "../../../lib/state";
+import { coordinatorIsConfigured, unpairDescription } from "../../device-disconnect";
 import {
 	clearPeerScopeReview,
 	consumePeerScopeReviewRequest,
@@ -397,7 +398,7 @@ function SyncPeerCard({ peer, onRemove, onSync }: SyncPeerCardProps) {
 		if (!peerId) return;
 		const confirmed = await openSyncConfirmDialog({
 			title: `Unpair ${destructiveLabel}?`,
-			description: `This device stops syncing with ${destructiveLabel} until they pair again. If both devices are in a Team, codemem pairs them again automatically. To stop syncing with ${destructiveLabel} on every device, use Remove device.`,
+			description: unpairDescription(destructiveLabel, coordinatorIsConfigured()),
 			confirmLabel: "Unpair",
 			cancelLabel: "Keep paired",
 			tone: "danger",

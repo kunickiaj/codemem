@@ -1,5 +1,6 @@
 import { deletePeer } from "../lib/api/sync";
 import { friendlyError } from "../lib/form";
+import { state } from "../lib/state";
 import type { SyncActionFeedback } from "./sync/components/sync-inline-feedback";
 import { peerRemovalFeedback } from "./sync/peer-removal-feedback";
 import { openSyncConfirmDialog } from "./sync/sync-dialogs";
@@ -15,6 +16,24 @@ const defaults: DeviceDisconnectDependencies = {
 };
 
 /**
+ * What the confirmation says. With a coordinator, devices that share a Team Project can be
+ * paired again automatically, so it names Remove device as the way to stop everywhere.
+ * Without one, nothing pairs them again, and the only other change to name is that the
+ * device keeps syncing with this person's other devices.
+ */
+export function unpairDescription(name: string, coordinatorConfigured: boolean): string {
+	if (coordinatorConfigured) {
+		return `This device stops syncing with ${name}. If both devices share a Team Project, codemem can pair them again automatically. To stop syncing with ${name} on all your devices, use Remove device.`;
+	}
+	return `This device stops syncing with ${name}. ${name} keeps syncing with your other devices.`;
+}
+
+/** Whether a coordinator is configured, as the last sync status read reported it. */
+export function coordinatorIsConfigured(): boolean {
+	return state.lastSyncCoordinator?.configured === true;
+}
+
+/**
  * Unpairs this device from a paired device, on every device and whatever the coordinator says
  * about it. It deletes only this device's pairing and sync progress for that peer. It never
  * changes the peer's Identity binding or Project access. Remove device does that and needs
@@ -28,7 +47,7 @@ export async function confirmAndDisconnectDevice(
 	const name = device.displayName;
 	const confirmed = await confirm({
 		title: `Unpair ${name}?`,
-		description: `This device stops syncing with ${name} until they pair again. If both devices are in a Team, codemem pairs them again automatically. To stop syncing with ${name} on every device, use Remove device.`,
+		description: unpairDescription(name, coordinatorIsConfigured()),
 		confirmLabel: "Unpair",
 		cancelLabel: "Keep paired",
 		autoFocusAction: "cancel",
