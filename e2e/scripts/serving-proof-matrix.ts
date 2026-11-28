@@ -3,11 +3,13 @@ import { fork, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import type { Database } from "../../packages/core/src/db.js";
 import type { CanaryObservation } from "./serving-proof-wire.js";
 
 const { values } = parseArgs({
@@ -29,6 +31,15 @@ Object.assign(process.env, {
 	CODEMEM_EMBEDDING_DISABLED: "1",
 });
 const fixture = await import("./serving-proof-fixture.js");
+const { transitionedNames } = await import("../../packages/core/src/transitioned-store-names.js");
+const Sqlite = createRequire(join(current, "packages/core/package.json"))(
+	"better-sqlite3",
+) as new (path: string, options: { readonly: boolean }) => Database;
+const releasedNames = Object.keys(transitionedNames);
+// A released client stops at the first moved table it touches, whichever that is.
+const missingMovedTable = new RegExp(
+	`Required tables missing: memory_items|no such table: (?:main\\.)?(?:${releasedNames.join("|")})\\b`,
+);
 type Peer = import("./serving-proof-fixture.js").Peer;
 
 function run(args: string[], p: Peer) {
@@ -132,10 +143,7 @@ async function exchange(
 			assert.equal(JSON.parse(r.stdout).ok, true);
 		} else if (source !== current) {
 			assert.equal(r.status, 1);
-			assert.match(
-				r.stdout + r.stderr,
-				/Required tables missing: memory_items|no such table: (?:main\.)?(memory_items|replication_ops|sync_device)/,
-			);
+			assert.match(r.stdout + r.stderr, missingMovedTable);
 		} else {
 			assert.equal(r.status, 1, r.stdout);
 			assert.ok(
@@ -145,10 +153,7 @@ async function exchange(
 		}
 		if (!expectTransfer && source !== current) {
 			const daemon = run([script("serving-proof-peer.mjs"), source, "daemon-pass"], sender);
-			assert.match(
-				daemon.stdout + daemon.stderr,
-				/no such table: (?:main\.)?(memory_items|replication_ops|sync_device)|Required tables missing: memory_items/,
-			);
+			assert.match(daemon.stdout + daemon.stderr, missingMovedTable);
 		}
 		for (const key of keys) {
 			assert.equal(count(sender, key), 1);
@@ -177,6 +182,7 @@ async function exchange(
 }
 async function matrix(source: string, target: string, legacy: string, directory: string) {
 	mkdirSync(directory);
+	const recreated = new Set<string>();
 	const coordinator = await disconnectedUrl();
 	const a = fixture.peer(join(directory, "a"), coordinator);
 	const b = fixture.peer(join(directory, "b"), coordinator);
@@ -279,11 +285,24 @@ async function matrix(source: string, target: string, legacy: string, directory:
 				p,
 			);
 			assert.match(init.stdout + init.stderr, /Required tables missing: memory_items/);
-			for (const table of ["memory_items", "memory_fts", "sync_device", "replication_ops"])
-				assert.equal(
-					p.db.prepare("SELECT count(*) FROM sqlite_schema WHERE name=?").pluck().get(table),
-					0,
-				);
+			// The shape-aware connection reports released names, so read the file directly.
+			const raw = new Sqlite(p.dbPath, { readonly: true });
+			try {
+				const present = raw
+					.prepare(
+						`SELECT name FROM sqlite_schema WHERE name IN (${releasedNames.map(() => "?").join(",")})`,
+					)
+					.pluck()
+					.all(...releasedNames) as string[];
+				// Released sync passes recreate the two reference tables. They must stay empty.
+				for (const table of present) {
+					assert.ok(["memory_concept_refs", "memory_file_refs"].includes(table), table);
+					assert.equal(raw.prepare(`SELECT count(*) FROM "${table}"`).pluck().get(), 0);
+				}
+				recreated.add(present.sort().join(",") || "none");
+			} finally {
+				raw.close();
+			}
 		}
 		const refreshedBody = await exchange(a, b, source, target, { expectTransfer: false });
 		if (historyId) {
@@ -295,6 +314,12 @@ async function matrix(source: string, target: string, legacy: string, directory:
 			{ offlineBody: [], refreshedBody: [] },
 			"Synthetic body crossed the peer connection",
 		);
+		// Current code still opens the store after the released probes.
+		for (const p of [a, b]) {
+			p.db.close();
+			fixture.reopen(p);
+		}
+		return [...recreated].join(" ");
 	} finally {
 		if (a.db.open) a.db.close();
 		if (b.db.open) b.db.close();
@@ -317,9 +342,9 @@ try {
 			["current-old", current, old],
 		] as const) {
 			try {
-				await matrix(source, target, old, join(root, `${direction}-${version}`));
+				const recreated = await matrix(source, target, old, join(root, `${direction}-${version}`));
 				process.stdout.write(
-					`${version} ${direction}: control, crash recovery, offline, legacy refresh passed\n`,
+					`${version} ${direction}: control, crash recovery, offline, legacy refresh passed (empty released tables recreated: ${recreated})\n`,
 				);
 			} catch (cause) {
 				failures.push(new Error(`${version} ${direction}`, { cause }));

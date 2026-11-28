@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import Sqlite from "better-sqlite3";
+import type Sqlite from "better-sqlite3";
 import {
 	decodeInvitePayload,
 	extractInvitePayload,
@@ -10,6 +10,7 @@ import {
 	recipientInviteAuthoritativeIdentityId,
 } from "./coordinator-store-contract.js";
 import { resolveDbPath } from "./db.js";
+import { openDeviceDatabase } from "./device-database-open.js";
 import { readCodememConfigFile, readCodememConfigFileAtPath } from "./observer-config.js";
 import { friendlyDeviceName, normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
@@ -289,7 +290,7 @@ function readReviewProfile(
 	const keysDir = opts.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	let db: Sqlite.Database;
 	try {
-		db = new Sqlite(resolveDbPath(opts.dbPath ?? undefined), {
+		db = openDeviceDatabase(resolveDbPath(opts.dbPath ?? undefined), {
 			readonly: true,
 			fileMustExist: true,
 		});

@@ -14,12 +14,12 @@
  * eligibility. Memories, Team memberships, grants and peers are untouched.
  */
 
-import BetterSqlite from "better-sqlite3";
 import type {
 	DeviceRebindPending,
 	DeviceRebindReceiptV1,
 } from "./coordinator-device-rebind-client.js";
 import type { Database } from "./db.js";
+import { openDeviceDatabase } from "./device-database-open.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { adoptLocalCapture } from "./memory-local-capture.js";
 import { mutateCodememConfigFile } from "./observer-config.js";
@@ -534,7 +534,7 @@ export function completeLocalIdentitySwitch(
 export function readCompletedLocalIdentitySwitches(
 	dbPath: string,
 ): Array<{ previousIdentityId: string; completedAtMs: number }> {
-	const db = new BetterSqlite(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+	const db = openDeviceDatabase(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
 	try {
 		const table = db
 			.prepare(

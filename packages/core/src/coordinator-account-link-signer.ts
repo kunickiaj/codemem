@@ -1,8 +1,8 @@
-import Database from "better-sqlite3";
 import {
 	type CoordinatorDeviceLocalEvidence,
 	readCoordinatorDeviceLocalEvidence,
 } from "./coordinator-device-local.js";
+import { openDeviceDatabase } from "./device-database-open.js";
 import { buildAuthHeaders, verifySignature } from "./sync-auth.js";
 
 function signerError(): Error {
@@ -16,7 +16,7 @@ function signerError(): Error {
 export function readAccountLinkDevice(dbPath: string): CoordinatorDeviceLocalEvidence {
 	try {
 		if (typeof dbPath !== "string" || !dbPath || dbPath === ":memory:") throw signerError();
-		const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+		const db = openDeviceDatabase(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
 		try {
 			const device = readCoordinatorDeviceLocalEvidence(db);
 			if (!device) throw signerError();

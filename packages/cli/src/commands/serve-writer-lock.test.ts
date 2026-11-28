@@ -5,8 +5,9 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalViewerDbPath, isViewerWriterLockHeld } from "@codemem/core";
+import { canonicalViewerDbPath, connect, isViewerWriterLockHeld } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareOfflineScopeServingStore } from "../../../core/src/offline-serving-preparation.js";
 import {
 	holdViewerLockInAnotherProcess,
 	stopHolder,
@@ -455,6 +456,47 @@ describe("choosing and signalling a Viewer that holds this database's lock", () 
 		// Assert
 		expect(result).toEqual({ stopped: false, pid: holder.pid });
 		expect(holder.signalCode).toBeNull();
+	});
+});
+
+describe("confirming a Viewer for a transitioned store", () => {
+	beforeEach(() => {
+		connect(dbPath).close();
+		prepareOfflineScopeServingStore(
+			dbPath,
+			{
+				coordinatorId: "fixture",
+				groupId: "team",
+				generation: "ddc460b1-6dd8-4489-ab5c-799c2319af62",
+			},
+			[],
+		);
+	});
+
+	it("leaves one running, because those releases cannot read the store, and stops a Viewer that holds the lock", async () => {
+		const { holder, address } = await preLockViewer();
+
+		await runServeInvocation(
+			resolveStopRestartInvocation("stop", {
+				dbPath,
+				host: address.host,
+				port: String(address.port),
+			}),
+			{ nativeRuntimeAllowsServeStart: async () => true, stopExistingViewer },
+		);
+
+		expect(holder.signalCode).toBeNull();
+		expect(printed()).toContain(
+			`could not be confirmed to serve ${dbPath}: it does not hold the database's lock, and only a Viewer that holds it can serve this database's storage format. Nothing was stopped.`,
+		);
+		expect(process.exitCode).toBe(1);
+
+		await stopHolder(holder);
+		const current = await viewerServing(dbPath);
+		const exited = new Promise((resolve) => current.holder.once("exit", resolve));
+		const result = await stopExistingViewer(dbPath, current.address);
+		expect(result).toEqual({ stopped: true, pid: current.holder.pid });
+		await exited;
 	});
 });
 

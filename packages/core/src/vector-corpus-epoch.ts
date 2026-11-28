@@ -1,5 +1,4 @@
 import type { Database } from "better-sqlite3";
-import { physicalTableName } from "./project-storage-connection.js";
 
 const TRIGGERS = [
 	["insert", "AFTER INSERT", ""],
@@ -19,9 +18,7 @@ const TRIGGERS = [
 function hasCurrentTriggers(db: Database): boolean {
 	const select = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?");
 	return TRIGGERS.every(
-		({ name, sql }) =>
-			(select.get(name) as { sql: string } | undefined)?.sql ===
-			sql.replace("ON memory_items", `ON ${physicalTableName(db, "memory_items")}`),
+		({ name, sql }) => (select.get(name) as { sql: string } | undefined)?.sql === sql,
 	);
 }
 

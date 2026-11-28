@@ -289,6 +289,22 @@ must refuse that store, while the current build must still return the record.
 The harness also runs the released daemon's sync pass on its direct SQLite
 connection and attempts database initialization. Metadata commands can still
 inspect the file. They do not need access to the memory or replication tables.
+Afterwards no moved table may exist under its released name, except the two
+reference tables that released sync passes recreate. Those must be empty, and
+the current build must still open the store.
+
+To check that released extraction replay cannot send stored transcripts to an
+observer, run:
+
+```
+pnpm exec tsx e2e/scripts/serving-proof-replay.ts --releases "$RELEASE_BUILDS"
+```
+
+For each release this stores a raw-event batch containing a canary and starts
+a local observer stub. Before the transition, the release's `diagnostics
+extraction replay` must reach the stub with the canary. After the transition it
+must exit with an error before sending any request, and the current build must
+still replay the batch to the stub.
 
 To check the maintenance window separately, run:
 

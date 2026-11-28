@@ -462,6 +462,7 @@ export {
 	hasPendingDedupKeyBackfill,
 	runDedupKeyBackfillPass,
 } from "./dedup-key-backfill.js";
+export { readDeviceStorageShape } from "./device-database-open.js";
 export type {
 	DeviceIdentityBindingActionV1,
 	DeviceIdentityBindingCommitRequestV1,
