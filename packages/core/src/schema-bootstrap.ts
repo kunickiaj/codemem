@@ -1,4 +1,5 @@
 import type { Database } from "better-sqlite3";
+import { ensureCoordinatorHistorySchema } from "./coordinator-history.js";
 import {
 	getSchemaVersion,
 	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
@@ -935,6 +936,8 @@ export function bootstrapSchema(db: Database): void {
 		ensureUsageEventsAggregateIndex(db);
 		ensureSyncStatusIndexes(db);
 		ensureVectorCorpusEpoch(db);
+		// Last, so its triggers attach to every table created above.
+		ensureCoordinatorHistorySchema(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
 	}).immediate();

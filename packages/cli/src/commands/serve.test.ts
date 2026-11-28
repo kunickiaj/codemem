@@ -767,6 +767,70 @@ describe("service process recognition", () => {
 	});
 });
 
+describe("serve startup records coordinator settings", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+
+	it("records a coordinator set only in the environment before any listener opens, with sync off", async () => {
+		// Arrange: a real store, sync disabled so no refresh runs, and the coordinator only in env.
+		const dir = mkdtempSync(join(tmpdir(), "codemem-serve-history-"));
+		const configPath = join(dir, "config.json");
+		writeFileSync(configPath, "{}");
+		const store = new MemoryStore(join(dir, "mem.sqlite"));
+		try {
+			vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", "https://coord.example.test");
+			vi.stubEnv("CODEMEM_SYNC_ENABLED", "0");
+			vi.spyOn(core, "acquireViewerWriterLock").mockReturnValue({ path: "", release() {} });
+			vi.spyOn(core, "ObserverClient").mockImplementation(class {} as never);
+			vi.spyOn(core, "RawEventSweeper").mockImplementation(
+				class {
+					start = vi.fn();
+				} as never,
+			);
+			vi.spyOn(server, "getStore").mockReturnValue(store);
+			vi.spyOn(server, "createViewerRawEventInbox").mockReturnValue({
+				inbox: { start: vi.fn() },
+			} as never);
+			vi.spyOn(server, "createAccountContextReader").mockReturnValue(vi.fn());
+			vi.spyOn(server, "createAccountLinkRegistry").mockReturnValue({} as never);
+			vi.spyOn(server, "createAccountRebindRunner").mockReturnValue(vi.fn());
+			vi.spyOn(server, "resumeAccountRebind").mockResolvedValue(null);
+			vi.spyOn(server, "createAccountOwnerRecoveryService").mockReturnValue(undefined as never);
+			vi.spyOn(server, "createViewerRelayReachability").mockReturnValue(null);
+			// The app is built before any listener opens, so stopping here proves the order.
+			const stop = new Error("app options captured");
+			let sourcesAtAppBuild: unknown[] = [];
+			vi.spyOn(server, "createApp").mockImplementation(() => {
+				sourcesAtAppBuild = store.db
+					.prepare("SELECT source FROM coordinator_history WHERE subject_kind = 'store'")
+					.pluck()
+					.all();
+				throw stop;
+			});
+
+			// Act
+			await expect(
+				startForegroundViewer(
+					resolveLegacyServeInvocation({
+						dbPath: store.dbPath,
+						config: configPath,
+						host: "127.0.0.1",
+						port: "38889",
+					}),
+				),
+			).rejects.toBe(stop);
+
+			// Assert
+			expect(sourcesAtAppBuild).toEqual(["config"]);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("serve relay wiring", () => {
 	const context = { db: {} as never, dbPath: "mem.sqlite", keysDir: "keys" };
 	afterEach(() => {

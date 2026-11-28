@@ -238,6 +238,25 @@ async function fixture() {
 	};
 }
 
+it("records coordinator history before the first owner enrollment request", async () => {
+	// Arrange
+	const c = await fixture();
+	const seen: unknown[][] = [];
+	const fetch: typeof globalThis.fetch = async (input, init) => {
+		const db = connect(join(profileDir, "mem.sqlite"));
+		try {
+			seen.push(db.prepare("SELECT source FROM coordinator_history").pluck().all());
+		} finally {
+			db.close();
+		}
+		return c.options.fetch(input, init);
+	};
+	// Act
+	await runOwnerEnrollment({ ...c.options, fetch });
+	// Assert
+	expect(seen[0]).toEqual(["enrollment"]);
+});
+
 it.each(["success", "lost-final", "config-write", "config-write-rotated"])(
 	"adopts receipt identity and preserves key through reopen and %s retry",
 	async (mode) => {

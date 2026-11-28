@@ -6,6 +6,10 @@ import {
 	normalizeAddress,
 } from "./address-utils.js";
 import {
+	recordListedCoordinatorPeers,
+	recordStoreCoordinatorHistory,
+} from "./coordinator-history.js";
+import {
 	fetchPeerRemovalLookup,
 	type PeerRemovalLookup,
 	type PeerRevocationCheckStatus,
@@ -252,6 +256,8 @@ export async function registerCoordinatorPresence(
 	options?: { keysDir?: string },
 ): Promise<{ groups: string[]; responses: Record<string, unknown>[] } | null> {
 	if (!coordinatorEnabled(config)) return null;
+	// Presence announces this device to the coordinator, so it is recorded before the request.
+	recordStoreCoordinatorHistory(store.db, "presence");
 	const keysDir = options?.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
 	const publicKey = loadPublicKey(keysDir);
@@ -352,7 +358,10 @@ export async function lookupCoordinatorPeers(
 			mergeCoordinatorPeerGroup(existing, record, groupId, freshAddresses);
 		}
 	}
-	return [...merged.values()];
+	const peers = [...merged.values()];
+	// Before any caller trusts a listed device or refreshes a pin from this listing.
+	recordListedCoordinatorPeers(store.db, peers);
+	return peers;
 }
 
 function mergeCoordinatorPeerGroup(
