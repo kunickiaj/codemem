@@ -29,7 +29,7 @@ import {
 import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
-import { syncEntryTooLargeMessage } from "./sync-entry-size.js";
+import { parseSyncEntryTooLarge, SyncEntryTooLargeReply } from "./sync-entry-size.js";
 import { type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
 import {
 	clearReplicationCursorLastApplied,
@@ -160,8 +160,6 @@ function snapshotRequestExecutor(options?: BootstrapOptions): RequestJsonExecuto
 }
 
 function snapshotFailureDetail(status: number, payload: Record<string, unknown> | null): string {
-	const tooLarge = syncEntryTooLargeMessage(payload);
-	if (tooLarge) return tooLarge;
 	const error = payload?.error ? String(payload.error) : "";
 	const reason = payload?.reason ? String(payload.reason) : "";
 	if (!error) return `status ${status}`;
@@ -222,6 +220,8 @@ export async function fetchAllSnapshotPages(
 
 		const [status, payload] = await requestExecutor("GET", url, { headers, timeoutS });
 		if (status !== 200 || !payload) {
+			const tooLarge = parseSyncEntryTooLarge(payload);
+			if (tooLarge) throw new SyncEntryTooLargeReply(tooLarge, "snapshot fetch failed");
 			throw new Error(`snapshot fetch failed: ${snapshotFailureDetail(status, payload)}`);
 		}
 

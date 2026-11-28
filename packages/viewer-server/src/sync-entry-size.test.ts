@@ -108,3 +108,36 @@ it("names the op in a channel's 409 while the plain listener still sends it", as
 		"big-op",
 	]);
 });
+
+/** A peer whose pull reply claims a size refusal but carries its own text. */
+function forgeSizeRefusal(f: Awaited<ReturnType<typeof pass>>, path: "/v1/snapshot" | "/v1/ops") {
+	const forged = { error: "sync_entry_too_large: arbitrary\n\u001b[31mtext" };
+	f.control.afterDispatch = (request, response) =>
+		request.method === "GET" && new URL(request.url).pathname === path
+			? { status: 409, bodyBytes: Buffer.from(JSON.stringify(forged)) }
+			: response;
+}
+
+it("keeps a peer's text out of the snapshot failure when its size refusal doesn't check out", async () => {
+	const f = await pass();
+	f.seed("remote", "small-memory");
+	forgeSizeRefusal(f, "/v1/snapshot");
+
+	const result = await syncScopedChannelOnce(f.options);
+
+	expect(result.ok).toBe(false);
+	expect(result.error).toBe("channel pull failed");
+	expect(result).not.toHaveProperty("entryTooLarge");
+});
+
+it("keeps a peer's text out of the ops failure when its size refusal doesn't check out", async () => {
+	const f = await pass();
+	setReplicationCursor(f.client.db, f.remote.localDeviceId, { lastApplied: INITIAL }, SCOPE);
+	f.seed("remote", "small-memory");
+	forgeSizeRefusal(f, "/v1/ops");
+
+	const result = await syncScopedChannelOnce(f.options);
+
+	expect(result.ok).toBe(false);
+	expect(result.error).toBe("channel pull failed");
+});

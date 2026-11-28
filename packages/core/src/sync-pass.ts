@@ -47,7 +47,12 @@ import {
 	hasCompletedSyncChannelBoundary,
 } from "./sync-channel-progress.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
-import { syncEntryTooLargeMessage } from "./sync-entry-size.js";
+import {
+	entryTooLargeOf,
+	parseSyncEntryTooLarge,
+	type SyncEntryTooLargeRefusal,
+	syncEntryTooLargeMessage,
+} from "./sync-entry-size.js";
 import {
 	categorizeSyncFailure,
 	storedAddressFailureCategory,
@@ -184,6 +189,8 @@ export interface SyncScopeResult {
 	/** First local relay route failure for a relay channel pass. Never sent to peers. */
 	relayFailureReason?: RelayFailureReason;
 	resetRequired?: SyncResetRequired;
+	/** The peer's checked refusal of an entry too large for this connection. */
+	entryTooLarge?: SyncEntryTooLargeRefusal;
 	/**
 	 * True when the pass began with an empty cursor and no local rows in the
 	 * scope, triggering a `/v1/snapshot` bootstrap. False for incremental
@@ -226,13 +233,21 @@ export function cursorAdvances(current: string | null, candidate: string | null)
 	return candidate > current;
 }
 
+/** A scope failure's text, with the peer's checked size refusal when there is one. */
+function scopeError(
+	error: string,
+	entryTooLarge: SyncEntryTooLargeRefusal | null | undefined,
+): Pick<SyncScopeResult, "error" | "entryTooLarge"> {
+	return entryTooLarge ? { error, entryTooLarge } : { error };
+}
+
 /**
  * Extract an error detail string from a JSON response payload.
  */
 function errorDetail(payload: Record<string, unknown> | null): string | null {
 	if (!payload) return null;
-	const tooLarge = syncEntryTooLargeMessage(payload);
-	if (tooLarge) return tooLarge;
+	const tooLarge = parseSyncEntryTooLarge(payload);
+	if (tooLarge) return syncEntryTooLargeMessage(tooLarge);
 	const error = payload.error;
 	const reason = payload.reason;
 	if (typeof error === "string" && typeof reason === "string") {
@@ -1088,7 +1103,7 @@ async function syncOneScope(
 				failureCategory: scopeFailureCategory(error),
 				opsIn: 0,
 				opsOut: 0,
-				error,
+				...scopeError(error, entryTooLargeOf(err)),
 				bootstrapped: true,
 			};
 		}
@@ -1162,7 +1177,7 @@ async function syncOneScope(
 				failureCategory: scopeFailureCategory(error),
 				opsIn: 0,
 				opsOut: 0,
-				error,
+				...scopeError(error, entryTooLargeOf(err)),
 				bootstrapped: true,
 			};
 		}
@@ -1253,7 +1268,7 @@ async function syncOneScope(
 				failureCategory: scopeFailureCategory(error),
 				opsIn: 0,
 				opsOut: 0,
-				error,
+				...scopeError(error, parseSyncEntryTooLarge(payload)),
 				bootstrapped: false,
 			};
 		}
@@ -1382,7 +1397,7 @@ async function syncOneScope(
 			failureCategory: scopeFailureCategory(error),
 			opsIn: 0,
 			opsOut: 0,
-			error,
+			...scopeError(error, entryTooLargeOf(err)),
 			bootstrapped: false,
 		};
 	}

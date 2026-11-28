@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	entriesWithinLimit,
+	parseSyncEntryTooLarge,
 	SyncEntryTooLargeError,
-	syncEntryTooLargeGuidance,
 	syncEntryTooLargeMessage,
 } from "./sync-entry-size.js";
 
@@ -30,7 +30,7 @@ describe("sync entry size", () => {
 		});
 	});
 
-	it("turns a peer's refusal into recovery guidance", () => {
+	it("turns a peer's checked refusal into recovery guidance", () => {
 		const reply = {
 			error: "sync_entry_too_large",
 			kind: "snapshot_item",
@@ -38,34 +38,35 @@ describe("sync entry size", () => {
 			bytes: 20 * MiB,
 			limit: 16 * MiB,
 		};
-		expect(syncEntryTooLargeMessage(reply)).toBe(
+		const refusal = parseSyncEntryTooLarge(reply);
+		expect(refusal).toEqual({
+			kind: "snapshot_item",
+			key: "memory-source-v1:abc",
+			bytes: 20 * MiB,
+			limit: 16 * MiB,
+		});
+		expect(refusal && syncEntryTooLargeMessage(refusal)).toBe(
 			"sync_entry_too_large: memory memory-source-v1:abc is 20.0 MiB, over the 16.0 MiB this connection carries. Trim or delete it on the peer, or exclude its project, then sync again.",
 		);
-		expect(syncEntryTooLargeMessage({ ...reply, kind: "op", key: "op-1" })).toContain(
-			"change op-1",
-		);
-		expect(syncEntryTooLargeMessage({ error: "reset_required" })).toBeNull();
-		expect(syncEntryTooLargeMessage(null)).toBeNull();
+		const op = parseSyncEntryTooLarge({ ...reply, kind: "op", key: "op-1" });
+		expect(op && syncEntryTooLargeMessage(op)).toContain("change op-1");
+	});
+
+	it.each([
+		["another error", { error: "reset_required" }],
+		["no payload", null],
+		["text after the code", { error: "sync_entry_too_large: arbitrary\n\u001b[31mtext" }],
+		["an unknown kind", { error: "sync_entry_too_large", kind: "x", bytes: 1, limit: 1 }],
+		["a string size", { error: "sync_entry_too_large", kind: "op", bytes: "1", limit: 1 }],
+		["a negative size", { error: "sync_entry_too_large", kind: "op", bytes: -1, limit: 1 }],
+		["a fractional limit", { error: "sync_entry_too_large", kind: "op", bytes: 1, limit: 0.5 }],
+	])("refuses %s as a size refusal", (_label, payload) => {
+		expect(parseSyncEntryTooLarge(payload as Record<string, unknown> | null)).toBeNull();
 	});
 
 	it("keeps peer-chosen key text out of local errors unless it is a plain identifier", () => {
 		const reply = { error: "sync_entry_too_large", kind: "op", bytes: MiB, limit: 1 };
 		for (const key of ["line\nbreak", "\u001b[31mred", "x".repeat(201), 42])
-			expect(syncEntryTooLargeMessage({ ...reply, key })).toContain("change unknown is");
-	});
-
-	it("finds the guidance inside a wrapped error", () => {
-		const guidance = syncEntryTooLargeMessage({
-			error: "sync_entry_too_large",
-			kind: "op",
-			key: "op-1",
-			bytes: MiB,
-			limit: 1,
-		});
-		expect(syncEntryTooLargeGuidance(`peer scoped ops fetch failed (409: ${guidance})`)).toBe(
-			guidance,
-		);
-		expect(syncEntryTooLargeGuidance("peer scoped ops fetch failed (409: other)")).toBeNull();
-		expect(syncEntryTooLargeGuidance(undefined)).toBeNull();
+			expect(parseSyncEntryTooLarge({ ...reply, key })?.key).toBe("unknown");
 	});
 });

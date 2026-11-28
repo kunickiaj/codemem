@@ -68,21 +68,52 @@ function printableKey(value: unknown): string {
 	return typeof value === "string" && /^[A-Za-z0-9:_.+/=-]{1,200}$/.test(value) ? value : "unknown";
 }
 
-/** Recovery guidance for a peer's sync_entry_too_large reply, or null for any other reply. */
-export function syncEntryTooLargeMessage(payload: Record<string, unknown> | null): string | null {
-	if (payload?.error !== SYNC_ENTRY_TOO_LARGE) return null;
-	const key = printableKey(payload.key);
-	const bytes = Number(payload.bytes);
-	const limit = Number(payload.limit);
-	if (!Number.isFinite(bytes) || !Number.isFinite(limit)) return SYNC_ENTRY_TOO_LARGE;
-	const entry = payload.kind === "op" ? "change" : "memory";
-	return `${SYNC_ENTRY_TOO_LARGE}: ${entry} ${key} is ${mebibytes(bytes)} MiB, over the ${mebibytes(limit)} MiB this connection carries. Trim or delete it on the peer, or exclude its project, then sync again.`;
+/** A peer's sync_entry_too_large reply, after every field was checked. */
+export interface SyncEntryTooLargeRefusal {
+	readonly kind: SyncEntryKind;
+	/** Only plain identifier characters, or "unknown". */
+	readonly key: string;
+	readonly bytes: number;
+	readonly limit: number;
 }
 
-/** The guidance inside a local error string, so wrappers that replace error text can keep it. */
-export function syncEntryTooLargeGuidance(error: string | undefined): string | null {
-	const start = error?.indexOf(`${SYNC_ENTRY_TOO_LARGE}: `) ?? -1;
-	if (!error || start < 0) return null;
-	const guidance = error.slice(start);
-	return guidance.endsWith(")") ? guidance.slice(0, -1) : guidance;
+const byteCount = (value: unknown): number | null =>
+	typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+/** The checked refusal in a peer's reply, or null for any other reply. */
+export function parseSyncEntryTooLarge(
+	payload: Record<string, unknown> | null,
+): SyncEntryTooLargeRefusal | null {
+	if (payload?.error !== SYNC_ENTRY_TOO_LARGE) return null;
+	if (payload.kind !== "op" && payload.kind !== "snapshot_item") return null;
+	const bytes = byteCount(payload.bytes);
+	const limit = byteCount(payload.limit);
+	if (bytes === null || limit === null) return null;
+	return { kind: payload.kind, key: printableKey(payload.key), bytes, limit };
+}
+
+/**
+ * Recovery guidance, composed here from a checked refusal. Peer text never
+ * reaches it, so callers keep it as structured data and build the message
+ * from that, never by searching an error string.
+ */
+export function syncEntryTooLargeMessage(refusal: SyncEntryTooLargeRefusal): string {
+	const entry = refusal.kind === "op" ? "change" : "memory";
+	return `${SYNC_ENTRY_TOO_LARGE}: ${entry} ${refusal.key} is ${mebibytes(refusal.bytes)} MiB, over the ${mebibytes(refusal.limit)} MiB this connection carries. Trim or delete it on the peer, or exclude its project, then sync again.`;
+}
+
+/** A snapshot page refused as too large. It carries the checked refusal for the caller. */
+export class SyncEntryTooLargeReply extends Error {
+	constructor(
+		readonly refusal: SyncEntryTooLargeRefusal,
+		context: string,
+	) {
+		super(`${context}: ${syncEntryTooLargeMessage(refusal)}`);
+		this.name = "SyncEntryTooLargeReply";
+	}
+}
+
+/** The checked refusal an error carries, if it is a snapshot page refused as too large. */
+export function entryTooLargeOf(error: unknown): SyncEntryTooLargeRefusal | undefined {
+	return error instanceof SyncEntryTooLargeReply ? error.refusal : undefined;
 }
