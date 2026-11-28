@@ -313,6 +313,7 @@ CREATE TABLE IF NOT EXISTS groups (
   group_id TEXT PRIMARY KEY,
   display_name TEXT,
   archived_at TEXT,
+  readiness_generation TEXT,
   created_at TEXT NOT NULL
 );
 

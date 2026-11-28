@@ -21,6 +21,7 @@ import {
 	rebindFixture,
 	TARGET,
 } from "./coordinator-device-rebind-test-fixtures.js";
+import { captureEnrollmentBatch } from "./coordinator-enrollment-receipt-test-fixtures.js";
 import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
@@ -39,12 +40,48 @@ const identities = () =>
 type Backend = "SQLite" | "D1";
 
 function registerCommit(kind: Backend) {
+	it("rebinds one enrollment and invalidates its preparation", async () => {
+		f = await rebindFixture(kind, ["group-a"]);
+		f.db.exec("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-a'");
+		const counts: number[] = [];
+		const input = f.input();
+		expect(
+			await commitDeviceRebind({
+				...input,
+				backend: captureEnrollmentBatch(input.backend, counts),
+			}),
+		).toMatchObject({ kind: "committed" });
+		expect(counts).toEqual([1]);
+		expect(
+			f.db
+				.prepare("SELECT readiness_generation FROM groups WHERE group_id='group-a'")
+				.pluck()
+				.get(),
+		).toBeNull();
+	});
 	it("binds the device, moves every enrollment of its key, and records one audit event", async () => {
 		// Arrange
 		f = await rebindFixture(kind);
 		const grants = f.db.prepare("SELECT * FROM coordinator_identity_group_grants").all();
+		const counts: number[] = [];
+		f.db.exec(
+			"UPDATE groups SET readiness_generation='prepared' WHERE group_id IN (SELECT group_id FROM enrolled_devices WHERE device_id='device-work')",
+		);
 		// Act
-		const result = await commitDeviceRebind(f.input());
+		const input = f.input();
+		const result = await commitDeviceRebind({
+			...input,
+			backend: captureEnrollmentBatch(input.backend, counts),
+		});
+		expect(counts).toEqual([GROUPS.length]);
+		expect(
+			f.db
+				.prepare(
+					"SELECT readiness_generation FROM groups WHERE group_id IN (SELECT group_id FROM enrolled_devices WHERE device_id='device-work')",
+				)
+				.pluck()
+				.all(),
+		).toEqual(GROUPS.map(() => null));
 		// Assert
 		expect(result).toMatchObject({
 			kind: "committed",

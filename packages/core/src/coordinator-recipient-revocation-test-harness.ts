@@ -546,7 +546,19 @@ async function changeFirstGate(
 }
 
 // Keep real prepared statements and transactional batch execution; only intercept execution.
-export function recipientGuardedD1(db: D1DatabaseLike, hook: RecipientWriteHook) {
+export function recipientGuardedD1(
+	db: D1DatabaseLike,
+	hook: RecipientWriteHook,
+	observe?: (query: string, result: unknown) => void,
+) {
+	return new D1CoordinatorStore(observeD1Statements(db, hook, observe));
+}
+
+export function observeD1Statements(
+	db: D1DatabaseLike,
+	hook: RecipientWriteHook,
+	observe?: (query: string, result: unknown) => void,
+): D1DatabaseLike {
 	const originals = new WeakMap<D1PreparedStatementLike, D1PreparedStatementLike>();
 	const writes = new WeakMap<D1PreparedStatementLike, RecipientWrite>();
 	const wrap = (
@@ -561,14 +573,16 @@ export function recipientGuardedD1(db: D1DatabaseLike, hook: RecipientWriteHook)
 			raw: <T>() => statement.raw<T>(),
 			run: async () => {
 				await hook([{ query, values }], "write");
-				return statement.run();
+				const result = await statement.run();
+				observe?.(query, result);
+				return result;
 			},
 		};
 		originals.set(adapter, statement);
 		writes.set(adapter, { query, values });
 		return adapter;
 	};
-	return new D1CoordinatorStore({
+	return {
 		prepare: (query) => wrap(db.prepare(query), query),
 		batch: async (statements) => {
 			await hook(
@@ -580,15 +594,18 @@ export function recipientGuardedD1(db: D1DatabaseLike, hook: RecipientWriteHook)
 				"batch",
 			);
 			if (!db.batch) throw new Error("Fixture batch unavailable");
-			return db.batch(
+			const results = await db.batch(
 				statements.map((s) => {
 					const original = originals.get(s);
 					if (!original) throw new Error("Unknown recipient fixture statement");
 					return original;
 				}),
 			);
+			for (const [index, statement] of statements.entries())
+				observe?.(writes.get(statement)?.query ?? "", results[index]);
+			return results;
 		},
-	});
+	};
 }
 
 function registerLaterWriteGuards(

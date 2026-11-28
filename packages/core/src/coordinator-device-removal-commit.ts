@@ -132,10 +132,10 @@ THEN json('device_removal_incomplete') ELSE 1 END AS complete`,
 	};
 }
 
-/** Nine writes and three reads, independent of the number of enrollments. */
+/** Ten writes and three reads, independent of the number of enrollments. */
 export function removalCommitStatements(
 	target: DeviceRemovalTarget,
-	op: CommitOperation,
+	op: CommitOperation & { readiness: boolean },
 	available: string,
 ): Statement[] {
 	const pairs = JSON.stringify(target.rows.map((row) => [row.group_id, row.device_id]));
@@ -152,6 +152,7 @@ FROM coordinator_device_removals t WHERE ${OWN_SQL} ORDER BY t.group_id, t.devic
 			read: true,
 		},
 		{ sql: `SELECT (${available}) AS available`, values: [], read: true },
+		...dependents.invalidate,
 	];
 	return [
 		insertStatement(target, op, available),

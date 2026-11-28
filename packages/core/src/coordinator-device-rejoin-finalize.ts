@@ -12,6 +12,11 @@ import {
 	rejoinLinkEvidenceCtes,
 } from "./coordinator-device-rejoin-link-evidence.js";
 import { verifyDeviceRejoinProof } from "./coordinator-device-rejoin-proof.js";
+import {
+	hasReadinessGeneration,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 
 const ATTEMPTS = "coordinator_device_rejoin_attempts";
 const DAY_MS = 86_400_000;
@@ -229,6 +234,7 @@ function finalizeEffects(
 	c: DeviceRejoinFinalizeScope,
 	receipt: RejoinReceipt,
 	encoded: string,
+	readiness: boolean,
 ): AuthLinkStatement[] {
 	const match =
 		"a.coordinator_id = ? AND a.attempt_id = ? AND a.state = 'finalized' AND a.final_receipt_json = ?";
@@ -253,6 +259,11 @@ function finalizeEffects(
 			values: [timestamp, ...winner],
 		},
 		changedRows(receipt.group_ids.length),
+		...readinessInvalidation(readiness, {
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
+ (SELECT g.value FROM ${ATTEMPTS} a, json_each(a.final_receipt_json,'$.group_ids') g WHERE ${match})`,
+			values: winner,
+		}),
 		{
 			sql: `INSERT INTO coordinator_device_rejoin_audit_log
  (coordinator_id, event_id, attempt_id, identity_id, device_id, binding_id, group_count, finalized_at_ms)
@@ -324,7 +335,12 @@ export async function finalizeDeviceRejoin(
 		[
 			winningUpdate(c, i, storage, row, encoded),
 			changedRows(),
-			...finalizeEffects(c, receipt, encoded),
+			...finalizeEffects(
+				c,
+				receipt,
+				encoded,
+				knownReadinessGeneration(backend) || (await hasReadinessGeneration(backend)),
+			),
 		],
 	);
 	if (wrote === "committed") return { kind: "finalized", receipt };

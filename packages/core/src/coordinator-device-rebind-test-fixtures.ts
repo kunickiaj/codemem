@@ -59,9 +59,10 @@ function exec(db: Database.Database, sql: string, ...values: unknown[]) {
 function seedCoordinator(
 	db: Database.Database,
 	device: Pick<DeviceRebindAttempt, "public_key" | "fingerprint">,
+	groups: readonly string[],
 ) {
 	const created = new Date(NOW).toISOString();
-	for (const group of GROUPS) {
+	for (const group of groups) {
 		exec(db, "INSERT INTO groups (group_id, created_at) VALUES (?, ?)", group, created);
 		// The migrated device: one group recorded no Identity, the other the old one.
 		exec(
@@ -91,7 +92,11 @@ function seedCoordinator(
 	seedConnectionOrder(db, COORDINATOR);
 }
 
-async function confirmedAttempt(publicKey: string, secret: string): Promise<DeviceRebindAttempt> {
+async function confirmedAttempt(
+	publicKey: string,
+	secret: string,
+	count: number,
+): Promise<DeviceRebindAttempt> {
 	const attempt: DeviceRebindAttempt = {
 		coordinator_id: COORDINATOR,
 		attempt_id: "rebind-attempt-a",
@@ -113,7 +118,7 @@ async function confirmedAttempt(publicKey: string, secret: string): Promise<Devi
 		link_authority_kind: "device_claim",
 		review_digest: "e".repeat(64),
 		team_effects_json: JSON.stringify({ requests: [] }),
-		enrollment_count: GROUPS.length,
+		enrollment_count: count,
 		confirmation_hash: null,
 		completion_secret_hash: await hashCoordinatorAuthProofBytes32(Buffer.from(secret, "base64url")),
 		final_key_proof_hash: null,
@@ -140,14 +145,17 @@ function insertAttempt(db: Database.Database, attempt: DeviceRebindAttempt) {
 }
 
 /** A migrated device enrolled in two groups, confirmed to rebind to TARGET. */
-export async function rebindFixture(kind: Backend): Promise<RebindFixture> {
+export async function rebindFixture(
+	kind: Backend,
+	groups: readonly string[] = GROUPS,
+): Promise<RebindFixture> {
 	const store = setupStore(kind);
 	const { db } = store;
 	const backend = kind === "SQLite" ? nativeBackend(db) : createD1AuthLinkBackend(sqliteD1(db));
 	const key = commitPendingKey();
 	const secret = Buffer.alloc(32, 7).toString("base64url");
-	const attempt = await confirmedAttempt(key.publicKey, secret);
-	seedCoordinator(db, attempt);
+	const attempt = await confirmedAttempt(key.publicKey, secret, groups.length);
+	seedCoordinator(db, attempt, groups);
 	insertAttempt(db, attempt);
 	const rows = (table: string) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
 	return {

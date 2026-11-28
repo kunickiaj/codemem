@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { captureEnrollmentBatch } from "../../core/src/coordinator-enrollment-receipt-test-fixtures.js";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { expect, it } from "vitest";
 import { hashCoordinatorAuthProofBytes32 } from "../../core/src/coordinator-auth-proof.js";
@@ -33,7 +34,7 @@ function deviceKey() {
 	};
 }
 
-async function seed(suffix: string) {
+async function seed(suffix: string, groups = [`group-a-${suffix}`, `group-b-${suffix}`]) {
 	const key = deviceKey();
 	const secret = createHash("sha256").update(`secret-${suffix}`).digest("base64url");
 	const device = `device-${suffix}`;
@@ -59,7 +60,7 @@ async function seed(suffix: string) {
 		link_authority_kind: "device_claim",
 		review_digest: "e".repeat(64),
 		team_effects_json: "{\"requests\":[]}",
-		enrollment_count: 2,
+		enrollment_count: groups.length,
 		confirmation_hash: null,
 		completion_secret_hash: await hashCoordinatorAuthProofBytes32(Buffer.from(secret, "base64url")),
 		final_key_proof_hash: null,
@@ -73,7 +74,6 @@ async function seed(suffix: string) {
 	};
 	attempt.confirmation_hash = await deviceRebindConfirmationHash(attempt);
 	const entries = Object.entries(attempt);
-	const groups = [`group-a-${suffix}`, `group-b-${suffix}`];
 	await db.batch([
 		...groups.flatMap((group) => [
 			db.prepare("INSERT INTO groups (group_id, created_at) VALUES (?, 'created')").bind(group),
@@ -119,11 +119,26 @@ const identities = async (device: string) =>
 			.all<{ identity_id: string | null }>()
 	).results.map((row) => row.identity_id);
 
+it("a native single-enrollment rebind reports exactly one change", async () => {
+	const f = await seed("single", ["group-single"]);
+	await db.prepare("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-single'").run();
+	const counts:number[] = [];
+	const input = f.input();
+	expect(await commitDeviceRebind({...input,backend:captureEnrollmentBatch(input.backend,counts)})).toMatchObject({kind:"committed"});
+	expect(counts).toEqual([1]);
+	expect(await db.prepare("SELECT readiness_generation FROM groups WHERE group_id='group-single'").raw()).toEqual([[null]]);
+});
+
 it("native D1 commits a rebind atomically and returns the same receipt on retry", async () => {
 	// Arrange
 	const f = await seed("commit");
+	const counts: number[] = [];
+	const input = f.input();
+	await db.prepare("UPDATE groups SET readiness_generation='prepared' WHERE group_id IN ('group-a-commit','group-b-commit')").run();
 	// Act
-	const first = await commitDeviceRebind(f.input());
+	const first = await commitDeviceRebind({...input, backend:captureEnrollmentBatch(input.backend, counts)});
+	expect(counts).toEqual([2]);
+	expect(await db.prepare("SELECT readiness_generation FROM groups WHERE group_id IN ('group-a-commit','group-b-commit')").raw()).toEqual([[null],[null]]);
 	const retry = await commitDeviceRebind(f.input());
 	// Assert
 	if (first.kind !== "committed") throw new Error(`expected a commit, got ${first.kind}`);

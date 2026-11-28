@@ -942,6 +942,16 @@ longer remove a device, and it can no longer enroll a device that is already enr
 removal exists. Apply `0049` in the same window as the 0.50 Worker deploy. A SQLite coordinator installs the same
 triggers the first time 0.50 opens its file, so an older binary pointed at that file fails the same way.
 
+Migration `0056_add_readiness_preparations.sql` adds the nullable column on
+`groups` that the Worker clears on enrollment and recipient changes, including
+scope policy updates and device revocations. A Worker deployed before the
+migration keeps accepting those writes without clearing anything, because no
+group can hold a generation until the column exists. It checks for the column
+before each such write until it finds it, then clears generations in the same
+batch as the write. Apply the migration before starting any preparation.
+SQLite adds the column on startup. It starts NULL for every group. This
+migration does not start a preparation or change access.
+
 Before resuming writers on D1, fill the key IDs of enrollments that predate `0048`.
 The migration leaves them null because SQL cannot compute the Ed25519 key ID.
 Device removal remains unavailable until every enrollment has a key ID. SQLite fills

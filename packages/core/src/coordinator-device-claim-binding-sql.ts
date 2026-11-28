@@ -28,6 +28,10 @@ import {
 } from "./coordinator-device-claim-binding-reuse.js";
 import { legacyDecisionCountsAsOwnerSql } from "./coordinator-legacy-team-completion.js";
 import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
+import {
+	hasReadinessGeneration,
+	knownReadinessGeneration,
+} from "./coordinator-readiness-invalidation.js";
 
 export interface PreparedDeviceClaimBinding {
 	guard: AuthLinkStatement;
@@ -48,6 +52,8 @@ export interface PreparedDeviceClaimBinding {
 	negativeGuards: AuthLinkStatement[];
 	/** The retained facts only, checked again after the enrollment update. */
 	completedNegativeGuards: AuthLinkStatement[];
+	/** Whether `groups.readiness_generation` exists, so the binding clears readiness. */
+	readinessGeneration: boolean;
 }
 
 const LIVE_SIGNER = `EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id=e.group_id
@@ -221,6 +227,8 @@ async function prepareBinding(
 			: undefined,
 		negativeGuards: negative.guards,
 		completedNegativeGuards: existingBinding ? negative.retainedGuards : [],
+		readinessGeneration:
+			knownReadinessGeneration(backend) || (await hasReadinessGeneration(backend)),
 	};
 }
 
@@ -317,6 +325,12 @@ export function deviceClaimBindingStatements(
 				},
 				assertChanges(1),
 			];
+	if (plan.readinessGeneration && (!plan.existingBinding || plan.nullCount > 0))
+		writes.push({
+			sql: `UPDATE groups SET readiness_generation = NULL WHERE readiness_generation IS NOT NULL AND group_id IN
+ (SELECT json_extract(value,'$.groupId') FROM json_each(?) ${plan.existingBinding ? "WHERE json_extract(value,'$.identityId') IS NULL" : ""})`,
+			values: [plan.enrollments],
+		});
 	if (!options.winning) return writes;
 	const winning = options.winning;
 	return writes.map((statement) => ({

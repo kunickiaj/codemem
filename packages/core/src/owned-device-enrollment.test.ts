@@ -201,6 +201,7 @@ describe("D1 captured inputs and write receipts", () => {
 			const receipt = { public_key: ownedEnrollment.publicKey };
 			const db = sqliteD1(f.db);
 			const store = new D1CoordinatorStore({
+				...db,
 				prepare(sql) {
 					const statement = db.prepare(sql);
 					if (sql.startsWith("SELECT public_key FROM enrolled_devices"))

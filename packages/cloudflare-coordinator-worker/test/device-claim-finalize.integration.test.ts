@@ -1,4 +1,7 @@
 import { env } from "cloudflare:workers";
+import { deviceClaimBindingStatements, prepareFirstLinkDeviceClaimBinding } from "../../core/src/coordinator-device-claim-binding.js";
+import { enrollmentDml } from "../../core/src/coordinator-enrollment-receipt-test-fixtures.js";
+import { observeD1Statements } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
 import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
@@ -8,7 +11,11 @@ import { config, input, NOW, seedEnrollmentSql } from "./device-claim-eligibilit
 it("native D1 finalizes atomically, rolls back an audit fault, and retains the exact retry receipt", async () => {
 	// Arrange: actual migrated D1 batch, trusted provider metadata, no external HTTP.
 	await env.COORDINATOR_DB.batch(seedEnrollmentSql.split(";").map((sql) => sql.trim()).filter(Boolean).map((sql) => env.COORDINATOR_DB.prepare(sql)));
-	const store = new D1CoordinatorStore(env.COORDINATOR_DB, { authClock: () => NOW });
+	const counts: number[] = [];
+	const db = observeD1Statements(env.COORDINATOR_DB, async () => {}, (sql, result) => {
+		if (enrollmentDml.test(sql)) counts.push((result as D1Result).meta.changes);
+	});
+	const store = new D1CoordinatorStore(db, { authClock: () => NOW });
 	const request = { authority: { kind: "device_claim" as const, identityId: input.identityId }, signer: input.signer, attemptId: "attempt-a", runtimeVerifierHash: "b".repeat(64), browserStartHash: "e".repeat(64), loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete" };
 	const browserConfig = { ...config, redirectUri: "https://coordinator.example.test/auth/callback" };
 	const transaction = { purpose: "link" as const, attemptId: request.attemptId, browserStartHash: request.browserStartHash, stateHash: "3".repeat(64), binderHash: "4".repeat(64), nonce: "n".repeat(43), pkceVerifier: "p".repeat(43) };
@@ -27,6 +34,7 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	tables.push(...catalog.results.map(({ name }) => name).filter(name => !name.startsWith("_cf_") && !name.startsWith("coordinator_auth_") && !tables.includes(name)));
 	const snapshot = () => Promise.all(tables.map(async (name) => (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${name}`).all()).results));
 	await env.COORDINATOR_DB.exec("CREATE TRIGGER finalization_fault BEFORE INSERT ON coordinator_auth_link_audit_log BEGIN SELECT RAISE(ABORT,'injected_finalization_failure'); END");
+	await env.COORDINATOR_DB.prepare("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-a'").run();
 	const before = await snapshot();
 	// Act: a failure late in the real D1 batch must undo attempt consumption, proof and link.
 	const failed = await store.finalizeAuthLinkAttempt(proof, config).then(() => null, (error: unknown) => error);
@@ -36,6 +44,7 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	await env.COORDINATOR_DB.exec("DROP TRIGGER finalization_fault");
 	// Act: identical proof succeeds after rollback, then retries without another INSERT.
 	const result = await store.finalizeAuthLinkAttempt(proof, config);
+	expect(counts).toEqual([1]);
 	const committed = await snapshot();
 	const retry = await store.finalizeAuthLinkAttempt(proof, config);
 	// Assert
@@ -59,7 +68,9 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 		attempt_id: `device_claim:${claims?.[0]?.claim_id}`, action: "owner_device_rebound", binding_id: bindings?.[0]?.binding_id,
 		device_id: input.signer.deviceId, previous_identity_id: input.identityId, target_identity_id: input.identityId,
 		enrollment_count: 1, created_at_ms: NOW }]);
-	expect(committed.slice(8)).toEqual(before.slice(8));
+	expect(committed.slice(8)).toEqual(before.slice(8).map((rows, i) => tables[i + 8] === "groups"
+		? rows.map(row => row.group_id === "group-a" ? { ...row, readiness_generation:null } : row) : rows));
+	await checkReuse(store, counts);
 	expect(await store.getAuthLinkAttemptStatus(request.attemptId, { kind: "device", signer: input.signer }, config)).toEqual(result.kind === "applied" ? result.status : null);
 	// Act: consume the committed device link through the normal browser session API.
 	const credentialHash = "8".repeat(64);
@@ -89,3 +100,19 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	expect(revoked[6]).toEqual(bindings);
 	expect(revoked[7]).toEqual(bindingAudits);
 });
+
+async function checkReuse(store: D1CoordinatorStore, counts: number[]) {
+	const db = env.COORDINATOR_DB;
+	await db.batch([
+		db.prepare("UPDATE enrolled_devices SET identity_id=NULL WHERE device_id='device-a'"),
+		db.prepare("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-a'")
+	]);
+	const backend = await store.readDeviceRebindBackend();
+	if (!backend) throw new Error("missing claim backend");
+	const plan = await prepareFirstLinkDeviceClaimBinding(backend,{signer:input.signer,currentIdentityId:input.identityId},config,NOW);
+	if (!plan?.existingBinding) throw new Error("expected a reusable binding");
+	counts.length = 0;
+	await backend.batch(deviceClaimBindingStatements(plan,"unused","unused"));
+	expect(counts).toEqual([1]);
+	expect(await db.prepare("SELECT readiness_generation FROM groups WHERE group_id='group-a'").first()).toEqual({readiness_generation:null});
+}

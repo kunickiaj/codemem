@@ -16,6 +16,7 @@ import {
 } from "./coordinator-device-rejoin-confirmation-test-harness.js";
 import { finalizeDeviceRejoin } from "./coordinator-device-rejoin-finalize.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { captureEnrollmentBatch } from "./coordinator-enrollment-receipt-test-fixtures.js";
 
 type Fixture = RejoinConfirmationFixture & { batch: AuthLinkBackend["batch"] };
 
@@ -82,6 +83,16 @@ function backend(db: Fixture): AuthLinkBackend {
 export function registerRejoinFinalizeTests(
 	withFixture: (use: (db: Fixture) => Promise<void>) => Promise<void>,
 ) {
+	registerFinalizeSuccess(withFixture);
+	registerFinalizeRollback(withFixture);
+	registerFinalizeLimitTest(withFixture);
+	registerFinalizeRaceTests(withFixture);
+	registerFinalizeReceiptTests(withFixture);
+}
+
+function registerFinalizeSuccess(
+	withFixture: (use: (db: Fixture) => Promise<void>) => Promise<void>,
+) {
 	it("lifts exact tombstones and enrolls the signed device once", () =>
 		withFixture(async (db) => {
 			const input = await signedFinalize(db);
@@ -98,7 +109,20 @@ export function registerRejoinFinalizeTests(
 				devices: "[]",
 				audit: 0,
 			});
-			const result = await finalizeDeviceRejoin(backend(db), scope, input);
+			await db.run("UPDATE groups SET readiness_generation='prepared' WHERE group_id='group-a'");
+			const counts: number[] = [];
+			const result = await finalizeDeviceRejoin(
+				captureEnrollmentBatch(backend(db), counts),
+				scope,
+				input,
+			);
+			expect(counts).toEqual([1]);
+			expect(
+				await db.first({
+					sql: "SELECT readiness_generation FROM groups WHERE group_id='group-a'",
+					values: [],
+				}),
+			).toEqual({ readiness_generation: null });
 			expect(result).toMatchObject({
 				kind: "finalized",
 				receipt: {
@@ -118,7 +142,11 @@ export function registerRejoinFinalizeTests(
 				kind: "prior_commit",
 			});
 		}));
+}
 
+function registerFinalizeRollback(
+	withFixture: (use: (db: Fixture) => Promise<void>) => Promise<void>,
+) {
 	it("rolls back the finalized attempt and tombstone lifts if enrollment writes no row", () =>
 		withFixture(async (db) => {
 			const input = await signedFinalize(db);
@@ -135,10 +163,6 @@ export function registerRejoinFinalizeTests(
 				audit: 0,
 			});
 		}));
-
-	registerFinalizeLimitTest(withFixture);
-	registerFinalizeRaceTests(withFixture);
-	registerFinalizeReceiptTests(withFixture);
 }
 
 function registerFinalizeLimitTest(

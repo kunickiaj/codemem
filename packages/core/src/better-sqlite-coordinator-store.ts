@@ -9,6 +9,7 @@ import type { CoordinatorListDeviceRemovalsInput } from "./coordinator-device-re
 import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 import { membershipGrantStatement } from "./coordinator-membership-enrollment.js";
 import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-removal-query.js";
+import { scopePolicyUpdate } from "./coordinator-scope-policy-update.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
  *
@@ -324,6 +325,15 @@ import {
 import { selectDeviceListingCapabilities } from "./coordinator-presence-capabilities.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
+	hasReadinessGenerationSync,
+	INVALIDATE_CHANGED_GROUP,
+	INVALIDATE_CHANGED_SCOPE_GROUP,
+	INVALIDATE_FILLED_KEYS,
+	READINESS_GENERATION_PRESENT,
+	READINESS_PREPARATIONS_SCHEMA,
+	shareReadinessGenerationCheck,
+} from "./coordinator-readiness-invalidation.js";
+import {
 	readRecipientOwnerConsistency,
 	validateRecipientOwnerInput,
 } from "./coordinator-recipient-owner-consistency.js";
@@ -394,7 +404,6 @@ import {
 	normalizeCoordinatorCreateScopeInput,
 	normalizeCoordinatorGrantScopeMembershipInput,
 	normalizeCoordinatorInviteMetadata,
-	normalizeCoordinatorUpdateScopeInput,
 	normalizeEpoch,
 } from "./coordinator-store-input-rules.js";
 import {
@@ -509,6 +518,8 @@ function insertMembershipAuditSync(
 		input.current.manifest_hash,
 		input.createdAt,
 	);
+	if (hasReadinessGenerationSync(db))
+		db.prepare(INVALIDATE_CHANGED_SCOPE_GROUP).run(input.current.scope_id);
 }
 
 function getMembershipEffectReceiptSync(
@@ -868,6 +879,7 @@ function fillEnrollmentKeyIdsSync(db: DatabaseType): void {
 					})),
 				);
 				fill.run(json, json);
+				if (hasReadinessGenerationSync(db)) db.prepare(INVALIDATE_FILLED_KEYS).run(json);
 				after = last.row_id;
 			}
 		}).immediate();
@@ -1191,6 +1203,11 @@ export function initializeBaseSchema(db: DatabaseType): void {
 
 /** Storage numbered after the last auth stage. Each piece is installed only when it is incomplete. */
 function initializePostStageStorage(db: DatabaseType): void {
+	const hasGeneration = () => db.prepare(READINESS_GENERATION_PRESENT).pluck().get() === 1;
+	if (!hasGeneration())
+		db.transaction(() => {
+			if (!hasGeneration()) db.exec(READINESS_PREPARATIONS_SCHEMA);
+		}).immediate();
 	// Every enrollment writer needs this storage, whatever the account schema state.
 	initializeDeviceRemovalSchema(db);
 	initializeBoundaryReadinessSchema(db);
@@ -1392,6 +1409,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		);
 		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
 		this.accountChangeBackend = withCoordinatorAuthSchema(rawAuthBackend, { connections: true });
+		for (const backend of [ledgerBackend, rawAuthBackend, authBackend, this.accountChangeBackend])
+			shareReadinessGenerationCheck(backend, this.db);
 		this.accountChangesCapability = new AccountChangeOperations(
 			this.accountChangeBackend,
 			options.authClock,
@@ -1410,6 +1429,15 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	 * Whether writers can store key IDs and removal sequences. A file opened only as
 	 * existing may predate that storage; once seen, it never goes away.
 	 */
+	/**
+	 * Clear the group's readiness when the immediately preceding write changed one
+	 * row. A database opened without initialization may predate migration 0056;
+	 * it has no generation to clear.
+	 */
+	private invalidateChangedGroup(groupId: string | null): void {
+		if (hasReadinessGenerationSync(this.db)) this.db.prepare(INVALIDATE_CHANGED_GROUP).run(groupId);
+	}
+
 	private hasRemovalSchema(): boolean {
 		if (!this.removalSchemaSeen) this.removalSchemaSeen = hasDeviceRemovalSchemaSync(this.db);
 		return this.removalSchemaSeen;
@@ -1771,7 +1799,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (assertion) statement.get(...values);
 				else changes.push(legacyDeviceWriteChanges({ meta: statement.run(...values) }));
 			}
-			if (legacyEnrollmentWritten(changes)) return;
+			if (legacyEnrollmentWritten(changes)) {
+				this.invalidateChangedGroup(groupId);
+				return;
+			}
 			const denial = legacyEnrollmentDenialStatement(enrollment);
 			const code = legacyDeviceDenial(this.db.prepare(denial.sql).get(...denial.values));
 			throw new Error(
@@ -2124,19 +2155,35 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async archiveGroup(groupId: string, archivedAt = nowISO()): Promise<boolean> {
-		const result = this.db
-			.prepare("UPDATE groups SET archived_at = ? WHERE group_id = ? AND archived_at IS NULL")
-			.run(archivedAt, groupId);
-		return result.changes > 0;
+		return this.writeGroupReadinessChange(
+			groupId,
+			() =>
+				this.db
+					.prepare("UPDATE groups SET archived_at = ? WHERE group_id = ? AND archived_at IS NULL")
+					.run(archivedAt, groupId).changes,
+		);
 	}
 
 	async unarchiveGroup(groupId: string): Promise<boolean> {
-		const result = this.db
-			.prepare(
-				"UPDATE groups SET archived_at = NULL WHERE group_id = ? AND archived_at IS NOT NULL",
-			)
-			.run(groupId);
-		return result.changes > 0;
+		return this.writeGroupReadinessChange(
+			groupId,
+			() =>
+				this.db
+					.prepare(
+						"UPDATE groups SET archived_at = NULL WHERE group_id = ? AND archived_at IS NOT NULL",
+					)
+					.run(groupId).changes,
+		);
+	}
+
+	private writeGroupReadinessChange(groupId: string, write: () => number): boolean {
+		return this.db
+			.transaction(() => {
+				const changes = write();
+				if (changes > 0) this.invalidateChangedGroup(groupId);
+				return changes > 0;
+			})
+			.immediate();
 	}
 
 	async enrollDevice(
@@ -2193,11 +2240,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async renameDevice(groupId: string, deviceId: string, displayName: string): Promise<boolean> {
-		const result = this.db
-			.prepare(`UPDATE enrolled_devices SET display_name = ?
+		return this.writeGroupReadinessChange(
+			groupId,
+			() =>
+				this.db
+					.prepare(`UPDATE enrolled_devices SET display_name = ?
 				 WHERE group_id = ? AND device_id = ?`)
-			.run(displayName, groupId, deviceId);
-		return result.changes > 0;
+					.run(displayName, groupId, deviceId).changes,
+		);
 	}
 
 	async setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean> {
@@ -2224,7 +2274,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						if (publicKey !== null) {
 							const write = legacyEnableWriteStatement(input);
 							const result = this.db.prepare(write.sql).run(...write.values);
-							if (legacyDeviceWriteChanges({ meta: result }) === 1) return true;
+							if (legacyDeviceWriteChanges({ meta: result }) === 1) {
+								this.invalidateChangedGroup(groupId);
+								return true;
+							}
 						} else if (!input.storeKeyId) return false;
 						const denial = legacyEnableDenialStatement(input);
 						return legacyEnableDenied(this.db.prepare(denial.sql).get(...denial.values));
@@ -2234,11 +2287,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				legacyDeviceAuthorizationFailure(error);
 			}
 		}
-		const result = this.db
-			.prepare(`UPDATE enrolled_devices SET enabled = ?
+		return this.writeGroupReadinessChange(
+			groupId,
+			() =>
+				this.db
+					.prepare(`UPDATE enrolled_devices SET enabled = ?
 				 WHERE group_id = ? AND device_id = ?`)
-			.run(enabled ? 1 : 0, groupId, deviceId);
-		return result.changes > 0;
+					.run(enabled ? 1 : 0, groupId, deviceId).changes,
+		);
 	}
 
 	/**
@@ -2795,13 +2851,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (saved.recipient_actor_id !== authoritativeIdentityId)
 					throw new Error("invite_identity_conflict");
 				if (changed === 1) {
-					const enrollmentChanges = this.writeRecipientEnrollment(invite.group_id, opts, {
+					this.writeRecipientEnrollment(invite.group_id, opts, {
 						identityId: authoritativeIdentityId,
 						displayName: deviceDisplayName,
 						createdAt: consumedAt,
 						authorization,
+						lifted,
 					});
-					if (lifted && enrollmentChanges !== 1) throw new Error("device_removed");
 				} else {
 					pendingGuards = namingRemovalRefusal(() =>
 						this.repairRecipientOwnerIdentity(invite, opts, { authorization, consistency }),
@@ -2875,9 +2931,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	/** The enrollment write of an acceptance, with a refusal by tombstone reported as `device_removed`. */
 	private writeRecipientEnrollment(
-		...write: Parameters<BetterSqliteCoordinatorStore["writeRecipientEnrollmentSync"]>
-	): number {
-		return namingRemovalRefusal(() => this.writeRecipientEnrollmentSync(...write));
+		groupId: string,
+		opts: CoordinatorConsumeRecipientInviteInput,
+		write: Parameters<BetterSqliteCoordinatorStore["writeRecipientEnrollmentSync"]>[2] & {
+			lifted: boolean;
+		},
+	): void {
+		const changes = namingRemovalRefusal(() =>
+			this.writeRecipientEnrollmentSync(groupId, opts, write),
+		);
+		if (write.lifted && changes !== 1) throw new Error("device_removed");
+		if (changes === 1) this.invalidateChangedGroup(groupId);
 	}
 
 	/** Updates the device's enrollment in the group, or inserts it when the group has none. */
@@ -2960,6 +3024,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				...authorization.values,
 			);
 		// A zero-row repair does not consume the initial owner evidence.
+		if (repaired.changes === 1) this.invalidateChangedGroup(invite.group_id);
 		return repaired.changes === 1 ? consistency.retainedGuards : consistency.guards;
 	}
 
@@ -3360,6 +3425,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				opts.fingerprint,
 				...guard.boundEligibilityValues,
 			);
+		this.invalidateChangedGroup(invite.group_id);
 	}
 
 	async listInvites(groupId: string): Promise<CoordinatorInvite[]> {
@@ -3742,6 +3808,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope> {
+		return this.db.transaction(() => this.createScopeSync(opts)).immediate();
+	}
+
+	private createScopeSync(opts: CoordinatorCreateScopeInput): CoordinatorScope {
 		const normalized = normalizeCoordinatorCreateScopeInput(opts);
 		if (this.getScopeSync(normalized.scopeId)) throw new Error("scopeId already exists.");
 		const now = nowISO();
@@ -3764,43 +3834,26 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				now,
 				now,
 			);
+		this.invalidateChangedGroup(normalized.groupId);
 		const scope = this.getScopeSync(normalized.scopeId);
 		if (!scope) throw new Error("scope insert returned no row");
 		return scope;
 	}
 
 	async updateScope(opts: CoordinatorUpdateScopeInput): Promise<CoordinatorScope | null> {
+		return this.db.transaction(() => this.updateScopeSync(opts)).immediate();
+	}
+
+	private updateScopeSync(opts: CoordinatorUpdateScopeInput): CoordinatorScope | null {
 		const scopeId = clean(opts.scopeId);
 		const existing = scopeId ? this.getScopeSync(scopeId) : null;
 		if (!existing) return null;
-		const normalized = normalizeCoordinatorUpdateScopeInput(opts, existing);
-		this.db
-			.prepare(`UPDATE coordinator_scopes
-				 SET label = ?,
-					 kind = ?,
-					 authority_type = ?,
-					 coordinator_id = ?,
-					 group_id = ?,
-					 manifest_issuer_device_id = ?,
-					 membership_epoch = ?,
-					 manifest_hash = ?,
-					 status = ?,
-					 updated_at = ?
-				 WHERE scope_id = ?`)
-			.run(
-				normalized.label,
-				normalized.kind,
-				normalized.authorityType,
-				normalized.coordinatorId,
-				normalized.groupId,
-				normalized.manifestIssuerDeviceId,
-				normalized.membershipEpoch,
-				normalized.manifestHash,
-				normalized.status,
-				nowISO(),
-				normalized.scopeId,
-			);
-		return this.getScopeSync(normalized.scopeId);
+		const { write, invalidate } = scopePolicyUpdate(opts, existing, nowISO());
+		if (this.db.prepare(write.sql).run(...write.values).changes !== 1)
+			throw new Error("scope_update_conflict");
+		if (invalidate && hasReadinessGenerationSync(this.db))
+			this.db.prepare(invalidate.sql).run(...invalidate.values);
+		return this.getScopeSync(existing.scope_id);
 	}
 
 	async listScopes(opts: CoordinatorListScopesInput = {}): Promise<CoordinatorScope[]> {

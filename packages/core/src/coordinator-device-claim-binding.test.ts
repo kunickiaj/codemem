@@ -5,6 +5,7 @@ import {
 	readDeviceClaimBindingReadiness,
 	readDeviceClaimBindingReceipt,
 } from "./coordinator-device-claim-binding.js";
+import { captureEnrollmentBatch } from "./coordinator-enrollment-receipt-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import {
 	LEGACY_SETUP,
@@ -77,14 +78,25 @@ for (const backend of ["SQLite", "D1"] as const) {
 				f.account.config,
 				Date.parse(LEGACY_SETUP.now),
 			);
+			const counts: number[] = [];
+			f.coordinator.db
+				.prepare("UPDATE groups SET readiness_generation='prepared' WHERE group_id=?")
+				.run(input.signer.groupId);
 			const result = await completeDeviceClaimBinding(
-				db,
+				captureEnrollmentBatch(db, counts),
 				input,
 				f.account.config,
 				Date.parse(LEGACY_SETUP.now),
 			);
 			// Assert
 			expect(ready.kind).toBe("ready");
+			expect(counts).toEqual([1]);
+			expect(
+				f.coordinator.db
+					.prepare("SELECT readiness_generation FROM groups WHERE group_id=?")
+					.pluck()
+					.get(input.signer.groupId),
+			).toBeNull();
 			expect(result.kind).toBe("completed");
 			expect(
 				f.coordinator.db

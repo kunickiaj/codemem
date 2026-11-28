@@ -40,6 +40,12 @@ import {
 	peerRemovalSnapshotResult,
 	peerRemovalSnapshotStatements,
 } from "./coordinator-peer-removal-query.js";
+import {
+	hasReadinessGenerationByAll,
+	INVALIDATE_FILLED_KEYS,
+	knownReadinessGeneration,
+	readinessInvalidation,
+} from "./coordinator-readiness-invalidation.js";
 
 /**
  * Removal tombstones. One row records each deleted enrollment and stays active
@@ -745,13 +751,14 @@ const SINGLE_REMOVAL_WRITES = 9;
 function singleRemovalStatements(
 	input: Required<CoordinatorRemoveEnrollmentInput>,
 	removalId: string,
-	now: string,
+	options: { now: string; readiness: boolean },
 ): RemovalStatement[] {
+	const { now } = options;
 	const target = [input.groupId, input.deviceId];
 	const own = [removalId, ...target];
 	const dependents = removalDependentStatements(
 		{ sql: SINGLE_OWN_TOMBSTONE_SQL, values: own },
-		{ actorId: input.actorId, now },
+		{ actorId: input.actorId, now, readiness: options.readiness },
 	);
 	return [
 		{
@@ -783,7 +790,19 @@ AND (requesting_device_id = ? OR requested_device_id = ?) AND ${OWN_TOMBSTONE_SQ
 		},
 		dependents.complete,
 		...singleRemovalReads(removalId, target),
+		...dependents.invalidate,
 	];
+}
+
+/** A single removal that wrote no tombstone: the device was not enrolled, or removal is unavailable. */
+function notEnrolledResult(
+	writes: number[],
+	state: { available: number; enrolled: number },
+): CoordinatorRemoveEnrollmentResult {
+	if (writes.some((count) => count !== 0)) return incompleteResult();
+	if (state.available !== 1) throw new Error("device_removal_unavailable");
+	if (state.enrolled > 0) return incompleteResult();
+	return { kind: "not_enrolled" };
 }
 
 /** The tombstone this removal wrote, and why it wrote none. */
@@ -819,10 +838,12 @@ function captureRemoval(input: unknown): Required<CoordinatorRemoveEnrollmentInp
 
 function committedRemovalResult(
 	results: unknown[],
+	statementCount: number,
 	target: DeviceRemovalTarget,
 	removalId: string,
 ): CoordinatorRemoveDeviceEnrollmentsResult {
-	if (results.length !== 12) return incompleteResult();
+	// Twelve statements, then the readiness invalidation once migration 0056 exists.
+	if (results.length !== statementCount || statementCount < 12) return incompleteResult();
 	const writes = results.slice(0, 9).map(resultChanges);
 	if (
 		writes[0] !== target.rows.length ||
@@ -922,13 +943,19 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 				next: page.next,
 			};
 		const { json } = page;
-		const results = await this.backend
-			.batch([
-				{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] },
-				{ sql: ENROLLMENT_KEY_ID_BLOCKED_SQL, values: [json], read: true },
-			])
-			.catch(removalBackendFailure);
-		if (results.length !== 2) return incompleteResult();
+		const statements: RemovalStatement[] = [
+			{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] },
+			{ sql: ENROLLMENT_KEY_ID_BLOCKED_SQL, values: [json], read: true },
+			...readinessInvalidation(
+				knownReadinessGeneration(this.backend) || (await hasReadinessGenerationByAll(this.backend)),
+				{
+					sql: INVALIDATE_FILLED_KEYS,
+					values: [json],
+				},
+			),
+		];
+		const results = await this.backend.batch(statements).catch(removalBackendFailure);
+		if (results.length !== statements.length) return incompleteResult();
 		const filled = resultChanges(results[0]);
 		const blocked = resultRows<{ blocked: number }>(results[1])[0]?.blocked;
 		if (!Number.isSafeInteger(blocked)) return incompleteResult();
@@ -953,11 +980,11 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 	): Promise<CoordinatorRemoveEnrollmentResult> {
 		const input = captureRemoval(raw);
 		const removalId = globalThis.crypto.randomUUID();
-		const statements = singleRemovalStatements(
-			input,
-			removalId,
-			new Date(this.clock()).toISOString(),
-		);
+		const statements = singleRemovalStatements(input, removalId, {
+			now: new Date(this.clock()).toISOString(),
+			readiness:
+				knownReadinessGeneration(this.backend) || (await hasReadinessGenerationByAll(this.backend)),
+		});
 		const results = await this.backend.batch(statements).catch(removalBackendFailure);
 		if (results.length !== statements.length) return incompleteResult();
 		const writes = results.slice(0, SINGLE_REMOVAL_WRITES).map(resultChanges);
@@ -967,12 +994,7 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		const removals = resultRows<CoordinatorDeviceRemovalEntry>(removed);
 		const state = resultRows<{ available: number; enrolled: number }>(read)[0];
 		if (!state) return incompleteResult();
-		if (removals.length === 0) {
-			if (writes.some((count) => count !== 0)) return incompleteResult();
-			if (state.available !== 1) throw new Error("device_removal_unavailable");
-			if (state.enrolled > 0) return incompleteResult();
-			return { kind: "not_enrolled" };
-		}
+		if (removals.length === 0) return notEnrolledResult(writes, state);
 		const [tombstone, , , enrollment, ...dependents] = writes;
 		if (removals.length !== 1 || tombstone !== 1 || enrollment !== 1 || state.enrolled !== 0)
 			return incompleteResult();
@@ -1029,11 +1051,19 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 				removalId,
 				actorId: input.actorId,
 				now: new Date(this.clock()).toISOString(),
+				readiness:
+					knownReadinessGeneration(this.backend) ||
+					(await hasReadinessGenerationByAll(this.backend)),
 			},
 			REMOVAL_AVAILABLE_SQL,
 		);
 		try {
-			return committedRemovalResult(await this.backend.batch(statements), target, removalId);
+			return committedRemovalResult(
+				await this.backend.batch(statements),
+				statements.length,
+				target,
+				removalId,
+			);
 		} catch (error) {
 			const refusal = removalCommitRefusal(error);
 			if (refusal === "removal_preview_stale")

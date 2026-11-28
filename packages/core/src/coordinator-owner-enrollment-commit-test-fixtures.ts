@@ -47,15 +47,14 @@ function nativeBackend(db: Database.Database): AuthLinkBackend {
 			(db.prepare(s.sql).get(...s.values) as T | undefined) ?? null,
 		run: async (s) => db.transaction(() => run(s)).immediate(),
 		batch: async (statements) => {
-			db.transaction(() => {
-				for (const s of statements) run(s);
-			}).immediate();
+			return db.transaction(() => statements.map(run)).immediate();
 		},
 	};
 }
 async function confirmedMetadata(
 	key: ReturnType<typeof commitPendingKey>,
 	history: HistoricalAccountPins,
+	groups: readonly string[],
 ): Promise<OwnerAttempt> {
 	const row: OwnerAttempt = {
 		...finalizedOwner,
@@ -70,7 +69,7 @@ async function confirmedMetadata(
 		public_key: key.publicKey,
 		key_id: (await ed25519KeyIdForRevocation(key.publicKey)) as string,
 		fingerprint: createHash("sha256").update(key.publicKey).digest("hex"),
-		grant_revisions_json: '[{"groupId":"group-a","revision":1},{"groupId":"group-b","revision":1}]',
+		grant_revisions_json: JSON.stringify(groups.map((groupId) => ({ groupId, revision: 1 }))),
 		completion_secret_hash: createHash("sha256").update(Buffer.alloc(32, 9)).digest("hex"),
 		state: "confirmed",
 		loopback_redirect: pendingOwner.loopback_redirect,
@@ -83,8 +82,8 @@ async function confirmedMetadata(
 	return { ...row, confirmation_hash: await ownerEnrollmentConfirmationHash(row) };
 }
 type Exec = (sql: string, ...values: AuthLinkStatement["values"]) => Promise<number>;
-async function seedCommitAuthority(exec: Exec) {
-	for (const group of ["group-a", "group-b"]) {
+async function seedCommitAuthority(exec: Exec, groups: readonly string[]) {
+	for (const group of groups) {
 		await exec(
 			"INSERT INTO groups (group_id,created_at) VALUES (?,?)",
 			group,
@@ -130,6 +129,7 @@ async function seedCommitAttempt(exec: Exec, row: OwnerAttempt) {
 // Test-only composition installs audit DDL; no production schema hook, route, provider or SDK.
 export async function commitWriterFixture(
 	prepared: Fixture & { history: HistoricalAccountPins; close(): void },
+	groups: readonly string[] = ["group-a", "group-b"],
 ): Promise<CommitWriterFixture> {
 	const { db } = prepared;
 	db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
@@ -144,9 +144,9 @@ export async function commitWriterFixture(
 			.all();
 	const key = commitPendingKey();
 	const secret = Buffer.alloc(32, 9).toString("base64url");
-	const row = await confirmedMetadata(key, prepared.history);
+	const row = await confirmedMetadata(key, prepared.history, groups);
 	await seedCommitAttempt(exec, row);
-	await seedCommitAuthority(exec);
+	await seedCommitAuthority(exec, groups);
 	return {
 		db,
 		backend,
