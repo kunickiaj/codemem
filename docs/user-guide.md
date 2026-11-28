@@ -1357,6 +1357,9 @@ When selected history may already have replicated, all participating owner devic
 - `codemem sync peers` shows peer health, including per-scope received and pending work.
 - `codemem sync attempts` shows recent sync attempt history per peer.
 - `codemem sync doctor` shows detailed sync configuration and reachability diagnostics.
+- `codemem sync duplicates` lists memories that this device has stored more than once in one scope.
+  Sync sends, serves and applies none of their copies. Remove all but one copy, then run
+  `codemem sync duplicates repair <memory-id>` on the copy that is left so sync uses it again.
 - `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
 - `codemem sync relay-keys` lists the relay service key pinned for each coordinator group. When a
   coordinator advertises a different key, relay pauses for that group and sync stays direct until

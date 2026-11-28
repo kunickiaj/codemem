@@ -891,6 +891,12 @@ export {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+export {
+	type AmbiguousCopyRepair,
+	type AmbiguousMemoryCopies,
+	listAmbiguousMemoryCopies,
+	repairAmbiguousMemoryCopy,
+} from "./memory-copy-ambiguity.js";
 export * from "./memory-filter-schema.js";
 export * from "./memory-kinds.js";
 export {

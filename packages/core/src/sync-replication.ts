@@ -14,6 +14,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
+import { ambiguousCopiesRecorded, recordedAmbiguousScopes } from "./memory-copy-ambiguity.js";
 import { recordOpCopy } from "./memory-copy-provenance.js";
 import {
 	hasMatchingLocalCreation,
@@ -2509,8 +2510,10 @@ const FALLBACK_LOCAL_ACTOR_ID = "local:local";
  * Whether a stored copy is held back from every peer until it is repaired or
  * settled:
  *
- * - Another copy shares its import key in its scope. Which one a peer should
- *   hold is unclear, so none is served while more than one is stored.
+ * - Its import key and scope have been seen with more than one copy. Which one a
+ *   peer should hold is unclear, so none is served, even after copies go away,
+ *   until `codemem sync duplicates repair` finds a single survivor
+ *   (memory-copy-ambiguity.ts).
  * - It still carries the fallback actor this store used before it adopted a
  *   device identity, whatever its origin says. It is served once adoption moves
  *   it to the canonical actor.
@@ -2538,8 +2541,9 @@ function chunked<T>(values: readonly T[]): T[][] {
 
 /**
  * The keys among a page's memories that this device stores more than once in
- * one scope, by copyScopeKey. One query per 500 keys, on the import key index,
- * so the cost follows the page, not the store.
+ * one scope, or has recorded as stored more than once (memory-copy-ambiguity.ts),
+ * by copyScopeKey. Two queries per 500 keys, on the import key index and the
+ * record's key, so the cost follows the page, not the store.
  */
 function duplicatedCopyKeys(
 	db: Database,
@@ -2557,7 +2561,8 @@ function duplicatedCopyKeys(
 				 GROUP BY import_key, scope_id HAVING COUNT(*) > 1`,
 			)
 			.all(...chunk) as Array<{ import_key: string; scope_id: string | null }>;
-		for (const row of rows) duplicated.add(copyScopeKey(row.import_key, row.scope_id));
+		for (const row of [...rows, ...recordedAmbiguousScopes(db, chunk)])
+			duplicated.add(copyScopeKey(row.import_key, row.scope_id));
 	}
 	return duplicated;
 }
@@ -4352,6 +4357,7 @@ function rejectUnretiredScopeFailures(
  */
 function opTargetsAmbiguousCopies(db: Database, op: ReplicationOp): boolean {
 	if (op.entity_type !== "memory_item" || op.op_type === ACCESS_CLEANUP_OP_TYPE) return false;
+	if (ambiguousCopiesRecorded(db, op.entity_id)) return true;
 	return (
 		Number(
 			db

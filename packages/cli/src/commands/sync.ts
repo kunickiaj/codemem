@@ -45,6 +45,7 @@ import {
 } from "../shared-options.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
 import { buildSyncBootstrapCommand } from "./sync-bootstrap.js";
+import { buildSyncDuplicatesCommand } from "./sync-duplicates.js";
 import {
 	buildServeLifecycleArgs,
 	formatSyncAttempt,
@@ -531,6 +532,7 @@ doctorCmd.action(
 	},
 );
 syncCommand.addCommand(doctorCmd);
+syncCommand.addCommand(buildSyncDuplicatesCommand());
 
 // ---- sync peer diagnostics ----
 

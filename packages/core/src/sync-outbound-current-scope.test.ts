@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { backfillNarrativeFromBody } from "./maintenance/backfill-narrative.js";
+import { listAmbiguousMemoryCopies, repairAmbiguousMemoryCopy } from "./memory-copy-ambiguity.js";
 import { opCopyId } from "./memory-copy-provenance.js";
 import { recordLocalCreationSnapshot } from "./memory-creation-provenance.js";
 import { writeMemoryRevision } from "./memory-revision-writes.js";
@@ -8,6 +9,7 @@ import { upsertProjectScopeSettingsMapping } from "./project-scope-settings.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
 import {
+	applyReplicationOps,
 	backfillReplicationOps,
 	filterReplicationOpsForSyncWithStatus,
 	getSyncResetState,
@@ -550,7 +552,7 @@ describe("a maintenance edit", () => {
 });
 
 describe("a replica with two copies of a memory in one scope", () => {
-	it("serves neither in a snapshot after one was redacted", async () => {
+	it("serves neither in a snapshot after one was redacted, and diagnostics count it", async () => {
 		// Arrange: a redacted copy and an unredacted duplicate under the same key.
 		insertScope(db, "scope-old", GROUP_ID);
 		insertTestPeer(db, "peer-old");
@@ -576,6 +578,69 @@ describe("a replica with two copies of a memory in one scope", () => {
 
 		// Assert
 		expect(page.items).toEqual([]);
+		expect(listAmbiguousMemoryCopies(db)).toEqual([{ scope_id: "scope-old", memory_ids: [1, 2] }]);
+	});
+});
+
+describe("a memory once stored twice in a scope", () => {
+	it("stays withheld after a cleanup removes one copy, until a repair confirms the survivor", async () => {
+		// Arrange: two copies another device wrote, both in the scope.
+		insertScope(db, "scope-old", GROUP_ID);
+		insertTestPeer(db, "peer-old");
+		await grant([
+			["scope-old", SOURCE],
+			["scope-old", "peer-old"],
+		]);
+		insertProjectMemory("scope-old");
+		insertSiblingCopy("scope-old", { body: "A different body" });
+		db.prepare("UPDATE memory_items SET origin_device_id = 'peer-a'").run();
+		const boundary = getSyncResetState(db, "scope-old");
+		const snapshot = () =>
+			loadMemorySnapshotPageForPeer(db, {
+				peerDeviceId: "peer-old",
+				scopeId: "scope-old",
+				generation: boundary.generation,
+				snapshotId: boundary.snapshot_id,
+				baselineCursor: boundary.baseline_cursor,
+			}).items;
+
+		// Act: the writer's cleanup notice removes one of the two copies.
+		const cleanup = applyReplicationOps(
+			db,
+			[
+				{
+					op_id: "cleanup-1",
+					entity_type: "memory_item",
+					entity_id: KEY,
+					op_type: "access_cleanup",
+					payload_json: JSON.stringify({ cleanup_scope_id: "scope-old" }),
+					clock_rev: 2,
+					clock_updated_at: NOW,
+					clock_device_id: "peer-a",
+					device_id: "peer-a",
+					created_at: NOW,
+					scope_id: "local-default",
+				},
+			],
+			SOURCE,
+		);
+		const survivors = db.prepare("SELECT id FROM memory_items").pluck().all() as number[];
+
+		// Assert: one copy is left, and it is still not served.
+		expect(cleanup.applied).toBe(1);
+		expect(survivors).toHaveLength(1);
+		expect(snapshot()).toEqual([]);
+		expect(listAmbiguousMemoryCopies(db)).toEqual([
+			{ scope_id: "scope-old", memory_ids: survivors },
+		]);
+
+		// Act + Assert: an explicit repair confirms the survivor, and it is served again.
+		expect(repairAmbiguousMemoryCopy(db, survivors[0] ?? 0)).toEqual({
+			status: "repaired",
+			scope_id: "scope-old",
+		});
+		expect(snapshot()).toHaveLength(1);
+		expect(listAmbiguousMemoryCopies(db)).toEqual([]);
 	});
 });
 
