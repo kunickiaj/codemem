@@ -250,3 +250,32 @@ Repeated labels count as separate invocations, and command arguments and output
 are not included in the summary. Summed command time excludes polling sleeps and
 other scenario work; it is not the scenario's wall-clock duration. Unexpected
 runner exceptions without command metadata do not contribute invented timings.
+
+## Offline serving compatibility check
+
+This local release gate checks whether a released sync client can send a
+synthetic memory body after device preparation. It checks both the traffic at
+the peer listener and the receiving database. A peer that rejects an incoming
+body has already received it.
+
+Build the current checkout and the unmodified release tags `v0.49.1` and
+`v0.50.0-beta.2` through `v0.50.0-beta.4` with their frozen lockfiles. Put the
+release builds in directories named for their tags under one directory.
+Each build needs the CLI, core, server, and viewer assets.
+
+```
+pnpm exec tsx e2e/scripts/serving-proof-matrix.ts --releases "$RELEASE_BUILDS"
+```
+
+The matrix runs each released CLI against its matching server and against the
+current server. It also runs the current CLI against each released server.
+Peers use disposable homes, file-backed keys, loopback listeners, and a
+disconnected coordinator. The listener records the direction and exact synthetic
+body IDs without saving payloads. The controls require each new memory to
+arrive before preparation and after crash recovery. The harness kills the
+preparing process both during the legacy purge and immediately before the
+first envelope insert. Neither interruption may leave a prepared group. After a
+successful retry, both the offline exchange and the exchange after a released
+client attempts a refresh must keep the bodies off the wire. The command exits
+nonzero if any pairing fails. It does not start production preparation, test
+online proof issuance, or decide proof freshness.

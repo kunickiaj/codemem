@@ -1,0 +1,4 @@
+{
+	"extends": "./tsconfig.owner-pilot.json",
+	"include": ["scripts/serving-proof-*.ts"]
+}
