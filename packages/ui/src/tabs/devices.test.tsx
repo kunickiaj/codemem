@@ -3533,6 +3533,54 @@ describe("Device unpair menu", () => {
 	});
 });
 
+describe("Unpair device confirmation text in Devices", () => {
+	const deviceId = "device-address-fingerprint-secret";
+
+	afterEach(() => {
+		state.lastSyncCoordinator = null;
+	});
+
+	it.each([
+		[
+			"with a coordinator, says codemem can pair the devices again",
+			true,
+			"This device stops syncing with Work Laptop. If both devices share a Team Project, codemem can pair them again automatically. To stop syncing with Work Laptop on all your devices, use Remove device.",
+		],
+		[
+			"without a coordinator, says the device keeps syncing with the other devices",
+			false,
+			"This device stops syncing with Work Laptop. Work Laptop keeps syncing with your other devices.",
+		],
+	])("%s", async (_name, configured, description) => {
+		state.lastSyncCoordinator = configured ? { configured: true } : null;
+		const confirm = vi.fn(async (_options: { description: string }) => false);
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "sync_peer"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			disconnect: { confirm, disconnect: vi.fn() },
+		});
+		const row = document.getElementById(`device-identity-card-${deviceId}`);
+		const action = [
+			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		].find((button) => button.textContent === "Unpair device…");
+
+		await act(async () => action?.click());
+
+		expect(confirm).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				title: "Unpair Work Laptop?",
+				description,
+				confirmLabel: "Unpair",
+				cancelLabel: "Keep paired",
+			}),
+		);
+	});
+});
+
 describe("Unpair device on every paired device card", () => {
 	it.each([
 		["configured, in the policy graph", "device-address-fingerprint-secret", "configured"],
