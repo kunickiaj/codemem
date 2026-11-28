@@ -279,3 +279,16 @@ successful retry, both the offline exchange and the exchange after a released
 client attempts a refresh must keep the bodies off the wire. The command exits
 nonzero if any pairing fails. It does not start production preparation, test
 online proof issuance, or decide proof freshness.
+
+To check the maintenance window separately, run:
+
+```
+pnpm exec tsx e2e/scripts/serving-proof-maintenance-window.ts --releases "$RELEASE_BUILDS"
+```
+
+For each release this starts a peer listener holding a disposable WAL store
+open. The preparation attempt must fail without creating either proof table.
+After the fixture peer exits, the same preparation must commit successfully.
+Operators still need to stop serving and drain in-flight work before a
+transition: the database lock cannot recall bytes already read by a process.
+This check does not certify that an old client cannot reopen the store later.
