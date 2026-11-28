@@ -73,9 +73,12 @@ function capSocketsPerAddress(server: Server, limits: SyncListenerLimits): void 
 /**
  * Closes a socket that has not delivered complete headers in time. Node's own
  * header timeout also applies, but this timer starts at connect and does not
- * depend on Node's check interval.
+ * depend on Node's check interval. Returns the function that stops a socket's
+ * timer. An upgrade handler must call it, because Node applies no timeouts to
+ * an upgraded socket. With no upgrade handler, Node serves an Upgrade request
+ * as an ordinary request, which stops the timer.
  */
-function closeSilentSockets(server: Server, limits: SyncListenerLimits): void {
+function closeSilentSockets(server: Server, limits: SyncListenerLimits): (socket: Socket) => void {
 	const timers = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
 	const settle = (socket: Socket): void => {
 		clearTimeout(timers.get(socket));
@@ -88,7 +91,7 @@ function closeSilentSockets(server: Server, limits: SyncListenerLimits): void {
 		socket.once("close", () => settle(socket));
 	});
 	server.on("request", (request: IncomingMessage) => settle(request.socket));
-	server.on("upgrade", (request: IncomingMessage) => settle(request.socket));
+	return settle;
 }
 
 /**

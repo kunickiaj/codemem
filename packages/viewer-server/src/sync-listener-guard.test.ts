@@ -112,3 +112,17 @@ it("throttles an address before the sync routes run", async () => {
 	expect(await refused.json()).toMatchObject({ error: "rate_limited" });
 	expect(handled).toHaveBeenCalledTimes(2);
 });
+
+it("answers an Upgrade request as an ordinary request when nothing handles upgrades", async () => {
+	const { port } = await listen({});
+	const socket = await connect(port, "127.0.0.1");
+	const reply = new Promise<string>((resolve) =>
+		socket.once("data", (chunk) => resolve(String(chunk))),
+	);
+
+	socket.write(
+		"GET /v1/noise HTTP/1.1\r\nHost: peer\r\nConnection: Upgrade\r\nUpgrade: codemem-peer-stream/1\r\n\r\n",
+	);
+
+	expect(await reply).toMatch(/^HTTP\/1\.1 404 /);
+});
