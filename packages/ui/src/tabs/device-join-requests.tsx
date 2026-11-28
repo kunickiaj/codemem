@@ -164,15 +164,22 @@ type Listing =
 
 type ReviewMessage = { text: string; tone: "success" | "warning" };
 
-/** Reads the requests again when Devices refreshes and whenever `reload` is called. */
-function useJoinRequestListing(api: DeviceJoinRequestsApi, refreshRevision: number) {
+/**
+ * Reads the requests when Devices opens, after each review, and whenever `reload` is called.
+ * The five-second Devices refresh does not read them again, because reading every group
+ * can take longer than that and each refresh would cancel the read before it finished.
+ */
+function useJoinRequestListing(api: DeviceJoinRequestsApi, openRevision: number) {
 	const [listing, setListing] = useState<Listing>({ state: "loading" });
+	const [reading, setReading] = useState(false);
 	const [reloads, setReloads] = useState(0);
 	useEffect(() => {
 		const controller = new AbortController();
+		setReading(true);
 		void api.load(controller.signal).then(
 			(loaded) => {
 				if (controller.signal.aborted) return;
+				setReading(false);
 				setListing(
 					loaded === null
 						? { state: "hidden" }
@@ -180,12 +187,14 @@ function useJoinRequestListing(api: DeviceJoinRequestsApi, refreshRevision: numb
 				);
 			},
 			() => {
-				if (!controller.signal.aborted) setListing({ state: "error" });
+				if (controller.signal.aborted) return;
+				setReading(false);
+				setListing({ state: "error" });
 			},
 		);
 		return () => controller.abort();
-	}, [api, refreshRevision, reloads]);
-	return { listing, reload: () => setReloads((count) => count + 1) };
+	}, [api, openRevision, reloads]);
+	return { listing, reading, reload: () => setReloads((count) => count + 1) };
 }
 
 /** Runs one review at a time and reports its result in a status that takes focus afterward. */
@@ -227,22 +236,28 @@ function useJoinRequestReview(
 export function DeviceJoinRequests({
 	api = defaultDeviceJoinRequestsApi,
 	onReviewed,
-	refreshRevision = 0,
+	openRevision = 0,
 }: {
 	api?: DeviceJoinRequestsApi;
 	/** Refreshes Devices after a review, because an approved device joins its list. */
 	onReviewed?: () => unknown;
-	refreshRevision?: number;
+	/** Changes each time the person opens Devices, which reads the requests again. */
+	openRevision?: number;
 }) {
-	const { listing, reload } = useJoinRequestListing(api, refreshRevision);
+	const { listing, reading, reload } = useJoinRequestListing(api, openRevision);
 	const reviewing = useJoinRequestReview(api, reload, onReviewed);
 	if (listing.state === "hidden" || listing.state === "loading") return null;
 	if (listing.state === "error")
 		return <JoinRequestsError onRetry={reload} reviewing={reviewing} />;
 	const { requests, failedGroups } = listing;
-	if (requests.length === 0 && failedGroups === 0 && !reviewing.message) return null;
 	return (
-		<JoinRequestsSection failedGroups={failedGroups} requests={requests} reviewing={reviewing} />
+		<JoinRequestsSection
+			failedGroups={failedGroups}
+			onRefresh={reload}
+			reading={reading}
+			requests={requests}
+			reviewing={reviewing}
+		/>
 	);
 }
 
@@ -284,10 +299,14 @@ function JoinRequestsError({
 
 function JoinRequestsSection({
 	failedGroups,
+	onRefresh,
+	reading,
 	requests,
 	reviewing,
 }: {
 	failedGroups: number;
+	onRefresh: () => void;
+	reading: boolean;
 	requests: DeviceJoinRequest[];
 	reviewing: ReturnType<typeof useJoinRequestReview>;
 }) {
@@ -312,8 +331,11 @@ function JoinRequestsSection({
 				{message?.text ?? ""}
 			</p>
 			{failedGroups > 0 ? (
-				<p role="status">Some join requests could not be loaded. Refresh Devices to try again.</p>
+				<p role="status">
+					Some join requests could not be loaded. Select Refresh join requests to try again.
+				</p>
 			) : null}
+			{requests.length === 0 && failedGroups === 0 ? <p>No join requests are waiting.</p> : null}
 			{requests.length > 0 ? (
 				<ul className="devices-join-requests-list">
 					{requests.map((request) => (
@@ -328,6 +350,14 @@ function JoinRequestsSection({
 					))}
 				</ul>
 			) : null}
+			<button
+				className="settings-button"
+				disabled={reading || pendingId !== null}
+				onClick={onRefresh}
+				type="button"
+			>
+				{reading ? "Refreshing…" : "Refresh join requests"}
+			</button>
 		</section>
 	);
 }

@@ -447,6 +447,7 @@ function switchTab(
 			options.advancedSection ?? parseAdvancedSectionFromHash() ?? state.advancedSection,
 		);
 	}
+	if (nextTab === "devices" && state.activeTab !== "devices") devicesOpenRevision += 1;
 	setActiveTab(nextTab, options.canonicalHash ? { canonicalHash: true } : {});
 	if (nextTab === "health") completeFirstRunStep("settings-health");
 	renderTabs(nextTab);
@@ -554,6 +555,8 @@ const emptyRecipientPolicyIntent: api.RecipientPolicyIntentGraphV1 = {
 	projectRecipients: [],
 };
 let devicesLoadRevision = 0;
+// Changes when the person opens Devices, not on each refresh. Join requests read on this.
+let devicesOpenRevision = 0;
 let latestDevicesLoad: Promise<boolean> | null = null;
 let lastDevicesData: {
 	projects: DevicesProjectInput[];
@@ -742,7 +745,7 @@ function deviceRendererActions(
 		localDeviceId: state.lastSyncStatus?.device_id ?? undefined,
 		rejoinHistoryRevision: state.lastSyncCoordinator?.configured ? devicesLoadRevision : undefined,
 		rejoinHistoryProfile: state.lastSyncCoordinator?.coordinator_url ?? undefined,
-		joinRequestsRevision: state.lastSyncCoordinator?.configured ? devicesLoadRevision : undefined,
+		joinRequestsRevision: state.lastSyncCoordinator?.configured ? devicesOpenRevision : undefined,
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),

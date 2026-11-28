@@ -1139,7 +1139,50 @@ describe("Devices app join requests", () => {
 		await act(async () => approve?.click());
 
 		await vi.waitFor(() => expect(panel?.textContent).toContain("Approved New laptop."));
-		expect(panel?.querySelector('[aria-label="Approve join request from New laptop"]')).toBeNull();
+		await vi.waitFor(() =>
+			expect(
+				panel?.querySelector('[aria-label="Approve join request from New laptop"]'),
+			).toBeNull(),
+		);
+	});
+
+	it("does not read join requests again on the five-second Devices refresh", async () => {
+		const { state } = await import("./lib/state");
+		mocks.loadSyncData.mockImplementation(async () => {
+			state.lastSyncStatus = { device_id: "observer" };
+			state.lastSyncCoordinator = {
+				configured: true,
+				coordinator_url: "https://coordinator.example.test",
+			};
+			return true;
+		});
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const request = new URL(String(input), "http://viewer.example.test");
+			if (request.pathname === "/api/coordinator/admin/status")
+				return Response.json({ readiness: "ready", has_admin_secret: true, groups: ["group-a"] });
+			if (request.pathname === "/api/coordinator/admin/groups")
+				return Response.json({ items: [{ group_id: "group-a" }] });
+			if (request.pathname === "/api/coordinator/admin/join-requests")
+				return Response.json({ items: [], group_id: "group-a" });
+			return Response.json({
+				scope: "c".repeat(64),
+				localDeviceId: "observer",
+				items: [],
+				nextCursor: null,
+			});
+		});
+		const joinReads = () =>
+			fetch.mock.calls.filter(([url]) => String(url).includes("/admin/join-requests")).length;
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		await vi.waitFor(() => expect(joinReads()).toBe(1));
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(16_000);
+		});
+
+		expect(joinReads()).toBe(1);
 	});
 });
 

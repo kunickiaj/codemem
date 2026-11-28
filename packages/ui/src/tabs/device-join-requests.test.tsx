@@ -54,8 +54,14 @@ function fakeApi(
 }
 
 async function show(api: DeviceJoinRequestsApi, props: { onReviewed?: () => unknown } = {}) {
-	await act(() => render(<DeviceJoinRequests api={api} refreshRevision={1} {...props} />, mount));
+	await act(() => render(<DeviceJoinRequests api={api} openRevision={1} {...props} />, mount));
 	await act(async () => {});
+}
+
+function refreshButton() {
+	return [...mount.querySelectorAll<HTMLButtonElement>("button")].find((item) =>
+		/^Refresh/.test(item.textContent ?? ""),
+	);
 }
 
 function button(label: string): HTMLButtonElement {
@@ -71,10 +77,11 @@ describe("Devices join requests", () => {
 		expect(mount.textContent).toBe("");
 	});
 
-	it("shows nothing when no device is waiting", async () => {
+	it("says no request is waiting and still offers a refresh", async () => {
 		await show(fakeApi([]));
 
-		expect(mount.textContent).toBe("");
+		expect(mount.textContent).toContain("No join requests are waiting.");
+		expect(refreshButton()?.disabled).toBe(false);
 	});
 
 	it("lists each waiting device with its details and the number of requests", async () => {
@@ -288,12 +295,43 @@ describe("Devices join request loading", () => {
 		expect(mount.textContent).toContain("Travel laptop");
 	});
 
-	it("reloads when Devices refreshes", async () => {
+	it("reads the requests when the person opens Devices, not when Devices refreshes", async () => {
 		const api = fakeApi([joinRequest()]);
 		await show(api);
-		await act(() => render(<DeviceJoinRequests api={api} refreshRevision={2} />, mount));
-		await act(async () => {});
 
+		// A Devices refresh renders the same section again with the same open revision.
+		await act(() => render(<DeviceJoinRequests api={api} openRevision={1} />, mount));
+		await act(async () => {});
+		expect(api.load).toHaveBeenCalledTimes(1);
+
+		await act(() => render(<DeviceJoinRequests api={api} openRevision={2} />, mount));
+		await act(async () => {});
+		expect(api.load).toHaveBeenCalledTimes(2);
+	});
+
+	it("reads again from Refresh join requests and disables it while reading", async () => {
+		let finish: (value: { requests: DeviceJoinRequest[]; failedGroups: number }) => void = () => {};
+		const api = fakeApi([joinRequest()], {
+			load: vi
+				.fn()
+				.mockResolvedValueOnce({ requests: [], failedGroups: 0 })
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							finish = resolve;
+						}),
+				),
+		});
+		await show(api);
+		expect(mount.textContent).toContain("No join requests are waiting.");
+
+		await act(async () => refreshButton()?.click());
+		expect(refreshButton()?.textContent).toBe("Refreshing…");
+		expect(refreshButton()?.disabled).toBe(true);
+
+		await act(async () => finish({ requests: [joinRequest()], failedGroups: 0 }));
+		expect(refreshButton()?.textContent).toBe("Refresh join requests");
+		expect(mount.textContent).toContain("Travel laptop");
 		expect(api.load).toHaveBeenCalledTimes(2);
 	});
 });

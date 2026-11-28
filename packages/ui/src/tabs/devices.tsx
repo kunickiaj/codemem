@@ -2716,7 +2716,7 @@ function DevicesRoot({
 				<DeviceJoinRequests
 					api={options.joinRequestsApi}
 					onReviewed={options.onCommitted}
-					refreshRevision={options.joinRequestsRevision}
+					openRevision={options.joinRequestsRevision}
 				/>
 			) : null}
 			<DevicesView
