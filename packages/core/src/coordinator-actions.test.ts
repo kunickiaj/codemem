@@ -15,7 +15,6 @@ import {
 	coordinatorEnrollDeviceAction,
 	coordinatorGetLegacyTeamCompletionAction,
 	coordinatorGrantScopeMembershipAction,
-	coordinatorImportInviteAction,
 	coordinatorListConsumedTeamInvitesAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
@@ -27,6 +26,7 @@ import {
 	coordinatorRenameDeviceAction,
 	coordinatorRevokeScopeMembershipAction,
 	coordinatorUpdateScopeAction,
+	coordinatorImportInviteAction as importInviteAction,
 	isPeerTrustBindingCompatible,
 } from "./coordinator-actions.js";
 import { encodeInvitePayload } from "./coordinator-invites.js";
@@ -54,6 +54,10 @@ import {
 import { managedProjectScopeId, shareProjectSetDigest } from "./share-operation.js";
 import { verifySignature } from "./sync-auth.js";
 import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
+
+/** Invitations here are accepted by a user who confirmed joining the coordinator. */
+const coordinatorImportInviteAction: typeof importInviteAction = (opts) =>
+	importInviteAction({ confirmCoordinatorJoin: true, ...opts });
 
 type TeamReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "team" }>;
 type AddDeviceReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "add_device" }>;

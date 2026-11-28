@@ -106,6 +106,7 @@ export type {
 	CoordinatorReviewedRecipientInviteEvidence,
 } from "./coordinator-actions.js";
 export {
+	COORDINATOR_JOIN_CONFIRMATION_REQUIRED,
 	coordinatorArchiveGroupAction,
 	coordinatorAuthControllerReviewAction,
 	coordinatorCreateAddDeviceInviteAction,

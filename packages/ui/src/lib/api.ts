@@ -121,6 +121,7 @@ export type {
 export {
 	acceptDiscoveredPeer,
 	advanceShareOperation,
+	CoordinatorJoinConfirmationRequiredError,
 	checkSharingDomainProjectMappings,
 	claimLegacyDeviceIdentity,
 	clearLegacyTeamSetupDecision,
