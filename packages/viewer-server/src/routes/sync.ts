@@ -6934,19 +6934,24 @@ function resolveReviewIfAllowed(
 	readConfig: typeof readCoordinatorSyncConfig,
 	request: RecipientPolicyReviewResolveRequestV1 | RecipientPolicyReviewResolveRequestV1[],
 ) {
-	const context = { localActorId: store.actorId, localDeviceId: store.deviceId };
-	const resolve = () =>
-		Array.isArray(request)
+	// Inside the resolver's own write, so its answer to a busy lock is kept: the
+	// authority check first, then the local person repair, only once allowed.
+	const context = {
+		localActorId: store.actorId,
+		localDeviceId: store.deviceId,
+		beforeResolve: () => {
+			if (!canChangeRecipientAccess(readConfig)) throw new Error(ACCESS_CHANGE_REFUSAL.error);
+			requireLocalActorRecord(store);
+		},
+	};
+	try {
+		return Array.isArray(request)
 			? resolveRecipientPolicyReviewBulk(store.db, context, request)
 			: resolveRecipientPolicyReview(store.db, context, request);
-	// The local person is repaired only once the decision is allowed, in the same write.
-	return store.db
-		.transaction(() => {
-			if (!canChangeRecipientAccess(readConfig)) return null;
-			requireLocalActorRecord(store);
-			return resolve();
-		})
-		.immediate();
+	} catch (error) {
+		if (error instanceof Error && error.message === ACCESS_CHANGE_REFUSAL.error) return null;
+		throw error;
+	}
 }
 
 /**

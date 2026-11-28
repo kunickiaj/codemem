@@ -9,6 +9,7 @@ import {
 	readCoordinatorSyncConfig,
 	serializeRecipientPolicyTeamMutation,
 } from "@codemem/core";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 
@@ -530,4 +531,52 @@ describe("on a store that has not adopted the identity it now holds", () => {
 		expect(store.deviceId).toBe("local");
 		expect(accessState()).toEqual(before);
 	});
+});
+
+describe("review decisions while another connection holds the write lock", () => {
+	const decision = {
+		reviewItemId: "review",
+		sourceFingerprint: "fingerprint",
+		decision: "keep_project_local",
+	};
+	const conflict = {
+		reviewItemId: "review",
+		sourceFingerprint: "fingerprint",
+		status: "conflict",
+		errorCode: "review_resolution_conflict",
+		idempotent: false,
+	};
+
+	it.each([
+		["one decision", "/api/sync/recipient-policy/v1/review/resolve", decision, 409],
+		[
+			"several decisions",
+			"/api/sync/recipient-policy/v1/review/resolve-bulk",
+			{ requests: [decision] },
+			207,
+		],
+	])(
+		"answers %s with the review conflict, not a server error",
+		async (_label, path, body, status) => {
+			store.db.pragma("busy_timeout = 1");
+			const competing = new Database(store.db.name);
+			competing.exec("BEGIN IMMEDIATE");
+			try {
+				const response = await app.request(path, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body),
+				});
+
+				expect(response.status).toBe(status);
+				const payload = (await response.json()) as Record<string, unknown>;
+				expect(Array.isArray(payload.results) ? payload.results : [payload]).toEqual([
+					expect.objectContaining(conflict),
+				]);
+			} finally {
+				competing.exec("ROLLBACK");
+				competing.close();
+			}
+		},
+	);
 });
