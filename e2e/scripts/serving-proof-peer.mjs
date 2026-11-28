@@ -9,8 +9,18 @@ import { observeCanaries } from "./serving-proof-wire.ts";
 const [root, action, coordinator] = process.argv.slice(2);
 const load = (pkg) => import(pathToFileURL(join(root, "packages", pkg, "dist/index.js")));
 const core = await load("core");
-const store = new core.MemoryStore(process.env.CODEMEM_DB);
+let opened;
+function getStore() {
+	try {
+		return (opened ??= new core.MemoryStore(process.env.CODEMEM_DB));
+	} catch (error) {
+		if (/Required tables missing: memory_items/.test(error.message))
+			appendFileSync(join(process.env.HOME, "open-refused"), "1");
+		throw error;
+	}
+}
 if (action === "inspect-cache") {
+	const store = getStore();
 	try {
 		const [expected, ...scopes] = process.argv.slice(5);
 		assert.ok(expected === "present" || expected === "absent");
@@ -32,6 +42,7 @@ if (action === "inspect-cache") {
 		store.close();
 	}
 } else if (action === "refresh") {
+	const store = getStore();
 	try {
 		const result = await core.refreshScopeMembershipCache(store.db, {
 			groupIds: ["fixture-group"],
@@ -46,12 +57,34 @@ if (action === "inspect-cache") {
 	} finally {
 		store.close();
 	}
+} else if (action === "viewer") {
+	const { createApp } = await load("viewer-server");
+	const response = await createApp({ storeFactory: getStore }).request(
+		"http://localhost/api/observations",
+	);
+	process.stdout.write(JSON.stringify({ status: response.status, text: await response.text() }));
+	opened?.close();
+} else if (action === "daemon-pass") {
+	const db = core.connect(process.env.CODEMEM_DB);
+	try {
+		const results = await core.syncDaemonTick(
+			db,
+			process.env.CODEMEM_KEYS_DIR,
+			undefined,
+			undefined,
+			process.env.CODEMEM_DB,
+		);
+		process.stdout.write(JSON.stringify(results));
+	} finally {
+		db.close();
+	}
 } else {
-	assert.equal(action, "serve");
+	assert.ok(action === "serve" || action === "serve-lazy");
+	if (action === "serve") getStore();
 	const { createSyncApp } = await load("viewer-server");
 	const require = createRequire(join(root, "packages/viewer-server/package.json"));
 	const { serve } = require("@hono/node-server");
-	const app = createSyncApp({ storeFactory: () => store });
+	const app = createSyncApp({ storeFactory: getStore });
 	const record = (text, direction) => {
 		for (const observation of observeCanaries(text, direction))
 			appendFileSync(join(process.env.HOME, "wire.jsonl"), JSON.stringify(observation) + "\n");
@@ -69,5 +102,5 @@ if (action === "inspect-cache") {
 		},
 		({ port }) => process.send({ port }),
 	);
-	process.on("disconnect", () => server.close(() => store.close()));
+	process.on("disconnect", () => server.close(() => opened?.close()));
 }

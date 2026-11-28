@@ -5,6 +5,7 @@ import {
 	type LocalCreationContext,
 	matchesLocalCaptureRuntime,
 } from "./memory-local-capture.js";
+import { tableExists } from "./schema-lookups.js";
 
 const PREFIX = "memory-source-v1:";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -111,7 +112,7 @@ export function allocateLocalCaptureMemorySource(
 		public_key: string;
 		fingerprint: string;
 	}> = [];
-	if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_device'").get())
+	if (tableExists(db, "sync_device"))
 		rows = db
 			.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 2")
 			.all() as typeof rows;

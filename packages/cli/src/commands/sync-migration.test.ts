@@ -53,6 +53,8 @@ it("distinguishes a fresh peer install from a configured coordinator that cannot
 		mode: "report",
 		state: "local_report",
 		local_filters: "none",
+		maintenance_window: expect.stringContaining("stop every client"),
+		storage_fence: expect.stringContaining("does not erase data from disk"),
 		projects: null,
 	});
 	expect(fetch).not.toHaveBeenCalled();
@@ -69,4 +71,23 @@ it("does not create a missing database or classify a damaged config as peer-only
 	await status();
 	expect(error).toHaveBeenCalledWith(expect.stringContaining("migration_report_unavailable"));
 	expect(process.exitCode).toBe(1);
+});
+
+it("tells the person in text what the storage fence does not erase and how to recover", async () => {
+	connect(dbPath).close();
+	writeFileSync(
+		configPath,
+		JSON.stringify({
+			sync_coordinator_url: "https://coord.example",
+			sync_coordinator_group: "test",
+		}),
+	);
+	const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+	await buildSyncMigrationCommand().parseAsync(
+		["status", "--db-path", dbPath, "--config", configPath],
+		{ from: "user" },
+	);
+	const text = output.mock.calls.map(([chunk]) => String(chunk)).join("");
+	expect(text).toContain("does not erase data from disk");
+	expect(text).toContain("leave the project_* tables unchanged");
 });

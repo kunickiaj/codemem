@@ -102,9 +102,8 @@ function estimateReplicationOpsBytes(db: ReturnType<typeof connect>): number {
 			.prepare(
 				`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
 				 FROM dbstat
-				 WHERE name = 'replication_ops'
-				    OR name LIKE 'idx_replication_ops_%'
-				    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+				 WHERE name IN (SELECT name FROM sqlite_schema WHERE tbl_name =
+				    COALESCE((SELECT tbl_name FROM sqlite_schema WHERE name='idx_replication_ops_created'),'replication_ops'))`,
 			)
 			.get() as { total_bytes?: number } | undefined;
 		return Number(row?.total_bytes ?? 0);

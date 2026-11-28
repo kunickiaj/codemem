@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { columnExists } from "./schema-lookups.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export interface CoordinatorDeviceLocalEvidence {
@@ -9,15 +10,8 @@ export interface CoordinatorDeviceLocalEvidence {
 }
 
 function hasDeviceColumns(db: Database.Database): boolean {
-	const exists = db
-		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-		.get("sync_device");
-	if (!exists) return false;
-	const columns = db.prepare("SELECT name FROM pragma_table_info(?)").all("sync_device") as {
-		name: string;
-	}[];
 	return ["device_id", "public_key", "fingerprint"].every((column) =>
-		columns.some((row) => row.name === column),
+		columnExists(db, "sync_device", column),
 	);
 }
 

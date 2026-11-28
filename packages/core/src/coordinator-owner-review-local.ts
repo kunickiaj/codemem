@@ -1,6 +1,8 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { readCoordinatorDeviceLocalEvidence } from "./coordinator-device-local.js";
+import { openDeviceDatabase } from "./device-database-open.js";
+import { columnExists } from "./schema-lookups.js";
 
 export interface CoordinatorOwnerReviewLocalOptions {
 	dbPath: string;
@@ -25,14 +27,7 @@ export interface CoordinatorOwnerReviewLocalEvidence {
 type Row = Record<string, unknown>;
 type OwnershipRecord = { present: boolean; label?: string };
 function hasColumns(db: Database.Database, table: string, required: string[]): boolean {
-	const exists = db
-		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-		.get(table);
-	if (!exists) return false;
-	const columns = db.prepare("SELECT name FROM pragma_table_info(?)").all(table) as {
-		name: string;
-	}[];
-	return required.every((column) => columns.some((row) => row.name === column));
+	return required.every((column) => columnExists(db, table, column));
 }
 function label(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
@@ -160,7 +155,11 @@ export function readCoordinatorOwnerReviewLocalEvidence(
 ): CoordinatorOwnerReviewLocalEvidence {
 	if (!options.dbPath || options.dbPath === ":memory:")
 		throw new Error("owner_review_local_unavailable");
-	const db = new Database(options.dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+	const db = openDeviceDatabase(options.dbPath, {
+		readonly: true,
+		fileMustExist: true,
+		timeout: 1000,
+	});
 	try {
 		return db.transaction(() => readEvidence(db, options))();
 	} finally {

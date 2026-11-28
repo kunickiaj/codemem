@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, sign } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import Sqlite from "better-sqlite3";
+import type Sqlite from "better-sqlite3";
 import { createCoordinatorOwnerEnrollmentReceiver } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
@@ -33,6 +33,7 @@ import {
 	syncOwnerProfileDirectory,
 } from "./coordinator-owner-profile-files.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
+import { openDeviceDatabase } from "./device-database-open.js";
 import {
 	type OwnerEnrollmentReceipt,
 	type OwnerEnrollmentStart,
@@ -706,7 +707,7 @@ export async function enrollOwnerProfile(
 		id(options.groupId);
 		origin(options.coordinatorUrl);
 		const databaseFile = ownerDatabaseFile(options.dbPath);
-		const db = new Sqlite(options.dbPath, {
+		const db = openDeviceDatabase(options.dbPath, {
 			readonly: options.mode === "prepare",
 			fileMustExist: true,
 			timeout: 1000,

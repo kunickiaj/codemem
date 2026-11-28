@@ -32,7 +32,7 @@ function reportText(report: ReturnType<typeof readLocalProjectMigrationReport>):
 			const observed = counts
 				? `Project candidates: ${counts.candidate_projects}. Projects in multiple setups: ${counts.multiple_sources}. Locally authored rows in those setups: ${counts.own_source_rows}.`
 				: "The local Project inventory is unavailable.";
-			return `${observed}\nLocal filter evidence: ${report.local_filters}. Other devices have not been checked.`;
+			return `${observed}\nLocal filter evidence: ${report.local_filters}. Other devices have not been checked.\n${report.maintenance_window}\n${report.storage_fence}`;
 		}
 	}
 }

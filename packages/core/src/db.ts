@@ -23,7 +23,6 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
-import Database from "better-sqlite3";
 import { ensureCoordinatorHistorySchema } from "./coordinator-history.js";
 import {
 	getSchemaVersion,
@@ -33,6 +32,7 @@ import {
 	REQUIRED_TABLES,
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
+import { openDeviceDatabase } from "./device-database-open.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { ensureMemoryReferenceSchema } from "./memory-reference-schema.js";
 import { expandUserPath } from "./observer-config.js";
@@ -241,7 +241,7 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	assertNotRealCodememPath(dbPath, "store");
 	migrateLegacyDbPath(dbPath);
 	mkdirSync(dirname(dbPath), { recursive: true });
-	const db = new Database(dbPath);
+	const db = openDeviceDatabase(dbPath);
 	try {
 		// Match Python's connect() pragmas exactly
 		db.pragma("foreign_keys = ON");
@@ -299,7 +299,7 @@ export function connectReadOnly(
 	options: ReadOnlyConnectionOptions = {},
 ): DatabaseType {
 	assertNotRealCodememPath(dbPath, "store");
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const db = openDeviceDatabase(dbPath, { readonly: true, fileMustExist: true });
 	try {
 		db.pragma("foreign_keys = ON");
 		db.pragma("busy_timeout = 5000");

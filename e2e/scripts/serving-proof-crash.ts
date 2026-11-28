@@ -1,9 +1,24 @@
 import { connect } from "../../packages/core/src/db.js";
+import { prepareOfflineScopeServingStore } from "../../packages/core/src/offline-serving-preparation.js";
 import { prepareScopeServingStore } from "../../packages/core/src/scope-serving-proof-store.js";
 
 const [path, coordinatorId, groupId, generation, stage] = process.argv.slice(2);
 if (!path || !coordinatorId || !groupId || !generation || path !== process.env.CODEMEM_DB)
 	throw new Error("Missing disposable fixture");
+if (stage === "format-before-envelope") {
+	prepareOfflineScopeServingStore(path, { coordinatorId, groupId, generation }, [
+		{
+			scopeId: "fixture-team",
+			deviceId: "fixture-device",
+			keyId: "ab".repeat(32),
+			get envelope(): Uint8Array {
+				process.kill(process.pid, "SIGKILL");
+				throw new Error("Expected fixture process to terminate");
+			},
+		},
+	]);
+	throw new Error("Preparation did not reach the envelope insert after format conversion");
+}
 const db = connect(path);
 db.function("crash_fixture", () => process.kill(process.pid, "SIGKILL"));
 if (stage === "purge") {

@@ -17,18 +17,21 @@
  * - A Viewer from a release before the lock records nothing. It must be the process
  *   listening on its port, report this database in its prompt-pack profile, and have the
  *   database file or its write-ahead log open, as `lsof` shows. Each is required: a
- *   process can have a database open without serving it.
+ *   process can have a database open without serving it. Those releases cannot read a
+ *   transitioned store, so for one only the lock proof is accepted.
  *
  * On macOS and Linux, a check that needs `lsof` refuses when `lsof` cannot run. On native
  * Windows there is no `lsof` or `ps`: a Viewer there cannot be identified at all, and the
  * database proofs that need `lsof` are not asked of it.
  */
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import {
 	canonicalViewerDbPath,
 	isViewerWriterLockHeld,
 	processStartIdentity,
+	readDeviceStorageShape,
 	readViewerWriterLockOwner,
 	viewerUrl,
 } from "@codemem/core";
@@ -226,6 +229,21 @@ function verified(
 	return { ok: true, viewer: { pid, identity, proof, recheck } };
 }
 
+/**
+ * Why a Viewer without the lock cannot be serving this database, or null. Releases
+ * from before the lock cannot read a transitioned store, so for one the lock is the
+ * only proof. A store whose names cannot be read is refused rather than guessed.
+ */
+function transitionedStoreRefusal(dbPath: string): string | null {
+	if (!existsSync(dbPath)) return null;
+	try {
+		if (readDeviceStorageShape(dbPath) === "legacy") return null;
+		return "it does not hold the database's lock, and only a Viewer that holds it can serve this database's storage format";
+	} catch (error) {
+		return `the database's storage format could not be read (${error instanceof Error ? error.message : String(error)})`;
+	}
+}
+
 /** The proof for a Viewer from before the lock: listener, open database, reported database. */
 async function verifyPreLockViewer(
 	pid: number,
@@ -268,6 +286,8 @@ export async function verifyViewerForDatabase(
 	}
 	if (owner && isViewerWriterLockHeld(dbPath))
 		return refuse("another process holds the database's lock");
+	const format = transitionedStoreRefusal(dbPath);
+	if (format) return refuse(format);
 	if (platform === "win32") return verified(pid, identity, "unidentifiable-platform", () => true);
 	return verifyPreLockViewer(
 		pid,
