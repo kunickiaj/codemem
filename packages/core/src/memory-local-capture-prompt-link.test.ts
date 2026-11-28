@@ -52,13 +52,19 @@ it("prompt-link import invalidates current creation proof without rewriting its 
 	const snapshots = factRows("memory_local_creation_snapshots");
 	// Act
 	const result = importMemories(payload, options);
-	// Assert: only the link changes; immutable evidence remains historical evidence.
+	// Assert: only the link changes, as a new revision of this device's memory;
+	// immutable evidence remains historical evidence.
 	expect(result).toMatchObject({ memory_items: 0, user_prompts: 1 });
 	const promptId = db
 		.prepare("SELECT id FROM user_prompts WHERE import_key = 'restore-prompt'")
 		.pluck()
 		.get();
-	expect(row(id)).toEqual({ ...before, user_prompt_id: promptId });
+	expect(row(id)).toEqual({
+		...before,
+		user_prompt_id: promptId,
+		rev: Number(before.rev) + 1,
+		updated_at: expect.any(String),
+	});
 	expect(factRows("memory_foreign_revisions")).toMatchObject([
 		{ entity_id: key, write_path: "import" },
 	]);

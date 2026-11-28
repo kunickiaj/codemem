@@ -58,6 +58,8 @@ import {
 	resolveOwnershipFilterContext,
 	snapshotOwnershipPredicate,
 } from "./memory-reads.js";
+import { writeMemoryRevision } from "./memory-revision-writes.js";
+
 import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import type { PackArtifacts, PackAssemblyRequest } from "./pack.js";
@@ -137,6 +139,9 @@ import { configuredVectorIndexModel, VectorIndexMaintenance } from "./vector-ind
 import { ensureVectorIndexReady } from "./vector-index-upgrade.js";
 import { vectorStoreExists } from "./vector-layout.js";
 import { type SemanticSearchResult, semanticSearch, storeVectors } from "./vectors.js";
+
+/** Memories moved per write transaction when this device adopts its identity. */
+const ACTOR_CANONICALIZATION_BATCH = 500;
 
 // Recovery debits and per-batch call clocks are private accounting, not observer usage.
 const PUBLIC_USAGE_EVENT_PREDICATE =
@@ -634,7 +639,11 @@ export class MemoryStore {
 
 	adoptEnsuredDeviceIdentity(deviceId: string): void {
 		const normalizedDeviceId = deviceId.trim();
-		if (!normalizedDeviceId || normalizedDeviceId === "local" || this.deviceId !== "local") return;
+		if (!normalizedDeviceId || normalizedDeviceId === "local") return;
+		if (this.deviceId !== "local") {
+			this.resumeFallbackActorCanonicalization();
+			return;
+		}
 		const previousDeviceId = this.deviceId;
 		const fallbackActorId = `local:${previousDeviceId}`;
 		const fallbackActor = this.fallbackActorForDeviceAdoption(fallbackActorId);
@@ -671,9 +680,84 @@ export class MemoryStore {
 				id: nextActorId,
 				displayName: nextActorDisplayName,
 			});
-			return;
+		} else {
+			this.publishEnsuredDeviceIdentity(normalizedDeviceId);
 		}
-		this.publishEnsuredDeviceIdentity(normalizedDeviceId);
+		this.canonicalizeFallbackActorRows(fallbackActorId, nextActorId);
+	}
+
+	/** Moves memories to the canonical actor, leaving what fails for the next identity check. */
+	private canonicalizeFallbackActorRows(fallbackActorId: string, nextActorId: string): void {
+		try {
+			this.moveFallbackActorRows(fallbackActorId, nextActorId);
+		} catch (err) {
+			// The identity is already adopted; the rest of the rows move on the next check.
+			console.warn(
+				`[codemem] adoptEnsuredDeviceIdentity: moving memories to the canonical actor stopped: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	/**
+	 * Finishes moving memories to the canonical actor when an earlier adoption was
+	 * interrupted. Only a store that adopted this identity resumes: its capture
+	 * identity was adopted by this device, or its fallback actor was merged into
+	 * this store's actor. A refused adoption moves nothing.
+	 */
+	private resumeFallbackActorCanonicalization(): void {
+		const adopted =
+			(tableExists(this.db, "memory_local_capture_adoption") &&
+				this.db
+					.prepare("SELECT 1 FROM memory_local_capture_adoption WHERE device_id = ?")
+					.get(this.deviceId) !== undefined) ||
+			this.db
+				.prepare(
+					"SELECT 1 FROM actors WHERE actor_id = 'local:local' AND status = 'merged' AND merged_into_actor_id = ?",
+				)
+				.get(this.actorId) !== undefined;
+		if (adopted) this.canonicalizeFallbackActorRows("local:local", this.actorId);
+	}
+
+	/**
+	 * Moves this device's memories that still carry the fallback actor to the
+	 * canonical one. Only rows that carry both fallback ownership signals move;
+	 * origin_device_id remains historical provenance, and a personal workspace
+	 * follows the canonical actor. A memory this device created takes a revision
+	 * with its op, so peers that hold it learn its actor.
+	 *
+	 * Each batch is its own short write transaction, so adoption never holds the
+	 * write lock for the whole store. Rows an interrupted run left behind move on
+	 * the next identity check.
+	 */
+	private moveFallbackActorRows(fallbackActorId: string, nextActorId: string): void {
+		const batch = this.db.prepare(
+			`SELECT id, workspace_id FROM memory_items
+			 WHERE actor_id = ? AND COALESCE(TRIM(origin_device_id), '') IN ('', 'local')
+			 ORDER BY id LIMIT ?`,
+		);
+		const moveBatch = this.db.transaction(() => {
+			const rows = batch.all(fallbackActorId, ACTOR_CANONICALIZATION_BATCH) as Array<{
+				id: number;
+				workspace_id: string | null;
+			}>;
+			const now = nowIso();
+			for (const row of rows) {
+				const workspaceId =
+					row.workspace_id === `personal:${fallbackActorId}`
+						? `personal:${nextActorId}`
+						: row.workspace_id;
+				writeMemoryRevision(this.db, {
+					memoryId: row.id,
+					changes: { actor_id: nextActorId, workspace_id: workspaceId },
+					now,
+				});
+			}
+			return rows.length;
+		});
+		// A full batch may leave more; a short one was the last.
+		let moved: number;
+		do moved = moveBatch.immediate();
+		while (moved === ACTOR_CANONICALIZATION_BATCH);
 	}
 
 	private persistDeviceAdoption(
@@ -701,24 +785,7 @@ export class MemoryStore {
 						)
 						.run(nextActorId, nextActorDisplayName, now, now);
 				}
-				this.db
-					.prepare(
-						// Canonicalize only rows that still carry both fallback ownership signals.
-						// origin_device_id and metadata clock_device_id remain historical provenance;
-						// personal workspace identity follows the canonical actor when applicable.
-						`UPDATE memory_items
-					 SET actor_id = ?,
-					     workspace_id = CASE WHEN workspace_id = ? THEN ? ELSE workspace_id END
-					 WHERE actor_id = ?
-					   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
-					)
-					.run(
-						nextActorId,
-						`personal:${fallbackActorId}`,
-						`personal:${nextActorId}`,
-						fallbackActorId,
-						this.deviceId,
-					);
+				// The memories move to the canonical actor after this commits, a batch at a time.
 				if (!fallbackActor) return;
 				this.db
 					.prepare(

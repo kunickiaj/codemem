@@ -14,6 +14,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
+import { recordOpCopy } from "./memory-copy-provenance.js";
 import {
 	hasMatchingLocalCreation,
 	hasRecordedLocalCreation,
@@ -1017,6 +1018,16 @@ export function isNewerClock(
  */
 export function recordReplicationOp(
 	db: Database,
+	opts: Parameters<typeof insertReplicationOp>[1],
+): string {
+	const opId = insertReplicationOp(db, opts);
+	recordOpCopy(db, opId, opts.memoryId);
+	return opId;
+}
+
+/** Inserts the op row; recordReplicationOp also records the copy it was built from. */
+function insertReplicationOp(
+	db: Database,
 	opts: {
 		memoryId: number;
 		opType: "upsert" | "delete";
@@ -1287,36 +1298,31 @@ export function recordScopeReassignment(
 			op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
 			clock_updated_at, clock_device_id, device_id, created_at, scope_id
 		) VALUES (?, 'memory_item', ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-		insert.run(
-			oldOpId,
-			memoryId,
-			REASSIGN_SCOPE_OP_TYPE,
-			toJson({ ...common, side: "old" }),
-			revision,
-			createdAt,
-			deviceId,
-			deviceId,
-			createdAt,
-			oldScopeId,
-		);
-		insert.run(
-			newOpId,
-			memoryId,
-			REASSIGN_SCOPE_OP_TYPE,
-			toJson({
-				...buildPayloadFromMemoryRow(updated),
-				project: cleanText(updated.project) ?? sessionProject,
-				...common,
-				side: "new",
-				scope_id: newScopeId,
-			}),
-			revision,
-			createdAt,
-			deviceId,
-			deviceId,
-			createdAt,
-			newScopeId,
-		);
+		const newSide = {
+			...buildPayloadFromMemoryRow(updated),
+			project: cleanText(updated.project) ?? sessionProject,
+			...common,
+			side: "new",
+			scope_id: newScopeId,
+		};
+		for (const [opId, payload, scopeId] of [
+			[oldOpId, { ...common, side: "old" }, oldScopeId],
+			[newOpId, newSide, newScopeId],
+		] as const) {
+			insert.run(
+				opId,
+				memoryId,
+				REASSIGN_SCOPE_OP_TYPE,
+				toJson(payload),
+				revision,
+				createdAt,
+				deviceId,
+				deviceId,
+				createdAt,
+				scopeId,
+			);
+			recordOpCopy(db, opId, opts.memoryId);
+		}
 	});
 	writeUnretiredReassignment(db, memoryId, newScopeId, write);
 	return { revision, oldOpId, newOpId };
@@ -3833,6 +3839,7 @@ export function insertBackfillReplicationOp(
 		})
 		.onConflictDoNothing()
 		.run();
+	recordOpCopy(db, opId, rowId);
 	return true;
 }
 

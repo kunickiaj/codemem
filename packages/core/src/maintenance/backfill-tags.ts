@@ -2,6 +2,7 @@
  */
 
 import type { Database } from "../db.js";
+import { writeMemoryRevision } from "../memory-revision-writes.js";
 import { projectColumnClause } from "../project.js";
 import { SecretScanner } from "../secret-scanner.js";
 import { deriveTags, parseJsonStringList } from "./tag-helpers.js";
@@ -29,6 +30,50 @@ export interface BackfillTagsTextResult {
 	checked: number;
 	updated: number;
 	skipped: number;
+}
+
+interface TagSourceRow {
+	id: number;
+	rev: number | null;
+	tags_text: string | null;
+	kind: string | null;
+	title: string | null;
+	concepts: string | null;
+	files_read: string | null;
+	files_modified: string | null;
+}
+
+/**
+ * Writes each derived tag set as a new revision with its op, so peers that hold
+ * the memory get it. A row edited or redacted since it was read keeps its current
+ * tags. Returns how many rows were left as they were for that reason.
+ */
+function writeDerivedTags(
+	db: Database,
+	updates: Array<{ row: TagSourceRow; tagsText: string }>,
+	now: string,
+): number {
+	let stale = 0;
+	db.transaction(() => {
+		for (const { row, tagsText } of updates) {
+			const written = writeMemoryRevision(db, {
+				memoryId: row.id,
+				changes: { tags_text: tagsText },
+				expectedRev: row.rev,
+				expectedValues: {
+					kind: row.kind,
+					title: row.title,
+					concepts: row.concepts,
+					files_read: row.files_read,
+					files_modified: row.files_modified,
+					tags_text: row.tags_text,
+				},
+				now,
+			});
+			if (!written) stale += 1;
+		}
+	})();
+	return stale;
 }
 
 /**
@@ -72,32 +117,23 @@ export function backfillTagsText(
 
 	const rows = db
 		.prepare(
-			`SELECT memory_items.id, memory_items.kind, memory_items.title,
-			        memory_items.concepts, memory_items.files_read, memory_items.files_modified
+			`SELECT memory_items.id, memory_items.rev, memory_items.kind, memory_items.title,
+			        memory_items.concepts, memory_items.files_read, memory_items.files_modified,
+			        memory_items.tags_text
 			 FROM memory_items
 			 ${joinClause}
 			 WHERE ${where}
 			 ORDER BY memory_items.created_at ASC
 			 ${limitClause}`,
 		)
-		.all(...params) as Array<{
-		id: number;
-		kind: string | null;
-		title: string | null;
-		concepts: string | null;
-		files_read: string | null;
-		files_modified: string | null;
-	}>;
+		.all(...params) as TagSourceRow[];
 
 	const scanner = opts.scanner ?? new SecretScanner();
 	let checked = 0;
 	let updated = 0;
 	let skipped = 0;
 	const now = new Date().toISOString();
-	const updateStmt = db.prepare(
-		"UPDATE memory_items SET tags_text = ?, updated_at = ? WHERE id = ?",
-	);
-	const updates: Array<{ id: number; tagsText: string }> = [];
+	const updates: Array<{ row: TagSourceRow; tagsText: string }> = [];
 
 	for (const row of rows) {
 		checked += 1;
@@ -114,16 +150,14 @@ export function backfillTagsText(
 			skipped += 1;
 			continue;
 		}
-		updates.push({ id: row.id, tagsText });
+		updates.push({ row, tagsText });
 		updated += 1;
 	}
 
 	if (!dryRun && updates.length > 0) {
-		db.transaction(() => {
-			for (const update of updates) {
-				updateStmt.run(update.tagsText, now, update.id);
-			}
-		})();
+		const stale = writeDerivedTags(db, updates, now);
+		updated -= stale;
+		skipped += stale;
 	}
 
 	return { checked, updated, skipped };

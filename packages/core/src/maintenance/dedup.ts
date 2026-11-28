@@ -2,6 +2,7 @@
  */
 
 import type { Database } from "../db.js";
+import { writeMemoryRevision } from "../memory-revision-writes.js";
 
 export interface DedupNearDuplicatesResult {
 	checked: number;
@@ -92,14 +93,11 @@ export function dedupNearDuplicateMemories(
 	}
 
 	const now = new Date().toISOString();
-	const chunkSize = 200;
-	for (let start = 0; start < toDeactivate.length; start += chunkSize) {
-		const chunk = toDeactivate.slice(start, start + chunkSize);
-		const placeholders = chunk.map(() => "?").join(",");
-		db.prepare(
-			`UPDATE memory_items SET active = 0, updated_at = ? WHERE id IN (${placeholders})`,
-		).run(now, ...chunk);
-	}
+	// Each deactivation is a new revision with its delete op, so peers that hold the memory drop it.
+	db.transaction(() => {
+		for (const memoryId of toDeactivate)
+			writeMemoryRevision(db, { memoryId, changes: { active: 0 }, now });
+	})();
 
 	return { checked, deactivated: toDeactivate.length, pairs };
 }

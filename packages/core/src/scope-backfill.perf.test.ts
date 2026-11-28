@@ -51,8 +51,8 @@ function insertMemory(
 			`INSERT INTO memory_items(
 				session_id, kind, title, body_text, created_at, updated_at,
 				visibility, workspace_id, workspace_kind, active, deleted_at,
-				import_key, scope_id, metadata_json
-			 ) VALUES (?, 'discovery', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				import_key, scope_id, metadata_json, rev
+			 ) VALUES (?, 'discovery', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		)
 		.run(
 			input.sessionId,
@@ -72,6 +72,7 @@ function insertMemory(
 	return Number(result.lastInsertRowid);
 }
 
+/** An op from before ops carried a scope, for its memory's current revision (rev 1). */
 function insertReplicationOp(
 	db: InstanceType<typeof Database>,
 	opId: string,
