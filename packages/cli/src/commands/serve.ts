@@ -1342,6 +1342,20 @@ async function openViewerStore(
 	return store;
 }
 
+/** The sync listener is network-facing, so it runs on the guarded server. */
+function syncListenerOptions(
+	serverModule: typeof import("@codemem/server"),
+	syncApp: { fetch: (request: Request) => Response | Promise<Response> },
+	syncConfig: { syncHost: string; syncPort: number },
+) {
+	return {
+		fetch: syncApp.fetch,
+		hostname: syncConfig.syncHost,
+		port: syncConfig.syncPort,
+		createServer: serverModule.createGuardedSyncServer(),
+	};
+}
+
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
@@ -1403,13 +1417,10 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	let syncListenerReady = false;
 	if (syncEnabled) {
 		const syncApp = createSyncApp(appOpts);
-		syncServer = serve(
-			{ fetch: syncApp.fetch, hostname: syncConfig.syncHost, port: syncConfig.syncPort },
-			(info) => {
-				syncListenerReady = true;
-				p.log.step(`Sync protocol listening on http://${info.address}:${info.port}`);
-			},
-		);
+		syncServer = serve(syncListenerOptions(serverModule, syncApp, syncConfig), (info) => {
+			syncListenerReady = true;
+			p.log.step(`Sync protocol listening on http://${info.address}:${info.port}`);
+		});
 		syncServer.on("error", (err: NodeJS.ErrnoException) => {
 			if (!syncListenerReady && err.code === "EADDRINUSE") {
 				p.log.warn(
