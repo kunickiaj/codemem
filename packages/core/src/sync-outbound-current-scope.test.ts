@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { backfillNarrativeFromBody } from "./maintenance/backfill-narrative.js";
 import { listAmbiguousMemoryCopies, repairAmbiguousMemoryCopy } from "./memory-copy-ambiguity.js";
 import { opCopyId } from "./memory-copy-provenance.js";
+import { repairAmbiguousMemory } from "./memory-copy-repair.js";
 import { recordLocalCreationSnapshot } from "./memory-creation-provenance.js";
 import { writeMemoryRevision } from "./memory-revision-writes.js";
 import { upsertProjectScopeSettingsMapping } from "./project-scope-settings.js";
@@ -228,6 +229,58 @@ describe("a memory this device no longer stores", () => {
 		db.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
 
 		expect(bodiesSentTo("peer-old")).toEqual([]);
+	});
+});
+
+describe("repairing a memory this device created", () => {
+	it("re-sends its withheld edit, which a peer that missed it applies and one that has it ignores", async () => {
+		// Arrange: this device's memory, edited while a second copy existed.
+		insertScope(db, "scope-old", GROUP_ID);
+		insertTestPeer(db, "peer-old");
+		await grant([
+			["scope-old", SOURCE],
+			["scope-old", "peer-old"],
+		]);
+		const memoryId = insertProjectMemory("scope-old");
+		recordCreatedHere(memoryId);
+		insertSiblingCopy("scope-old", { body: "A different body" });
+		editMemory(memoryId, { body_text: "Edited body" });
+		const scanned = memoryOps();
+		expect(bodiesSentTo("peer-old", scanned)).toEqual([]);
+		const [original, edit] = scanned;
+
+		// Act: the extra copy goes, and the repair confirms the survivor.
+		db.prepare("DELETE FROM memory_items WHERE id != ?").run(memoryId);
+		const repaired = repairAmbiguousMemory(db, memoryId, { localDeviceId: SOURCE });
+		const resent = memoryOps().filter((op) => !scanned.some((seen) => seen.op_id === op.op_id));
+		const [outbound] = filterReplicationOpsForSyncWithStatus(db, resent, "peer-old", {
+			localDeviceId: SOURCE,
+			supportsReassignScope: true,
+		});
+
+		// Assert: one new op carries the edit.
+		expect(repaired).toMatchObject({ status: "repaired" });
+		expect(bodiesSentTo("peer-old", resent)).toEqual([
+			{ op_type: "upsert", scope_id: "scope-old", body: "Edited body" },
+		]);
+
+		// Assert: a peer that scanned past the edit applies it, one that has it keeps its row.
+		const peer = (received: ReplicationOp[]) => {
+			const peerDb = new Database(":memory:");
+			initTestSchema(peerDb);
+			applyReplicationOps(peerDb, received, "peer-old");
+			return peerDb;
+		};
+		const missedIt = peer(original ? [original] : []);
+		const hasIt = peer([original, edit].filter((op): op is ReplicationOp => Boolean(op)));
+		expect(applyReplicationOps(missedIt, outbound, "peer-old")).toMatchObject({ applied: 1 });
+		expect(applyReplicationOps(hasIt, outbound, "peer-old")).toMatchObject({ applied: 0 });
+		for (const peerDb of [missedIt, hasIt]) {
+			expect(peerDb.prepare("SELECT rev, body_text FROM memory_items").all()).toEqual([
+				{ rev: 2, body_text: "Edited body" },
+			]);
+			peerDb.close();
+		}
 	});
 });
 

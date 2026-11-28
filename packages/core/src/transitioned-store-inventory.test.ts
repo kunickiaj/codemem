@@ -138,6 +138,7 @@ const expectedMoved = [
 	"memory_concept_refs",
 	"memory_file_refs",
 	"memory_local_creation_snapshots",
+	"memory_ambiguous_held_ops",
 	"memory_vectors",
 	"memory_vectors_v1",
 	"artifacts",

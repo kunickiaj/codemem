@@ -1360,8 +1360,8 @@ When selected history may already have replicated, all participating owner devic
 - `codemem sync duplicates` lists memories that this device has stored more than once in one scope.
   Sync sends and serves none of their copies. Changes peers send for them wait on this device
   while sync with those peers carries on. Remove all but one copy, then run
-  `codemem sync duplicates repair <memory-id>` on the copy that is left so sync uses it again and
-  applies the waiting changes. When every copy is removed, the record clears by itself and the
+  `codemem sync duplicates repair <memory-id>` on the copy that is left so sync uses it again,
+  sends it to peers again when this device created it, and applies the waiting changes. When every copy is removed, the record clears by itself and the
   waiting changes apply with the next sync, if their sender may still write the scope.
 - `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
 - `codemem sync relay-keys` lists the relay service key pinned for each coordinator group. When a

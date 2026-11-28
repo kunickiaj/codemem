@@ -784,6 +784,26 @@ describe("a change held while a memory was stored twice", () => {
 		expect(storedBodies()).toEqual(["Held body"]);
 	});
 
+	it("stays held through a stale membership epoch, and applies once membership catches up", () => {
+		// The scope's epoch moves ahead of the cached memberships until they catch up.
+		const setScopeEpoch = (epoch: number) =>
+			fixture.db
+				.prepare("UPDATE replication_scopes SET membership_epoch = ? WHERE scope_id = ?")
+				.run(epoch, OSS_SCOPE);
+		const heldCount = () =>
+			fixture.db.prepare("SELECT COUNT(*) FROM memory_ambiguous_held_ops").pluck().get();
+		setScopeEpoch(2);
+
+		applyReplicationOps(fixture.db, [], LOCAL_DEVICE);
+		const whileStale = { bodies: storedBodies(), held: heldCount() };
+		setScopeEpoch(1);
+		applyReplicationOps(fixture.db, [], LOCAL_DEVICE);
+
+		expect(whileStale).toEqual({ bodies: [], held: 1 });
+		expect(storedBodies()).toEqual(["Held body"]);
+		expect(heldCount()).toBe(0);
+	});
+
 	it("is dropped at replay when its sender may no longer write the scope", () => {
 		putRecipientPolicyDenyOverlay(fixture.db, {
 			canonicalProjectIdentity: "project:oss",

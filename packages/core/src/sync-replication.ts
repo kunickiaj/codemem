@@ -4408,8 +4408,9 @@ function inboundSender(options: ApplyReplicationOpsOptions): string | null {
 /**
  * Applies the changes held for memories that are no longer stored or recorded
  * more than once, one at a time, each checked again against its sender's current
- * access to the scopes it writes. A change that fails stays held; one the sender
- * may no longer write is dropped. Returns their vector work.
+ * access to the scopes it writes. A change whose sender is no longer a member of
+ * its scope is dropped; any other rejection or failure leaves it held. Returns
+ * their vector work.
  */
 export function replayReleasedHeldOps(
 	db: Database,
@@ -4424,9 +4425,12 @@ export function replayReleasedHeldOps(
 			const result = applyReplicationOpsInternal(db, [held.op], localDeviceId, scanner, {
 				inboundScopeValidation: validation,
 			});
-			// A rejected op is dropped. Any other failure rolls back, keeping it held.
-			if (result.rejected === 0 && result.errors.length > 0)
-				throw new Error(result.errors.join("; "));
+			// Dropped only when its sender lost access to the scope. Any other rejection
+			// (a stale membership epoch, say) or failure rolls back, keeping it held.
+			const senderLostAccess = result.rejections.some(
+				(rejection) => rejection.reason === "sender_not_member",
+			);
+			if (!senderLostAccess && result.errors.length > 0) throw new Error(result.errors.join("; "));
 			return result;
 		});
 		try {
