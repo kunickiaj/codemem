@@ -8,6 +8,7 @@ import {
 	createGuardedSyncServer,
 	createSyncListenerLimiter,
 	remoteAddressKey,
+	SYNC_LISTENER_CAPS,
 	SYNC_LISTENER_LIMITS,
 	type SyncListenerLimits,
 } from "./sync-listener-guard.js";
@@ -23,7 +24,11 @@ afterEach(async () => {
 	);
 });
 
-async function listen(limits: Partial<SyncListenerLimits>, hostname = "127.0.0.1") {
+async function listen(
+	limits: Partial<SyncListenerLimits>,
+	hostname = "127.0.0.1",
+	options: { noise?: boolean } = {},
+) {
 	const handled = vi.fn();
 	const app = new Hono();
 	app.get("/v1/status", (c) => {
@@ -32,7 +37,21 @@ async function listen(limits: Partial<SyncListenerLimits>, hostname = "127.0.0.1
 	});
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const started = serve(
-			{ fetch: app.fetch, hostname, port: 0, createServer: createGuardedSyncServer({ limits }) },
+			{
+				fetch: app.fetch,
+				hostname,
+				port: 0,
+				createServer: createGuardedSyncServer({
+					limits,
+					// The gate's store is never opened: these tests send no upgrades.
+					directNoise: {
+						storeFactory: () => {
+							throw new Error("unused");
+						},
+						active: options.noise ?? false,
+					},
+				}),
+			},
 			() => resolve(started),
 		);
 	});
@@ -77,7 +96,7 @@ async function dualStackAvailable(): Promise<boolean> {
 	}
 }
 
-it("applies the header, request and expiry-check limits and leaves the caps off by default", async () => {
+it("applies the deadlines and leaves the caps off on the plain listener while direct Noise is off", async () => {
 	const { server, port } = await listen({
 		headerMs: 4_000,
 		requestMs: 9_000,
@@ -99,6 +118,35 @@ it("applies the header, request and expiry-check limits and leaves the caps off 
 	expect(held.every((socket) => !socket.destroyed)).toBe(true);
 });
 
+it("applies the measured caps once the listener runs direct Noise", async () => {
+	const { server, port } = await listen({}, "127.0.0.1", { noise: true });
+
+	expect(server.maxConnections).toBe(256);
+	expect(SYNC_LISTENER_CAPS).toEqual({
+		maxSockets: 256,
+		maxSocketsPerIp: 16,
+		requestsPerIpPerMinute: 600,
+	});
+	// Sixteen sockets from one address stay connected. The seventeenth is closed.
+	const held = await Promise.all(Array.from({ length: 16 }, () => connect(port, "127.0.0.1")));
+	const overCap = await connect(port, "127.0.0.1");
+	expect(await closed(overCap)).toBeLessThan(500);
+	expect(held.every((socket) => !socket.destroyed)).toBe(true);
+});
+
+it("leaves a cap off when it is set to undefined, even with direct Noise on", async () => {
+	const { server, port } = await listen(
+		{ maxSockets: undefined, maxSocketsPerIp: undefined, requestsPerIpPerMinute: undefined },
+		"127.0.0.1",
+		{ noise: true },
+	);
+
+	expect(server.maxConnections).toBeUndefined();
+	const held = await Promise.all(Array.from({ length: 30 }, () => connect(port, "127.0.0.1")));
+	expect((await status(port)).status).toBe(200);
+	expect(held.every((socket) => !socket.destroyed)).toBe(true);
+});
+
 it("accepts connections again after the total socket cap was full", async () => {
 	const { port } = await listen({ maxSockets: 2, headerMs: 5_000 });
 	const held = await Promise.all([1, 2].map(() => connect(port, "127.0.0.1")));
@@ -116,7 +164,7 @@ it("keeps the limiter's bucket map bounded under address churn", () => {
 	const limiter = createInMemoryRequestRateLimiter(60_000, { maxBuckets: 8 });
 	for (let i = 0; i < 1_000; i++) limiter.check(`sync-listener:198.51.100.${i % 250}:${i}`, 1);
 	expect(limiter.bucketCount?.()).toBe(8);
-	// The most recent key keeps its bucket, so it is still limited.
+	// Keys past the ceiling share one overflow budget, which the churn already spent.
 	expect(limiter.check("sync-listener:198.51.100.249:999", 1).allowed).toBe(false);
 });
 
