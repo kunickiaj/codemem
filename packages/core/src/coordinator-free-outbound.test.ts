@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setPeerProjectFilter } from "./index.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import {
 	ACCESS_CLEANUP_OP_TYPE,
@@ -85,6 +86,22 @@ function opOf(opId: string): ReplicationOp {
 	return db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as ReplicationOp;
 }
 
+/** Forgets the memory as this device does: a new revision and its delete op. */
+function forget(id: number): ReplicationOp {
+	db.prepare(
+		"UPDATE memory_items SET active = 0, deleted_at = ?, rev = 2, updated_at = ? WHERE id = ?",
+	).run(NOW, NOW, id);
+	const opId = recordReplicationOp(db, {
+		memoryId: id,
+		opType: "delete",
+		deviceId: LOCAL,
+		scopeId: "local-default",
+		clockRev: 2,
+		createdAt: "2026-11-28T12:00:01.000Z",
+	});
+	return opOf(opId);
+}
+
 function sent(ops: ReplicationOp[], lane: CoordinatorFreeOutboundRules | null = LANE) {
 	const [allowed] = filterReplicationOpsForSyncWithStatus(db, ops, PEER, {
 		localDeviceId: LOCAL,
@@ -166,5 +183,40 @@ describe("the lane carries a copy only when this device created it, it says shar
 		memory({ scopeId: "legacy-shared-review" });
 
 		expect(sent([op])).toEqual([]);
+	});
+});
+
+describe("lane deletions go without content, while the copy is deleted and readable", () => {
+	it("sends this device's deletion of a shared memory without a payload", () => {
+		const { id } = memory();
+		const deletion = forget(id);
+
+		const [allowed] = filterReplicationOpsForSyncWithStatus(db, [deletion], PEER, {
+			localDeviceId: LOCAL,
+			coordinatorFree: LANE,
+		});
+
+		expect(allowed).toEqual([{ ...deletion, payload_json: null }]);
+	});
+
+	it("withholds a deletion of a copy that only its workspace calls shared", () => {
+		const { id } = memory({ visibility: null, workspaceKind: "shared" });
+
+		expect(sent([forget(id)])).toEqual([]);
+	});
+
+	it("decides a deletion again before each request: restored or moved out of reach since", () => {
+		const restored = memory({ key: "key:restored" });
+		const restoredDeletion = forget(restored.id);
+		const excluded = memory({ key: "key:excluded", project: "held-back" });
+		const excludedDeletion = forget(excluded.id);
+		expect(sent([restoredDeletion, excludedDeletion])).toHaveLength(2);
+
+		db.prepare("UPDATE memory_items SET active = 1, deleted_at = NULL WHERE id = ?").run(
+			restored.id,
+		);
+		setPeerProjectFilter(db, PEER, { include: null, exclude: ["held-back"] });
+
+		expect(sendableNow([restoredDeletion, excludedDeletion])).toEqual([]);
 	});
 });
