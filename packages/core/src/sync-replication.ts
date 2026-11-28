@@ -2851,6 +2851,18 @@ function reassignOutboundDecision(
 	}
 }
 
+/**
+ * A delete op as it goes to a peer: without a payload. Apply never reads a
+ * deletion's payload, and replication backfill records deletions with the full
+ * row, which a peer must not receive once the memory is deleted. Without its
+ * payload, the op takes the same checks as every other deletion.
+ */
+function asOutboundTombstone(op: ReplicationOp): ReplicationOp {
+	if (op.entity_type !== "memory_item" || op.op_type !== "delete" || op.payload_json == null)
+		return op;
+	return { ...op, payload_json: null };
+}
+
 export function filterReplicationOpsForSyncWithStatus(
 	db: Database,
 	ops: ReplicationOp[],
@@ -2861,7 +2873,7 @@ export function filterReplicationOpsForSyncWithStatus(
 	let nextCursor: string | null = null;
 	const skipped = { count: 0, first: null as FilterReplicationSkipped | null };
 	const applyScopeFilter = options.applyScopeFilter !== false;
-	for (const op of ops) {
+	for (const op of applyScopeFilter ? ops.map(asOutboundTombstone) : ops) {
 		let outbound = op;
 		if (retirementBlocksMemoryOp(db, op)) {
 			addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });

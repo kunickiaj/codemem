@@ -8,6 +8,7 @@ import { upsertProjectScopeSettingsMapping } from "./project-scope-settings.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
 import {
+	backfillReplicationOps,
 	filterReplicationOpsForSyncWithStatus,
 	getSyncResetState,
 	loadMemorySnapshotPageForPeer,
@@ -225,6 +226,37 @@ describe("a memory this device no longer stores", () => {
 		db.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
 
 		expect(bodiesSentTo("peer-old")).toEqual([]);
+	});
+});
+
+describe("a deletion that replication backfill recorded", () => {
+	it("goes out as a tombstone without the deleted memory's content", async () => {
+		// Arrange: a memory deleted without a delete op, which backfill then records with the full row.
+		insertScope(db, "scope-old", GROUP_ID);
+		insertTestPeer(db, "peer-old");
+		await grant([
+			["scope-old", SOURCE],
+			["scope-old", "peer-old"],
+		]);
+		const memoryId = insertProjectMemory("scope-old");
+		db.prepare(`UPDATE memory_items SET active = 0, deleted_at = ?, rev = 2,
+			 metadata_json = '{"clock_device_id":"source-device"}' WHERE id = ?`).run(NOW, memoryId);
+		backfillReplicationOps(db);
+		const deletion = memoryOps().find((op) => op.op_type === "delete");
+		expect(JSON.parse(deletion?.payload_json ?? "null")).toMatchObject({
+			body_text: "Private body",
+		});
+
+		// Act
+		const [allowed] = filterReplicationOpsForSyncWithStatus(db, memoryOps(), "peer-old", {
+			localDeviceId: SOURCE,
+			supportsReassignScope: true,
+		});
+
+		// Assert: the deletion reaches the peer, and carries no content.
+		expect(allowed.map((op) => ({ op_type: op.op_type, payload_json: op.payload_json }))).toEqual([
+			{ op_type: "delete", payload_json: null },
+		]);
 	});
 });
 
