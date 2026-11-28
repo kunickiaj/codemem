@@ -2447,7 +2447,7 @@ describe("Device setup validation", () => {
 	});
 });
 describe("Device inventory gates", () => {
-	it("blocks incomplete and unavailable remote inventory but permits local-only setup when unconfigured", () => {
+	it("blocks incomplete and unavailable inventory, and all setup when no coordinator is configured", () => {
 		const local = inventoryItem("local", "Local", "setup_required", {
 			isLocal: true,
 			suggestedIdentityId: "identity-scope-secret",
@@ -2481,11 +2481,15 @@ describe("Device inventory gates", () => {
 				},
 			},
 		});
+		// Assigning even this device to a person needs a coordinator.
 		expect(
 			[...document.querySelectorAll<HTMLButtonElement>("button")].find(
 				(button) => button.textContent === "Review this device",
 			)?.disabled,
-		).toBe(false);
+		).toBe(true);
+		expect(document.body.textContent).toContain(
+			"Identity setup needs a coordinator. Set the coordinator URL and group in Settings.",
+		);
 
 		mount(intent(), reconciliation(), {
 			inventory: {
@@ -2502,6 +2506,39 @@ describe("Device inventory gates", () => {
 			)?.disabled,
 		).toBe(true);
 	});
+
+	it.each([
+		[
+			"admin_secret_missing",
+			"Only a device that holds the coordinator admin secret can change device Identities. Use that device.",
+		],
+		[
+			"unknown",
+			"codemem couldn't check whether this device can change device Identities. Refresh Devices to try again.",
+		],
+	] as const)(
+		"blocks setup and changes when coordinator access is %s",
+		(coordinatorAccess, copy) => {
+			const local = inventoryItem("local", "Local", "setup_required", { isLocal: true });
+			mount(intent(), reconciliation(), { coordinatorAccess, inventory: inventory([local]) });
+			expect(
+				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
+					(button) => button.textContent === "Review this device",
+				)?.disabled,
+			).toBe(true);
+			expect(document.body.textContent).toContain(copy);
+
+			mount(intentWithAlternateIdentity(), reconciliation(), {
+				coordinatorAccess,
+				inventory: inventory([
+					inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
+				]),
+			});
+			expect(
+				document.querySelector<HTMLButtonElement>(".device-identity-rebind > button")?.disabled,
+			).toBe(true);
+		},
+	);
 });
 describe("Device setup state", () => {
 	it("preserves setup review state but disables every write control during inventory degradation", async () => {

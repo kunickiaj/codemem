@@ -25,6 +25,8 @@ type SyncActorRowProps = {
 
 type SyncActorsListProps = {
 	actors: ActorLike[];
+	/** Whether this device may add, rename, merge or remove people. */
+	canManagePeople: boolean;
 	hiddenLocalDuplicateCount: number;
 	onRename: (actorId: string, displayName: string) => Promise<void>;
 	onMerge: (primaryActorId: string, secondaryActorId: string) => Promise<void>;
@@ -36,6 +38,48 @@ function localActorNote(hiddenLocalDuplicateCount: number): string {
 		return "Represents you across your own devices.";
 	}
 	return `Represents you across your own devices. ${hiddenLocalDuplicateCount} unresolved duplicate ${hiddenLocalDuplicateCount === 1 ? "entry is" : "entries are"} hidden until reviewed in Needs attention.`;
+}
+
+function ActorDetails({
+	actor,
+	count,
+	hiddenLocalDuplicateCount,
+}: {
+	actor: ActorLike;
+	count: number;
+	hiddenLocalDuplicateCount: number;
+}) {
+	return (
+		<div className="actor-details">
+			<div className="actor-title">
+				<strong>{actorDisplayLabel(actor)}</strong>
+				<span
+					className={`badge actor-badge${actor.is_local ? " local" : ""}`}
+					title={actor.is_local ? localActorNote(hiddenLocalDuplicateCount) : undefined}
+				>
+					{actor.is_local ? "You" : `${count} device${count === 1 ? "" : "s"}`}
+				</span>
+			</div>
+			{!actor.is_local ? (
+				<div className="peer-meta">
+					{count} assigned device{count === 1 ? "" : "s"}
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+/** Another person, shown without controls on a device that may not change people. */
+function ReadOnlyActorRow({ actor }: { actor: ActorLike }) {
+	return (
+		<div className="actor-row">
+			<ActorDetails
+				actor={actor}
+				count={assignedActorCount(String(actor.actor_id || ""))}
+				hiddenLocalDuplicateCount={0}
+			/>
+		</div>
+	);
 }
 
 function SyncActorRow({
@@ -132,22 +176,11 @@ function SyncActorRow({
 
 	return (
 		<div className="actor-row">
-			<div className="actor-details">
-				<div className="actor-title">
-					<strong>{actorDisplayLabel(actor)}</strong>
-					<span
-						className={`badge actor-badge${actor.is_local ? " local" : ""}`}
-						title={actor.is_local ? localActorNote(hiddenLocalDuplicateCount) : undefined}
-					>
-						{actor.is_local ? "You" : `${count} device${count === 1 ? "" : "s"}`}
-					</span>
-				</div>
-				{!actor.is_local ? (
-					<div className="peer-meta">
-						{count} assigned device{count === 1 ? "" : "s"}
-					</div>
-				) : null}
-			</div>
+			<ActorDetails
+				actor={actor}
+				count={count}
+				hiddenLocalDuplicateCount={hiddenLocalDuplicateCount}
+			/>
 
 			<div className="actor-actions">
 				{actor.is_local ? (
@@ -241,6 +274,7 @@ function SyncActorRow({
 
 function SyncActorsList({
 	actors,
+	canManagePeople,
 	hiddenLocalDuplicateCount,
 	onRename,
 	onMerge,
@@ -259,6 +293,9 @@ function SyncActorsList({
 		<>
 			{actors.map((actor) => {
 				const actorId = String(actor.actor_id || actor.display_name || actor.is_local || "");
+				if (!canManagePeople && !actor.is_local) {
+					return <ReadOnlyActorRow key={actorId} actor={actor} />;
+				}
 				return (
 					<SyncActorRow
 						key={actorId}

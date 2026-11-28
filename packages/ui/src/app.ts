@@ -26,6 +26,7 @@ import { mountToastHost } from "./components/primitives/toast";
 import { PROJECT_FILTER_CHANGE, renderProjectFilter } from "./components/project-filter";
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
+import { coordinatorAccessFromStatus } from "./lib/coordinator-access";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import { $, $button } from "./lib/dom";
 import { friendlyError } from "./lib/form";
@@ -82,6 +83,7 @@ import { requestInvitationCreate } from "./tabs/recipient-policy-invitations";
 import { isPersonSettingsDialogOpen } from "./tabs/recipient-policy-person-settings";
 import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
 import { requestSharingNavigation } from "./tabs/recipient-policy-sharing";
+import type { CoordinatorAccess } from "./tabs/recipient-policy-team-create";
 import { initSettings, isSettingsOpen, loadConfigData, openSettings } from "./tabs/settings";
 import { setSettingsTab } from "./tabs/settings/data/state-ops";
 import {
@@ -568,6 +570,7 @@ let lastDevicesData: {
 	inventory: api.DeviceIdentityInventoryV1 | undefined;
 	inventoryUnavailable: boolean;
 	coordinatorEnrollmentIssueCount: number;
+	coordinatorAccess: CoordinatorAccess;
 } | null = null;
 
 async function loadRecipientPolicyProjects(
@@ -769,12 +772,21 @@ function renderPreviousDevicesAfterRefreshFailure(mount: HTMLElement): void {
 		{
 			...deviceRendererActions(lastDevicesData.inventory?.deviceLifecycleActions === true),
 			coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
+			coordinatorAccess: lastDevicesData.coordinatorAccess,
 			inventory: lastDevicesData.inventory,
 			inventoryUnavailable: lastDevicesData.inventoryUnavailable,
 			peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
 			peerSyncMetadata: lastDevicesData.peerSyncMetadata,
 			refreshError: true,
 		},
+	);
+}
+
+/** Whether this device may change device Identities, which needs the coordinator admin secret. */
+function readCoordinatorAccess(options: ReadRequestOptions): Promise<CoordinatorAccess> {
+	return api.loadCoordinatorAdminStatus(options).then(
+		(value) => coordinatorAccessFromStatus({ status: "fulfilled", value }),
+		(reason: unknown) => coordinatorAccessFromStatus({ status: "rejected", reason }),
 	);
 }
 
@@ -796,13 +808,15 @@ async function runLoadDevicesData(
 		});
 	}
 	try {
-		const [projects, intent, reconciliation, inventoryResult, syncRefreshed] = await Promise.all([
-			loadRecipientPolicyProjects(options),
-			api.loadRecipientPolicyIntent(options),
-			api.loadRecipientPolicyReconciliationStatus(options),
-			readDevicesInventory(options),
-			loadSyncData({ requiredSurface: "devices", signal: options.signal }),
-		]);
+		const [projects, intent, reconciliation, inventoryResult, syncRefreshed, coordinatorAccess] =
+			await Promise.all([
+				loadRecipientPolicyProjects(options),
+				api.loadRecipientPolicyIntent(options),
+				api.loadRecipientPolicyReconciliationStatus(options),
+				readDevicesInventory(options),
+				loadSyncData({ requiredSurface: "devices", signal: options.signal }),
+				readCoordinatorAccess(options),
+			]);
 		if (options.signal?.aborted) return false;
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		const availability = deriveDeviceAvailability();
@@ -817,6 +831,7 @@ async function runLoadDevicesData(
 		state.deviceIdentityInventoryLoadError = inventoryResult.unavailable;
 		mountDevices(mount, intent, reconciliation, projects, availability, {
 			...deviceRendererActions(inventoryResult.inventory?.deviceLifecycleActions === true),
+			coordinatorAccess,
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
@@ -834,6 +849,7 @@ async function runLoadDevicesData(
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
+			coordinatorAccess,
 		};
 		return syncRefreshed;
 	} catch {

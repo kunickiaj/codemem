@@ -2268,6 +2268,93 @@ const localPeerRemovalOptions = {
 	}),
 };
 
+/**
+ * A Project shared with another person through an accepted share, which the
+ * recipient-policy migration turns into a Project recipient.
+ */
+function seedRecipientMigrationFixture(store: MemoryStore) {
+	const now = "2026-07-21T12:00:00.000Z";
+	const projectId = "https://git.example.invalid/acme/intent-route.git";
+	const scopeId = "protected-route-scope";
+	const recipientId = "identity-route-recipient";
+	const deviceId = "device-route-recipient";
+	const sessionId = insertTestSession(store.db);
+	store.db
+		.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
+		.run(projectId, "intent-route", sessionId);
+	insertTestMemory(store, {
+		sessionId,
+		kind: "discovery",
+		title: "intent route fixture",
+		scopeId,
+	});
+	store.db
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES (?, 'Route recipient', 0, 'active', ?, ?)`,
+		)
+		.run(recipientId, now, now);
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, 'Intent route', 'managed_project', 'coordinator',
+				'private-coordinator', 'private-group', 1, 'active', ?, ?)`,
+		)
+		.run(scopeId, now, now);
+	store.db
+		.prepare(
+			`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
+		)
+		.run(projectId, projectId, scopeId, now, now);
+	store.db
+		.prepare(
+			`INSERT INTO sync_peers(
+				peer_device_id, name, actor_id, public_key, pinned_fingerprint, addresses_json, created_at
+			 ) VALUES (?, 'Route laptop', ?, 'private-key', 'private-transport-fingerprint',
+				'["private-address"]', ?)`,
+		)
+		.run(deviceId, recipientId, now);
+	store.db
+		.prepare(
+			`INSERT INTO scope_memberships(
+				scope_id, device_id, status, membership_epoch, coordinator_id, group_id, updated_at
+			 ) VALUES (?, ?, 'active', 1, 'private-coordinator', 'private-group', ?)`,
+		)
+		.run(scopeId, deviceId, now);
+	const project = {
+		canonicalIdentity: projectId,
+		displayName: "intent-route",
+		identitySource: "git_remote",
+		existingMemoryCount: 1,
+	};
+	const reviewedDigest = core.shareProjectSetDigest([project]);
+	store.db
+		.prepare(
+			`INSERT INTO share_operations(
+				operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+				person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+				coordinator_group_id, invite_token_digest, invite_expires_at,
+				recipient_actor_id, recipient_device_id, acceptance_consumed_at, created_at, updated_at
+			 ) VALUES ('route-operation', 'active', ?, '[]', ?, 'existing', 'Route recipient',
+				'existing_and_future', ?, 'private-group', 'private-invite-digest',
+				'2099-01-01T00:00:00.000Z', ?, ?, ?, ?, ?)`,
+		)
+		.run(store.actorId, recipientId, reviewedDigest, recipientId, deviceId, now, now, now);
+	store.db
+		.prepare(
+			`INSERT INTO share_operation_projects(
+				operation_id, canonical_project_identity, display_name, identity_source,
+				existing_memory_count, ordinal
+			 ) VALUES ('route-operation', ?, 'intent-route', 'git_remote', 1, 0)`,
+		)
+		.run(projectId);
+	return { projectId, recipientId, scopeId };
+}
+
 describe("viewer-server", () => {
 	it("serves viewer shell and app bundle with cache-safe headers", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-cache-"));
@@ -13695,7 +13782,7 @@ describe("viewer-server", () => {
 		});
 
 		it("assigns a sync peer to the local actor through the identity route", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");
@@ -14479,85 +14566,7 @@ describe("viewer-server", () => {
 			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
-				const now = "2026-07-21T12:00:00.000Z";
-				const projectId = "https://git.example.invalid/acme/intent-route.git";
-				const scopeId = "protected-route-scope";
-				const recipientId = "identity-route-recipient";
-				const deviceId = "device-route-recipient";
-				const sessionId = insertTestSession(store.db);
-				store.db
-					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
-					.run(projectId, "intent-route", sessionId);
-				insertTestMemory(store, {
-					sessionId,
-					kind: "discovery",
-					title: "intent route fixture",
-					scopeId,
-				});
-				store.db
-					.prepare(
-						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-						 VALUES (?, 'Route recipient', 0, 'active', ?, ?)`,
-					)
-					.run(recipientId, now, now);
-				store.db
-					.prepare(
-						`INSERT INTO replication_scopes(
-							scope_id, label, kind, authority_type, coordinator_id, group_id,
-							membership_epoch, status, created_at, updated_at
-						 ) VALUES (?, 'Intent route', 'managed_project', 'coordinator',
-							'private-coordinator', 'private-group', 1, 'active', ?, ?)`,
-					)
-					.run(scopeId, now, now);
-				store.db
-					.prepare(
-						`INSERT INTO project_scope_mappings(
-							workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-						 ) VALUES (?, ?, ?, 1000, 'test', ?, ?)`,
-					)
-					.run(projectId, projectId, scopeId, now, now);
-				store.db
-					.prepare(
-						`INSERT INTO sync_peers(
-							peer_device_id, name, actor_id, public_key, pinned_fingerprint, addresses_json, created_at
-						 ) VALUES (?, 'Route laptop', ?, 'private-key', 'private-transport-fingerprint',
-							'["private-address"]', ?)`,
-					)
-					.run(deviceId, recipientId, now);
-				store.db
-					.prepare(
-						`INSERT INTO scope_memberships(
-							scope_id, device_id, status, membership_epoch, coordinator_id, group_id, updated_at
-						 ) VALUES (?, ?, 'active', 1, 'private-coordinator', 'private-group', ?)`,
-					)
-					.run(scopeId, deviceId, now);
-				const project = {
-					canonicalIdentity: projectId,
-					displayName: "intent-route",
-					identitySource: "git_remote",
-					existingMemoryCount: 1,
-				};
-				const reviewedDigest = core.shareProjectSetDigest([project]);
-				store.db
-					.prepare(
-						`INSERT INTO share_operations(
-							operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
-							person_kind, teammate_name, history_policy, reviewed_project_set_digest,
-							coordinator_group_id, invite_token_digest, invite_expires_at,
-							recipient_actor_id, recipient_device_id, acceptance_consumed_at, created_at, updated_at
-						 ) VALUES ('route-operation', 'active', ?, '[]', ?, 'existing', 'Route recipient',
-							'existing_and_future', ?, 'private-group', 'private-invite-digest',
-							'2099-01-01T00:00:00.000Z', ?, ?, ?, ?, ?)`,
-					)
-					.run(store.actorId, recipientId, reviewedDigest, recipientId, deviceId, now, now, now);
-				store.db
-					.prepare(
-						`INSERT INTO share_operation_projects(
-							operation_id, canonical_project_identity, display_name, identity_source,
-							existing_memory_count, ordinal
-						 ) VALUES ('route-operation', ?, 'intent-route', 'git_remote', 1, 0)`,
-					)
-					.run(projectId);
+				const { projectId, scopeId, recipientId } = seedRecipientMigrationFixture(store);
 
 				const invalid = await app.request("/api/sync/recipient-policy/v1/migrate", {
 					method: "POST",
@@ -14620,6 +14629,54 @@ describe("viewer-server", () => {
 				]) {
 					expect(intentText).not.toContain(forbiddenKey);
 				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("refuses a recipient-policy migration when the admin secret is removed while its body is read", async () => {
+			let adminSecret = "fixture-admin-secret";
+			const { app, ensureStore, cleanup } = createTestApp({
+				readCoordinatorConfig: () =>
+					core.readCoordinatorSyncConfig({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_groups: ["group-admin"],
+						sync_coordinator_admin_secret: adminSecret,
+					}),
+			});
+			try {
+				const store = ensureStore();
+				seedRecipientMigrationFixture(store);
+				const written = () =>
+					["actors", "identity_devices", "project_recipients"].map((table) =>
+						store.db.prepare(`SELECT * FROM ${table}`).all(),
+					);
+				const before = written();
+				let sendBody = (_text: string) => {};
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						sendBody = (text) => {
+							controller.enqueue(new TextEncoder().encode(text));
+							controller.close();
+						};
+					},
+				});
+
+				// The gate admits the request; the secret goes before the body arrives.
+				const pending = app.request("/api/sync/recipient-policy/v1/migrate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body,
+					duplex: "half",
+				} as RequestInit);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				adminSecret = "";
+				sendBody("{}");
+				const response = await pending;
+
+				expect(response.status).toBe(403);
+				expect(await response.json()).toEqual({ error: "access_change_needs_admin_device" });
+				expect(written()).toEqual(before);
 			} finally {
 				cleanup();
 			}
@@ -16317,7 +16374,7 @@ describe("viewer-server", () => {
 		});
 
 		it("maps claimed_local_actor=true to the local actor id when no actor id is provided", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");

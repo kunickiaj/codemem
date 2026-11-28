@@ -913,7 +913,7 @@ Open **Sharing → Identities** and choose **Person settings** on the person's c
 - **Merge duplicates** combines two entries for the same person. The entry you opened moves its devices, Team memberships, and shared Projects to the person you choose, then leaves Sharing. Merging stops if the two entries have different roles or invitation states in the same Team, or if a Project is shared with one and stopped for the other.
 - **Remove person** stops that person's devices from receiving every Project shared with them, directly or through a Team. Memories already on those devices stay there. Neither merge nor removal can be undone.
 
-Merging and removal change who receives Projects. They work only on a device that holds the coordinator admin secret. On other devices the controls are disabled and say so. People are created by invitations and shares; Sharing has no separate step to create one.
+Renaming, merging and removal work only on a device that holds the coordinator admin secret, because people belong to coordinator setups and merging or removal changes who receives Projects. On other devices the controls are disabled and say so. People are created by invitations and shares; Sharing has no separate step to create one.
 
 ### Devices, status, and recovery
 
@@ -963,6 +963,8 @@ Sync starts as **Not verified** after an upgrade until Codemem observes the dire
 | Review required | Device or ownership evidence conflicts. | Use the Advanced review path; normal setup cannot resolve conflicts. |
 
 For several setup-ready devices, select each device, choose an Identity for each one, and confirm each choice. Codemem does not assign an Identity from a suggestion in this flow. The review step lists every device and target Identity before the atomic commit. A prefilled local or suggested Identity is still unconfirmed until you select the confirmation checkbox.
+
+Setting up or changing a device's Identity needs a device with a coordinator and its admin secret, like other access changes. On any other device, Devices shows these controls disabled and says why. Pairing, removing a device and sync work without a coordinator.
 
 Changing a configured device's Identity is a separate rebind flow. It shows both the previous and target Identities and requires another reviewed confirmation. If device evidence changes after preview, refresh Devices and review the current information before retrying.
 
@@ -1218,7 +1220,7 @@ An install that shared memories before Spaces existed shows **Choose where older
 ### Same-person device recovery
 
 - In **Advanced → Sync**, ownership summaries come from active `identity_devices` bindings. Use the device card's **Set up Identity in Devices** or **Review or rebind in Devices** action to confirm or change ownership.
-- Older versions let you assign a person to a paired device, or mark it as your own, outside Devices. The first time codemem 0.50 runs its sync maintenance, it converts each of those assignments into an Identity binding when nothing contradicts it: the device has a pinned key, has no binding yet, names one active person, and the coordinator does not name someone else for it. This happens once per database, and only on a device that holds the coordinator admin secret and is set up for at least one coordinator group, because only that device can read what the coordinator records for each device in every group. On other devices, and on an install with no coordinator, nothing is converted and the older assignment keeps working as before.
+- Older versions let you assign a person to a paired device, or mark it as your own, outside Devices. The first time codemem 0.50 runs its sync maintenance, it converts each of those assignments into an Identity binding when nothing contradicts it: the device has a pinned key, has no binding yet, names one active person, and the coordinator does not name someone else for it. This happens once per database, and only on a device that holds the coordinator admin secret and is set up for at least one coordinator group, because only that device can read what the coordinator records for each device in every group. On other devices, and on an install with no coordinator, nothing is converted. The older assignment still counts there, but only a device with the coordinator admin secret can change it. If the coordinator settings change while the conversion reads the coordinator, it writes nothing and tries again on a later run.
 - An assignment that was not converted stays as the suggested Identity on that device in Devices. It is only a hint, and it does not become ownership until you review and confirm the binding there. After the conversion has run on a device, an unconverted assignment no longer makes a device one of your own there, and the older assignment can no longer be changed outside Devices.
 - Identity setup preserves the distinction between ownership, provenance, pairing, and access. Private sync still requires membership in a personal Sharing domain; an Identity binding is not an access grant.
 - If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.
@@ -1228,7 +1230,7 @@ An install that shared memories before Spaces existed shows **Choose where older
 - The Sync panel now has an `Actors` section for creating and renaming non-local actors.
 - The same section can merge a duplicate actor into another actor. This immediately moves assigned peers, device bindings, Team memberships, and direct or received Project access to the target Identity, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them. Merging and removing people change who receives Projects, so they work only on a device that holds the coordinator admin secret, here as in Sharing. That includes merging duplicate people on a device with no coordinator configured.
 - Historical actor records and `sync_peers.actor_id` remain available to explain provenance and supply setup suggestions. After the one-time conversion described under Same-person device recovery, they do not establish device ownership.
-- Create or rename an actor label here when maintaining legacy provenance, then complete any device ownership choice in Devices.
+- Create or rename an actor label here when maintaining legacy provenance, then complete any device ownership choice in Devices. Creating and renaming work only on a device that holds the coordinator admin secret. On other devices, including an install with no coordinator, the section lists people without these controls and says why.
 - Non-local peers receive memories only after Sharing-domain authorization succeeds. Their include/exclude filters can narrow that set, but cannot grant access.
 - Use `Only me` on a memory when it should stay local and not sync to non-local actors.
 - The Sync panel also shows a teammate review card with per-peer counts for memories that will share by default versus memories marked `Only me`, plus a one-click jump into `My memories` in the Feed for review.

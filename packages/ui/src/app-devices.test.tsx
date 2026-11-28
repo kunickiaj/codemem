@@ -34,6 +34,7 @@ vi.mock("@radix-ui/react-select", async () => {
 });
 
 const mocks = vi.hoisted(() => ({
+	loadCoordinatorAdminStatus: vi.fn(),
 	loadProjectScopeInventory: vi.fn(),
 	loadDeviceIdentityInventory: vi.fn(),
 	loadLegacyTeamSetupDetail: vi.fn(),
@@ -73,7 +74,7 @@ vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	clearLegacyTeamSetupDecision: vi.fn(),
 	finishLegacyTeamSetup: vi.fn(),
-	loadCoordinatorAdminStatus: vi.fn(async () => ({ has_admin_secret: false })),
+	loadCoordinatorAdminStatus: mocks.loadCoordinatorAdminStatus,
 	loadDeviceIdentityInventory: mocks.loadDeviceIdentityInventory,
 	loadLegacyTeamSetupSummary: vi.fn(async () => ({ version: 1, candidates: [] })),
 	loadLegacyTeamSetupDetail: mocks.loadLegacyTeamSetupDetail,
@@ -133,6 +134,9 @@ vi.mock("./tabs/sync", () => ({
 	loadSyncData: mocks.loadSyncData,
 }));
 vi.mock("./tabs/sync/sync-view-controller", () => ({ applySyncSubView: vi.fn() }));
+
+// Only an admin device may change device Identities; tests use one unless they say otherwise.
+const ADMIN_READY = { readiness: "ready", has_admin_secret: true };
 
 const intent = {
 	version: 1 as const,
@@ -444,6 +448,7 @@ async function setupDevicesAppTest() {
 	});
 	mocks.loadRecipientPolicyIntent.mockResolvedValue(intent);
 	mocks.loadProjectsData.mockResolvedValue(true);
+	mocks.loadCoordinatorAdminStatus.mockResolvedValue(ADMIN_READY);
 	mocks.loadRecipientPolicySharingData.mockResolvedValue(true);
 	mocks.loadCoordinatorAdminData.mockResolvedValue(true);
 	mocks.loadPairingData.mockResolvedValue(true);
@@ -951,6 +956,34 @@ describe("Devices app inventory recovery", () => {
 		expect(mocks.loadRecipientPolicyIntent).toHaveBeenCalled();
 		expect(mocks.loadRecipientPolicyReconciliationStatus).toHaveBeenCalled();
 	});
+
+	it.each([
+		[
+			{ readiness: "partial", has_admin_secret: false },
+			"Only a device that holds the coordinator admin secret can change device Identities.",
+		],
+		[
+			{ readiness: "not_configured", has_admin_secret: false },
+			"Identity setup needs a coordinator.",
+		],
+	])(
+		"disables Identity changes on a device that is not an admin device: %o",
+		async (status, copy) => {
+			mocks.loadDeviceIdentityInventory.mockResolvedValueOnce(configuredDeviceInventory());
+			mocks.loadCoordinatorAdminStatus.mockResolvedValue(status);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+
+			const panel = document.getElementById("tab-devices");
+			const rebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+				(button) => button.textContent === "Change Identity…",
+			);
+			expect(rebind?.disabled).toBe(true);
+			expect(panel?.textContent).toContain(copy);
+		},
+	);
 
 	it("restores Identity controls after a first Devices load inventory failure", async () => {
 		mocks.loadDeviceIdentityInventory.mockResolvedValueOnce(configuredDeviceInventory());

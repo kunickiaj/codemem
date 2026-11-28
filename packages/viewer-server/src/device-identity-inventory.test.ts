@@ -17,6 +17,19 @@ import { verifySignature } from "../../core/src/sync-auth.js";
 import { settleBackgroundRefreshes } from "./application/background-refresh.js";
 import { createApp } from "./index.js";
 
+// Binding commits need the admin device; these tests are about other checks.
+function createAdminApp(options: Parameters<typeof createApp>[0]) {
+	return createApp({
+		readCoordinatorConfig: () =>
+			readCoordinatorSyncConfig({
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_groups: ["group-admin"],
+				sync_coordinator_admin_secret: "fixture-admin-secret",
+			}),
+		...options,
+	});
+}
+
 function testStore(): { store: MemoryStore; cleanup: () => void } {
 	const directory = mkdtempSync(join(tmpdir(), "codemem-device-inventory-test-"));
 	const dbPath = join(directory, "test.sqlite");
@@ -314,7 +327,7 @@ describe("device Identity binding routes", () => {
 			expect(previewResponse.status).toBe(200);
 			expect(previewStore.deviceId).toBe(stableDeviceId);
 			expect(previewStore.actorId).toBe(stableActorId);
-			const commitApp = createApp({
+			const commitApp = createAdminApp({
 				storeFactory: () => commitStore,
 				loadDeviceIdentityCoordinatorEvidence: coordinatorEvidence,
 			});
@@ -521,7 +534,7 @@ describe("device Identity binding writes", () => {
 	it("requires local confirmation, commits, and makes an exact retry idempotent", async () => {
 		const fixture = testStore();
 		try {
-			const app = createApp({
+			const app = createAdminApp({
 				storeFactory: () => fixture.store,
 				loadDeviceIdentityCoordinatorEvidence: async () => ({
 					availability: "available",
@@ -694,7 +707,7 @@ describe("device Identity binding writes", () => {
 	it("re-reads evidence and rejects a stale commit", async () => {
 		const fixture = testStore();
 		try {
-			const app = createApp({
+			const app = createAdminApp({
 				storeFactory: () => fixture.store,
 				loadDeviceIdentityCoordinatorEvidence: async () => ({
 					availability: "available",

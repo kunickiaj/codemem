@@ -46,6 +46,11 @@ export interface LegacyPairingAssignmentConversionInput {
 	 * false when the local Identity cannot be recorded.
 	 */
 	ensureLocalIdentity?: () => boolean;
+	/**
+	 * Whether the authority that fetched `coordinator` still holds. Called inside the
+	 * write transaction; when it returns false the conversion writes nothing and waits.
+	 */
+	authorityStillHolds?: () => boolean;
 	now?: () => string;
 }
 
@@ -53,6 +58,7 @@ export interface LegacyPairingAssignmentConversionResult {
 	status: "converted" | "already_converted" | "waiting";
 	waitingReason:
 		| "coordinator_evidence_unavailable"
+		| "coordinator_authority_changed"
 		| "device_inventory_truncated"
 		| "local_identity_conflict"
 		| null;
@@ -268,6 +274,10 @@ function convertInTransaction(
 	// A process that still runs as a person this database has switched away from must not decide.
 	assertLocalIdentityCurrent(db, input.localActorId);
 	if (legacyPairingAssignmentsConverted(db)) return result("already_converted");
+	// The evidence was fetched before this transaction, with the authority it was fetched under.
+	if (input.authorityStillHolds?.() === false) {
+		return result("waiting", "coordinator_authority_changed");
+	}
 	const plan = conversionPlan(db, input);
 	if ("status" in plan) return plan;
 

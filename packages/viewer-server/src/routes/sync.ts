@@ -16,6 +16,7 @@ import type {
 	DeviceIdentityBindingCommitRequestV1,
 	DeviceIdentityBindingPreviewRequestV1,
 	DeviceIdentityCoordinatorEvidence,
+	DeviceIdentityInventoryInput,
 	InboundScopeRejection,
 	LegacyPairingAssignmentConversionResult,
 	MaintenanceJobSnapshot,
@@ -2319,6 +2320,31 @@ export async function loadAllGroupsDeviceIdentityCoordinatorEvidence(
 	}
 }
 
+/** Group IDs may hold any text, so lists are compared entry by entry. */
+function sameGroups(current: readonly string[], fetched: readonly string[]): boolean {
+	return current.length === fetched.length && current.every((group, i) => group === fetched[i]);
+}
+
+/**
+ * Whether the coordinator, groups and admin secret are still the ones the evidence
+ * was fetched with. The fetch can outlast a change, so the write checks this.
+ */
+function sameCoordinatorAuthority(
+	readConfig: typeof readCoordinatorSyncConfig,
+	fetchedWith: ReturnType<typeof readCoordinatorSyncConfig>,
+): boolean {
+	try {
+		const current = readConfig();
+		return (
+			current.syncCoordinatorUrl === fetchedWith.syncCoordinatorUrl &&
+			current.syncCoordinatorAdminSecret === fetchedWith.syncCoordinatorAdminSecret &&
+			sameGroups(current.syncCoordinatorGroups, fetchedWith.syncCoordinatorGroups)
+		);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Runs the one-time conversion of the person assigned on pairings into Identity
  * bindings. It runs after enrollment reconciliation, so a binding the coordinator
@@ -2329,20 +2355,28 @@ export async function loadAllGroupsDeviceIdentityCoordinatorEvidence(
 export async function convertLegacyPairingAssignmentsOperation(
 	store: MemoryStore,
 	options: {
-		loadCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
+		readConfig?: typeof readCoordinatorSyncConfig;
+		loadCoordinatorEvidence?: (
+			config: ReturnType<typeof readCoordinatorSyncConfig>,
+		) => Promise<DeviceIdentityCoordinatorEvidence>;
 	} = {},
 ): Promise<ConvertLegacyPairingAssignmentsOperationResult> {
 	if (legacyPairingAssignmentsConverted(store.db)) {
 		return { status: "already_converted", waitingReason: null };
 	}
-	const load = options.loadCoordinatorEvidence ?? loadAllGroupsDeviceIdentityCoordinatorEvidence;
-	const coordinator = await load();
+	const readConfig = options.readConfig ?? readCoordinatorSyncConfig;
+	const load =
+		options.loadCoordinatorEvidence ??
+		((config) => loadAllGroupsDeviceIdentityCoordinatorEvidence({ config }));
+	const fetchedWith = readConfig();
+	const coordinator = await load(fetchedWith);
 	try {
 		const { status, waitingReason } = convertLegacyPairingAssignments(store.db, {
 			localActorId: store.actorId,
 			localDeviceId: store.deviceId,
 			coordinator,
 			ensureLocalIdentity: () => ensureLocalActorRecord(store),
+			authorityStillHolds: () => sameCoordinatorAuthority(readConfig, fetchedWith),
 		});
 		return { status, waitingReason };
 	} catch (error) {
@@ -6548,6 +6582,160 @@ function persistPeerIdentityMutation(store: MemoryStore, body: Record<string, un
 	return assignment;
 }
 
+/**
+ * Assigns a paired device to a person through the older route. The gate checked on
+ * entry, but reading the body can outlast that, so the write checks again.
+ */
+function persistPeerIdentityIfAllowed(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	return runViewerActorMutation(store, () =>
+		canChangeRecipientAccess(readConfig)
+			? persistPeerIdentityMutation(store, body)
+			: { ...ACCESS_CHANGE_REFUSAL, status: 403 as const },
+	);
+}
+
+const BINDING_COMMIT_HTTP_STATUS: Partial<Record<string, 400 | 404 | 409>> = {
+	invalid: 400,
+	not_found: 404,
+	stale: 409,
+	conflict: 409,
+};
+
+/**
+ * Commits reviewed device bindings, or returns null when this device may no longer
+ * change access. The gate checked on entry, but the publication lock and the
+ * inventory read can outlast that, so the write transaction checks again.
+ */
+function commitBindingsIfAllowed(
+	store: MemoryStore,
+	inventory: DeviceIdentityInventoryInput,
+	request: DeviceIdentityBindingCommitRequestV1,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	return store.db
+		.transaction(() =>
+			canChangeRecipientAccess(readConfig)
+				? commitDeviceIdentityBindings(
+						store.db,
+						{ localActorId: store.actorId, localDeviceId: store.deviceId },
+						inventory,
+						request,
+					)
+				: null,
+		)
+		.immediate();
+}
+
+/** Adds a person. People belong to coordinator setups, so this needs the admin device. */
+async function createActorRoute(
+	c: Context,
+	store: MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	ensureLocalActorRecord(store);
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json<Record<string, unknown>>();
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	const rawDisplayName = String(body.display_name ?? "");
+	if (!rawDisplayName.trim()) return c.json({ error: "display_name required" }, 400);
+	let displayName: string;
+	try {
+		displayName = normalizeHumanPresentationName(rawDisplayName, "display_name");
+	} catch (error) {
+		return c.json({ error: error instanceof Error ? error.message : "display_name_invalid" }, 400);
+	}
+	const now = new Date().toISOString();
+	const actor = {
+		actor_id: randomUUID(),
+		display_name: displayName,
+		is_local: 0,
+		status: "active",
+		merged_into_actor_id: null,
+		created_at: now,
+		updated_at: now,
+	};
+	// The gate checked on entry, but reading the body can outlast that.
+	const written = store.db
+		.transaction(() => {
+			if (!canChangeRecipientAccess(readConfig)) return false;
+			drizzle(store.db, { schema }).insert(schema.actors).values(actor).run();
+			return true;
+		})
+		.immediate();
+	return written ? c.json(actor) : c.json(ACCESS_CHANGE_REFUSAL, 403);
+}
+
+/** Renames a person, which needs the admin device like other changes to people. */
+async function renameActorRoute(
+	c: Context,
+	store: MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	ensureLocalActorRecord(store);
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json<Record<string, unknown>>();
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	const actorId = String(body.actor_id ?? "").trim();
+	if (!actorId) return c.json({ error: "actor_id required" }, 400);
+	let displayName: string;
+	try {
+		displayName = normalizeHumanPresentationName(String(body.display_name ?? ""), "display_name");
+	} catch (error) {
+		return c.json({ error: error instanceof Error ? error.message : "display_name_invalid" }, 400);
+	}
+	const d = drizzle(store.db, { schema });
+	const updatedAt = new Date().toISOString();
+	// The gate checked on entry, but reading the body can outlast that.
+	const result = store.db
+		.transaction(() => {
+			if (!canChangeRecipientAccess(readConfig)) return "refused" as const;
+			const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
+			if (!actor) return null;
+			d.update(schema.actors)
+				.set({ display_name: displayName, updated_at: updatedAt })
+				.where(eq(schema.actors.actor_id, actorId))
+				.run();
+			return actor;
+		})
+		.immediate();
+	if (result === "refused") return c.json(ACCESS_CHANGE_REFUSAL, 403);
+	if (!result) return c.json({ error: "actor not found" }, 404);
+	return c.json({ ...result, display_name: displayName, updated_at: updatedAt });
+}
+
+/**
+ * Runs the recipient-policy migration, or returns null when this device may no
+ * longer change access. A dry run writes nothing, so any device may run one. The
+ * gate checked on entry, but reading the body can outlast that, so a migration
+ * that writes checks again inside its transaction.
+ */
+function migrateIfAllowed(
+	store: MemoryStore,
+	dryRun: boolean,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	const migrate = () =>
+		migrateRecipientPolicyIntent(
+			store.db,
+			{ localActorId: store.actorId, localDeviceId: store.deviceId },
+			{ dryRun },
+		);
+	if (dryRun) return migrate();
+	return store.db
+		.transaction(() => (canChangeRecipientAccess(readConfig) ? migrate() : null))
+		.immediate();
+}
+
 function createActorMutationPreflightRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 	const preflight = async (c: Context, next: () => Promise<void>) => {
@@ -7039,10 +7227,17 @@ export function installRecipientAccessChangeGate(
 	const allowed = () => canChangeRecipientAccess(readConfig);
 	// Each of these saves a choice of who receives a Project: recipient edges, review
 	// decisions and the migration that materializes them, moving held-back memories
-	// into a shared scope, and merging or removing a person, which moves or ends
-	// their devices' access. Merge and removal check again inside their writes.
+	// into a shared scope, merging or removing a person, which moves or ends their
+	// devices' access, and assigning a device to a person, which changes the Projects
+	// it receives. Adding and renaming people need the same device, because people
+	// belong to coordinator setups. Every change to a person or a device's person
+	// checks again inside its write.
 	for (const path of [
 		"/api/sync/recipient-policy/v1/edges/commit",
+		"/api/sync/recipient-policy/v1/device-bindings/commit",
+		"/api/sync/peers/identity",
+		"/api/sync/actors",
+		"/api/sync/actors/rename",
 		"/api/sync/actors/merge",
 		"/api/sync/actors/deactivate",
 		"/api/sync/recipient-policy/v1/review/resolve",
@@ -7507,18 +7702,10 @@ export function syncRoutes(
 		try {
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			ensureStableStoreIdentity(store);
-			const result = commitDeviceIdentityBindings(
-				store.db,
-				{ localActorId: store.actorId, localDeviceId: store.deviceId },
-				await localInventoryInput(store),
-				body,
-			);
-			if (result.status === "invalid") return c.json(result, 400);
-			if (result.status === "not_found") return c.json(result, 404);
-			if (result.status === "stale" || result.status === "conflict") {
-				return c.json(result, 409);
-			}
-			return c.json(result);
+			const inventory = await localInventoryInput(store);
+			const result = commitBindingsIfAllowed(store, inventory, body, readCoordinatorConfig);
+			if (!result) return c.json(ACCESS_CHANGE_REFUSAL, 403);
+			return c.json(result, BINDING_COMMIT_HTTP_STATUS[result.status] ?? 200);
 		} catch (error) {
 			if (isSqliteBusy(error)) {
 				c.header("Retry-After", "1");
@@ -7887,13 +8074,8 @@ export function syncRoutes(
 			return c.json({ error: "request_invalid" }, 400);
 		}
 		try {
-			return c.json(
-				migrateRecipientPolicyIntent(
-					store.db,
-					{ localActorId: store.actorId, localDeviceId: store.deviceId },
-					{ dryRun: body.dryRun === true },
-				),
-			);
+			const result = migrateIfAllowed(store, body.dryRun === true, readCoordinatorConfig);
+			return result ? c.json(result) : c.json(ACCESS_CHANGE_REFUSAL, 403);
 		} catch (error) {
 			if (isSqliteBusy(error)) {
 				c.header("Retry-After", "1");
@@ -8347,76 +8529,16 @@ export function syncRoutes(
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
-		const result = runViewerActorMutation(store, () => persistPeerIdentityMutation(store, body));
+		const result = persistPeerIdentityIfAllowed(store, body, readCoordinatorConfig);
 		if ("error" in result) return c.json({ error: result.error }, result.status);
 		return c.json({ ok: true, ...result });
 	});
 
-	app.post("/api/sync/actors", async (c) => {
-		const store = getStore();
-		ensureLocalActorRecord(store);
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const rawDisplayName = String(body.display_name ?? "");
-		if (!rawDisplayName.trim()) return c.json({ error: "display_name required" }, 400);
-		let displayName: string;
-		try {
-			displayName = normalizeHumanPresentationName(rawDisplayName, "display_name");
-		} catch (error) {
-			return c.json(
-				{ error: error instanceof Error ? error.message : "display_name_invalid" },
-				400,
-			);
-		}
-		const d = drizzle(store.db, { schema });
-		const now = new Date().toISOString();
-		const actor = {
-			actor_id: randomUUID(),
-			display_name: displayName,
-			is_local: 0,
-			status: "active",
-			merged_into_actor_id: null,
-			created_at: now,
-			updated_at: now,
-		};
-		d.insert(schema.actors).values(actor).run();
-		return c.json(actor);
-	});
+	app.post("/api/sync/actors", (c) => createActorRoute(c, getStore(), readCoordinatorConfig));
 
-	app.post("/api/sync/actors/rename", async (c) => {
-		const store = getStore();
-		ensureLocalActorRecord(store);
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const actorId = String(body.actor_id ?? "").trim();
-		if (!actorId) return c.json({ error: "actor_id required" }, 400);
-		let displayName: string;
-		try {
-			displayName = normalizeHumanPresentationName(String(body.display_name ?? ""), "display_name");
-		} catch (error) {
-			return c.json(
-				{ error: error instanceof Error ? error.message : "display_name_invalid" },
-				400,
-			);
-		}
-		const d = drizzle(store.db, { schema });
-		const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
-		if (!actor) return c.json({ error: "actor not found" }, 404);
-		const updatedAt = new Date().toISOString();
-		d.update(schema.actors)
-			.set({ display_name: displayName, updated_at: updatedAt })
-			.where(eq(schema.actors.actor_id, actorId))
-			.run();
-		return c.json({ ...actor, display_name: displayName, updated_at: updatedAt });
-	});
+	app.post("/api/sync/actors/rename", (c) =>
+		renameActorRoute(c, getStore(), readCoordinatorConfig),
+	);
 
 	app.post("/api/sync/actors/merge", async (c) => {
 		const store = getStore();
