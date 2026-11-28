@@ -115,6 +115,8 @@ export async function shareProjectsWithTeammate(
 		invite: created.body.invite.encoded,
 		recipient_name: options.teammateName,
 		device_name: options.deviceName,
+		// Joining turns off sync without a coordinator for this key; the journey accepts that.
+		confirm_coordinator_join: true,
 	});
 	assert(accepted.status === 200, `Project invite acceptance failed: ${JSON.stringify(accepted.body)}`);
 	assert(accepted.body.type === "project_share", `unexpected invite type: ${String(accepted.body.type)}`);

@@ -382,6 +382,7 @@ describe("enrollment and presence record history before the request", () => {
 				dbPath: path,
 				keysDir: join(directory, "keys"),
 				configPath: join(directory, "not-a-directory", "config.json"),
+				confirmCoordinatorJoin: true,
 			}),
 		).rejects.toThrow();
 

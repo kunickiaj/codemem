@@ -151,6 +151,7 @@ function options() {
 		keysDir,
 		configPath,
 		deviceDisplayName: "Recipient laptop",
+		confirmCoordinatorJoin: true,
 	};
 }
 function commandArgs(extra: string[]) {
@@ -166,6 +167,8 @@ function commandArgs(extra: string[]) {
 		configPath,
 		"--device-name",
 		"  Recipient laptop  ",
+		// These tests accept as a user who confirmed joining the coordinator.
+		"--confirm-coordinator-join",
 		...extra,
 	];
 }

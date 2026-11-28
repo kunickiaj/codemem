@@ -103,6 +103,8 @@ export async function runCoordinatorScenario(ctx: ScenarioContext): Promise<void
 			"--config",
 			"/config/codemem.json",
 			"--json",
+			// Joining turns off sync without a coordinator for this key; the scenario accepts that.
+			"--confirm-coordinator-join",
 		],
 		"11-import-invite",
 		120_000,

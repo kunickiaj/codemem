@@ -70,6 +70,8 @@ async function adoptA(f) {
 		inviteValue: invite.encoded, dbPath: f.dbPath, keysDir: f.keysDir, configPath: f.configPath,
 		recipientDisplayName: "Synthetic owner", deviceDisplayName: "Synthetic A",
 		reviewedOnboardingDigest: preview.reviewedOnboardingDigest,
+		// The synthetic owner accepts that joining turns off sync without a coordinator.
+		confirmCoordinatorJoin: true,
 	});
 	const store = f.openStore();
 	assert.equal(store.actorId, invite.payload.assigned_identity_id);

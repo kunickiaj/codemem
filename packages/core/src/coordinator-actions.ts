@@ -11,6 +11,7 @@ import {
 	type CoordinatorDeviceRemovalListResult,
 	parseDeviceRemovalListPage,
 } from "./coordinator-device-removal-list.js";
+import { keyHasManagedMark, markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { recordStoreCoordinatorHistory } from "./coordinator-history.js";
 import {
 	type CoordinatorIdentityGroupGrantActionResult,
@@ -2651,6 +2652,8 @@ interface InviteJoinTransport {
 	/** The device the join enrolls, and the store that records it. */
 	device: { deviceId: string; dbPath: string; keysDir?: string };
 	signed: boolean;
+	/** The user confirmed that joining turns off sync without a coordinator for this key. */
+	confirmed: boolean;
 }
 
 function postInviteJoin(
@@ -2664,15 +2667,23 @@ function postInviteJoin(
 	return requestJson("POST", url, { ...options, bodyBytes, headers });
 }
 
+export const COORDINATOR_JOIN_CONFIRMATION_REQUIRED = "coordinator_join_confirmation_required";
+
 /**
  * A coordinator can enroll this device's key as soon as it receives the join, signed or not,
- * and before any setting is saved here. The store records that history first, so it stays on
- * record even if the coordinator refuses the join or this process stops before saving.
+ * and before any setting is saved here. So before the request, the store records that history
+ * and marks the store and its key managed in every witness, even if the coordinator then
+ * refuses the join. That permanently turns off sync without a coordinator for this key, so a
+ * store that isn't managed yet needs the user's confirmation first.
  */
-function recordInviteJoinHistory(dbPath: string): void {
-	const conn = connect(dbPath);
+function prepareStoreForJoin({ device, confirmed }: InviteJoinTransport): void {
+	const conn = connect(device.dbPath);
 	try {
+		// Only a durable mark on the key means joining takes nothing more away.
+		const keyManaged = keyHasManagedMark(conn, { keysDir: device.keysDir });
+		if (!confirmed && !keyManaged) throw new Error(COORDINATOR_JOIN_CONFIRMATION_REQUIRED);
 		recordStoreCoordinatorHistory(conn, "enrollment");
+		markCoordinatorManaged(conn, { keysDir: device.keysDir });
 	} finally {
 		conn.close();
 	}
@@ -2683,7 +2694,7 @@ async function requestInvitationJoin(
 	body: Record<string, unknown>,
 	{ recipientLegacyRetry }: { recipientLegacyRetry: boolean },
 ) {
-	recordInviteJoinHistory(transport.device.dbPath);
+	prepareStoreForJoin(transport);
 	try {
 		const [status, response] = await postInviteJoin(transport, body);
 		if (
@@ -2705,6 +2716,23 @@ async function requestInvitationJoin(
 	}
 }
 
+/** Join refusals the coordinator names, which reach the caller as they are. */
+const INVITE_JOIN_REFUSALS = new Set([
+	"add_device_invite_self_acceptance_forbidden",
+	"invite_already_bound",
+	"invite_expired",
+	"invite_identity_conflict",
+	"invite_invalid",
+	"recipient_display_name_invalid",
+	"recipient_display_name_required",
+	"recipient_display_name_too_long",
+	"device_display_name_invalid",
+	"device_display_name_required",
+	"device_display_name_too_long",
+	"recipient_invite_intent_mismatch",
+	"recipient_invite_review_unavailable",
+]);
+
 export async function coordinatorImportInviteAction(opts: {
 	inviteValue: string;
 	dbPath?: string | null;
@@ -2714,6 +2742,8 @@ export async function coordinatorImportInviteAction(opts: {
 	recipientDisplayName?: string | null;
 	deviceDisplayName?: string | null;
 	reviewedOnboardingDigest?: string | null;
+	/** Joining permanently turns off sync without a coordinator for this device's key. */
+	confirmCoordinatorJoin?: boolean;
 }): Promise<Record<string, unknown>> {
 	const payload = decodeInviteForImport(opts.inviteValue);
 	const recipientInvite = isRecipientInvite(payload);
@@ -2801,31 +2831,14 @@ export async function coordinatorImportInviteAction(opts: {
 			url: `${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
 			device: { deviceId, dbPath: resolvedDbPath, keysDir },
 			signed: recipientInvite || projectInvite,
+			confirmed: opts.confirmCoordinatorJoin === true,
 		},
 		joinBody,
 		{ recipientLegacyRetry: recipientInvite && !projectInvite },
 	);
 	if (status < 200 || status >= 300) {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
-		if (
-			[
-				"add_device_invite_self_acceptance_forbidden",
-				"invite_already_bound",
-				"invite_expired",
-				"invite_identity_conflict",
-				"invite_invalid",
-				"recipient_display_name_invalid",
-				"recipient_display_name_required",
-				"recipient_display_name_too_long",
-				"device_display_name_invalid",
-				"device_display_name_required",
-				"device_display_name_too_long",
-				"recipient_invite_intent_mismatch",
-				"recipient_invite_review_unavailable",
-			].includes(detail)
-		) {
-			throw new Error(detail);
-		}
+		if (INVITE_JOIN_REFUSALS.has(detail)) throw new Error(detail);
 		throw new Error(`Invite import failed (${status}).`);
 	}
 	// A successful consume is trusted coordinator state; malformed authority must fail closed,

@@ -12,12 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { coordinatorImportInviteAction } from "./coordinator-actions.js";
 import {
 	attestCoordinatorFree,
 	markCoordinatorManaged,
 	readCoordinatorFreeStatus,
 	type WitnessBackend,
 } from "./coordinator-free-attestation.js";
+import { encodeInvitePayload } from "./coordinator-invites.js";
 import { lookupCoordinatorPeers, readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import { refreshCoordinatorForDaemon } from "./sync-daemon.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -319,5 +321,41 @@ describe("coordinator entry points mark the store managed first", () => {
 		expect(managedRecords()).toEqual(["key", "store"]);
 		expect(readCoordinatorFreeStatus(db, { keysDir })).toBe("managed");
 		db.close();
+	});
+
+	it("marks the store managed before a signed invitation join, even a refused one", async () => {
+		const path = join(directory, "invite.sqlite");
+		const statuses: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				const db = new Database(path, { readonly: true });
+				statuses.push(readCoordinatorFreeStatus(db, { keysDir }));
+				db.close();
+				return Response.json({ error: "invite_expired" }, { status: 410 });
+			}),
+		);
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "coordinator_team_invite",
+			coordinator_url: "https://coord.example.test",
+			group_id: "team-a",
+			policy: "auto_admit",
+			token: "expired-token",
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: "Team A",
+			operation_id: `share_${"a".repeat(40)}`,
+		});
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath: path,
+				keysDir,
+				confirmCoordinatorJoin: true,
+			}),
+		).rejects.toThrow("invite_expired");
+
+		expect(statuses).toEqual(["managed"]);
 	});
 });

@@ -152,10 +152,13 @@ record_state "joining" "Identity initialized, preparing coordinator join."
 
 phase "coordinator join"
 
+# This workspace exists to join the coordinator, so the join is confirmed: it turns off
+# sync without a coordinator for this device's key.
 codemem coordinator invitation accept "$INVITE_TOKEN" \
   --db-path "$CODEMEM_DB" \
   --keys-dir "$CODEMEM_KEYS_DIR" \
   --config "$CODEMEM_CONFIG" \
+  --confirm-coordinator-join \
   --json \
   2>"$ARTIFACTS_DIR/import-invite-stderr.log" \
   > "$ARTIFACTS_DIR/import-invite.json" || fail "join_failed" "coordinator invitation accept failed"
