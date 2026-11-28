@@ -47,9 +47,8 @@ it("refuses an oversized snapshot item by name and saves no snapshot progress", 
 	expect(result.ok).toBe(false);
 	expect(result.error).toMatch(/sync_entry_too_large: memory \S+ is 0\.0 MiB, over the 0\.0 MiB/);
 	expect(result.error).toContain(
-		"Trim it on the peer, or exclude its Project from this pairing, then sync again.",
+		"Trim or delete it on the peer, or exclude its Project from this pairing, then sync again.",
 	);
-	expect(result.error).not.toContain("delete");
 	expect(savedProgress(f)).toBeNull();
 	expect(getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE)[0]).toBeNull();
 	expect(memoryTitles(f)).not.toContain("big-memory");
@@ -71,8 +70,9 @@ it("refuses an oversized op by name and keeps the inbound cursor where it was", 
 
 	expect(result.ok).toBe(false);
 	expect(result.error).toMatch(/sync_entry_too_large: change z-big-memory-op is/);
-	expect(result.error).toContain("Exclude its Project from this pairing, then sync again.");
-	expect(result.error).not.toContain("Trim or delete it");
+	expect(result.error).toContain(
+		"Trim or delete the memory on the peer, or exclude its Project from this pairing, then sync again.",
+	);
 	expect(getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE)[0]).toBe(cursor);
 	expect(memoryTitles(f)).not.toContain("z-big-memory");
 });
@@ -152,4 +152,108 @@ it("keeps a peer's text out of the ops failure when its size refusal doesn't che
 
 	expect(result.ok).toBe(false);
 	expect(result.error).toBe("channel pull failed");
+});
+
+/** A newer revision of a seeded memory on the remote, with a small body, as a trim records it. */
+function trimOnRemote(f: Awaited<ReturnType<typeof pass>>, op: ReturnType<typeof f.seed>) {
+	const trimmed = {
+		...op,
+		op_id: `${op.op_id}-trimmed`,
+		clock_rev: Number(op.clock_rev ?? 1) + 1,
+		created_at: "2026-01-02T00:00:00Z",
+		clock_updated_at: "2026-01-02T00:00:00Z",
+		payload_json: JSON.stringify({ ...JSON.parse(op.payload_json ?? "{}"), body_text: "Trimmed" }),
+	};
+	const db = f.remote.store.db;
+	const result = applyReplicationOps(db, [trimmed], f.remote.peerDeviceId, f.remote.store.scanner);
+	expect(result).toMatchObject({ applied: 1 });
+	const memoryId = db
+		.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+		.pluck()
+		.get(op.entity_id) as number;
+	recordOpCopy(db, trimmed.op_id, memoryId);
+}
+
+it("unblocks an oversized change once the memory is trimmed on the peer", async () => {
+	const f = await pass();
+	setReplicationCursor(f.client.db, f.remote.localDeviceId, { lastApplied: INITIAL }, SCOPE);
+	f.seed("remote", "small-memory");
+	expect((await syncScopedChannelOnce(f.options)).ok).toBe(true);
+	const big = f.seed("remote", "z-big-memory", OVERSIZED);
+	expect((await syncScopedChannelOnce(f.options)).ok).toBe(false);
+
+	trimOnRemote(f, big);
+	const result = await syncScopedChannelOnce(f.options);
+
+	expect(result.ok).toBe(true);
+	expect(
+		f.client.db
+			.prepare("SELECT body_text FROM memory_items WHERE title = 'z-big-memory'")
+			.pluck()
+			.get(),
+	).toBe("Trimmed");
+});
+
+it("unblocks an oversized change once the memory is deleted on the peer", async () => {
+	const f = await pass();
+	setReplicationCursor(f.client.db, f.remote.localDeviceId, { lastApplied: INITIAL }, SCOPE);
+	f.seed("remote", "small-memory");
+	expect((await syncScopedChannelOnce(f.options)).ok).toBe(true);
+	const big = f.seed("remote", "z-big-memory", OVERSIZED);
+	expect((await syncScopedChannelOnce(f.options)).ok).toBe(false);
+
+	const db = f.remote.store.db;
+	f.remote.store.forget(
+		db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+			.pluck()
+			.get(big.entity_id) as number,
+	);
+	const result = await syncScopedChannelOnce(f.options);
+
+	expect(result.ok).toBe(true);
+	expect(memoryTitles(f)).not.toContain("z-big-memory");
+});
+
+it("unblocks an oversized snapshot memory once it is deleted on the peer", async () => {
+	const f = await pass();
+	f.seed("remote", "small-memory");
+	const big = f.seed("remote", "big-memory", OVERSIZED);
+	expect((await syncScopedChannelOnce(f.options)).ok).toBe(false);
+
+	const db = f.remote.store.db;
+	f.remote.store.forget(
+		db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+			.pluck()
+			.get(big.entity_id) as number,
+	);
+	const result = await syncScopedChannelOnce(f.options);
+
+	expect(result.ok).toBe(true);
+	expect(memoryTitles(f)).toContain("small-memory");
+	expect(
+		f.client.db
+			.prepare("SELECT body_text FROM memory_items WHERE title = 'big-memory'")
+			.pluck()
+			.all(),
+	).not.toContain(OVERSIZED);
+});
+
+it("unblocks an oversized snapshot memory once it is trimmed on the peer", async () => {
+	const f = await pass();
+	f.seed("remote", "small-memory");
+	const big = f.seed("remote", "big-memory", OVERSIZED);
+	expect((await syncScopedChannelOnce(f.options)).ok).toBe(false);
+
+	trimOnRemote(f, big);
+	const result = await syncScopedChannelOnce(f.options);
+
+	expect(result.ok).toBe(true);
+	expect(
+		f.client.db
+			.prepare("SELECT body_text FROM memory_items WHERE title = 'big-memory'")
+			.pluck()
+			.get(),
+	).toBe("Trimmed");
 });

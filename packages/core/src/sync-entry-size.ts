@@ -99,11 +99,11 @@ export function parseSyncEntryTooLarge(
  */
 export function syncEntryTooLargeMessage(refusal: SyncEntryTooLargeRefusal): string {
 	const size = `is ${mebibytes(refusal.bytes)} MiB, over the ${mebibytes(refusal.limit)} MiB this connection carries.`;
-	// The op log keeps the oversized change, so editing the memory adds a new change behind it.
+	// A peer sends an old change only while it is the memory's current revision, and a
+	// snapshot sends a deleted memory without its content, so trimming or deleting works.
 	if (refusal.kind === "op")
-		return `${SYNC_ENTRY_TOO_LARGE}: change ${refusal.key} ${size} Exclude its Project from this pairing, then sync again. Trimming or deleting the memory won't clear it, because the peer still has the oversized change.`;
-	// A deleted memory still carries its body in a snapshot, so deleting it wouldn't help.
-	return `${SYNC_ENTRY_TOO_LARGE}: memory ${refusal.key} ${size} Trim it on the peer, or exclude its Project from this pairing, then sync again.`;
+		return `${SYNC_ENTRY_TOO_LARGE}: change ${refusal.key} ${size} Trim or delete the memory on the peer, or exclude its Project from this pairing, then sync again.`;
+	return `${SYNC_ENTRY_TOO_LARGE}: memory ${refusal.key} ${size} Trim or delete it on the peer, or exclude its Project from this pairing, then sync again.`;
 }
 
 /** A snapshot page refused as too large. It carries the checked refusal for the caller. */
