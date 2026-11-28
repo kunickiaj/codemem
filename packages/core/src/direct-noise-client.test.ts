@@ -102,7 +102,7 @@ it("closes the socket when a listener never answers the upgrade before the deadl
 });
 
 /** A listener that answers every upgrade with one fixed response head, or closes at once. */
-async function answering(head: string | "close at once") {
+async function answering(head: string | string[] | "close at once") {
 	const db = new Database(":memory:");
 	cleanups.push(() => db.close());
 	initTestSchema(db);
@@ -118,6 +118,7 @@ async function answering(head: string | "close at once") {
 	).run(fingerprintPublicKey(peerKey), peerKey);
 	const server = net.createServer((socket) => {
 		if (head === "close at once") socket.destroy();
+		else if (Array.isArray(head)) socket.once("data", () => void writeFragments(socket, head));
 		else socket.once("data", () => socket.end(head));
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -131,6 +132,15 @@ async function answering(head: string | "close at once") {
 		keysDir,
 		expectedPin: peerKey,
 	});
+}
+
+/** Writes each fragment in its own turn, so the client sees them separately. */
+async function writeFragments(socket: net.Socket, fragments: string[]) {
+	for (const fragment of fragments) {
+		socket.write(fragment);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	socket.end();
 }
 
 const open = (factory: Awaited<ReturnType<typeof answering>>) =>
@@ -181,4 +191,19 @@ it.each([
 	const failure = await open(await answering(head)).catch((error: unknown) => error);
 
 	expect(failure).toBeInstanceOf(DirectNoiseRejected);
+});
+
+it("refuses a reply larger than 16 KiB sent in one chunk", async () => {
+	const head = `HTTP/1.1 404 Not Found\r\nContent-Length: 20000\r\n\r\n${"x".repeat(20_000)}`;
+	const failure = await open(await answering(head)).catch((error: unknown) => error);
+
+	expect(failure).toBeInstanceOf(DirectNoiseRejected);
+	expect(String(failure)).toContain("reply too large");
+});
+
+it("reads a complete 404 that arrives in fragments as Noise not offered", async () => {
+	const fragments = ["HTTP/1.1 40", "4 Not Found\r\nContent-Len", "gth: 2\r\n\r", "\n{", "}"];
+	const failure = await open(await answering(fragments)).catch((error: unknown) => error);
+
+	expect(failure).toBeInstanceOf(DirectNoiseNotOffered);
 });

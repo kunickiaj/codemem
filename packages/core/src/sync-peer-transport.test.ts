@@ -535,3 +535,106 @@ it("cuts off a retry attempt that hangs past the pass's busy budget", async () =
 	expect(String(failure)).toMatch(/noise_busy/);
 	expect(performance.now() - started).toBeLessThan(300 + 200);
 });
+
+it("holds later addresses' first attempts to the budget once a slow busy reply started it", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 100, baseMs: 1, maxMs: 5, totalMs: 400 } });
+	stream.answer = slowBusy(300);
+	const started = performance.now();
+
+	const failures = [];
+	for (const port of [7, 8, 9, 10, 11]) failures.push(await statusAt(p, `127.0.0.1:${port}`));
+
+	// The first address takes one slow reply plus the budget. The rest are refused at once.
+	expect(performance.now() - started).toBeLessThan(300 + 400 + 200);
+	for (const failure of failures.slice(1))
+		expect(String(failure)).toContain("noise_busy: the pass spent its busy budget");
+});
+
+it("gives up at once when Retry-After asks for longer than the budget has left", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 8, baseMs: 1, maxMs: 50, totalMs: 1_000 } });
+	stream.answer = slowBusy(0, 3);
+	const started = performance.now();
+
+	const failure = await statusAt(p, "127.0.0.1:7");
+
+	expect(String(failure)).toMatch(/noise_busy: peer still busy \(status 503\) after 1 attempts/);
+	expect(stream.opened).toBe(1);
+	expect(performance.now() - started).toBeLessThan(200);
+});
+
+it("waits the listener's whole Retry-After when it fits, even past maxMs", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 3, baseMs: 1, maxMs: 50, totalMs: 3_000 } });
+	stream.pin = "key-a";
+	const attemptsAt: number[] = [];
+	stream.answer = (url) => {
+		attemptsAt.push(performance.now());
+		if (attemptsAt.length === 1) throw new DirectNoiseBusy(503, 1);
+		return statusNaming("key-a")(url);
+	};
+
+	const [status] = await p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" });
+
+	expect(status).toBe(200);
+	expect((attemptsAt[1] ?? 0) - (attemptsAt[0] ?? 0)).toBeGreaterThanOrEqual(990);
+});
+
+it("lets ordinary traffic run past the budget once an exchange succeeds", async () => {
+	const p = pinned("key-a", { busyRetry: { attempts: 3, baseMs: 1, maxMs: 5, totalMs: 200 } });
+	stream.pin = "key-a";
+	let calls = 0;
+	stream.answer = async (url, deadlineMs) => {
+		calls += 1;
+		if (calls === 1) throw new DirectNoiseBusy(503, undefined);
+		if (calls === 3) {
+			// A long pull after the busy budget has run out, with no deadline on it.
+			expect(deadlineMs).toBeUndefined();
+			await new Promise((resolve) => setTimeout(resolve, 300));
+		}
+		return statusNaming("key-a")(url);
+	};
+
+	await p.execute("GET", "http://127.0.0.1:7/v1/status", { operation: "status" });
+	const [status] = await p.execute("GET", "http://127.0.0.1:7/v1/ops?limit=1", {
+		operation: "ops",
+	});
+
+	expect(status).toBe(200);
+});
+
+it("keeps a legacy peer at an https:// address on HTTPS, even with plain fallback off", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext, allowLegacy: false });
+
+	const [status] = await p.execute("GET", "https://peer.invalid/v1/status", {
+		operation: "status",
+	});
+
+	expect(status).toBe(200);
+	expect(plaintext).toHaveBeenCalledWith(
+		"GET",
+		"https://peer.invalid/v1/status",
+		expect.anything(),
+	);
+	expect(stream.opened).toBe(0);
+});
+
+it("refuses a noise_required peer at an https:// address by name", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+	promotePeerToNoiseRequired(p.db, "peer", "transport_statement");
+
+	await expect(
+		p.execute("GET", "https://peer.invalid/v1/status", { operation: "status" }),
+	).rejects.toThrow(/^noise_required_https: /);
+	expect(plaintext).not.toHaveBeenCalled();
+});
+
+it("refuses an address with any other scheme", async () => {
+	const plaintext = recordingPlaintext();
+	const p = pinned("key-a", { plaintext });
+
+	await expect(
+		p.execute("GET", "ftp://peer.invalid/v1/status", { operation: "status" }),
+	).rejects.toThrow("unsupported_address: ftp:");
+	expect(plaintext).not.toHaveBeenCalled();
+});

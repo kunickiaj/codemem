@@ -63,12 +63,14 @@ export interface PeerTransportOptions {
 
 /**
  * Retries for a listener that is busy: 429, 503, or a close with no answer.
- * Each wait is a random time up to baseMs doubled per attempt, at least the
- * listener's Retry-After, and never more than maxMs.
+ * Each wait is a random time up to baseMs doubled per attempt, capped at
+ * maxMs, or the listener's whole Retry-After when that is longer. A
+ * Retry-After that doesn't fit in the remaining budget ends the retries.
  *
  * totalMs is the busy budget for the whole executor, which callers create
- * once per sync pass: every retry wait and retry attempt, across all
- * requests and addresses, ends within 10 s of the pass's first busy answer.
+ * once per sync pass: from the pass's first busy answer, every retry wait and
+ * every attempt, across all requests and addresses, ends within 10 s, until
+ * an exchange over Noise succeeds.
  * A request with its own timeoutS, such as the reachability probe's, also
  * ends its retries within that timeout. In the listener load measurement,
  * 128 devices behind one address that started a pass at the same moment all
@@ -95,9 +97,9 @@ export const BUSY_RETRY: BusyRetry = Object.freeze({
  */
 export const ALLOW_LEGACY_FALLBACK = true;
 
-function busyDelayMs(retry: BusyRetry, attempt: number, retryAfterS: number | undefined): number {
-	const jittered = Math.random() * retry.baseMs * 2 ** (attempt - 1);
-	return Math.min(retry.maxMs, Math.max((retryAfterS ?? 0) * 1000, jittered));
+/** A random wait up to baseMs doubled per attempt, never more than maxMs. */
+function busyJitterMs(retry: BusyRetry, attempt: number): number {
+	return Math.min(retry.maxMs, Math.random() * retry.baseMs * 2 ** (attempt - 1));
 }
 
 /**
@@ -111,6 +113,12 @@ function noBusyRetry(error: unknown, busy: DirectNoiseBusy | null): unknown {
 	if (!busy) return error;
 	return new PeerTransportRefused(
 		`noise_busy: peer was busy (${busyDetail(busy)}), then ${errorText(error)}; plaintext refused`,
+	);
+}
+
+function spentBudget(): PeerTransportRefused {
+	return new PeerTransportRefused(
+		"noise_busy: the pass spent its busy budget on a busy peer; try again later",
 	);
 }
 
@@ -174,9 +182,24 @@ export class PeerTransportRefused extends Error {
 }
 
 function endpointOf(url: URL) {
-	if (url.protocol !== "http:") return null;
 	const port = Number(url.port || 80);
 	return { host: url.hostname.replace(/^\[|\]$/g, ""), port };
+}
+
+/**
+ * Direct Noise runs only over http:// addresses, because it upgrades the raw
+ * HTTP/1.1 connection. An https:// address is the one named exception: TLS
+ * already encrypts it, so a legacy peer keeps using it as before, while a
+ * noise_required peer is refused there and needs an http:// address or the
+ * relay. Any other scheme is refused.
+ */
+type AddressScheme = "http" | "https-legacy-exception" | "unsupported";
+
+function addressScheme(url: string): AddressScheme {
+	const protocol = new URL(url).protocol;
+	if (protocol === "http:") return "http";
+	if (protocol === "https:") return "https-legacy-exception";
+	return "unsupported";
 }
 
 type ExecutorArgs = Parameters<RequestJsonExecutor>;
@@ -185,7 +208,11 @@ type Sent = { result: ExecutorResult; transport: Transport; pin: string | null }
 
 class PeerTransport {
 	private readonly states = new Map<string, AddressState>();
-	private busyBudgetEnd: number | undefined;
+	/** The pass's busy budget: when it ends, and whether attempts are held to it now. */
+	private readonly busyBudget: { end: number | undefined; open: boolean } = {
+		end: undefined,
+		open: false,
+	};
 	private readonly plaintextExecutor: RequestJsonExecutor;
 
 	constructor(private readonly options: PeerTransportOptions) {
@@ -263,6 +290,10 @@ class PeerTransport {
 		request: ExecutorArgs,
 		snapshot: boolean,
 	): Promise<Sent> {
+		const scheme = addressScheme(request[1]);
+		if (scheme === "unsupported")
+			throw new PeerTransportRefused(`unsupported_address: ${new URL(request[1]).protocol}`);
+		if (scheme === "https-legacy-exception") return this.overHttps(state, request, snapshot);
 		if (state.mode === "plaintext" && this.policy() !== "noise_required")
 			return this.sendPlaintext(state, request, snapshot);
 		const statusPin = snapshot ? this.requireStatusFor(state, "noise") : null;
@@ -294,10 +325,14 @@ class PeerTransport {
 		const requestEnd = timeoutS === undefined ? Infinity : performance.now() + timeoutS * 1000;
 		let busy: DirectNoiseBusy | null = null;
 		for (let attempt = 1; ; attempt++) {
+			const end = this.attemptEnd(requestEnd, busy);
 			try {
-				const retryEnd = busy ? Math.min(requestEnd, this.busyDeadline(retry)) : undefined;
-				return await this.overNoise(request, statusPin, retryEnd);
+				const sent = await this.overNoise(request, statusPin, end);
+				this.busyBudget.open = false;
+				return sent;
 			} catch (error) {
+				// An attempt the budget cut off reports the budget, whatever the connection said.
+				if (end !== undefined && performance.now() >= end) throw spentBudget();
 				if (!(error instanceof DirectNoiseBusy)) throw noBusyRetry(error, busy);
 				busy = error;
 				await this.waitForBusy(retry, attempt, busy, { requestEnd, signal: request[2]?.signal });
@@ -305,10 +340,24 @@ class PeerTransport {
 		}
 	}
 
-	/** When the executor's busy budget ends. It starts at the first busy answer. */
-	private busyDeadline(retry: BusyRetry): number {
-		this.busyBudgetEnd ??= performance.now() + retry.totalMs;
-		return this.busyBudgetEnd;
+	/**
+	 * When an attempt must end, or undefined for the request's own limits.
+	 * Once the pass has met a busy listener, every later attempt, at this
+	 * address or any other, gets only what remains of the busy budget, until
+	 * an exchange over Noise succeeds. A request that was itself busy stays
+	 * held to it. A spent budget refuses the attempt before it is sent.
+	 */
+	private attemptEnd(requestEnd: number, busy: DirectNoiseBusy | null): number | undefined {
+		const { end, open } = this.busyBudget;
+		if (end === undefined || !(open || busy)) return undefined;
+		if (performance.now() >= end) throw spentBudget();
+		return Math.min(requestEnd, end);
+	}
+
+	private startBusyBudget(retry: BusyRetry): number {
+		this.busyBudget.end ??= performance.now() + retry.totalMs;
+		this.busyBudget.open = true;
+		return this.busyBudget.end;
 	}
 
 	private async waitForBusy(
@@ -317,13 +366,29 @@ class PeerTransport {
 		busy: DirectNoiseBusy,
 		limits: { requestEnd: number; signal: AbortSignal | undefined },
 	): Promise<void> {
-		const end = Math.min(limits.requestEnd, this.busyDeadline(retry));
-		const delay = busyDelayMs(retry, attempt, busy.retryAfterS);
-		if (attempt >= retry.attempts || performance.now() + delay >= end)
+		const end = Math.min(limits.requestEnd, this.startBusyBudget(retry));
+		const now = performance.now();
+		// A listener that asks for a longer wait than is left gets no early retry.
+		const hintMs = busy.retryAfterS === undefined ? 0 : busy.retryAfterS * 1000;
+		const delay = Math.max(hintMs, busyJitterMs(retry, attempt));
+		if (attempt >= retry.attempts || now + delay >= end)
 			throw new PeerTransportRefused(
 				`noise_busy: peer still busy (${busyDetail(busy)}) after ${attempt} attempts; try again later`,
 			);
 		await sleep(delay, limits.signal);
+	}
+
+	/**
+	 * The https:// exception. It isn't a fallback from Noise, so the plain
+	 * fallback switch doesn't apply, and sendPlaintext still refuses a
+	 * noise_required peer just before sending.
+	 */
+	private overHttps(state: AddressState, request: ExecutorArgs, snapshot: boolean): Promise<Sent> {
+		if (this.policy() === "noise_required")
+			throw new PeerTransportRefused(
+				"noise_required_https: this peer requires direct Noise, which an https:// address can't carry; use an http:// address or the relay",
+			);
+		return this.sendPlaintext(state, request, snapshot);
 	}
 
 	/** Reads the policy immediately before sending, so a promotion during an await still counts. */
@@ -377,7 +442,6 @@ class PeerTransport {
 	): Promise<Sent> {
 		const parsed = new URL(url);
 		const endpoint = endpointOf(parsed);
-		if (!endpoint) throw new DirectNoiseNotOffered(`${parsed.protocol} address`);
 		const expectedPin = statusPin ?? currentPeerPin(this.options.db, this.options.peerDeviceId);
 		if (!expectedPin) throw new Error("peer not pinned");
 		const factory = directNoiseConnectionFactory({ ...this.options, ...endpoint, expectedPin });

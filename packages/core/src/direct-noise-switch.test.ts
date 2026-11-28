@@ -5,6 +5,7 @@ import {
 	DirectNoiseRejected,
 	MAX_SWITCH_RESPONSE_BYTES,
 	readSwitchResponse,
+	SwitchReader,
 } from "./direct-noise-switch.js";
 
 const read = (reply: string, closed = true) =>
@@ -89,4 +90,35 @@ it("reads a clean 101 as switched", () => {
 	).toEqual({
 		kind: "switched",
 	});
+});
+
+it("refuses a chunk that would pass the size limit without storing it", () => {
+	const reader = new SwitchReader();
+	expect(reader.push(Buffer.from("HTTP/1.1 404 Not Found\r\n")).kind).toBe("pending");
+
+	const reading = reader.push(Buffer.alloc(MAX_SWITCH_RESPONSE_BYTES));
+
+	expect(reading).toMatchObject({ kind: "refused", error: expect.any(DirectNoiseRejected) });
+	expect(reader.bufferedBytes).toBe("HTTP/1.1 404 Not Found\r\n".length);
+});
+
+it("reads a reply sent one byte at a time, parsing only once its head has ended", () => {
+	const reply = "HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\n{}";
+	const reader = new SwitchReader();
+	const readings = [...Buffer.from(reply)].map((byte) => reader.push(Buffer.from([byte])));
+
+	expect(readings.slice(0, -1).every((reading) => reading.kind === "pending")).toBe(true);
+	expect(readings.at(-1)).toMatchObject({
+		kind: "refused",
+		error: expect.any(DirectNoiseNotOffered),
+	});
+	// One parse when the head ended, then one per body byte.
+	expect(reader.parses).toBe(3);
+});
+
+it("finds a head end split across chunks", () => {
+	const reader = new SwitchReader();
+	reader.push(Buffer.from("HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r"));
+	expect(reader.push(Buffer.from("\n\r")).kind).toBe("pending");
+	expect(reader.push(Buffer.from("\n")).kind).toBe("switched");
 });

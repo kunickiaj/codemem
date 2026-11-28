@@ -155,3 +155,48 @@ export function readSwitchResponse(buffered: Buffer, closed: boolean): SwitchRea
 	if (body.byteLength !== 0) return refused(new DirectNoiseRejected("data after the switch"));
 	return { kind: "switched" };
 }
+
+/**
+ * Collects a reply as it arrives. A chunk that would take the reply past
+ * MAX_SWITCH_RESPONSE_BYTES is refused before it is copied, and the reply is
+ * parsed only once its head has ended, not on every fragment before that.
+ */
+export class SwitchReader {
+	private readonly chunks: Buffer[] = [];
+	private bytes = 0;
+	private headEnded = false;
+	private carry = Buffer.alloc(0);
+	/** How many times the reply was parsed. Tests read it. */
+	parses = 0;
+
+	/** Bytes actually held, counted from the stored chunks. */
+	get bufferedBytes(): number {
+		return this.chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+	}
+
+	push(chunk: Buffer): SwitchReading {
+		if (this.bytes + chunk.byteLength > MAX_SWITCH_RESPONSE_BYTES)
+			return refused(new DirectNoiseRejected("reply too large"));
+		this.chunks.push(chunk);
+		this.bytes += chunk.byteLength;
+		if (!this.headEnded) {
+			// Only the newest chunk and the three bytes before it can complete the head's end.
+			const window = Buffer.concat([this.carry, chunk]);
+			this.carry = window.subarray(Math.max(0, window.byteLength - 3));
+			if (window.indexOf("\r\n\r\n") < 0) return PENDING;
+			this.headEnded = true;
+		}
+		return this.read(false);
+	}
+
+	close(): SwitchReading {
+		return this.read(true);
+	}
+
+	private read(closed: boolean): SwitchReading {
+		this.parses += 1;
+		const buffered = Buffer.concat(this.chunks);
+		this.chunks.splice(0, this.chunks.length, buffered);
+		return readSwitchResponse(buffered, closed);
+	}
+}

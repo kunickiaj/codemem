@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 import { duplexPair } from "node:stream";
 import { finished } from "node:stream/promises";
 import type { Database } from "./db.js";
-import { DirectNoiseRejected, readSwitchResponse } from "./direct-noise-switch.js";
+import { DirectNoiseRejected, SwitchReader, type SwitchReading } from "./direct-noise-switch.js";
 import {
 	DIRECT_NOISE_LOGICAL_ORIGIN,
 	DIRECT_NOISE_TRANSPORT_LABEL,
@@ -80,7 +80,7 @@ function connect(endpoint: DirectNoiseEndpoint, signal: AbortSignal): Promise<ne
  */
 function readSwitch(socket: net.Socket, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
-		let buffered = Buffer.alloc(0);
+		const reader = new SwitchReader();
 		const finish = (error?: Error) => {
 			socket.off("data", onData);
 			socket.off("close", onClose);
@@ -89,16 +89,12 @@ function readSwitch(socket: net.Socket, signal: AbortSignal): Promise<void> {
 			if (error) reject(error);
 			else resolve();
 		};
-		const settle = (closed: boolean) => {
-			const reading = readSwitchResponse(buffered, closed);
+		const settle = (reading: SwitchReading) => {
 			if (reading.kind === "pending") return;
 			finish(reading.kind === "switched" ? undefined : reading.error);
 		};
-		const onData = (chunk: Buffer) => {
-			buffered = Buffer.concat([buffered, chunk]);
-			settle(false);
-		};
-		const onClose = () => settle(true);
+		const onData = (chunk: Buffer) => settle(reader.push(chunk));
+		const onClose = () => settle(reader.close());
 		// A listener that never answers must not hold the socket past the exchange's deadline.
 		const onAbort = () => finish(new Error("Direct Noise upgrade got no answer in time"));
 		if (signal.aborted) return onAbort();
