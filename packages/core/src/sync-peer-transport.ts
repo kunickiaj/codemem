@@ -189,7 +189,14 @@ class PeerTransport {
 			dbPath: this.options.dbPath,
 			bootstrapGrantId: grantId,
 		});
-		const [status] = await this.plaintextExecutor("GET", url, { headers, redirect: "error" });
+		// The caller's cancellation and timeout bound this request too, like the one it precedes.
+		const { signal, timeoutS } = request[2] ?? {};
+		const [status] = await this.plaintextExecutor("GET", url, {
+			headers,
+			redirect: "error",
+			signal,
+			timeoutS,
+		});
 		if (status !== 200) throw new PeerTransportRefused(`bootstrap_pin_failed: status ${status}`);
 		state.grantPinned = true;
 	}

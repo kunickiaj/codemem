@@ -1,8 +1,14 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
-import { PeerTransportRefused, peerTransportExecutor } from "./sync-peer-transport.js";
-import { readPeerTransportPolicy } from "./sync-transport-policy.js";
+import {
+	type PeerTransportOptions,
+	PeerTransportRefused,
+	peerTransportExecutor,
+} from "./sync-peer-transport.js";
+import { promotePeerToNoiseRequired, readPeerTransportPolicy } from "./sync-transport-policy.js";
 import { initTestSchema } from "./test-utils.js";
 
 /** The pin the fake Noise stream claims to have authenticated, and the inner answers it gives. */
@@ -27,6 +33,12 @@ vi.mock("./direct-noise-client.js", async (original) => ({
 	}),
 }));
 
+// The grant's pin-only status is signed. These tests check where requests go, so signing needs no key.
+vi.mock("./sync-auth.js", async (original) => ({
+	...(await original<typeof import("./sync-auth.js")>()),
+	buildDirectPeerAuthHeaders: () => ({}),
+}));
+
 vi.mock("./peer-http-client.js", async (original) => ({
 	...(await original<typeof import("./peer-http-client.js")>()),
 	createPeerHttpExecutor: () => async (_method: string, url: string) => {
@@ -42,7 +54,7 @@ afterEach(() => {
 	stream.expectedPins = [];
 });
 
-function pinned(pin: string) {
+function pinned(pin: string, extra: Partial<PeerTransportOptions> = {}) {
 	const db = new Database(":memory:");
 	databases.push(db);
 	initTestSchema(db);
@@ -60,6 +72,7 @@ function pinned(pin: string) {
 		peerDeviceId: "peer",
 		localDeviceId: "local",
 		active: true,
+		...extra,
 	});
 	return { db, repin, execute };
 }
@@ -142,4 +155,67 @@ it("holds a snapshot to the status pin when the pin rotates before dialing", asy
 
 	await expect(snapshot).rejects.toThrow(PeerTransportRefused);
 	expect(stream.expectedPins.at(-1)).toBe("key-a");
+});
+
+/** A plaintext listener that reads each request and never answers it. */
+async function silentListener() {
+	const server = createServer(() => {});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const close = () =>
+		new Promise<void>((resolve) => {
+			server.closeAllConnections();
+			server.close(() => resolve());
+		});
+	return { port: (server.address() as AddressInfo).port, close };
+}
+
+function grantHolder() {
+	const p = pinned("key-a", { bootstrapGrantId: "grant-1" });
+	promotePeerToNoiseRequired(p.db, "peer", "transport_statement");
+	return p;
+}
+
+it("stops the grant's pin-only status when the pass is cancelled", async () => {
+	const listener = await silentListener();
+	try {
+		const p = grantHolder();
+		const controller = new AbortController();
+		const started = performance.now();
+		setTimeout(() => controller.abort(new Error("pass cancelled")), 50);
+
+		const failure = await p
+			.execute("GET", `http://127.0.0.1:${listener.port}/v1/status`, {
+				operation: "status",
+				signal: controller.signal,
+			})
+			.catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(Error);
+		expect(performance.now() - started).toBeLessThan(1_000);
+		expect(stream.opened).toBe(0);
+	} finally {
+		await listener.close();
+	}
+});
+
+it("holds the grant's pin-only status to the caller's shorter timeout", async () => {
+	const listener = await silentListener();
+	try {
+		const p = grantHolder();
+		const started = performance.now();
+
+		// The reachability probe passes a timeout below requestJson's 3 s default.
+		const failure = await p
+			.execute("GET", `http://127.0.0.1:${listener.port}/v1/status`, {
+				operation: "status",
+				timeoutS: 0.2,
+			})
+			.catch((error: unknown) => error);
+
+		expect(failure).toBeInstanceOf(Error);
+		expect(performance.now() - started).toBeLessThan(1_500);
+		expect(stream.opened).toBe(0);
+	} finally {
+		await listener.close();
+	}
 });
