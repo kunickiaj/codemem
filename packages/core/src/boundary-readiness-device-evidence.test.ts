@@ -1,6 +1,13 @@
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GroupReadinessRequest } from "./boundary-readiness-device-evidence.js";
 import { submitGroupBoundaryReadiness } from "./coordinator-boundary-readiness-client.js";
@@ -10,6 +17,7 @@ import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
 import { cacheScope, cacheWireSnapshot } from "./scope-membership-cache-test-fixtures.js";
 import { verifySignature } from "./sync-auth.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+import { type FakeKeychain, installFakeKeychain } from "./test-keychain-fake.js";
 
 const authority = "https://coordinator.example.test";
 const group = "group-a";
@@ -28,6 +36,7 @@ let deviceId: string;
 let publicKey: string;
 let acknowledgement: Record<string, unknown>;
 let configPath: string;
+let keychain: FakeKeychain | null = null;
 
 async function refresh(catalog: object, members?: object) {
 	transport.mockResolvedValueOnce(
@@ -96,6 +105,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	keychain?.uninstall();
+	keychain = null;
 	db?.close();
 	vi.unstubAllGlobals();
 	vi.unstubAllEnvs();
@@ -127,20 +138,14 @@ it.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
 			other.close();
 		}
 		copyFileSync(join(otherDir, "device.key"), join(keyDir, "device.key"));
-		const mac = process.platform === "darwin";
-		const lookupMarker = join(directory, "keychain-read");
-		const lookup = mac
-			? ["find-generic-password", "-a", deviceId, "-s", "codemem-sync", "-w"]
-			: ["lookup", "service", "codemem-sync", "account", deviceId];
-		writeFileSync(
-			join(directory, mac ? "security" : "secret-tool"),
-			`#!/usr/bin/env node
-if (JSON.stringify(process.argv.slice(2)) !== ${JSON.stringify(JSON.stringify(lookup))}) process.exit(1);
-require("node:fs").writeFileSync(${JSON.stringify(lookupMarker)}, "");
-process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(restored)}));`,
-			{ mode: 0o700 },
-		);
-		vi.stubEnv("PATH", `${directory}${delimiter}${process.env.PATH}`);
+		const fake = installFakeKeychain();
+		keychain = fake;
+		fake.set("codemem-sync", deviceId, readFileSync(restored, "utf8"));
+		const lookups = () =>
+			fake.calls.filter(
+				({ account, action }) =>
+					account === deviceId && (action === "find-generic-password" || action === "lookup"),
+			).length;
 		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
 		expect(await submitGroupBoundaryReadiness(input)).toEqual({
 			kind: "stored",
@@ -162,13 +167,13 @@ process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(restored)}
 		).toBe(true);
 		// Even when both stores hold the enrolled key, consult Keychain first.
 		copyFileSync(restored, join(keyDir, "device.key"));
-		rmSync(lookupMarker);
+		const before = lookups();
 		expect(await submitGroupBoundaryReadiness(input)).toMatchObject({ kind: "stored" });
-		expect(existsSync(lookupMarker)).toBe(true);
+		expect(lookups()).toBeGreaterThan(before);
 		// A stale Keychain entry permits only a matching file fallback.
-		copyFileSync(join(otherDir, "device.key"), restored);
+		fake.set("codemem-sync", deviceId, readFileSync(join(otherDir, "device.key"), "utf8"));
 		expect(await submitGroupBoundaryReadiness(input)).toMatchObject({ kind: "stored" });
-		copyFileSync(restored, join(keyDir, "device.key"));
+		copyFileSync(join(otherDir, "device.key"), join(keyDir, "device.key"));
 		transport.mockClear();
 		expect(await submitGroupBoundaryReadiness(input)).toEqual({
 			kind: "failed",

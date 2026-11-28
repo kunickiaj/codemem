@@ -8,6 +8,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { resolveDbPath } from "./db.js";
+import { runKeychainCommand } from "./keychain-command.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { resolveKeyPaths } from "./sync-identity.js";
 import { initTestSchema, seedMixedScopeFixture } from "./test-utils.js";
@@ -51,4 +52,13 @@ test("the real-path guard refuses the account's own store and keys", () => {
 		() => resolveKeyPaths(join(accountHome, ".config", "codemem", "keys")),
 		/A test tried to use the real codemem keys directory/u,
 	);
+});
+
+test("the keychain guard refuses the real keychain tools", () => {
+	for (const command of ["security", "secret-tool"] as const) {
+		assert.throws(
+			() => runKeychainCommand(command, ["lookup"]),
+			/A test tried to run the real `(security|secret-tool)` keychain tool/u,
+		);
+	}
 });

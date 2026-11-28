@@ -5,7 +5,6 @@
  * keychain storage. Ported from codemem/sync_identity.py.
  */
 
-import { execFileSync } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -13,6 +12,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
 import { codememHomeDir } from "./home.js";
+import { keychainCommandAvailable, runKeychainCommand } from "./keychain-command.js";
 import { adoptLocalCapture, hasPendingLocalCapture } from "./memory-local-capture.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
@@ -48,19 +48,6 @@ function keyStoreMode(): "file" | "keychain" {
 }
 
 // ---------------------------------------------------------------------------
-// CLI availability helpers
-// ---------------------------------------------------------------------------
-
-function cliAvailable(cmd: string): boolean {
-	try {
-		execFileSync("which", [cmd], { stdio: "pipe" });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Keychain storage (platform-specific)
 // ---------------------------------------------------------------------------
 
@@ -76,12 +63,12 @@ function warnKeychainLimitations(): void {
 /** Store a private key in the OS keychain. Returns true on success. */
 export function storePrivateKeyKeychain(privateKey: Buffer, deviceId: string): boolean {
 	if (process.platform === "linux") {
-		if (!cliAvailable("secret-tool")) return false;
+		if (!keychainCommandAvailable("secret-tool")) return false;
 		try {
-			execFileSync(
+			runKeychainCommand(
 				"secret-tool",
 				["store", "--label", "codemem sync key", "service", KEYCHAIN_SERVICE, "account", deviceId],
-				{ input: privateKey, stdio: ["pipe", "pipe", "pipe"] },
+				privateKey.toString("utf-8"),
 			);
 			return true;
 		} catch {
@@ -89,22 +76,18 @@ export function storePrivateKeyKeychain(privateKey: Buffer, deviceId: string): b
 		}
 	}
 	if (process.platform === "darwin") {
-		if (!cliAvailable("security")) return false;
+		if (!keychainCommandAvailable("security")) return false;
 		try {
-			execFileSync(
-				"security",
-				[
-					"add-generic-password",
-					"-a",
-					deviceId,
-					"-s",
-					KEYCHAIN_SERVICE,
-					"-w",
-					privateKey.toString("utf-8"),
-					"-U",
-				],
-				{ stdio: ["pipe", "pipe", "pipe"] },
-			);
+			runKeychainCommand("security", [
+				"add-generic-password",
+				"-a",
+				deviceId,
+				"-s",
+				KEYCHAIN_SERVICE,
+				"-w",
+				privateKey.toString("utf-8"),
+				"-U",
+			]);
 			return true;
 		} catch {
 			return false;
@@ -116,26 +99,31 @@ export function storePrivateKeyKeychain(privateKey: Buffer, deviceId: string): b
 /** Load a private key from the OS keychain. Returns null if unavailable. */
 export function loadPrivateKeyKeychain(deviceId: string): Buffer | null {
 	if (process.platform === "linux") {
-		if (!cliAvailable("secret-tool")) return null;
+		if (!keychainCommandAvailable("secret-tool")) return null;
 		try {
-			const out = execFileSync(
-				"secret-tool",
-				["lookup", "service", KEYCHAIN_SERVICE, "account", deviceId],
-				{ stdio: ["pipe", "pipe", "pipe"] },
-			);
+			const out = runKeychainCommand("secret-tool", [
+				"lookup",
+				"service",
+				KEYCHAIN_SERVICE,
+				"account",
+				deviceId,
+			]);
 			return Buffer.from(out);
 		} catch {
 			return null;
 		}
 	}
 	if (process.platform === "darwin") {
-		if (!cliAvailable("security")) return null;
+		if (!keychainCommandAvailable("security")) return null;
 		try {
-			const out = execFileSync(
-				"security",
-				["find-generic-password", "-a", deviceId, "-s", KEYCHAIN_SERVICE, "-w"],
-				{ stdio: ["pipe", "pipe", "pipe"] },
-			);
+			const out = runKeychainCommand("security", [
+				"find-generic-password",
+				"-a",
+				deviceId,
+				"-s",
+				KEYCHAIN_SERVICE,
+				"-w",
+			]);
 			return Buffer.from(out);
 		} catch {
 			return null;

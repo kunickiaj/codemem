@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { markCoordinatorManaged } from "./coordinator-free-attestation.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
-import { isolateTestKeys, REAL_KEYCHAIN_DISABLED } from "./test-environment-keys.js";
+import { isolateTestKeys } from "./test-environment-keys.js";
 import { initTestSchema } from "./test-utils.js";
 
 /** The state that the setup file keeps for its connection guard. */
@@ -36,15 +36,13 @@ describe("test environment isolation", () => {
 	it("isolates key material even when the caller's environment sets it", () => {
 		// Arrange: settings a developer's shell could pass down.
 		const inherited = { CODEMEM_KEYS_DIR: "/inherited/keys", CODEMEM_SYNC_KEY_STORE: "keychain" };
-		const scope: Record<symbol, unknown> = {};
 		// Act
-		isolateTestKeys(inherited, "/test-directory", scope);
+		isolateTestKeys(inherited, "/test-directory");
 		// Assert
 		expect(inherited).toEqual({
 			CODEMEM_KEYS_DIR: join("/test-directory", "keys"),
 			CODEMEM_SYNC_KEY_STORE: "file",
 		});
-		expect(scope[REAL_KEYCHAIN_DISABLED]).toBe(true);
 		expect(process.env.CODEMEM_SYNC_KEY_STORE).toBe("file");
 		expect(dirname(process.env.CODEMEM_KEYS_DIR ?? "")).toBe(
 			dirname(process.env.CODEMEM_CONFIG ?? ""),
@@ -58,8 +56,10 @@ describe("test environment isolation", () => {
 		ensureDeviceIdentity(db, { keysDir: process.env.CODEMEM_KEYS_DIR });
 		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "keychain");
 		try {
-			// Act and assert: the keychain refuses, so the managed mark can't be written.
-			expect(() => markCoordinatorManaged(db)).toThrow("coordinator_free_witness_unavailable");
+			// Act and assert: the real keychain tool is refused before it runs.
+			expect(() => markCoordinatorManaged(db)).toThrow(
+				/A test tried to run the real `.+` keychain tool/u,
+			);
 		} finally {
 			vi.unstubAllEnvs();
 			db.close();
