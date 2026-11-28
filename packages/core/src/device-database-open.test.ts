@@ -72,7 +72,8 @@ describe("device store connections", () => {
 			);
 			const before = readFileSync(path);
 			expect(readDeviceStorageShape(path)).toBe("transitioned");
-			expect(readFileSync(path)).toEqual(before);
+			// Buffer.equals: a deep toEqual walks the 1.4 MB file byte by byte and takes over a second.
+			expect(readFileSync(path).equals(before), "store file changed").toBe(true);
 		});
 	});
 });
