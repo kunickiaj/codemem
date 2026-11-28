@@ -1713,6 +1713,11 @@ export {
 	syncOnce,
 	syncPassPreflight,
 } from "./sync-pass.js";
+export {
+	type PeerTransportOptions,
+	PeerTransportRefused,
+	peerTransportExecutor,
+} from "./sync-peer-transport.js";
 export type {
 	ApplyReplicationOpsOptions,
 	ApplyResult,

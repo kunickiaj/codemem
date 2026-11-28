@@ -1,4 +1,5 @@
 import { CHANNEL_MAX_ENTRY_BYTES } from "@codemem/core";
+import { DIRECT_NOISE_ACTIVE } from "@codemem/core/internal/relay-runtime";
 
 /**
  * How a sync request reached this device. Each mode states its own rules, and
@@ -11,7 +12,11 @@ import { CHANNEL_MAX_ENTRY_BYTES } from "@codemem/core";
  *   bootstrap grants, every request bound to both the admitted device and its key.
  */
 export type SyncServerMode =
-	| { readonly kind: "plain-direct" }
+	| {
+			readonly kind: "plain-direct";
+			/** Whether direct Noise is on for this listener. Defaults to DIRECT_NOISE_ACTIVE. */
+			readonly noiseActive?: boolean;
+	  }
 	| {
 			readonly kind: "relay";
 			readonly peerPin: (request: Request) => string | null;
@@ -96,4 +101,13 @@ const CHANNEL_ROUTES = new Set([
 /** Channels serve the peer protocol only. The plain listener keeps its own 404 for the rest. */
 export function channelRouteAllowed(mode: SyncServerMode, method: string, path: string): boolean {
 	return mode.kind === "plain-direct" || CHANNEL_ROUTES.has(`${method} ${path}`);
+}
+
+/**
+ * Whether the plain listener runs with direct Noise on. Then a bootstrap grant
+ * authorizes only status, and an unmarked grant status from a worker known to
+ * speak Noise is refused. Channels never accept grants at all.
+ */
+export function noiseActive(mode: SyncServerMode): boolean {
+	return mode.kind === "plain-direct" && (mode.noiseActive ?? DIRECT_NOISE_ACTIVE);
 }

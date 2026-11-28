@@ -162,6 +162,7 @@ import {
 	parseRecipientPolicyEdgeCommitRequest,
 	parseSyncScopeRequest,
 	peerFacingScopeResetReason,
+	peerTransportExecutor,
 	persistShareOperation,
 	personalScopeGrantStatusForPeer,
 	planShareOperation,
@@ -178,6 +179,7 @@ import {
 	RemoteCoordinatorRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
+	readPeerTransportPolicy,
 	readRepositoryIdentitySnapshot,
 	readViewerPidFile,
 	reassignProjectScopeInventoryProject,
@@ -249,6 +251,7 @@ import {
 	channelBinding,
 	channelRouteAllowed,
 	entryByteLimit,
+	noiseActive,
 	PLAIN_DIRECT_MODE,
 	requiresScope,
 	type SyncServerMode,
@@ -1326,6 +1329,17 @@ export function recipientPolicyCapabilityFromStatus(payload: {
 	return supportsSyncFeature(payload.sync_features, "reassign_scope") ? "supported" : "unsupported";
 }
 
+/** The probe reaches the peer through the shared transport policy, like a sync pass. */
+function peerStatusExecutor(store: MemoryStore, peerDeviceId: string, localDeviceId: string) {
+	return peerTransportExecutor({
+		db: store.db,
+		peerDeviceId,
+		localDeviceId,
+		dbPath: store.dbPath,
+		keysDir: syncKeysDir(),
+	});
+}
+
 export async function peerSupportsSyncRequirements(
 	store: MemoryStore,
 	deviceId: string,
@@ -1347,8 +1361,8 @@ export async function peerSupportsSyncRequirements(
 	const expectedFingerprint =
 		String(row?.pinned_fingerprint ?? "").trim() ||
 		(row?.public_key ? fingerprintPublicKey(row.public_key) : "");
-	const addresses = safeJsonList(row?.addresses_json ?? null);
-	for (const address of addresses) {
+	const execute = peerStatusExecutor(store, deviceId, localDeviceId);
+	for (const address of safeJsonList(row?.addresses_json ?? null)) {
 		try {
 			const url = `${buildBaseUrl(address)}/v1/status`;
 			const headers = {
@@ -1364,7 +1378,7 @@ export async function peerSupportsSyncRequirements(
 				[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 				[SYNC_FEATURES_HEADER]: LOCAL_SYNC_FEATURES.join(","),
 			};
-			const [status, payload] = await requestJson("GET", url, { headers, timeoutS: 5 });
+			const [status, payload] = await execute("GET", url, { headers, timeoutS: 5 });
 			if (status < 200 || status >= 300) continue;
 			if (String(payload?.device_id ?? "").trim() !== deviceId) continue;
 			if (
@@ -5887,6 +5901,93 @@ function serveDefaultStatus(c: Context, store: MemoryStore, auth: AuthenticatedS
 	return c.json(response);
 }
 
+type RateLimitedResponse = (c: Context, key: string, authenticated: boolean) => Response | null;
+
+/**
+ * Device authentication for the plain status and snapshot reads, with the
+ * bootstrap-grant fallback when allowed. Returns the response to send when
+ * the request is refused or rate limited.
+ */
+async function authorizePeerRead(
+	c: Context,
+	store: MemoryStore,
+	rateLimitedResponse: RateLimitedResponse,
+	options: { allowGrant: boolean; scope?: boolean },
+): Promise<PeerRead | Response> {
+	const device = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+	if (isSyncAuthStoreBusy(device)) return syncAuthStoreBusyResponse(c);
+	if (device.ok) return admittedPeerRead(c, rateLimitedResponse, device, false);
+	// Unauthenticated bucket with a stable key: caller headers must not pick the rate-limit identity.
+	const limited = rateLimitedResponse(c, c.req.path, false);
+	if (limited) return limited;
+	if (!options.allowGrant) return refusedPeerRead(c, device.reason, device, false);
+	const scope = options.scope ? scopeOf(c) : undefined;
+	const grant = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), scope);
+	if (isSyncAuthStoreBusy(grant)) return syncAuthStoreBusyResponse(c);
+	if (!grant.ok) return refusedPeerRead(c, device.reason, grant, true);
+	return admittedPeerRead(c, rateLimitedResponse, grant, true);
+}
+
+type PeerRead = { auth: AuthenticatedSyncPeer; viaGrant: boolean };
+
+function admittedPeerRead(
+	c: Context,
+	rateLimitedResponse: RateLimitedResponse,
+	auth: AuthenticatedSyncPeer,
+	viaGrant: boolean,
+): PeerRead | Response {
+	return rateLimitedResponse(c, auth.deviceId, true) ?? { auth, viaGrant };
+}
+
+/** Specific reasons stay server-side; wire responses remain generic. */
+function refusedPeerRead(
+	c: Context,
+	deviceAuthReason: string,
+	auth: { reason: string },
+	bootstrapAttempted: boolean,
+): Response {
+	const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
+	// Warn only when the caller actually attempted authentication (a grant or
+	// signed device headers); bare probes must not fill logs with attacker noise.
+	const authAttempted = grantPresent || deviceAuthReason !== "missing_headers";
+	if (bootstrapAttempted && authAttempted) {
+		console.warn(
+			`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
+		);
+	} else {
+		logDirectPeerAuthDiagnostic(deviceAuthReason, auth.reason);
+	}
+	return c.json(unauthorizedPayload(), 401);
+}
+
+/**
+ * The answer to a status request a bootstrap grant authorized, or null to
+ * serve the full status. A worker that marks its request transport=noise1
+ * (inside the signed target) gets only the pin, and fetches the rest over
+ * Noise. Once direct Noise is on, an unmarked grant status from a worker
+ * this device knows speaks Noise is refused.
+ */
+function grantStatusAnswer(
+	c: Context,
+	store: MemoryStore,
+	read: PeerRead,
+	mode: SyncServerMode,
+): Response | null {
+	if (!read.viaGrant) return null;
+	if (c.req.query("transport") === "noise1") {
+		const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+		return c.json({ device_id: deviceId, fingerprint, transport: "noise1" });
+	}
+	if (
+		noiseActive(mode) &&
+		readPeerTransportPolicy(store.db, read.auth.deviceId) === "noise_required"
+	) {
+		logDirectPeerAuthDiagnostic("bootstrap_grant_plaintext_refused");
+		return c.json(unauthorizedPayload(), 401);
+	}
+	return null;
+}
+
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
 	const app = new Hono();
 	const routeRateLimit = opts.routeRateLimit ?? null;
@@ -5916,52 +6017,11 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	app.get("/v1/status", (c) => {
 		const store = getStore();
 		return (async () => {
-			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
-			let preauthChecked = false;
-			let bootstrapAttempted = false;
-			let deviceAuthReason: string | null = null;
-			if (!auth.ok) {
-				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
-				if (bootstrapGrantId) {
-					preauthChecked = true;
-					// Use unauthenticated bucket with stable key — grant is not yet verified,
-					// so caller-controlled headers must not influence rate-limit identity.
-					const bootstrapLimited = rateLimitedResponse(c, c.req.path, false);
-					if (bootstrapLimited) return bootstrapLimited;
-				} else {
-					preauthChecked = true;
-					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
-					if (unauthLimited) return unauthLimited;
-				}
-				deviceAuthReason = auth.reason;
-				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
-				bootstrapAttempted = true;
-			}
-			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
-			if (!auth.ok) {
-				// Specific reasons stay server-side; wire responses remain generic.
-				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
-				// Warn only when the caller actually attempted authentication (a
-				// grant or signed device headers); bare probes and health checks
-				// must not fill logs with attacker-controllable noise.
-				const authAttempted =
-					grantPresent || (deviceAuthReason != null && deviceAuthReason !== "missing_headers");
-				if (bootstrapAttempted && authAttempted) {
-					console.warn(
-						`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason ?? "none"} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
-					);
-				} else {
-					logDirectPeerAuthDiagnostic(deviceAuthReason, auth.reason);
-				}
-				return (
-					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(), 401)
-				);
-			}
-			const limited = rateLimitedResponse(c, auth.deviceId, true);
-			if (limited) return limited;
-			return serveAuthenticatedStatus(c, store, auth);
+			const read = await authorizePeerRead(c, store, rateLimitedResponse, { allowGrant: true });
+			if (read instanceof Response) return read;
+			return (
+				grantStatusAnswer(c, store, read, mode) ?? serveAuthenticatedStatus(c, store, read.auth)
+			);
 		})();
 	});
 
@@ -6051,52 +6111,14 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	app.get("/v1/snapshot", (c) => {
 		const store = getStore();
 		return (async () => {
-			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
-			let preauthChecked = false;
-			let bootstrapAttempted = false;
-			let deviceAuthReason: string | null = null;
-			if (!auth.ok) {
-				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
-				if (bootstrapGrantId) {
-					preauthChecked = true;
-					// Use unauthenticated bucket with stable key — grant is not yet verified,
-					// so caller-controlled headers must not influence rate-limit identity.
-					const bootstrapLimited = rateLimitedResponse(c, c.req.path, false);
-					if (bootstrapLimited) return bootstrapLimited;
-				} else {
-					preauthChecked = true;
-					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
-					if (unauthLimited) return unauthLimited;
-				}
-				deviceAuthReason = auth.reason;
-				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), scopeOf(c));
-				bootstrapAttempted = true;
-			}
-			if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
-			if (!auth.ok) {
-				// Specific reasons stay server-side; wire responses remain generic.
-				const grantPresent = Boolean((c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim());
-				// Warn only when the caller actually attempted authentication (a
-				// grant or signed device headers); bare probes and health checks
-				// must not fill logs with attacker-controllable noise.
-				const authAttempted =
-					grantPresent || (deviceAuthReason != null && deviceAuthReason !== "missing_headers");
-				if (bootstrapAttempted && authAttempted) {
-					console.warn(
-						`[sync] peer auth failed: reason=${auth.reason} device_auth_reason=${deviceAuthReason ?? "none"} grant_present=${grantPresent} path=${c.req.path} device=${loggableHeaderValue(c.req.header("X-Opencode-Device"))}`,
-					);
-				} else {
-					logDirectPeerAuthDiagnostic(deviceAuthReason, auth.reason);
-				}
-				return (
-					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(), 401)
-				);
-			}
-			const limited = rateLimitedResponse(c, auth.deviceId, true);
-			if (limited) return limited;
-			return serveAuthorizedSnapshot(c, store, auth);
+			// Once direct Noise is on, status pins a bootstrap worker before any snapshot.
+			const allowGrant = !noiseActive(mode);
+			const read = await authorizePeerRead(c, store, rateLimitedResponse, {
+				allowGrant,
+				scope: true,
+			});
+			if (read instanceof Response) return read;
+			return serveAuthorizedSnapshot(c, store, read.auth);
 		})();
 	});
 
