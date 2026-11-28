@@ -130,6 +130,41 @@ it("applies a held change once every copy is gone", () => {
 	expect(heldOpIds()).toEqual([]);
 });
 
+it("replays held changes in the order they arrived, so a later delete stays applied", () => {
+	// Arrange: an upsert and then a delete held in the same millisecond. The delete's
+	// op ID sorts first, so ordering by time and op ID would replay it first.
+	insertCopy(1, "Revision 1");
+	insertCopy(1, "Revision 1, again");
+	const upsert = { ...incomingUpsert(3), op_id: "z-upsert" };
+	const deletion: ReplicationOp = {
+		...incomingUpsert(4),
+		op_id: "a-delete",
+		op_type: "delete",
+		payload_json: null,
+	};
+	applyReplicationOps(db, [upsert, deletion], "local");
+	db.prepare("UPDATE memory_ambiguous_held_ops SET held_at = ?").run(NOW);
+	db.prepare("DELETE FROM memory_items").run();
+
+	// Act
+	applyReplicationOps(db, [], "local");
+
+	// Assert: the upsert recreated the memory, then the delete removed it again.
+	expect(db.prepare("SELECT active, rev FROM memory_items").all()).toEqual([{ active: 0, rev: 4 }]);
+	expect(heldOpIds()).toEqual([]);
+});
+
+it("keeps a change held again at its first place in the order", () => {
+	insertCopy(1, "Revision 1");
+	insertCopy(1, "Revision 1, again");
+	applyReplicationOps(db, [incomingUpsert(3), incomingUpsert(4)], "local");
+	applyReplicationOps(db, [incomingUpsert(3)], "local");
+
+	expect(
+		db.prepare("SELECT op_id FROM memory_ambiguous_held_ops ORDER BY arrival").pluck().all(),
+	).toEqual(["incoming-3", "incoming-4"]);
+});
+
 it("applies to none of a memory's copies when this device stores more than one", () => {
 	// Arrange: two copies at different revisions; comparing against either would pick one.
 	const older = insertCopy(1, "Revision 1");

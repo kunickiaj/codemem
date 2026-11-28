@@ -39,11 +39,13 @@ const HAS_SIBLING = `NEW.import_key IS NOT NULL AND (${SIBLING_COUNT_SQL}) > 1`;
 /**
  * Changes a peer sent for a memory while it was stored, or recorded as stored,
  * more than once. The sender's cursor moves on; the change waits here and is
- * applied once the memory is repaired or its copies are gone. Payloads are memory
+ * applied once the memory is repaired or its copies are gone, in the order the
+ * changes arrived (`arrival`; timestamps tie within a millisecond). Payloads are memory
  * content, so a store transition moves this table (transitioned-store-names.ts).
  */
 const HELD_OPS_TABLE = `CREATE TABLE IF NOT EXISTS memory_ambiguous_held_ops (
-	op_id TEXT PRIMARY KEY,
+	arrival INTEGER PRIMARY KEY,
+	op_id TEXT NOT NULL UNIQUE,
 	import_key TEXT NOT NULL,
 	scope_key TEXT NOT NULL,
 	sender_device_id TEXT,
@@ -109,16 +111,20 @@ export interface HeldReplicationOp {
 	senderDeviceId: string | null;
 }
 
-/** Keeps a change for later instead of applying it to one of several copies. */
+/**
+ * Keeps a change for later instead of applying it to one of several copies. A
+ * change held again keeps its first place in the order.
+ */
 export function holdAmbiguousOp(
 	db: Database,
 	op: ReplicationOp,
 	senderDeviceId: string | null,
 ): void {
 	db.prepare(
-		`INSERT OR REPLACE INTO memory_ambiguous_held_ops
+		`INSERT INTO memory_ambiguous_held_ops
 		 (op_id, import_key, scope_key, sender_device_id, op_json, held_at)
-		 VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
+		 VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		 ON CONFLICT(op_id) DO NOTHING`,
 	).run(op.op_id, op.entity_id, op.scope_id ?? "", senderDeviceId, JSON.stringify(op));
 }
 
@@ -134,7 +140,7 @@ export function releasedHeldOps(db: Database): HeldReplicationOp[] {
 			 WHERE NOT EXISTS (SELECT 1 FROM memory_ambiguous_copies AS record
 			                   WHERE record.import_key = held.import_key)
 			   AND (SELECT COUNT(*) FROM memory_items WHERE import_key = held.import_key) <= 1
-			 ORDER BY held_at, op_id`,
+			 ORDER BY arrival`,
 		)
 		.all() as Array<{ sender_device_id: string | null; op_json: string }>;
 	return rows.map((row) => ({
