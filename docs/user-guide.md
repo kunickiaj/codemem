@@ -8,7 +8,7 @@ person or a device, rejoining after a removal, and invitation tokens encrypted a
 
 ### Cloudflare coordinator
 
-0.50.0 adds eight D1 migrations. Apply them in order, in the same window as the 0.50.0 Worker deploy:
+0.50.0 adds ten D1 migrations. Apply them in order, in the same window as the 0.50.0 Worker deploy:
 
 | Migration | What it adds |
 | --- | --- |
@@ -20,6 +20,8 @@ person or a device, rejoining after a removal, and invitation tokens encrypted a
 | `0053_add_team_group_bindings.sql` | The coordinator group each Team belongs to. |
 | `0054_add_coordinator_metadata.sql` | A table where the Worker records its invitation token lookup version and you record the rollback floor. |
 | `0055_seal_invite_tokens.sql` | Columns for each invitation token's ciphertext and the ID of the key that sealed it. |
+| `0056_add_readiness_preparations.sql` | A readiness generation on each group, which the Worker clears when the group's devices or recipients change. It starts empty and changes no access. |
+| `0057_bind_boundary_readiness.sql` | A coordinator ID on each group, and tables for verified readiness records and per-device discard markers. Readiness records from before it do not count as verified. |
 
 Upgrade in this order. The [Cloudflare deployment guide](cloudflare-coordinator-deployment.md) has the full
 request and response of each step.
@@ -63,7 +65,7 @@ and accepting an invitation keeps working. After recording the floor, roll back 
 
 ### Self-hosted coordinator (SQLite)
 
-`codemem coordinator serve` adds the same storage as migrations `0048` through `0055` when it opens its database
+`codemem coordinator serve` adds the same storage as migrations `0048` through `0057` when it opens its database
 file. It also fills the enrollment key IDs and the token digests, so there is no migration command to run.
 
 1. Stop the 0.49.1 coordinator before you start 0.50.0 on the same database, and never open that database with
@@ -91,12 +93,29 @@ anything, and on a filesystem without hard links it asks for a configured key in
   it and lets it rejoin, and **Block device permanently**, for a lost or compromised device.
 - Join requests are reviewed in **Devices → Join requests**, with **Approve** and **Deny**, on a device that
   holds the coordinator admin secret. **Advanced → Coordinator administration** no longer has that tab.
+- **Unpair device…** in a device's menu in **Devices**, and `codemem sync peers remove`, stop only this device from
+  syncing with that device. They need no admin secret and change nothing on the coordinator or on other devices.
+  With a coordinator, the confirmation says "This device stops syncing with {name}. If both devices share a Team
+  Project, codemem can pair them again automatically. To stop syncing with {name} on all your devices, use Remove
+  device." Without one, it says "This device stops syncing with {name}. {name} keeps syncing with your other
+  devices." **Advanced → Sync** device cards no longer offer it.
+- Pairing and device sync moved from **Advanced → Sync** into **Devices**. **Pair a device** reviews a pasted
+  pairing code, **Devices waiting for review** lists the team devices to pair with or approve, **Sync all devices** is
+  the former **Sync now** button, and **Older device history** replaces **Legacy device history**. **Advanced → Sync** no
+  longer has the **Join a team** form. Accept invitations in **Sharing → Invitations**.
 - **Rename device** in **Devices** is the only way to rename a device.
 - Assigning a device to a person, and adding, renaming, merging or removing a person, need the coordinator admin
   secret. Other devices list people without these controls and say why.
+- Joining a coordinator asks for confirmation first, because the join permanently turns off syncing without a
+  coordinator for this device's key. Scripts that run `codemem coordinator invitation accept` with `--json` or
+  without a terminal must add `--confirm-coordinator-join`.
+- Secret redaction now reaches peers for memories this device created. `codemem maintenance memory redact-secrets`
+  lists as "Redacted here only" the memories in a synced scope that this device cannot show it created, because
+  peers that received them keep the unredacted copy. Redact them on the device that wrote them, or remove them from
+  the peers.
 - Teams, sharing Projects with people, and assigning devices to people all need a coordinator. Memories move
   between devices only through Sharing domains that a coordinator manages, so two devices paired without one can
-  reach each other but exchange no memories.
+  reach each other but still exchange no memories.
 
 ## Coordinator authentication and account-management upgrades
 
