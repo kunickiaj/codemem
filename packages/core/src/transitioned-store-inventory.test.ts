@@ -21,7 +21,9 @@ const reviewedMetadata: Record<string, string> = {
 	attribution_assessment_evidence: "Links between assessment and evidence IDs.",
 	attribution_assessments: "Retrieval impact labels and methods.",
 	coordinator_enrollment_reconciliation_issues: "Enrollment issue codes and counts.",
+	coordinator_free_attestation: "Signed attestation that this store never used a coordinator.",
 	coordinator_group_preferences: "Project include/exclude filters per group.",
+	coordinator_history: "Devices and stores that have used a coordinator.",
 	device_identity_binding_audit: "Device-to-identity decisions.",
 	device_identity_binding_commits: "Reviewed device binding requests and outcomes.",
 	identity_devices: "Device display names and assignments.",
@@ -91,12 +93,14 @@ const reviewedMetadata: Record<string, string> = {
 	share_operation_projects: "Project names in a share operation.",
 	share_operation_steps: "Share step progress.",
 	share_operations: "Share operation state, names and keys.",
+	store_identity: "Random store ID.",
 	sync_attempts: "Sync outcomes and errors.",
 	sync_channel_progress: "Per-scope sync cursors.",
 	sync_daemon_state: "Daemon errors and phase.",
 	sync_nonces: "Replay nonces.",
 	sync_peer_removal_check_state: "Peer removal generation.",
 	sync_peer_signature_state: "Signature versions seen per peer.",
+	sync_peer_transport_policy: "Whether each peer requires Noise.",
 	sync_peers: "Peer names, keys, addresses and Project filters.",
 	sync_relay_service_pins: "Relay service keys.",
 	sync_reset_state: "Reset baseline cursors.",
@@ -106,6 +110,7 @@ const reviewedMetadata: Record<string, string> = {
 	sync_scope_rejections: "Rejected op IDs and reasons.",
 	sync_transfer_observations: "Transfer times and error codes.",
 	sync_transfer_receipts: "Transfer receipt IDs.",
+	unpaired_peer_pins: "Pinned keys of peers that are not paired.",
 	usage_events: "Token counts and pack metrics.",
 	validated_vector_models: "Embedding model counts.",
 	validated_vector_rows: "Embedding row metadata: memory ID, model and content hash.",
@@ -156,7 +161,7 @@ const contentColumn =
 // Tables created only by these files live in coordinator, relay or in-memory
 // databases, never in a device store.
 const otherDatabaseFile =
-	/^(?:better-sqlite-coordinator-store|coordinator-(?!group-preferences)[\w-]*|relay-[\w-]+|admission-budget[\w-]*|peer-traversal-coordinator[\w-]*|owner-enrollment-link-authority|vector-metadata-snapshot)\.ts$/;
+	/^(?:better-sqlite-coordinator-store|coordinator-(?!group-preferences|history)[\w-]*|relay-[\w-]+|admission-budget[\w-]*|peer-traversal-coordinator[\w-]*|owner-enrollment-link-authority|vector-metadata-snapshot)\.ts$/;
 
 const packagesRoot = join(import.meta.dirname, "..", "..");
 const sourceRoots = ["core", "cli", "viewer-server", "mcp-server"].map((name) =>
