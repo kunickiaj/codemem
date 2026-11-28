@@ -170,19 +170,27 @@ function parsePayload(opts: SyncPairOptions, text: string) {
 
 type ParsedPayload = ReturnType<typeof parsePayload>;
 
-/** Pins the payload's key and records what it says about Noise in one transaction. */
-function savePairing(store: MemoryStore, opts: SyncPairOptions, pairing: ParsedPayload): void {
-	const { deviceId } = pairing;
-	const db = store.db;
-	const pinned = db
+function refuseStalePin(store: MemoryStore, pairing: ParsedPayload): void {
+	const pinned = store.db
 		.prepare("SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
 		.pluck()
-		.get(deviceId);
+		.get(pairing.deviceId);
 	const existing = String(pinned ?? "").trim();
 	if (existing && existing !== pairing.fingerprint)
 		throw new PairRefusal("peer_conflict", STALE_PIN);
+}
+
+/**
+ * The conflict check, the pin, the transport evidence and the checked filter
+ * write share one immediate transaction. A re-pin from another process waits
+ * for it or is seen by it, and a refused filter write rolls back the pin.
+ */
+function savePairing(store: MemoryStore, opts: SyncPairOptions, pairing: ParsedPayload): void {
+	const { deviceId } = pairing;
+	const db = store.db;
 	const change = pairFilterChange(opts);
 	db.transaction(() => {
+		refuseStalePin(store, pairing);
 		const widens = change !== null && !peerProjectFilterChangeOnlyNarrows(db, deviceId, change);
 		if (widens && !readPeerProjectFilterAuthority(db)) throw new Error(PAIR_FILTERS_REFUSED);
 		updatePeerAddresses(db, deviceId, pairing.addresses, {
@@ -192,9 +200,9 @@ function savePairing(store: MemoryStore, opts: SyncPairOptions, pairing: ParsedP
 			replaceTrust: true,
 		});
 		recordPairingTransportEvidence(db, deviceId, pairing.payload);
-	})();
-	if (change && setPeerProjectFilterChecked(db, deviceId, change) !== "saved")
-		throw new Error(PAIR_FILTERS_REFUSED);
+		if (change && setPeerProjectFilterChecked(db, deviceId, change) !== "saved")
+			throw new Error(PAIR_FILTERS_REFUSED);
+	}).immediate();
 }
 
 function acceptPairing(store: MemoryStore, opts: SyncPairOptions, text: string): void {
