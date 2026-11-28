@@ -61,8 +61,8 @@ import {
 	removalCompatibilityNotice,
 } from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
-import type { CoordinatorAccess } from "./recipient-policy-team-create";
 import { SyncAllDevicesButton } from "./device-sync-all";
+import type { CoordinatorAccess } from "./recipient-policy-team-create";
 import type { TeamSyncDiscoveredRow } from "./sync/team-sync/discovered-devices";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
