@@ -71,7 +71,6 @@ describe("Sync peer badge compatibility", () => {
 			renderSyncPeersList(mount, {
 				peers: [peer],
 				onRemove: vi.fn(),
-				onRename: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);
@@ -108,6 +107,28 @@ describe("Sync peer badge compatibility", () => {
 					]
 				: []),
 		]);
+	});
+});
+
+describe("Sync peer card actions", () => {
+	it("leaves renaming to Devices", () => {
+		const mount = document.createElement("div");
+		document.body.append(mount);
+		act(() =>
+			renderSyncPeersList(mount, {
+				peers: [{ peer_device_id: "peer-a", name: "Peer", status: { peer_state: "online" } }],
+				onRemove: vi.fn(),
+				onSync: vi.fn(),
+			}),
+		);
+
+		act(() => mount.querySelector("button")?.click());
+		const labels = [...mount.querySelectorAll("button")].map((button) => button.textContent);
+		expect(labels).toContain("Sync now");
+		expect(labels).not.toContain("Save name");
+		expect(mount.querySelector("input")).toBeNull();
+		act(() => render(null, mount));
+		mount.remove();
 	});
 });
 
@@ -154,7 +175,6 @@ describe("Sync peer observed activity labels", () => {
 				renderSyncPeersList(mount, {
 					peers: [peer],
 					onRemove: vi.fn(),
-					onRename: vi.fn(),
 					onSync: vi.fn(),
 				}),
 			);
@@ -271,7 +291,6 @@ describe("Advanced device Identity ownership", () => {
 			renderSyncPeersList(mount, {
 				peers: [{ peer_device_id: "peer-a", name: "Peer A", actor_id: "identity-hint" }],
 				onRemove: vi.fn(),
-				onRename: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);
@@ -296,7 +315,6 @@ describe("Advanced device Identity ownership", () => {
 			renderSyncPeersList(mount, {
 				peers: [{ peer_device_id: "peer-a", name: "Peer A", actor_id: "identity-hint" }],
 				onRemove: vi.fn(),
-				onRename: vi.fn(),
 				onSync: vi.fn(),
 			}),
 		);

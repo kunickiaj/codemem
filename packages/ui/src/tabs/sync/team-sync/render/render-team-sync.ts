@@ -221,16 +221,9 @@ export function renderTeamSync() {
 		const deviceId = String(item.deviceId || "").trim();
 		if (!deviceId) return;
 		if (item.kind === "name-device") {
-			const renameInput = document.querySelector(
-				`[data-device-name-input="${CSS.escape(deviceId)}"]`,
-			);
-			if (renameInput instanceof HTMLInputElement) {
-				renameInput.scrollIntoView({ block: "center", behavior: syncScrollBehavior() });
-				renameInput.focus();
-				renameInput.select();
-				pulseAttentionTarget(renameInput);
-				return;
-			}
+			// Devices is the only place that renames a device.
+			window.location.hash = "devices";
+			return;
 		}
 		const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
 		if (peerCard instanceof HTMLElement) {

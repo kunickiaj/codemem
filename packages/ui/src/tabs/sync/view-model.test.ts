@@ -1659,6 +1659,15 @@ describe("deriveSyncViewModel", () => {
 		});
 	});
 
+	it("sends naming an unnamed device to Devices", () => {
+		const view = deriveSyncViewModel({
+			peers: [{ peer_device_id: "peer-unnamed", name: "", status: { peer_state: "online" } }],
+		});
+
+		const naming = view.attentionItems.find((item) => item.kind === "name-device");
+		expect(naming).toMatchObject({ deviceId: "peer-unnamed", actionLabel: "Open Devices" });
+	});
+
 	it("hides duplicate-person attention when the user already marked them as different people", () => {
 		const view = deriveSyncViewModel({
 			actors: [

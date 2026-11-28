@@ -80,7 +80,7 @@ function createNamingItem(device: {
 		priority: 30,
 		title: `Name ${device.name}`,
 		summary: device.summary,
-		actionLabel: "Go to name field",
+		actionLabel: "Open Devices",
 		deviceId: device.id,
 	};
 }

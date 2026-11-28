@@ -21,7 +21,6 @@ export {
 	loadCoordinatorAdminScopes,
 	loadCoordinatorAdminStatus,
 	removeCoordinatorAdminDevice,
-	renameCoordinatorAdminDevice,
 	renameCoordinatorAdminGroup,
 	revokeCoordinatorAdminScopeMember,
 	unarchiveCoordinatorAdminGroup,

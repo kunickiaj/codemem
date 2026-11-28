@@ -7,7 +7,6 @@ import {
 	coordinatorGroupPresentationName,
 	currentAdminSnapshotTarget,
 	readStoredAdminTargetGroup,
-	reconcileDeviceRenameDrafts,
 	reconcileGroupRenameDrafts,
 	writeStoredAdminTargetGroup,
 } from "./target-group";
@@ -20,8 +19,6 @@ describe("coordinator admin target group helpers", () => {
 		state.coordinatorAdminTargetGroup = "";
 		coordinatorAdminState.groupRenameDrafts.clear();
 		coordinatorAdminState.groupPresentationAliases.clear();
-		coordinatorAdminState.deviceRenameDrafts.clear();
-		coordinatorAdminState.deviceRenameServerNames.clear();
 		localStorage.clear();
 	});
 
@@ -72,35 +69,6 @@ describe("coordinator admin target group helpers", () => {
 
 		expect(currentAdminSnapshotTarget()).toBeNull();
 		expect(adminSnapshotTargetMatchesCurrent(null)).toBe(false);
-	});
-
-	it("preserves dirty device rename drafts across refreshes", () => {
-		state.lastCoordinatorAdminDevices = [
-			{ device_id: "dev-1", display_name: "NAS", group_id: "team-a" },
-		];
-		reconcileDeviceRenameDrafts();
-		coordinatorAdminState.deviceRenameDrafts.set("dev-1", "NAS storage box");
-
-		state.lastCoordinatorAdminDevices = [
-			{ device_id: "dev-1", display_name: "NAS", group_id: "team-a" },
-		];
-		reconcileDeviceRenameDrafts();
-
-		expect(coordinatorAdminState.deviceRenameDrafts.get("dev-1")).toBe("NAS storage box");
-	});
-
-	it("updates clean device rename drafts from refreshed server state", () => {
-		state.lastCoordinatorAdminDevices = [
-			{ device_id: "dev-1", display_name: "NAS", group_id: "team-a" },
-		];
-		reconcileDeviceRenameDrafts();
-
-		state.lastCoordinatorAdminDevices = [
-			{ device_id: "dev-1", display_name: "NAS seed peer", group_id: "team-a" },
-		];
-		reconcileDeviceRenameDrafts();
-
-		expect(coordinatorAdminState.deviceRenameDrafts.get("dev-1")).toBe("NAS seed peer");
 	});
 
 	it("assigns collision-free privacy-safe aliases to unnamed coordinator groups", () => {

@@ -156,18 +156,6 @@ export function renderSyncPeers() {
 	}
 	renderSyncPeersList(syncPeers, {
 		peers: peersArray,
-		onRename: async (peerId, nextName) => {
-			try {
-				await api.renamePeer(peerId, nextName);
-				await _loadSyncData();
-				return { message: "Device name saved.", tone: "success" } satisfies SyncActionFeedback;
-			} catch (error) {
-				return {
-					message: friendlyError(error, "Failed to save device name."),
-					tone: "warning",
-				} satisfies SyncActionFeedback;
-			}
-		},
 		onSync: async (peer, address) => {
 			try {
 				const peerId = String(peer?.peer_device_id || "");
