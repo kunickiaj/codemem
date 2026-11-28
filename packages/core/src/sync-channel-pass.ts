@@ -1,5 +1,14 @@
 import { performance } from "node:perf_hooks";
 import { UnexpectedPeerError } from "@libp2p/interface";
+import {
+	applyCoordinatorFreeOps,
+	COORDINATOR_FREE_CURSOR_SCOPE,
+	COORDINATOR_FREE_LANE,
+	COORDINATOR_FREE_RECOVERY_UNAVAILABLE,
+	coordinatorFreeEligibility,
+	coordinatorFreeOutboundOps,
+	coordinatorFreeSendableNow,
+} from "./coordinator-free-lane.js";
 import type { Database } from "./db.js";
 import { readPairingInstanceId } from "./pairing-instance.js";
 import { createPeerHttpExecutor, type PeerHttpConnectionFactory } from "./peer-http-client.js";
@@ -26,10 +35,19 @@ import {
 import { syncEntryTooLargeMessage } from "./sync-entry-size.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import { ensureDeviceIdentity, fingerprintPublicKey } from "./sync-identity.js";
-import { type SyncFailureCategory, type SyncScopeResult, syncScopedPeerPull } from "./sync-pass.js";
 import {
+	recordSyncAttempt,
+	type SyncFailureCategory,
+	type SyncScopeResult,
+	syncScopedPeerPull,
+} from "./sync-pass.js";
+import {
+	DEFAULT_SYNC_SCOPE_ID,
+	extractReplicationOps,
 	filterReplicationOpsForSyncWithStatus,
+	getReplicationCursor,
 	opsStillSendableToPeer,
+	setReplicationCursor,
 } from "./sync-replication.js";
 import { parseSyncScopeRequest } from "./sync-scope-protocol.js";
 import {
@@ -53,6 +71,11 @@ export interface ScopedChannelSyncOptions {
 	signal?: AbortSignal;
 	deadlineMs?: number;
 }
+
+/** Sync without a coordinator runs in the default scope's place, so it names no scope. */
+export type CoordinatorFreeChannelSyncOptions = Omit<ScopedChannelSyncOptions, "scopeId">;
+
+type ChannelInput = ScopedChannelSyncOptions & { coordinatorFreeLane?: boolean };
 type Identity = { device_id: string; public_key: string; fingerprint: string };
 type Peer = { public_key: string; pinned_fingerprint: string };
 type Scope = Parameters<typeof syncScopedPeerPull>[1]["scope"];
@@ -92,7 +115,7 @@ function currentPeer(db: Database, peerDeviceId: string): Peer {
 	return row;
 }
 
-function captureContext(input: ScopedChannelSyncOptions) {
+function captureContext(input: ChannelInput) {
 	const passDeadline = performance.now() + 60_000;
 	const options = { ...input };
 	const origin = new URL(options.logicalOrigin);
@@ -130,6 +153,15 @@ function checkAuthorization(context: Context): void {
 			readPairingInstanceId(context.db, context.peerDeviceId) !== context.pairingInstanceId)
 	)
 		throw new ChannelNegotiationError("trust");
+	if (context.coordinatorFreeLane) {
+		const eligibility = coordinatorFreeEligibility(context.db, {
+			peerDeviceId: context.peerDeviceId,
+			channelAuthenticated: true,
+			keysDir: context.keysDir,
+		});
+		if (!eligibility.eligible) throw new ChannelNegotiationError("scope");
+		return;
+	}
 	const admission = parseSyncScopeRequest(context.scopeId, true, {
 		db: context.db,
 		localDeviceId: local.device_id,
@@ -377,7 +409,17 @@ function checkPushReply(payload: Record<string, unknown> | null, scopeId: string
 
 /** The ops of a batch the peer may receive now, as they go out. */
 function sendableNow(context: Context, batch: ReplicationOp[]): ReplicationOp[] {
+	if (context.coordinatorFreeLane)
+		return coordinatorFreeSendableNow(context.db, batch, laneOf(context));
 	return opsStillSendableToPeer(context.db, batch, context.peerDeviceId, context.local.device_id);
+}
+
+function laneOf(context: Context) {
+	return {
+		localDeviceId: context.local.device_id,
+		peerDeviceId: context.peerDeviceId,
+		keysDir: context.keysDir,
+	};
 }
 
 async function pushBatch(
@@ -389,7 +431,8 @@ async function pushBatch(
 	// signed only once it is open. This first check only avoids opening a channel
 	// for a batch with nothing left to send. Split retries come back here.
 	if (sendableNow(context, batch).length === 0) return;
-	const url = `${context.logicalOrigin}/v1/ops`;
+	const lane = context.coordinatorFreeLane ? `?lane=${COORDINATOR_FREE_LANE}` : "";
+	const url = `${context.logicalOrigin}/v1/ops${lane}`;
 	let ops: ReplicationOp[] = [];
 	const [status, payload] = await execute("POST", url, {
 		prepare: () => {
@@ -582,5 +625,149 @@ export async function syncScopedChannelOnce(
 		return { ...result, opsOut };
 	} catch (error) {
 		return failedChannelExchange(options, result, error, { established, sending });
+	}
+}
+
+const LANE_QUERY = { lane: COORDINATOR_FREE_LANE };
+
+/** The peer's boundary when it takes part in sync without a coordinator, or null. */
+async function fetchLaneStatus(context: Context, execute: RequestJsonExecutor) {
+	const url = `${context.logicalOrigin}/v1/status?${new URLSearchParams(LANE_QUERY)}`;
+	const [status, payload] = await execute("GET", url, {
+		headers: signedHeaders(context, "GET", url, Buffer.alloc(0)),
+	});
+	if (
+		status !== 200 ||
+		payload?.device_id !== context.peerDeviceId ||
+		payload.fingerprint !== context.peer.pinned_fingerprint
+	)
+		throw new ChannelNegotiationError("trust");
+	const lane = payload.coordinator_free as { consent?: unknown; sync_reset?: unknown } | undefined;
+	if (lane?.consent !== true) return null;
+	return checkedBoundary(lane.sync_reset, DEFAULT_SYNC_SCOPE_ID);
+}
+
+/** The ops applied, or null when the peer can't continue from this device's position. */
+async function pullLane(
+	context: Context,
+	execute: RequestJsonExecutor,
+	boundary: Scope["sync_reset"],
+): Promise<number | null> {
+	const [since] = getReplicationCursor(
+		context.db,
+		context.peerDeviceId,
+		COORDINATOR_FREE_CURSOR_SCOPE,
+	);
+	const query = new URLSearchParams({
+		...LANE_QUERY,
+		limit: String(context.limit),
+		generation: String(boundary.generation),
+		snapshot_id: boundary.snapshot_id,
+	});
+	if (boundary.baseline_cursor) query.set("baseline_cursor", boundary.baseline_cursor);
+	if (since) query.set("since", since);
+	const url = `${context.logicalOrigin}/v1/ops?${query}`;
+	const [status, payload] = await execute("GET", url, {
+		headers: signedHeaders(context, "GET", url, Buffer.alloc(0)),
+	});
+	if (status === 409 && payload?.error === "reset_required") return null;
+	if (status !== 200 || !payload) throw new Error("channel pull failed");
+	const ops = extractReplicationOps(payload);
+	if (!Array.isArray(payload.ops) || ops.length !== payload.ops.length)
+		throw new Error("channel pull returned malformed ops");
+	checkAuthorization(context);
+	const applied = applyCoordinatorFreeOps(context.db, ops, {
+		localDeviceId: context.local.device_id,
+		peerDeviceId: context.peerDeviceId,
+		peerFingerprint: context.peer.pinned_fingerprint,
+		scanner: context.scanner,
+	});
+	if (applied.rejections.length > 0) throw new Error("channel pull rejected");
+	if (typeof payload.next_cursor === "string")
+		setReplicationCursor(
+			context.db,
+			context.peerDeviceId,
+			{ lastApplied: payload.next_cursor },
+			COORDINATOR_FREE_CURSOR_SCOPE,
+		);
+	return applied.applied;
+}
+
+async function pushLane(context: Context, execute: RequestJsonExecutor): Promise<number> {
+	const cursor = getReplicationCursor(
+		context.db,
+		context.peerDeviceId,
+		COORDINATOR_FREE_CURSOR_SCOPE,
+	)[1];
+	const [timestamp = "", opId = ""] = cursor
+		? [cursor.slice(0, cursor.indexOf("|")), cursor.slice(cursor.indexOf("|") + 1)]
+		: [];
+	const window = context.db
+		.prepare(`SELECT * FROM replication_ops WHERE device_id = ? AND scope_id = ?
+		AND (? IS NULL OR created_at > ? OR (created_at = ? AND op_id > ?))
+		ORDER BY created_at, op_id LIMIT ?`)
+		.all(
+			context.local.device_id,
+			DEFAULT_SYNC_SCOPE_ID,
+			cursor,
+			timestamp,
+			timestamp,
+			opId,
+			context.limit,
+		) as ReplicationOp[];
+	const { allowed, nextCursor } = coordinatorFreeOutboundOps(context.db, window, laneOf(context));
+	const save = (acked: string) =>
+		setReplicationCursor(
+			context.db,
+			context.peerDeviceId,
+			{ lastAcked: acked },
+			COORDINATOR_FREE_CURSOR_SCOPE,
+		);
+	for (const batch of planBatches(DEFAULT_SYNC_SCOPE_ID, allowed)) {
+		await pushBatch(context, execute, batch);
+		const last = batch.at(-1);
+		if (last) save(`${last.created_at}|${last.op_id}`);
+	}
+	if (nextCursor) save(nextCursor);
+	return allowed.length;
+}
+
+/**
+ * Sync without a coordinator over an authenticated channel: pull the peer's shared memories,
+ * then send this device's. Nothing moves unless both devices consider each other eligible.
+ * When the peer can't continue from this device's position, the exchange records that
+ * recovery is unavailable and leaves every cursor where it was.
+ */
+export async function syncCoordinatorFreeChannelOnce(
+	options: CoordinatorFreeChannelSyncOptions,
+): Promise<SyncScopeResult> {
+	const result: SyncScopeResult = {
+		scope_id: DEFAULT_SYNC_SCOPE_ID,
+		ok: false,
+		opsIn: 0,
+		opsOut: 0,
+		bootstrapped: false,
+	};
+	try {
+		const input = { ...options, scopeId: DEFAULT_SYNC_SCOPE_ID, coordinatorFreeLane: true };
+		const context = captureContext(input);
+		checkAuthorization(context);
+		const execute = channelExecutor(context);
+		const boundary = await fetchLaneStatus(context, execute);
+		if (!boundary) return { ...result, ok: true };
+		const opsIn = await pullLane(context, execute, boundary);
+		if (opsIn === null) {
+			recordSyncAttempt(context.db, context.peerDeviceId, {
+				ok: false,
+				error: COORDINATOR_FREE_RECOVERY_UNAVAILABLE,
+			});
+			return { ...result, error: COORDINATOR_FREE_RECOVERY_UNAVAILABLE };
+		}
+		const opsOut = await pushLane(context, execute);
+		return { ...result, ok: true, opsIn, opsOut };
+	} catch (error) {
+		const category = error instanceof ChannelNegotiationError ? error.category : undefined;
+		const failed = category ? { ...result, failureCategory: category } : result;
+		return failedResult(failed, options.factory, "coordinator-free channel exchange failed");
 	}
 }
