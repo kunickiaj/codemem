@@ -67,6 +67,8 @@ it("refuses an oversized op by name and keeps the inbound cursor where it was", 
 
 	expect(result.ok).toBe(false);
 	expect(result.error).toMatch(/sync_entry_too_large: change z-big-memory-op is/);
+	expect(result.error).toContain("Exclude its Project from this pairing, then sync again.");
+	expect(result.error).not.toContain("Trim or delete it");
 	expect(getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE)[0]).toBe(cursor);
 	expect(memoryTitles(f)).not.toContain("z-big-memory");
 });

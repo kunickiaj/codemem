@@ -49,7 +49,9 @@ describe("sync entry size", () => {
 			"sync_entry_too_large: memory memory-source-v1:abc is 20.0 MiB, over the 16.0 MiB this connection carries. Trim or delete it on the peer, or exclude its project, then sync again.",
 		);
 		const op = parseSyncEntryTooLarge({ ...reply, kind: "op", key: "op-1" });
-		expect(op && syncEntryTooLargeMessage(op)).toContain("change op-1");
+		expect(op && syncEntryTooLargeMessage(op)).toBe(
+			"sync_entry_too_large: change op-1 is 20.0 MiB, over the 16.0 MiB this connection carries. Exclude its Project from this pairing, then sync again. Trimming or deleting the memory won't clear it, because the peer still has the oversized change.",
+		);
 	});
 
 	it.each([
