@@ -176,9 +176,11 @@ export function coordinatorD1ConditionalBaselineMigrations(
 	return coordinatorD1BaselineMigrations(stage).filter((name) => conditional.includes(name));
 }
 
-const POST_STAGE_GUARD_SQL = Object.entries(POST_STAGE_MIGRATION_READINESS_SQL)
-	.map(([name, readiness]) => `(column1 <> ${quote(name)} OR (${readiness}))`)
-	.join(" AND ");
+// One CASE rather than a chain of ANDs: D1 refuses an expression tree deeper than
+// 100, and each migration after the last auth stage added a level to the chain.
+const POST_STAGE_GUARD_SQL = `(CASE column1 ${Object.entries(POST_STAGE_MIGRATION_READINESS_SQL)
+	.map(([name, readiness]) => `WHEN ${quote(name)} THEN (${readiness})`)
+	.join(" ")} ELSE 1 END)`;
 
 // Check every V2 table for every stage, without relying on the narrower V2 readiness query.
 // Group column names per table to avoid repeating long names near D1's statement-size limit.
