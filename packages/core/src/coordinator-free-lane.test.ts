@@ -488,10 +488,13 @@ describe("deletes travel as tombstones that carry no content", () => {
 			.allowed;
 	}
 
-	it("sends a forgotten shared memory as a tombstone built from the row", () => {
+	it("sends a forgotten shared memory as a deletion without content", () => {
 		const shared = remember("secret title");
 		store.forget(Number(shared.id));
-		const stored = deleteOpOf(shared.id);
+		const stored = {
+			...deleteOpOf(shared.id),
+			payload_json: JSON.stringify({ title: "secret title" }),
+		};
 
 		const [tombstone, ...rest] = outbound([stored]);
 
@@ -500,21 +503,17 @@ describe("deletes travel as tombstones that carry no content", () => {
 			op_id: stored.op_id,
 			op_type: "delete",
 			clock_rev: stored.clock_rev,
+			payload_json: null,
 		});
-		expect(tombstone?.payload_json).not.toContain("secret title");
-		const payload = JSON.parse(String(tombstone?.payload_json));
-		expect(Object.keys(payload).sort()).toEqual([
-			"active",
-			"deleted_at",
-			"has_deleted_at",
-			"origin_device_id",
-			"scope_id",
-		]);
-		expect(payload).toMatchObject({
-			active: 0,
-			origin_device_id: local,
-			scope_id: "local-default",
-		});
+	});
+
+	it("doesn't send a forgotten memory's earlier upsert with it", () => {
+		const shared = remember("secret title");
+		store.forget(Number(shared.id));
+
+		const sent = outbound([shared.op, deleteOpOf(shared.id)]);
+
+		expect(sent.map((op) => op.op_type)).toEqual(["delete"]);
 	});
 
 	it("sends no tombstone for a private memory or one restored since", () => {
@@ -537,7 +536,7 @@ describe("deletes travel as tombstones that carry no content", () => {
 		expect(outbound([deleteOpOf(excluded.id)])).toEqual([]);
 	});
 
-	function tombstoneFrom(entityId: string, payload: Record<string, unknown> = {}) {
+	function tombstoneFrom(entityId: string, payload?: Record<string, unknown>) {
 		return peerOp(
 			entityId,
 			{
@@ -545,14 +544,8 @@ describe("deletes travel as tombstones that carry no content", () => {
 				op_type: "delete",
 				clock_rev: 2,
 				clock_updated_at: "2026-11-28T00:00:00.000Z",
-				payload_json: JSON.stringify({
-					scope_id: "local-default",
-					origin_device_id: PEER,
-					active: 0,
-					deleted_at: "2026-11-28T00:00:00.000Z",
-					has_deleted_at: true,
-					...payload,
-				}),
+				// The shared outbound decision sends every deletion without a payload.
+				payload_json: payload ? JSON.stringify(payload) : null,
 			},
 			{},
 		);
@@ -574,10 +567,10 @@ describe("deletes travel as tombstones that carry no content", () => {
 	});
 
 	it.each([
-		["another sender", { device_id: "other" }, {}],
-		["another clock device", { clock_device_id: "other" }, {}],
-		["another scope", { scope_id: "team-scope" }, {}],
-		["an active flag", {}, { active: 1 }],
+		["another sender", { device_id: "other" }, undefined],
+		["another clock device", { clock_device_id: "other" }, undefined],
+		["another scope", { scope_id: "team-scope" }, undefined],
+		["a payload, even an empty one", {}, {}],
 	])("refuses a tombstone with %s", (_case, overrides, payload) => {
 		apply([peerOp("theirs")]);
 		const op = { ...tombstoneFrom("theirs", payload), ...overrides };
@@ -588,7 +581,7 @@ describe("deletes travel as tombstones that carry no content", () => {
 		).toBe(1);
 	});
 
-	it("refuses a tombstone that carries content, names another origin or targets another device's row", () => {
+	it("refuses a tombstone that carries content or targets another device's row", () => {
 		apply([peerOp("theirs")]);
 		const mine = remember("mine");
 		const myKey = String(
@@ -596,11 +589,9 @@ describe("deletes travel as tombstones that carry no content", () => {
 		);
 
 		const withContent = apply([tombstoneFrom("theirs", { title: "theirs" })]);
-		const otherOrigin = apply([tombstoneFrom("theirs", { origin_device_id: local })]);
 		const notTheirs = apply([tombstoneFrom(myKey)]);
 
 		expect(withContent.rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
-		expect(otherOrigin.rejections).toEqual([{ op_id: "theirs-delete", reason: "op_not_allowed" }]);
 		expect(notTheirs.rejections).toEqual([
 			{ op_id: `${myKey}-delete`, reason: "target_not_owned_by_sender" },
 		]);

@@ -155,25 +155,12 @@ function fromOriginInLocalDefault(op: ReplicationOp, origin: string): boolean {
 	);
 }
 
-/** The only fields a tombstone may carry: where the memory was, who made it, and when it went. */
-const TOMBSTONE_FIELDS = new Set([
-	"scope_id",
-	"origin_device_id",
-	"active",
-	"deleted_at",
-	"has_deleted_at",
-]);
-
-/** A delete from `origin` for a memory it created, carrying no content. */
+/**
+ * A delete from `origin` in local-default, without a payload, as the shared outbound decision
+ * sends every deletion. The row it targets must be one `origin` created, which the caller checks.
+ */
 function laneTombstone(op: ReplicationOp, origin: string): boolean {
-	if (op.op_type !== "delete" || !fromOriginInLocalDefault(op, origin)) return false;
-	const payload = parsePayload(op);
-	if (!payload || payload.origin_device_id !== origin) return false;
-	if (Object.keys(payload).some((field) => !TOMBSTONE_FIELDS.has(field))) return false;
-	if (payload.scope_id != null && payload.scope_id !== DEFAULT_SYNC_SCOPE_ID) return false;
-	if (payload.active != null && payload.active !== 0) return false;
-	if (payload.deleted_at != null && typeof payload.deleted_at !== "string") return false;
-	return payload.has_deleted_at == null || typeof payload.has_deleted_at === "boolean";
+	return op.op_type === "delete" && fromOriginInLocalDefault(op, origin) && op.payload_json == null;
 }
 
 /** An op the lane may carry from `origin`: a shared upsert or a content-free tombstone. */

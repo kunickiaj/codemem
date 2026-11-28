@@ -417,3 +417,52 @@ it("carries a forgotten memory to the other device as a tombstone, both ways", a
 	expect(active(client)).toEqual([]);
 	expect(active(server)).toEqual([]);
 });
+
+/**
+ * A copy `holder` kept from sync between these devices before this version, which records no
+ * coordinator-free provenance. Only the row is copied: its content and clock as `origin` has it.
+ */
+function legacyCopy(origin: Device, holder: Device, memoryId: number) {
+	const row = origin.store.db
+		.prepare(
+			`SELECT kind, title, body_text, created_at, updated_at, import_key, origin_device_id,
+			 visibility, scope_id, rev, metadata_json FROM memory_items WHERE id = ?`,
+		)
+		.get(memoryId) as Record<string, unknown>;
+	const session = holder.store.startSession({ cwd: directory, project: "lane" });
+	holder.store.db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+			 import_key, origin_device_id, visibility, scope_id, rev, metadata_json, active)
+			 VALUES (@session, @kind, @title, @body_text, @created_at, @updated_at, @import_key,
+			 @origin_device_id, @visibility, @scope_id, @rev, @metadata_json, 1)`,
+		)
+		.run({ ...row, session });
+}
+
+it.each([
+	["pulled from", "server"],
+	["pushed to", "client"],
+] as const)(
+	"forgets a memory shared and then forgotten before the upgrade when it is %s the other device",
+	async (_direction, author) => {
+		const server = device("server");
+		const client = device("client");
+		pair(server, client);
+		const [origin, holder] = author === "server" ? [server, client] : [client, server];
+		const shared = remember(origin, "shared before", "shared");
+		legacyCopy(origin, holder, Number(shared));
+		// The author forgets the memory while the other device runs an earlier version.
+		origin.store.forget(Number(shared));
+
+		const result = await exchange(server, client);
+
+		expect(result).toMatchObject({ ok: true });
+		expect(
+			holder.store.db
+				.prepare("SELECT active FROM memory_items WHERE title = 'shared before'")
+				.pluck()
+				.all(),
+		).toEqual([0]);
+	},
+);
