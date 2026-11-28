@@ -3,6 +3,7 @@
 ## Using codemem
 
 - [User guide](user-guide.md): viewer workflows, configuration, and troubleshooting.
+- [Upgrading from 0.49.1 to 0.50.0](user-guide.md#upgrading-from-0491-to-0500): coordinator migrations, the invitation token key, and what changes for users.
 - [Command reference](cli-reference.md): CLI groups, diagnostics, and compatibility commands.
 - [Plugin reference](plugin-reference.md): adapter behavior and environment controls.
 - [Sharing guide](sharing-guide.md): sharing Projects and adding devices.

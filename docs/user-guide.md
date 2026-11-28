@@ -1,5 +1,103 @@
 # User Guide
 
+## Upgrading from 0.49.1 to 0.50.0
+
+Upgrade the CLI and the OpenCode plugin or Pi extension together, then restart the Viewer and the agent hosts.
+A coordinator needs its own upgrade, described below, before devices use what 0.50.0 adds: Teams, removing a
+person or a device, rejoining after a removal, and invitation tokens encrypted at rest.
+
+### Cloudflare coordinator
+
+0.50.0 adds eight D1 migrations. Apply them in order, in the same window as the 0.50.0 Worker deploy:
+
+| Migration | What it adds |
+| --- | --- |
+| `0048_add_device_removals.sql` | Device removal records, the removal sequence each invitation was issued after, and a key ID for each enrollment. |
+| `0049_add_enrollment_removal_triggers.sql` | Triggers that apply removals to every enrollment write. After it, a Worker or CLI from before 0.50 can no longer remove a device, or enroll a device already enrolled in the group. |
+| `0050_add_boundary_readiness.sql` | Readiness records: for each device and group, the Projects it holds under an older scope. They grant nothing. |
+| `0051_add_device_rejoin.sql` | Storage for a removed device that returns through Google sign-in with `codemem sync rejoin`, with an audit log. |
+| `0052_add_team_member_removals.sql` | Permanent records of a person removed from one Team. |
+| `0053_add_team_group_bindings.sql` | The coordinator group each Team belongs to. |
+| `0054_add_coordinator_metadata.sql` | A table where the Worker records its invitation token lookup version and you record the rollback floor. |
+| `0055_seal_invite_tokens.sql` | Columns for each invitation token's ciphertext and the ID of the key that sealed it. |
+
+Upgrade in this order. The [Cloudflare deployment guide](cloudflare-coordinator-deployment.md) has the full
+request and response of each step.
+
+1. [Back up the database](cloudflare-coordinator-deployment.md#back-up-the-database). Pause auth writers, and
+   ask every admin not to approve join requests until step 6.
+2. Apply the migrations from the repository root:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 migrations apply codemem-coordinator --remote --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+3. Set the invitation token key. The value goes from the generator straight to Wrangler, so it is never shown,
+   logged or saved. The 0.49.1 Worker ignores it:
+
+   ```fish
+   openssl rand -hex 32 | pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler secret put CODEMEM_INVITE_TOKEN_KEY --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+4. Deploy the 0.50.0 Worker as a full cutover with `wrangler deploy`, never `wrangler versions deploy` with a
+   percentage. Wait until `wrangler deployments list` shows only the new version, at 100 percent, for every Worker
+   bound to the database. An earlier Worker would approve the join requests this one stores without checking
+   whether the inviter was removed.
+5. Fill the key IDs of existing enrollments with `POST /v1/admin/devices/key-id-fill` until `remaining` is false
+   and no row is blocked or skipped. Removing a device stays unavailable until then. See
+   [Auth schema stages](cloudflare-coordinator-deployment.md#auth-schema-stages-0045-to-0047).
+6. Give older invitations and join requests their token digests with `POST /v1/admin/invite-tokens/digests`
+   until both `remaining` counts are `0`. Then resume auth writers and join approvals. Until then, an older
+   invitation cannot be accepted, and a pending join request for one cannot be approved.
+7. Once no earlier Worker serves the database, record the rollback floor with
+   `POST /v1/admin/invite-tokens/lookup-floor` and the body `{"min_serving_lookup_version":1}`. See
+   [Invitation token digests](cloudflare-coordinator-deployment.md#invitation-token-digests-rollback-floor).
+8. Encrypt the tokens stored before the floor with `POST /v1/admin/invite-tokens/seal` until
+   `remaining_plaintext_invites`, `remaining_plaintext_join_requests` and `remaining_spent_ciphertext` are all `0`.
+   See [Invitation token key](cloudflare-coordinator-deployment.md#invitation-token-key-0055).
+
+From step 7 on, the coordinator keeps each invitation token only as its SHA-256 digest, which acceptance looks up,
+and as AES-GCM ciphertext under the key, which **Copy invite** decrypts to rebuild the link. Invitation links do
+not change. Without the key, creating an invitation and **Copy invite** answer `503 invite_token_key_unavailable`,
+and accepting an invitation keeps working. After recording the floor, roll back only to 0.50.0 or later.
+
+### Self-hosted coordinator (SQLite)
+
+`codemem coordinator serve` adds the same storage as migrations `0048` through `0055` when it opens its database
+file. It also fills the enrollment key IDs and the token digests, so there is no migration command to run.
+
+1. Stop the 0.49.1 coordinator before you start 0.50.0 on the same database, and never open that database with
+   an earlier release again. An earlier release can no longer remove a device there, or enroll one already enrolled, and it would
+   approve join requests without checking whether the inviter was removed.
+2. Start 0.50.0 with `codemem coordinator serve --db-path <path>`.
+3. To encrypt invitation tokens at rest, stop every process that opens the database and check that
+   `lsof <path>` prints nothing. Then record the floor, which also encrypts the stored tokens, and start the
+   coordinator again:
+
+   ```fish
+   codemem coordinator invitation record-floor 1 --db-path <path>
+   ```
+
+The coordinator encrypts nothing until this step. A key set in `CODEMEM_INVITE_TOKEN_KEY`, or in
+`sync_coordinator_invite_token_key` in the codemem config file, is used first. Without one, the command creates
+the key in a file next to the database's real path, `<database>.invite-token-key`, readable only by its user.
+Back that file up with the database. The command checks the key, or creates the file, before it records
+anything, and on a filesystem without hard links it asks for a configured key instead. See
+[Coordinator deployment](coordinator-deployment.md).
+
+### What changes for users
+
+- **Retire device** is gone. In **Devices**, a device's menu offers **Remove device**, which stops sharing with
+  it and lets it rejoin, and **Block device permanently**, for a lost or compromised device.
+- Join requests are reviewed in **Devices → Join requests**, with **Approve** and **Deny**, on a device that
+  holds the coordinator admin secret. **Advanced → Coordinator administration** no longer has that tab.
+- **Rename device** in **Devices** is the only way to rename a device.
+- Assigning a device to a person, and adding, renaming, merging or removing a person, need the coordinator admin
+  secret. Other devices list people without these controls and say why.
+- Teams, sharing Projects with people, and assigning devices to people all need a coordinator. Memories move
+  between devices only through Sharing domains that a coordinator manages, so two devices paired without one can
+  reach each other but exchange no memories.
+
 ## Coordinator authentication and account-management upgrades
 
 An older coordinator can keep serving ordinary device-signed sync while optional
