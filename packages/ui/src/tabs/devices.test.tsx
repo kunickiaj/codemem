@@ -11,6 +11,7 @@ import type {
 import * as syncApi from "../lib/api/sync";
 import { DeviceIdentityBindingApiError } from "../lib/api/sync";
 import { formatTimestamp } from "../lib/format";
+import { hasPendingPairingCode, setPendingPairingCode } from "../lib/pairing-handoff";
 import { state } from "../lib/state";
 import { closeActionMenu, openActionMenu } from "../menu-test-utils";
 import { createRemovalClickFixture } from "./device-removal-click-fixture.js";
@@ -763,12 +764,7 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 });
 
 describe("Device pairing entry point", () => {
-	it("keeps pairing on Devices and explains it in place", async () => {
-		const joinHost = document.createElement("div");
-		joinHost.id = "syncJoinSection";
-		joinHost.innerHTML =
-			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div>';
-		document.body.appendChild(joinHost);
+	it("keeps pairing on Devices and explains it in place", () => {
 		const onNavigate = vi.fn();
 		mount(intent(), reconciliation(), {
 			inventory: inventory([
@@ -780,13 +776,6 @@ describe("Device pairing entry point", () => {
 		});
 
 		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices · 1");
-		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
-			"Work LaptopOwned by Adam & Co",
-		);
-		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
-			"Sync results describe exchanges with Work Laptop.",
-		);
-		expect(document.body.textContent).not.toContain("your identity");
 		expect(document.body.textContent).toContain("No other devices");
 		expect(document.body.textContent).not.toContain("1 unknown");
 		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(0);
@@ -795,188 +784,106 @@ describe("Device pairing entry point", () => {
 			(button) => button.textContent === "How pairing works",
 		);
 		act(() => howPairingWorks?.click());
-		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+		const panel = document.getElementById("devices-pairing-panel");
+		expect(panel?.textContent).toContain(
 			"Generate a pairing payload on the device you want to connect, then accept it here.",
 		);
-		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
-			"codemem sync pair --payload-only",
-		);
-		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
-			"Accept a pairing payload",
-		);
-		expect(document.getElementById("syncJoinPanel")?.hidden).toBe(false);
-		expect(
-			document
-				.getElementById("syncJoinPanel")
-				?.parentElement?.classList.contains("devices-pairing-accept"),
-		).toBe(true);
-		const feedback = document.createElement("div");
-		feedback.id = "syncJoinFeedback";
-		feedback.setAttribute("role", "alert");
-		feedback.textContent = "Pairing failed. Check the payload.";
-		joinHost.appendChild(feedback);
-		await act(async () => {
-			await Promise.resolve();
-		});
-		expect(
-			document
-				.getElementById("syncJoinFeedback")
-				?.parentElement?.classList.contains("devices-pairing-accept"),
-		).toBe(true);
-		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
-			"Pairing failed. Check the payload.",
-		);
+		expect(panel?.textContent).toContain("codemem sync pair --payload-only");
+		expect(panel?.textContent).toContain("Accept a pairing payload");
+		expect(panel?.querySelector("textarea")).not.toBeNull();
+		expect(panel?.textContent).toContain("Each device must accept the other’s payload");
 		expect(onNavigate).not.toHaveBeenCalled();
-		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
-			"Each device must accept the other’s payload",
+	});
+
+	it("takes a pairing code Sharing handed over and opens the form", () => {
+		setPendingPairingCode("pairing-code-from-sharing");
+		mount(intent(), reconciliation());
+
+		const field = document.querySelector<HTMLTextAreaElement>("#devices-pairing-code");
+		expect(document.getElementById("devices-pairing-panel")).not.toBeNull();
+		expect(field?.value).toBe("pairing-code-from-sharing");
+		expect(hasPendingPairingCode()).toBe(false);
+	});
+
+	it("opens the form for a code handed over after Devices is already showing", async () => {
+		mount(intent(), reconciliation());
+		expect(document.getElementById("devices-pairing-panel")).toBeNull();
+
+		await act(async () => setPendingPairingCode("late-code"));
+
+		expect(document.getElementById("devices-pairing-panel")).not.toBeNull();
+		expect(document.querySelector<HTMLTextAreaElement>("#devices-pairing-code")?.value).toBe(
+			"late-code",
 		);
 	});
-});
 
-describe("Device pairing live portal restoration", () => {
-	it.each([
-		[false, "live-portal"],
-		[true, "live-portal"],
-		[false, "syncJoinSection"],
-		[true, "syncJoinSection"],
-	] as const)(
-		"preserves visibility after initial sync reveals the form (observer ran: %s, parent: %s)",
-		async (observerRan, parentId) => {
-			document.body.insertAdjacentHTML(
-				"beforeend",
-				'<div id="syncJoinSection"><div id="syncJoinPanel" hidden><button>Review invite</button></div></div><div id="live-portal"></div>',
-			);
-			mount(intent(), reconciliation());
-			act(() =>
-				[...document.querySelectorAll<HTMLButtonElement>("button")]
-					.find((button) => button.textContent === "Pair a device")
-					?.click(),
-			);
-			const panel = document.getElementById("syncJoinPanel");
-			const portal = document.getElementById(parentId);
-			if (!panel || !portal) throw new Error("pairing fixture missing");
-			portal.appendChild(panel);
-			panel.hidden = false;
-			if (observerRan)
-				await act(async () => {
-					await Promise.resolve();
-				});
-			act(() =>
-				[...document.querySelectorAll<HTMLButtonElement>("button")]
-					.find((button) => button.textContent === "Close")
-					?.click(),
-			);
-			expect(panel.parentElement).toBe(portal);
-			expect(panel.hidden).toBe(false);
-		},
-	);
-	it.each([false, true])(
-		"returns to the live configured portal (replaced: %s)",
-		async (replaced) => {
-			document.body.insertAdjacentHTML(
-				"beforeend",
-				'<div id="syncSetupPanel" hidden><div id="syncJoinSection"></div></div><div id="live-portal"><div id="syncJoinPanel"><button>Review invite</button></div></div>',
-			);
-			mount(intent(), reconciliation());
-			const panel = document.getElementById("syncJoinPanel");
-			act(() =>
-				[...document.querySelectorAll<HTMLButtonElement>("button")]
-					.find((button) => button.textContent === "Pair a device")
-					?.click(),
-			);
-			expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
-			if (replaced) {
-				document.getElementById("live-portal")?.remove();
-				const nextPortal = document.createElement("div");
-				nextPortal.id = "live-portal";
-				document.body.appendChild(nextPortal);
-				if (!panel) throw new Error("pairing panel missing");
-				nextPortal.appendChild(panel);
-				await act(async () => {
-					await Promise.resolve();
-				});
-				expect(panel.closest(".devices-pairing-accept")).not.toBeNull();
-			}
-			act(() =>
-				[...document.querySelectorAll<HTMLButtonElement>("button")]
-					.find((button) => button.textContent === "Close")
-					?.click(),
-			);
-			expect(panel?.parentElement).toBe(document.getElementById("live-portal"));
-			expect(panel?.closest("[hidden]")).toBeNull();
-		},
-	);
-});
-
-describe("Device pairing ownership", () => {
-	it("returns the form to a connected host after the sync action slot is replaced", async () => {
-		const section = document.createElement("div");
-		section.id = "syncJoinSection";
-		section.innerHTML =
-			'<div id="old-slot"><div id="syncJoinPanel" hidden><textarea></textarea></div></div>';
-		document.body.appendChild(section);
-		mount(intent(), reconciliation());
-		const pair = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Pair a device",
-		);
-		act(() => pair?.click());
-		const panel = document.getElementById("syncJoinPanel");
-		expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
-		document.getElementById("old-slot")?.remove();
-		await act(async () => {
-			await Promise.resolve();
-		});
+	it("reviews a pairing code and saves the pairing through the form", async () => {
+		const pairingApi = {
+			review: vi.fn(async () => ({
+				deviceId: "new-laptop-id",
+				fingerprint: "fingerprint-1",
+				addresses: ["10.0.0.4:7337"],
+			})),
+			save: vi.fn(async () => undefined),
+		};
+		const onCommitted = vi.fn(async () => true);
+		mount(intent(), reconciliation(), { pairingApi, onCommitted });
 		act(() =>
 			[...document.querySelectorAll<HTMLButtonElement>("button")]
-				.find((button) => button.textContent === "Close")
+				.find((button) => button.textContent === "Pair a device")
 				?.click(),
 		);
-		expect(document.getElementById("syncJoinPanel")).toBe(panel);
-		expect(panel?.parentElement).toBe(section);
-		expect(panel?.hidden).toBe(true);
-		act(() => pair?.click());
-		expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
-	});
-	it("does not invent a local row when inventory is unavailable", () => {
-		mount(intent(), reconciliation(), { inventoryUnavailable: true });
-		expect(document.querySelector(".devices-local-row")).toBeNull();
-		expect(document.body.textContent).toContain("Work Laptop");
-	});
-	it("leaves the pairing form with Advanced while Devices is hidden", async () => {
-		const devicesTab = document.createElement("div");
-		devicesTab.id = "tab-devices";
-		const mountElement = document.getElementById("mount");
-		if (!mountElement) throw new Error("mount missing");
-		devicesTab.appendChild(mountElement);
-		document.body.appendChild(devicesTab);
-
-		const joinHost = document.createElement("div");
-		joinHost.id = "syncJoinSection";
-		joinHost.innerHTML = '<div id="syncJoinPanel" hidden><button>Review invite</button></div>';
-		document.body.appendChild(joinHost);
-		mount(intent(), reconciliation(), {
-			inventory: inventory([
-				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
-					isLocal: true,
-				}),
-			]),
+		const field = document.querySelector<HTMLTextAreaElement>("#devices-pairing-code");
+		if (!field) throw new Error("pairing form missing");
+		act(() => {
+			field.value = "pairing-code";
+			field.dispatchEvent(new Event("input", { bubbles: true }));
 		});
+		const submit = () => document.querySelector<HTMLButtonElement>(".devices-pairing-form button");
+		await act(async () => submit()?.click());
+		await act(async () => {});
 
-		const pairButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Pair a device",
+		const panel = document.getElementById("devices-pairing-panel");
+		expect(pairingApi.review).toHaveBeenCalledExactlyOnceWith("pairing-code");
+		expect(panel?.textContent).toContain("new-laptop-id");
+		expect(panel?.textContent).toContain("fingerprint-1");
+		expect(panel?.textContent).toContain("10.0.0.4:7337");
+		expect(submit()?.textContent).toBe("Save pairing");
+
+		await act(async () => submit()?.click());
+		await act(async () => {});
+
+		expect(pairingApi.save).toHaveBeenCalledExactlyOnceWith("pairing-code");
+		expect(onCommitted).toHaveBeenCalledOnce();
+		expect(panel?.textContent).toContain(
+			"Pairing saved on this device. Team and Project access is unchanged.",
 		);
-		act(() => pairButton?.click());
-		const panel = document.getElementById("syncJoinPanel");
-		if (!panel) throw new Error("pairing panel missing");
-		expect(panel.parentElement?.classList.contains("devices-pairing-accept")).toBe(true);
+	});
 
-		devicesTab.hidden = true;
-		await act(async () => {
-			await Promise.resolve();
+	it("sends a Team or Project invitation to Sharing instead of pairing", async () => {
+		const pairingApi = { review: vi.fn(async () => null), save: vi.fn() };
+		mount(intent(), reconciliation(), { pairingApi });
+		act(() =>
+			[...document.querySelectorAll<HTMLButtonElement>("button")]
+				.find((button) => button.textContent === "Pair a device")
+				?.click(),
+		);
+		const field = document.querySelector<HTMLTextAreaElement>("#devices-pairing-code");
+		if (!field) throw new Error("pairing form missing");
+		act(() => {
+			field.value = "team-invitation";
+			field.dispatchEvent(new Event("input", { bubbles: true }));
 		});
 
-		expect(panel.parentElement).toBe(joinHost);
-		expect(panel.hidden).toBe(true);
+		await act(async () =>
+			document.querySelector<HTMLButtonElement>(".devices-pairing-form button")?.click(),
+		);
+		await act(async () => {});
+
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Accept Team and Project invitations in Sharing → Invitations.",
+		);
+		expect(pairingApi.save).not.toHaveBeenCalled();
 	});
 });
 

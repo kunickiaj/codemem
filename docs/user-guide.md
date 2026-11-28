@@ -878,7 +878,7 @@ Changing who receives a Project works only on a device that holds the coordinato
 Open **Sharing → Invitations → Review an invite** and paste any code you received. Sharing reviews it and shows what accepting it does:
 
 - **Team, add-device, and Project invitations** show the Projects you will receive before you accept.
-- **A device pairing code** belongs in **Devices**. Choose **Review in Devices**, then **Pair a device**. The code is already filled in, so you can check the other device before trusting it.
+- **A device pairing code** belongs in **Devices**. Choose **Review in Devices**. Devices opens its pairing form with the code already filled in, so you can check the other device before trusting it.
 - **An older connection-only code** connects this device to a coordinator group. It shares no Projects and adds you to no Team. If the group needs an admin's approval, Sharing says the join request was sent. codemem 0.50 no longer creates these codes, and 0.51 stops accepting them. If someone sends you one after you upgrade to 0.51, ask them for a Team invitation instead.
 
 ### Stop receiving a Project on this device
@@ -1119,7 +1119,7 @@ A pairing authenticates the two devices to each other. It moves only memories of
 
 1. In **Devices**, choose **Pair a device** and copy the displayed `codemem sync pair --payload-only` command.
 2. On the device you want to connect, run `codemem sync enable` and `codemem service restart` before running the copied command. Both devices need sync enabled to exchange memories of the Sharing domains they share.
-3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Choose **Review invite** to check the device ID, fingerprint, and addresses against the other device, then choose **Accept invite**. Accept only a payload from a device you trust; acceptance trusts that device.
+3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Choose **Review pairing** to check the device ID, fingerprint, and addresses against the other device, then choose **Save pairing**. A Team or Project invitation pasted here is not a pairing code. Accept it in **Sharing → Invitations**. Accept only a payload from a device you trust; acceptance trusts that device.
 4. Repeat in the other direction: enable sync and restart this device, generate its payload, then accept that payload on the other device. Each device must accept the other's payload; one-way acceptance does not complete pairing.
 
 For a CLI-only compatibility flow, generate a payload with `codemem sync pair` on one device and accept it with `codemem sync pair --accept '<payload>'` on the other. Repeat with the devices reversed.
