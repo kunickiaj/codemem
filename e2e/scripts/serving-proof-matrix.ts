@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { fork, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import type { CanaryObservation } from "./serving-proof-wire.js";
 
 const { values } = parseArgs({
 	options: { releases: { type: "string" }, version: { type: "string" } },
@@ -65,7 +66,7 @@ async function exchange(
 	{ expectTransfer }: { expectTransfer: boolean },
 ) {
 	const keys = fixture.seedCanaries(sender);
-	const wireFile = join(receiver.env.HOME, "wire-count");
+	const wireFile = join(receiver.env.HOME, "wire.jsonl");
 	writeFileSync(wireFile, "");
 	const server = fork(script("serving-proof-peer.mjs"), [target, "serve"], {
 		execArgv: [],
@@ -118,7 +119,18 @@ async function exchange(
 				`unexpected transfer outcome: ${source} -> ${target}`,
 			);
 		}
-		return statSync(wireFile).size > 0;
+		const observed: CanaryObservation[] = readFileSync(wireFile, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		if (expectTransfer) {
+			for (const key of keys)
+				assert.ok(
+					observed.some((hit) => hit.direction === "sender-to-receiver" && hit.id === key),
+					`Missing outbound control: ${key}`,
+				);
+		}
+		return observed;
 	} finally {
 		server.kill();
 		await exit;
@@ -145,36 +157,51 @@ async function matrix(source: string, target: string, legacy: string, directory:
 				],
 				p,
 			);
-		assert.equal(await exchange(a, b, source, target, { expectTransfer: true }), true);
-		for (const p of [a, b]) {
-			const r = run(
-				[
-					"--import",
-					"tsx",
-					script("serving-proof-crash.ts"),
-					p.dbPath,
-					coordinator,
-					fixture.groupId,
-					generation,
-				],
-				p,
-			);
-			assert.equal(r.signal, "SIGKILL", r.stderr);
-			assert.equal(
-				p.db
+		await exchange(a, b, source, target, { expectTransfer: true });
+		for (const stage of ["purge", "first-envelope"])
+			for (const p of [a, b]) {
+				const r = run(
+					[
+						"--import",
+						"tsx",
+						script("serving-proof-crash.ts"),
+						p.dbPath,
+						coordinator,
+						fixture.groupId,
+						generation,
+						stage,
+					],
+					p,
+				);
+				assert.equal(r.signal, "SIGKILL", r.stderr);
+				const installed = p.db
 					.prepare("SELECT count(*) FROM sqlite_master WHERE name='scope_serving_preparations'")
 					.pluck()
-					.get(),
-				0,
-			);
-			assert.equal(
-				p.db.prepare("SELECT count(*) FROM scope_membership_authorization_evidence").pluck().get(),
-				4,
-			);
-		}
+					.get();
+				if (installed) {
+					assert.equal(
+						p.db
+							.prepare("SELECT count(*) FROM scope_serving_preparations WHERE group_id=?")
+							.pluck()
+							.get(fixture.groupId),
+						0,
+					);
+					assert.equal(
+						p.db.prepare("SELECT count(*) FROM scope_serving_proofs_v2").pluck().get(),
+						0,
+					);
+				}
+				assert.equal(
+					p.db
+						.prepare("SELECT count(*) FROM scope_membership_authorization_evidence")
+						.pluck()
+						.get(),
+					4,
+				);
+			}
 		// An interrupted preparation cannot acknowledge a transition. The old
 		// state still works end to end until preparation succeeds on retry.
-		assert.equal(await exchange(a, b, source, target, { expectTransfer: true }), true);
+		await exchange(a, b, source, target, { expectTransfer: true });
 		fixture.transition(a, b, coordinator, generation);
 		fixture.transition(b, a, coordinator, generation);
 		const offlineBody = await exchange(a, b, source, target, { expectTransfer: false });
@@ -195,7 +222,7 @@ async function matrix(source: string, target: string, legacy: string, directory:
 		const refreshedBody = await exchange(a, b, source, target, { expectTransfer: false });
 		assert.deepEqual(
 			{ offlineBody, refreshedBody },
-			{ offlineBody: false, refreshedBody: false },
+			{ offlineBody: [], refreshedBody: [] },
 			"Synthetic body crossed the peer connection",
 		);
 	} finally {

@@ -270,8 +270,11 @@ pnpm exec tsx e2e/scripts/serving-proof-matrix.ts --releases "$RELEASE_BUILDS"
 The matrix runs each released CLI against its matching server and against the
 current server. It also runs the current CLI against each released server.
 Peers use disposable homes, file-backed keys, loopback listeners, and a
-disconnected coordinator. The controls require the synthetic memories to
-arrive before preparation and after a crash rolls preparation back. After a
+disconnected coordinator. The listener records the direction and exact synthetic
+body IDs without saving payloads. The controls require each new memory to
+arrive before preparation and after crash recovery. The harness kills the
+preparing process both during the legacy purge and immediately before the
+first envelope insert. Neither interruption may leave a prepared group. After a
 successful retry, both the offline exchange and the exchange after a released
 client attempts a refresh must keep the bodies off the wire. The command exits
 nonzero if any pairing fails. It does not start production preparation, test

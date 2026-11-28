@@ -4,6 +4,7 @@ import { appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { observeCanaries } from "./serving-proof-wire.ts";
 
 const [root, action, coordinator] = process.argv.slice(2);
 const load = (pkg) => import(pathToFileURL(join(root, "packages", pkg, "dist/index.js")));
@@ -51,16 +52,16 @@ if (action === "inspect-cache") {
 	const require = createRequire(join(root, "packages/viewer-server/package.json"));
 	const { serve } = require("@hono/node-server");
 	const app = createSyncApp({ storeFactory: () => store });
-	const marker = "offline-proof-synthetic-body:";
-	const record = (text) => {
-		if (text.includes(marker)) appendFileSync(join(process.env.HOME, "wire-count"), "1");
+	const record = (text, direction) => {
+		for (const observation of observeCanaries(text, direction))
+			appendFileSync(join(process.env.HOME, "wire.jsonl"), JSON.stringify(observation) + "\n");
 	};
 	const server = serve(
 		{
 			fetch: async (request) => {
-				if (request.method === "POST") record(await request.clone().text());
+				if (request.method === "POST") record(await request.clone().text(), "sender-to-receiver");
 				const response = await app.fetch(request);
-				record(await response.clone().text());
+				record(await response.clone().text(), "receiver-to-sender");
 				return response;
 			},
 			hostname: "127.0.0.1",

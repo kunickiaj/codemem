@@ -3,6 +3,7 @@ import type { Database } from "./db.js";
 import { scopeEvidenceTableExists } from "./scope-membership-evidence.js";
 
 type Preparation = { coordinatorId: string; groupId: string; generation: string };
+type Envelope = { scopeId: string; deviceId: string; keyId: string; envelope: Uint8Array };
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS scope_serving_preparations (
 	coordinator_id TEXT NOT NULL, group_id TEXT NOT NULL, generation TEXT NOT NULL,
@@ -18,7 +19,11 @@ CREATE TABLE IF NOT EXISTS scope_serving_proofs_v2 (
 
 /** Device-local step only. The caller must already have stopped v1 issuance and
  * drained serving and refreshes. No production operation starts preparation. */
-export function prepareScopeServingStore(db: Database, input: Preparation): void {
+export function prepareScopeServingStore(
+	db: Database,
+	input: Preparation,
+	envelopes: readonly Envelope[],
+): void {
 	const { coordinatorId, groupId, generation } = input;
 	if (!coordinatorId.trim() || !groupId.trim() || !isBoundaryReadinessGeneration(generation))
 		throw new Error("Invalid scope serving preparation");
@@ -36,12 +41,14 @@ export function prepareScopeServingStore(db: Database, input: Preparation): void
 		if (scopeEvidenceTableExists(db))
 			db.prepare(`DELETE FROM scope_membership_authorization_evidence
 				WHERE coordinator_id=? AND group_id=?`).run(coordinatorId, groupId);
+		for (const envelope of envelopes)
+			storeScopeServingEnvelope(db, { ...envelope, coordinatorId, groupId, generation });
 	}).immediate();
 }
 
 /** Stores opaque bytes for a future verifier. Storage confers no access and
  * never converts legacy evidence into a proof. */
-export function storeScopeServingEnvelope(
+function storeScopeServingEnvelope(
 	db: Database,
 	input: Preparation & { scopeId: string; deviceId: string; keyId: string; envelope: Uint8Array },
 ): void {
