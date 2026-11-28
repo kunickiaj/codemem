@@ -14,7 +14,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
-import { opCopyId, recordOpCopy } from "./memory-copy-provenance.js";
+import { recordOpCopy } from "./memory-copy-provenance.js";
 import {
 	hasMatchingLocalCreation,
 	hasRecordedLocalCreation,
@@ -37,6 +37,7 @@ import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import { requestReplicationBackfillRecheck } from "./replication-backfill-state.js";
 import * as schema from "./schema.js";
+import { tableExists } from "./schema-lookups.js";
 import { isScopeDeviceAdmissionRefused } from "./scope-device-admission.js";
 import {
 	getCachedScopeAuthorization,
@@ -1586,6 +1587,8 @@ function unretiredSnapshotPayload(
 
 type SnapshotRow = { memory: MemoryItemRow; sessionProject: string | null };
 
+const snapshotRowMemory = (row: SnapshotRow): MemoryItemRow => row.memory;
+
 /** A snapshot upsert names the session project, so receivers file it under the right Project. */
 function snapshotUpsertPayload(payload: MemoryPayload, row: SnapshotRow): Record<string, unknown> {
 	return { ...payload, project: row.sessionProject ?? null };
@@ -1611,6 +1614,7 @@ function snapshotItemForPeer(
 	row: SnapshotRow,
 	importKey: string,
 	options: LoadMemorySnapshotPageForPeerOptions,
+	duplicated: ReadonlySet<string>,
 ): SyncMemorySnapshotItem | null {
 	const payload = unretiredSnapshotPayload(db, row.memory, options.sourceDeviceId);
 	if (!payload) return null;
@@ -1619,7 +1623,7 @@ function snapshotItemForPeer(
 		project: row.sessionProject,
 		scopeId: cleanText(row.memory.scope_id),
 	};
-	if (storedCopyRefusal(db, copy, options.peerDeviceId ?? null)) return null;
+	if (storedCopyRefusal(db, copy, options.peerDeviceId ?? null, duplicated)) return null;
 	const deleted = Boolean(row.memory.deleted_at) || row.memory.active === 0;
 	return {
 		entity_id: importKey,
@@ -1711,17 +1715,16 @@ export function loadMemorySnapshotPageForPeer(
 	while (items.length < limit && !full) {
 		const rows = rowsAfterToken(nextScanToken, scanBatchSize);
 		if (rows.length === 0) break;
+		const duplicated = duplicatedCopyKeys(db, rows.map(snapshotRowMemory));
 
-		for (let index = 0; index < rows.length; index += 1) {
-			const row = rows[index];
-			if (!row) continue;
+		for (const [index, row] of rows.entries()) {
 			const importKey = String(row.memory.import_key ?? "").trim();
 			if (!importKey) continue;
 			// An earlier row is always on the page when this is used, so it is never null then.
 			const tokenBeforeRow: string | null = lastScannedToken;
 			lastScannedToken = makeSnapshotPageToken(importKey, Number(row.memory.id));
 			nextScanToken = { importKey, id: Number(row.memory.id) };
-			const item = snapshotItemForPeer(db, row, importKey, options);
+			const item = snapshotItemForPeer(db, row, importKey, options, duplicated);
 			if (!item) continue;
 			const itemBytes = snapshotItemBytes(item, importKey, options.maxEntryBytes);
 			if (items.length > 0 && pageBytes + itemBytes > maxBytes) {
@@ -2478,9 +2481,11 @@ function storedCopyRefusal(
 	db: Database,
 	copy: StoredMemoryCopy,
 	peerDeviceId: string | null,
+	duplicated: ReadonlySet<string>,
 ): OutboundRefusal | null {
 	const scope = { scope_id: copy.scopeId };
-	if (storedCopyWithheld(db, copy)) return { reason: "scope_filter", scope_id: copy.scopeId };
+	if (storedCopyWithheld(copy, duplicated))
+		return { reason: "scope_filter", scope_id: copy.scopeId };
 	if (
 		(replicationOpRequiresPersonalScopeAuthorization(scope, copy.payload) ||
 			!syncVisibilityAllowed(copy.payload)) &&
@@ -2510,18 +2515,51 @@ const FALLBACK_LOCAL_ACTOR_ID = "local:local";
  *   device identity, whatever its origin says. It is served once adoption moves
  *   it to the canonical actor.
  */
-function storedCopyWithheld(db: Database, copy: StoredMemoryCopy): boolean {
+function storedCopyWithheld(copy: StoredMemoryCopy, duplicated: ReadonlySet<string>): boolean {
 	if (copy.payload.actor_id === FALLBACK_LOCAL_ACTOR_ID) return true;
 	const importKey = cleanText(copy.payload.import_key as string | null);
-	if (importKey == null) return false;
-	return (
-		Number(
-			db
-				.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key = ? AND scope_id IS ?")
-				.pluck()
-				.get(importKey, copy.scopeId),
-		) > 1
+	return importKey != null && duplicated.has(copyScopeKey(importKey, copy.scopeId));
+}
+
+/** A memory's import key and scope, as one key of a page's duplicate set. */
+function copyScopeKey(importKey: string, scopeId: string | null): string {
+	return `${importKey}\u0000${scopeId ?? ""}`;
+}
+
+/** SQLite placeholders per IN list, well under its bound-parameter limit. */
+const PAGE_LOOKUP_CHUNK = 500;
+
+function chunked<T>(values: readonly T[]): T[][] {
+	const chunks: T[][] = [];
+	for (let start = 0; start < values.length; start += PAGE_LOOKUP_CHUNK)
+		chunks.push(values.slice(start, start + PAGE_LOOKUP_CHUNK));
+	return chunks;
+}
+
+/**
+ * The keys among a page's memories that this device stores more than once in
+ * one scope, by copyScopeKey. One query per 500 keys, on the import key index,
+ * so the cost follows the page, not the store.
+ */
+function duplicatedCopyKeys(
+	db: Database,
+	memories: Iterable<{ import_key?: string | null }>,
+): Set<string> {
+	const keys = [...new Set([...memories].map((memory) => cleanText(memory.import_key)))].filter(
+		(key): key is string => key != null,
 	);
+	const duplicated = new Set<string>();
+	for (const chunk of chunked(keys)) {
+		const rows = db
+			.prepare(
+				`SELECT import_key, scope_id FROM memory_items
+				 WHERE import_key IN (${chunk.map(() => "?").join(", ")})
+				 GROUP BY import_key, scope_id HAVING COUNT(*) > 1`,
+			)
+			.all(...chunk) as Array<{ import_key: string; scope_id: string | null }>;
+		for (const row of rows) duplicated.add(copyScopeKey(row.import_key, row.scope_id));
+	}
+	return duplicated;
 }
 
 /** Whether the op carries a memory's content, as against a tombstone, cleanup or move retraction. */
@@ -2553,25 +2591,64 @@ interface CurrentCopy {
  * The copy's current content still reaches peers through an op recorded for it
  * since, and through snapshot pages.
  */
-function currentCopyForOp(db: Database, op: ReplicationOp): CurrentCopy | null {
-	const importKey = cleanText(op.entity_id);
-	const scopeId = cleanText(op.scope_id);
-	const copyId = opCopyId(db, op.op_id);
-	if (!importKey || !scopeId || !copyId) return null;
-	const row = db
-		.prepare(
-			`SELECT memory.*, session.project AS session_project
-			 FROM memory_items AS memory
-			 JOIN memory_copy_identities AS copy ON copy.memory_id = memory.id
-			 LEFT JOIN sessions AS session ON session.id = memory.session_id
-			 WHERE copy.copy_id = ? AND memory.import_key = ? AND memory.scope_id = ?
-			   AND COALESCE(memory.rev, 0) = ?`,
-		)
-		.get(copyId, importKey, scopeId, Number(op.clock_rev ?? 0)) as
-		| (MemoryItemRow & { session_project: string | null })
-		| undefined;
-	if (!row) return null;
-	return { row, sessionProject: cleanText(row.session_project) };
+function currentCopyForOp(page: OutboundPage, op: ReplicationOp): CurrentCopy | null {
+	const copy = page.copies.get(op.op_id);
+	if (!copy || !cleanText(op.scope_id)) return null;
+	const { row } = copy;
+	const current =
+		row.import_key === cleanText(op.entity_id) &&
+		row.scope_id === cleanText(op.scope_id) &&
+		Number(row.rev ?? 0) === Number(op.clock_rev ?? 0);
+	return current ? copy : null;
+}
+
+/**
+ * What outbound decisions on one window of ops read from the store, loaded once
+ * for the window: the stored copy each op names, and which of those copies share
+ * an import key with another copy in their scope. Lookups per op would grow with
+ * the store; these grow with the window.
+ */
+interface OutboundPage {
+	/** The window's ops as they go out: deletions without a payload. */
+	ops: ReplicationOp[];
+	copies: Map<string, CurrentCopy>;
+	duplicated: Set<string>;
+	localDeviceId: string | null;
+}
+
+function outboundPage(
+	db: Database,
+	listed: ReplicationOp[],
+	localDeviceId: string | null,
+): OutboundPage {
+	const ops = listed.map(asOutboundTombstone);
+	const copies = storedCopiesForOps(db, ops);
+	const memories = [...copies.values()].map((copy) => copy.row);
+	return { ops, copies, duplicated: duplicatedCopyKeys(db, memories), localDeviceId };
+}
+
+/** The stored copy each memory op names, by op ID, in one query per 500 ops. */
+function storedCopiesForOps(db: Database, ops: ReplicationOp[]): Map<string, CurrentCopy> {
+	const copies = new Map<string, CurrentCopy>();
+	if (!tableExists(db, "replication_op_copies")) return copies;
+	const opIds = ops.filter((op) => op.entity_type === "memory_item").map((op) => op.op_id);
+	for (const chunk of chunked(opIds)) {
+		const rows = db
+			.prepare(
+				`SELECT op_copy.op_id AS page_op_id, memory.*, session.project AS session_project
+				 FROM replication_op_copies AS op_copy
+				 JOIN memory_copy_identities AS copy ON copy.copy_id = op_copy.copy_id
+				 JOIN memory_items AS memory ON memory.id = copy.memory_id
+				 LEFT JOIN sessions AS session ON session.id = memory.session_id
+				 WHERE op_copy.op_id IN (${chunk.map(() => "?").join(", ")})`,
+			)
+			.all(...chunk) as Array<
+			MemoryItemRow & { page_op_id: string; session_project: string | null }
+		>;
+		for (const { page_op_id, session_project, ...row } of rows)
+			copies.set(page_op_id, { row, sessionProject: cleanText(session_project) });
+	}
+	return copies;
 }
 
 /**
@@ -2617,40 +2694,25 @@ function outboundDecision(
 	op: ReplicationOp,
 	payload: Record<string, unknown> | null,
 	peerDeviceId: string | null,
-	localDeviceId: string | null,
+	page: OutboundPage,
 ): OutboundDecision {
 	const scopeRefusal: OutboundRefusal = {
 		reason: "scope_filter",
 		scope_id: cleanText(op.scope_id),
 	};
-	if (!outboundScopeAllowed(db, op, payload, peerDeviceId, localDeviceId))
+	if (!outboundScopeAllowed(db, op, payload, peerDeviceId, page.localDeviceId))
 		return { refusal: scopeRefusal };
 	if (!payload || !opCarriesMemoryContent(op, payload)) return { op };
-	const copy = currentCopyForOp(db, op);
+	const copy = currentCopyForOp(page, op);
 	if (!copy || copy.row.active === 0 || copy.row.deleted_at) return { refusal: scopeRefusal };
 	const readable = {
 		payload: buildPayloadFromMemoryRow(copy.row) as unknown as Record<string, unknown>,
 		project: copy.sessionProject,
 		scopeId: cleanText(copy.row.scope_id),
 	};
-	const refusal = storedCopyRefusal(db, readable, peerDeviceId);
+	const refusal = storedCopyRefusal(db, readable, peerDeviceId, page.duplicated);
 	if (refusal) return { refusal };
 	return { op: { ...op, payload_json: toJson(currentOpPayload(op, payload, copy)) } };
-}
-
-/**
- * The outbound decision, where the scope filter applies, with the op that goes
- * out rebuilt from its stored copy. Inbound validation runs without the filter.
- */
-function scopedOutboundDecision(
-	db: Database,
-	op: ReplicationOp,
-	payload: Record<string, unknown> | null,
-	peerDeviceId: string | null,
-	options: FilterReplicationOpsForSyncOptions,
-): OutboundDecision {
-	if (options.applyScopeFilter === false) return { op };
-	return outboundDecision(db, op, payload, peerDeviceId, options.localDeviceId ?? null);
 }
 
 /**
@@ -2665,10 +2727,11 @@ export function opsStillSendableToPeer(
 	peerDeviceId: string,
 	localDeviceId: string | null,
 ): ReplicationOp[] {
+	const page = outboundPage(db, ops, localDeviceId);
 	return ops.flatMap((op) => {
 		const payload = op.entity_type === "memory_item" ? parsePayload(op.payload_json) : null;
 		if (!opCarriesMemoryContent(op, payload)) return [op];
-		const decision = outboundDecision(db, op, payload, peerDeviceId, localDeviceId);
+		const decision = outboundDecision(db, op, payload, peerDeviceId, page);
 		return decision.refusal ? [] : [decision.op];
 	});
 }
@@ -2794,6 +2857,23 @@ function legacyDefaultReassignAllowed(
  * processed op (including skipped ops), and skipped metadata when filtering
  * removed one or more ops.
  */
+/** Why a deletion without a payload may not go to the peer, or null when it may. */
+function contentFreeDeleteRefusal(
+	db: Database,
+	op: ReplicationOp,
+	peerDeviceId: string | null,
+	applyScopeFilter: boolean,
+): Parameters<typeof addSkipped>[2] | null {
+	const rejection = existingDeleteRejection(db, op, peerDeviceId, { applyScopeFilter });
+	if (rejection) return rejection;
+	if (
+		replicationOpRequiresPersonalScopeAuthorization(op, null) &&
+		!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, null, peerDeviceId)
+	)
+		return { reason: "visibility_filter" };
+	return null;
+}
+
 function existingDeleteRejection(
 	db: Database,
 	op: ReplicationOp,
@@ -2873,7 +2953,9 @@ export function filterReplicationOpsForSyncWithStatus(
 	let nextCursor: string | null = null;
 	const skipped = { count: 0, first: null as FilterReplicationSkipped | null };
 	const applyScopeFilter = options.applyScopeFilter !== false;
-	for (const op of applyScopeFilter ? ops.map(asOutboundTombstone) : ops) {
+	// Outbound ops are decided with their window's copies; inbound validation skips the scope filter.
+	const page = applyScopeFilter ? outboundPage(db, ops, options.localDeviceId ?? null) : null;
+	for (const op of page?.ops ?? ops) {
 		let outbound = op;
 		if (retirementBlocksMemoryOp(db, op)) {
 			addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
@@ -2924,7 +3006,7 @@ export function filterReplicationOpsForSyncWithStatus(
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}
-			const decision = scopedOutboundDecision(db, op, payload, peerDeviceId, options);
+			const decision = page ? outboundDecision(db, op, payload, peerDeviceId, page) : { op };
 			if (decision.refusal) {
 				addSkipped(skipped, op, decision.refusal);
 				nextCursor = computeCursor(op.created_at, op.op_id);
@@ -2932,21 +3014,9 @@ export function filterReplicationOpsForSyncWithStatus(
 			}
 			outbound = decision.op;
 			if (op.op_type === "delete" && payload == null) {
-				const rejection = existingDeleteRejection(db, op, peerDeviceId, { applyScopeFilter });
-				if (rejection) {
-					addSkipped(skipped, op, rejection);
-					nextCursor = computeCursor(op.created_at, op.op_id);
-					continue;
-				}
-				if (
-					replicationOpRequiresPersonalScopeAuthorization(op, payload) &&
-					!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, payload, peerDeviceId)
-				) {
-					addSkipped(skipped, op, { reason: "visibility_filter" });
-					nextCursor = computeCursor(op.created_at, op.op_id);
-					continue;
-				}
-				allowed.push(op);
+				const refusal = contentFreeDeleteRefusal(db, op, peerDeviceId, applyScopeFilter);
+				if (refusal) addSkipped(skipped, op, refusal);
+				else allowed.push(op);
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}

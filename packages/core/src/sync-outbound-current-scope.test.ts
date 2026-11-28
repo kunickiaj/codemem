@@ -229,6 +229,71 @@ describe("a memory this device no longer stores", () => {
 	});
 });
 
+describe("a window of many ops", () => {
+	it("looks up copies once per 500 ops, and still withholds a duplicate past the first lookup", async () => {
+		// Arrange: 1,200 memories with ops, and a second copy of one far into the window.
+		insertScope(db, "scope-old", GROUP_ID);
+		insertTestPeer(db, "peer-old");
+		await grant([
+			["scope-old", SOURCE],
+			["scope-old", "peer-old"],
+		]);
+		const session = Number(
+			db
+				.prepare("INSERT INTO sessions(started_at, cwd, project) VALUES (?, '/w/api', 'api')")
+				.run(NOW).lastInsertRowid,
+		);
+		const insert = db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
+			 visibility, origin_device_id, active, metadata_json, project, scope_id, import_key, rev)
+			 VALUES (?, 'discovery', 'Title', ?, ?, ?, 'shared', ?, 1, '{}', 'api', 'scope-old', ?, 1)`,
+		);
+		for (let i = 0; i < 1_200; i++) {
+			const memoryId = Number(
+				insert.run(session, `Body ${i}`, NOW, NOW, SOURCE, `key:${i}`).lastInsertRowid,
+			);
+			recordReplicationOp(db, {
+				memoryId,
+				opType: "upsert",
+				deviceId: SOURCE,
+				scopeId: "scope-old",
+				clockRev: 1,
+				createdAt: NOW,
+			});
+		}
+		insert.run(session, "Another body", NOW, NOW, SOURCE, "key:1100");
+		const ops = db
+			.prepare("SELECT * FROM replication_ops ORDER BY created_at, op_id")
+			.all() as ReplicationOp[];
+		const prepared: string[] = [];
+		const prepare = db.prepare.bind(db);
+		db.prepare = ((sql: string) => {
+			prepared.push(sql);
+			return prepare(sql);
+		}) as typeof db.prepare;
+
+		// Act
+		const [allowed] = filterReplicationOpsForSyncWithStatus(db, ops, "peer-old", {
+			localDeviceId: SOURCE,
+			supportsReassignScope: true,
+		});
+
+		// Assert: every other op carries its content, and each lookup ran once per 500 ops.
+		expect(allowed.map((op) => op.entity_id).sort()).toEqual(
+			Array.from({ length: 1_200 }, (_, i) => `key:${i}`)
+				.filter((key) => key !== "key:1100")
+				.sort(),
+		);
+		expect(allowed.every((op) => JSON.parse(op.payload_json ?? "{}").body_text)).toBe(true);
+		expect(
+			prepared.filter((sql) => sql.includes("FROM replication_op_copies AS op_copy")),
+		).toHaveLength(3);
+		expect(
+			prepared.filter((sql) => sql.includes("GROUP BY import_key, scope_id HAVING COUNT(*) > 1")),
+		).toHaveLength(3);
+	});
+});
+
 describe("a deletion that replication backfill recorded", () => {
 	it("goes out as a tombstone without the deleted memory's content", async () => {
 		// Arrange: a memory deleted without a delete op, which backfill then records with the full row.
